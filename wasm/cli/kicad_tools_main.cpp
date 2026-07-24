@@ -10,6 +10,8 @@
  *     kicad_tools --gerbers <file.kicad_pcb> [<outdir>]
  *     kicad_tools --drill <file.kicad_pcb> [<outdir>]
  *     kicad_tools --plot-board [--pdf] [--layers <a,b,...>] <file.kicad_pcb> [<out>]
+ *     kicad_tools --ipc356 <file.kicad_pcb> [<out.ipc>]
+ *     kicad_tools --fab-components <file.kicad_pcb> [<out.json>]
  *
  *   eeschema side (sym_convert_main.cpp) — everything else:
  *     kicad_tools --convert-lib <input.lib> <output.kicad_sym>
@@ -47,7 +49,9 @@ int main( int argc, char** argv )
     if( argc >= 2
         && ( std::strcmp( argv[1], "--drc" ) == 0 || std::strcmp( argv[1], "--gerbers" ) == 0
              || std::strcmp( argv[1], "--drill" ) == 0
-             || std::strcmp( argv[1], "--plot-board" ) == 0 ) )
+             || std::strcmp( argv[1], "--plot-board" ) == 0
+             || std::strcmp( argv[1], "--ipc356" ) == 0
+             || std::strcmp( argv[1], "--fab-components" ) == 0 ) )
     {
         rc = pcbConvertMain( argc, argv );
     }

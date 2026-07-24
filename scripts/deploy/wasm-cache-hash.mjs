@@ -59,6 +59,13 @@ const INPUTS = [
   // Per-tool compile recipes (compile flags / emcc link options).
   { dir: "scripts/kicad", match: /^build-.*\.sh$/ },
 
+  // The pcbjam-repo C++/CMake/shim sources compiled INTO the tools (bindings,
+  // cli mains, kiplatform, gl1, stubs, editor glue). These live outside the
+  // kicad/wx submodules, so without this entry a pure wasm/** edit (e.g. a
+  // new kicad_tools subcommand) would cache-hit stale output — plugins 0002
+  // shipped exactly that way before this entry existed.
+  { dir: "wasm" },
+
   // Dependency builds (boost/cairo/occ/... — the sysroot the wasm links against).
   { dir: "scripts/deps" },
 

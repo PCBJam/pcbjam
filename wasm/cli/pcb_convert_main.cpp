@@ -32,6 +32,20 @@
  *             default to the board's enabled set, or a comma-separated list
  *             of canonical/user layer names. Exit: 0 ok, 2 usage, 4 failure.
  *
+ *   ipc356:   pcb_convert --ipc356 <file.kicad_pcb> [<out.ipc>]
+ *             IPC-D-356 netlist via IPC356D_WRITER, default settings (out
+ *             defaults to <file>-netlist.ipc). Exit: 0 ok, 2 usage, 4 load
+ *             failure, 5 write failure.
+ *
+ *   fab:      pcb_convert --fab-components <file.kicad_pcb> [<out.json>]
+ *             Manufacturer-agnostic fabrication data JSON (plugins 0002):
+ *             board metrics (Edge.Cuts bbox mm, aux origin, copper layer
+ *             count, thickness) + one entry per footprint (ref, fpid, side,
+ *             absolute position mm in board coords — no Y flip, no
+ *             aux-origin subtraction; consumers derive their own — rotation
+ *             deg, smd/exclude/dnp attributes, all non-empty fields).
+ *             Exit: 0 ok, 2 usage, 4 load failure, 5 write failure.
+ *
  * No GUI, no renderer, no embind bindings. Wired into pcbnew/CMakeLists.txt
  * behind the KICAD_PCB_CONVERTER_WASM option (see
  * scripts/kicad/build-pcb_convert.sh).
@@ -43,6 +57,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <unistd.h>
@@ -54,13 +69,16 @@
 #include <wx/string.h>
 
 #include <base_screen.h>
+#include <base_units.h>
 #include <board.h>
 #include <board_design_settings.h>
 #include <drc/drc_engine.h>
 #include <drc/drc_item.h>
 #include <drc/drc_report.h>
+#include <exporters/export_d356.h>
 #include <exporters/gendrill_excellon_writer.h>
 #include <exporters/gerber_jobfile_writer.h>
+#include <json_common.h>
 #include <jobs/job_export_pcb_drill.h>
 #include <jobs/job_export_pcb_gerbers.h>
 #include <jobs/job_export_pcb_pdf.h>
@@ -70,6 +88,7 @@
 #include <lset.h>
 #include <libraries/library_manager.h>
 #include <footprint.h>
+#include <pcb_field.h>
 #include <pcb_io/kicad_sexpr/pcb_io_kicad_sexpr.h>
 #include <pcb_io/pcb_io_mgr.h>
 #include <pcb_marker.h>
@@ -636,6 +655,147 @@ int runDrill( const char* aInPath, const char* aOutDir )
     return ok ? 0 : 4;
 }
 
+// ── IPC-D-356 netlist export ──────────────────────────────────────────────────
+// Same IPC356D_WRITER call the pcbnew GUI export makes, default settings; net
+// assignments come from the saved board (no connectivity rebuild needed).
+
+int runIpc356( const char* aInPath, const char* aOutPath )
+{
+    wxFileName fn( wxString::FromUTF8( aInPath ) );
+    fn.MakeAbsolute();
+
+    BOARD* brd = loadBoardHeadless( aInPath );
+
+    if( !brd )
+        return 4;
+
+    wxString outPath;
+
+    if( aOutPath )
+    {
+        outPath = wxString::FromUTF8( aOutPath );
+    }
+    else
+    {
+        wxFileName out( fn );
+        out.SetName( out.GetName() + wxS( "-netlist" ) );
+        out.SetExt( wxS( "ipc" ) );
+        outPath = out.GetFullPath();
+    }
+
+    trace( "runIpc356: IPC356D_WRITER::Write" );
+    IPC356D_WRITER writer( brd );
+    const bool     ok = writer.Write( outPath );
+
+    std::fprintf( stderr, "%s: %s (ipc-356d) -> %s\n", aInPath, ok ? "OK" : "FAIL",
+                  (const char*) outPath.ToUTF8() );
+
+    return ok ? 0 : 5;
+}
+
+// ── fabrication components JSON ───────────────────────────────────────────────
+// Manufacturer-agnostic per-footprint placement/BOM data + board metrics
+// (plugins 0002). Coordinates are absolute board coords in mm, as-is: no Y
+// flip, no aux-origin subtraction — manufacturer-specific conventions (e.g.
+// PCBWay's aux-relative negated-Y positions) are applied by the consumer.
+
+int runFabComponents( const char* aInPath, const char* aOutPath )
+{
+    wxFileName fn( wxString::FromUTF8( aInPath ) );
+    fn.MakeAbsolute();
+
+    BOARD* brd = loadBoardHeadless( aInPath );
+
+    if( !brd )
+        return 4;
+
+    wxString outPath;
+
+    if( aOutPath )
+    {
+        outPath = wxString::FromUTF8( aOutPath );
+    }
+    else
+    {
+        wxFileName out( fn );
+        out.SetName( out.GetName() + wxS( "-fab-components" ) );
+        out.SetExt( wxS( "json" ) );
+        outPath = out.GetFullPath();
+    }
+
+    trace( "runFabComponents: collecting" );
+
+    const BOX2I    bbox = brd->GetBoardEdgesBoundingBox();
+    const VECTOR2I aux = brd->GetDesignSettings().GetAuxOrigin();
+
+    nlohmann::json board;
+    board["widthMm"] = pcbIUScale.IUTomm( bbox.GetWidth() );
+    board["heightMm"] = pcbIUScale.IUTomm( bbox.GetHeight() );
+    board["bboxOriginMm"] = { { "x", pcbIUScale.IUTomm( bbox.GetX() ) },
+                              { "y", pcbIUScale.IUTomm( bbox.GetY() ) } };
+    board["auxOriginMm"] = { { "x", pcbIUScale.IUTomm( aux.x ) },
+                             { "y", pcbIUScale.IUTomm( aux.y ) } };
+    board["copperLayers"] = brd->GetCopperLayerCount();
+    board["thicknessMm"] = pcbIUScale.IUTomm( brd->GetDesignSettings().GetBoardThickness() );
+
+    nlohmann::json footprints = nlohmann::json::array();
+
+    for( FOOTPRINT* fp : brd->Footprints() )
+    {
+        const VECTOR2I pos = fp->GetPosition();
+        const int      attrs = fp->GetAttributes();
+
+        nlohmann::json f;
+        f["ref"] = std::string( fp->GetReference().ToUTF8() );
+        f["fpid"] = std::string( fp->GetFPID().GetUniStringLibId().ToUTF8() );
+        f["side"] = fp->GetLayer() == B_Cu ? "bottom" : "top";
+        f["posMm"] = { { "x", pcbIUScale.IUTomm( pos.x ) },
+                       { "y", pcbIUScale.IUTomm( pos.y ) } };
+        f["rotationDeg"] = fp->GetOrientationDegrees();
+        f["smd"] = bool( attrs & FP_SMD );
+        f["excludeFromPos"] = fp->IsExcludedFromPosFiles();
+        f["excludeFromBom"] = fp->IsExcludedFromBOM();
+        f["dnp"] = fp->IsDNP();
+
+        nlohmann::json fields = nlohmann::json::object();
+
+        std::vector<PCB_FIELD*> fieldList;
+        fp->GetFields( fieldList, false );
+
+        for( PCB_FIELD* field : fieldList )
+        {
+            const wxString text = field->GetShownText( false );
+
+            if( !text.IsEmpty() )
+                fields[std::string( field->GetName().ToUTF8() )] = std::string( text.ToUTF8() );
+        }
+
+        f["fields"] = fields;
+        footprints.push_back( f );
+    }
+
+    nlohmann::json j;
+    j["board"] = board;
+    j["footprints"] = footprints;
+
+    trace( "runFabComponents: writing" );
+    std::ofstream out( outPath.fn_str() );
+    out << j.dump( 2 ) << "\n";
+    out.close();
+
+    if( !out )
+    {
+        std::fprintf( stderr, "%s: error: unable to write %s\n", aInPath,
+                      (const char*) outPath.ToUTF8() );
+        return 5;
+    }
+
+    std::fprintf( stderr, "%s: OK (%d footprints) -> %s\n", aInPath,
+                  (int) brd->Footprints().size(), (const char*) outPath.ToUTF8() );
+
+    return 0;
+}
+
 } // namespace
 
 
@@ -1035,10 +1195,65 @@ int pcbConvertMain( int argc, char** argv )
         _exit( rc );
     }
 
+    if( argc >= 2 && std::strcmp( argv[1], "--ipc356" ) == 0 )
+    {
+        wxDisableAsserts();
+
+        if( argc < 3 )
+        {
+            std::fprintf( stderr, "usage: kicad_tools --ipc356 <file.kicad_pcb> [<out.ipc>]\n" );
+            return 2;
+        }
+
+        int rc = 4;
+
+        try
+        {
+            rc = runIpc356( argv[2], argc >= 4 ? argv[3] : nullptr );
+        }
+        catch( const std::exception& e )
+        {
+            std::fprintf( stderr, "%s: error: %s\n", argv[2], e.what() );
+        }
+
+        // Same static-dtor rationale as --drc above.
+        std::fflush( nullptr );
+        _exit( rc );
+    }
+
+    if( argc >= 2 && std::strcmp( argv[1], "--fab-components" ) == 0 )
+    {
+        wxDisableAsserts();
+
+        if( argc < 3 )
+        {
+            std::fprintf( stderr,
+                          "usage: kicad_tools --fab-components <file.kicad_pcb> [<out.json>]\n" );
+            return 2;
+        }
+
+        int rc = 4;
+
+        try
+        {
+            rc = runFabComponents( argv[2], argc >= 4 ? argv[3] : nullptr );
+        }
+        catch( const std::exception& e )
+        {
+            std::fprintf( stderr, "%s: error: %s\n", argv[2], e.what() );
+        }
+
+        // Same static-dtor rationale as --drc above.
+        std::fflush( nullptr );
+        _exit( rc );
+    }
+
     std::fprintf( stderr, "usage: kicad_tools --drc [--json] [--strict] <file.kicad_pcb> [<out>]\n"
                           "       kicad_tools --gerbers <file.kicad_pcb> [<outdir>]\n"
                           "       kicad_tools --drill <file.kicad_pcb> [<outdir>]\n"
-                          "       kicad_tools --plot-board [--pdf] [--layers <a,b,...>] <file.kicad_pcb> [<out>]\n" );
+                          "       kicad_tools --plot-board [--pdf] [--layers <a,b,...>] <file.kicad_pcb> [<out>]\n"
+                          "       kicad_tools --ipc356 <file.kicad_pcb> [<out.ipc>]\n"
+                          "       kicad_tools --fab-components <file.kicad_pcb> [<out.json>]\n" );
     return 2;
 }
 
