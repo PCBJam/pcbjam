@@ -7,6 +7,25 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <title>PCBJam - KiCad demo</title>
+    <!-- No-flash theme boot (comments-ux 0002): ?theme= (platform hand-off,
+         persisted) > localStorage > OS preference, applied before first paint.
+         Keep the key + precedence in sync with src/lib/theme.ts. -->
+    <script>
+      (function () {
+        try {
+          var p = new URLSearchParams(location.search).get("theme");
+          var t = p === "light" || p === "dark" ? p : null;
+          if (t) localStorage.setItem("pcbjam-theme", t);
+          else t = localStorage.getItem("pcbjam-theme");
+          if (t !== "light" && t !== "dark") {
+            t = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+          }
+          document.documentElement.classList.toggle("dark", t === "dark");
+        } catch (e) {
+          /* storage/matchMedia unavailable — stay light */
+        }
+      })();
+    </script>
     <meta
       name="description"
       content="Early-access alpha of PCBJam — KiCad running in your browser. Open the example boards or your own KiCad project. No install, nothing uploaded."

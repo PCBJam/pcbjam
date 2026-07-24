@@ -66,6 +66,7 @@ struct PIN
     VECTOR2D       pos;                  // world coords (IU)
     KIGFX::COLOR4D color;
     bool           resolved = false;
+    bool           unread   = false;     // comments-ux 0001 C: accent ring
 };
 
 inline long long nowMs()
@@ -384,7 +385,7 @@ struct CORE
         for( const PIN& pin : pins )
         {
             KIGFX::COLOR4D color = peerColor( style, pin.name, pin.color );
-            drawPin( chipOverlay.get(), pin.pos, color, pin.resolved, px, style );
+            drawPin( chipOverlay.get(), pin.pos, color, pin.resolved, pin.unread, px, style );
         }
 
         view->Update( overlay.get() );
@@ -532,9 +533,9 @@ struct CORE
         scheduleRedraw();
     }
 
-    /** kicadCollabSetPins (0005): comment pin dots — `{pins:[{id,name,x,y,
-     *  color,resolved}]}`, world IU coords resolved by the TS side from the
-     *  ydoc anchors. Snapshot semantics like setRemote. */
+    /** kicadCollabSetPins (0005): comment pins — `{pins:[{id,name,x,y,
+     *  color,resolved,unread}]}`, world IU coords resolved by the TS side
+     *  from the ydoc anchors. Snapshot semantics like setRemote. */
     void setPins( const std::string& aJson )
     {
         json j = json::parse( aJson, nullptr, /*allow_exceptions*/ false );
@@ -552,6 +553,7 @@ struct CORE
             pin.pos      = VECTOR2D( p.value( "x", 0.0 ), p.value( "y", 0.0 ) );
             pin.color    = parsePeerColor( p.value( "color", "" ) );
             pin.resolved = p.value( "resolved", false );
+            pin.unread   = p.value( "unread", false );
             parsed.push_back( std::move( pin ) );
         }
 

@@ -67,8 +67,13 @@ async function pinDelta(page: Page): Promise<{ dx: number; dy: number }> {
     const r = gl.getBoundingClientRect();
     const ratio = r.width / vp.w;
     const world = win.__pcbjamComments.threads()[0].world;
-    const truthX = r.x + ((world.x - vp.cx) * vp.scale + vp.w / 2) * ratio;
-    const truthY = r.y + ((world.y - vp.cy) * vp.scale + vp.h / 2) * ratio;
+    // Bubble-pin geometry (comments-ux 0001 A): the DOM target centers on the
+    // bubble BODY at anchor + (r, -r) — the anchored point is the bubble's
+    // sharp bottom-left corner. Keep in sync with standalone
+    // src/wasm/collab/pin-geometry.ts (PIN_RADIUS_PX).
+    const bubbleR = 9 * ratio;
+    const truthX = r.x + ((world.x - vp.cx) * vp.scale + vp.w / 2) * ratio + bubbleR;
+    const truthY = r.y + ((world.y - vp.cy) * vp.scale + vp.h / 2) * ratio - bubbleR;
     const pin = document.querySelector('[data-testid="comment-pin"]') as HTMLElement;
     const pr = pin.getBoundingClientRect();
     return { dx: pr.x + pr.width / 2 - truthX, dy: pr.y + pr.height / 2 - truthY };

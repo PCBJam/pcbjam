@@ -3,10 +3,16 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter } from "react-router-dom";
 import App from "./App";
 import { initAnalytics } from "./lib/analytics";
+import { initTheme } from "./lib/theme";
 import "./index.css";
 
 // Privacy-friendly analytics (Plausible), only when VITE_PLAUSIBLE_SRC is set.
 initAnalytics();
+
+// Re-assert the resolved theme (index.html applied it pre-paint; this keeps
+// SPA state consistent if that inline script is ever bypassed, e.g. tests
+// mounting the app directly).
+initTheme();
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: false } },

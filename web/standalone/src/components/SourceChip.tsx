@@ -50,7 +50,7 @@ export function SourceChip({
     return (
       <span
         title={descriptor.description}
-        className={`inline-flex items-center gap-2 text-xs font-medium text-white/90 ${className}`}
+        className={`inline-flex items-center gap-2 text-xs font-medium text-neutral-800 dark:text-white/90 ${className}`}
       >
         <Icon size={14} className={`shrink-0 ${MUTED_TONES[descriptor.kind]}`} />
         {descriptor.label}

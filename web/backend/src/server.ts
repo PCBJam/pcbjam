@@ -210,6 +210,12 @@ export async function buildApp(): Promise<import("fastify").FastifyInstance> {
       }
       return { status: 200 as const, body: await walk(PROJECT_DIR) };
     },
+    // No members model on the example backend — mention autocomplete falls
+    // back to the presence roster + comment authors (contract-sanctioned 404).
+    listCollaborators: async () => ({
+      status: 404 as const,
+      body: { message: "no members model on this backend" },
+    }),
     listLibs: async ({ headers, query }) => {
       const owner = userOf(headers);
       // Origins filtered by item kind (?kind); user libs are kind-agnostic

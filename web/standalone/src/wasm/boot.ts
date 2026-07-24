@@ -23,6 +23,8 @@ import {
 } from "./libs/source";
 import { libUri, PCBJAM_LIB_MOUNT } from "./libs/uri";
 import { installTouchGestures } from "./touch-gestures";
+import { currentTheme } from "@/lib/theme";
+import pcbjamDarkTheme from "./themes/pcbjam-dark.json";
 
 /** The default user lib boot ensures exists, so there's a writable save target. */
 const DEFAULT_USER_LIB_NAME = "My Symbols";
@@ -431,6 +433,27 @@ async function doBoot(opts: BootOptions): Promise<void> {
       `${KICAD_CONFIG_DIR}/design-block-lib-table`,
       "(design_block_lib_table\n  (version 7)\n)\n",
     );
+
+    // Theme (comments-ux 0002 F2): the dark color theme is seeded ALWAYS (so
+    // the F4 live switch is a settings-only operation); the per-app settings
+    // pick the boot theme. Only the schematic set is overridden — KiCad's
+    // board canvas is dark by default, and `_builtin_default` keeps it.
+    FS.mkdirTree(`${KICAD_CONFIG_DIR}/colors`);
+    writeIfAbsent(
+      `${KICAD_CONFIG_DIR}/colors/pcbjam-dark.json`,
+      JSON.stringify(pcbjamDarkTheme, null, 2),
+    );
+    if (currentTheme() === "dark") {
+      const appearance = JSON.stringify(
+        { appearance: { color_theme: "pcbjam-dark" } },
+        null,
+        2,
+      );
+      // writeIfAbsent by design: a same-session relaunch after the user
+      // switched themes in-app (F4 persists into these files) must win.
+      writeIfAbsent(`${KICAD_CONFIG_DIR}/eeschema.json`, appearance);
+      writeIfAbsent(`${KICAD_CONFIG_DIR}/pcbnew.json`, appearance);
+    }
   };
 
   const preRun = [createCanvas, writeResources];
@@ -438,7 +461,16 @@ async function doBoot(opts: BootOptions): Promise<void> {
 
   w.Module = {
     thisProgram: TOOL_ARGV0[tool], // argv[0] for KiCad's DEBUG check
-    ...(traceMask ? { ENV: { KICAD_TRACE: traceMask } } : {}),
+    // PCBJAM_DARK_CHROME is a getenv fallback for the wx chrome appearance
+    // (wxwidgets src/wasm/settings.cpp) — the authoritative seed is the
+    // kicadSetDarkChrome call in onRuntimeInitialized below, which runs on
+    // the browser main thread BEFORE main() spawns on the KiCad pthread
+    // (pthreads build environ from their own worker's ENV, so this ENV may
+    // never reach them).
+    ENV: {
+      ...(traceMask ? { KICAD_TRACE: traceMask } : {}),
+      ...(currentTheme() === "dark" ? { PCBJAM_DARK_CHROME: "1" } : {}),
+    },
     // Runtime frame selection: emscripten feeds these to main() as argv[1..], which
     // single_top.cpp parses ("--frame=<token>") to open the requested editor frame
     // from a shared bundle. Set in the Module literal so it's present before the
@@ -471,6 +503,12 @@ async function doBoot(opts: BootOptions): Promise<void> {
     monitorRunDependencies: () => {},
     onRuntimeInitialized: () => {
       log("[boot] runtime initialized");
+      // Seed the wx chrome appearance BEFORE main() spawns on the KiCad
+      // pthread (comments-ux 0002 F4) — this runs on the browser main
+      // thread, and the flag lives in shared wasm memory. Older bundles
+      // without the binding just skip it.
+      const mod = w.Module as { kicadSetDarkChrome?: (dark: boolean) => void };
+      mod.kicadSetDarkChrome?.(currentTheme() === "dark");
       const canvas = (w.Module as { canvas?: HTMLCanvasElement }).canvas;
       if (canvas) canvas.style.display = "block";
       onStatus("");

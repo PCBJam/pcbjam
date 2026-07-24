@@ -91,7 +91,7 @@ export function PresenceRoster({
                 : `${p.user.name} — on ${elsewhere}`
             }
             className={`${overlayRowClass} ${
-              followed ? "bg-white/10" : ""
+              followed ? "bg-black/10 dark:bg-white/10" : ""
             } ${here ? "" : "cursor-default opacity-50 hover:bg-transparent"}`}
           >
             <span
@@ -101,17 +101,17 @@ export function PresenceRoster({
             />
             <span className="truncate">{p.user.name}</span>
             {!here && (
-              <span className="ml-auto shrink-0 truncate text-[10px] text-white/40">
+              <span className="ml-auto shrink-0 truncate text-[10px] text-neutral-400 dark:text-white/40">
                 on {elsewhere}
               </span>
             )}
             {here && followed && (
-              <span className="ml-auto flex shrink-0 items-center gap-1 text-[10px] font-medium text-white/70">
+              <span className="ml-auto flex shrink-0 items-center gap-1 text-[10px] font-medium text-neutral-600 dark:text-white/70">
                 <Eye size={12} /> Stop
               </span>
             )}
             {here && !followed && followable(p) && (
-              <span className="ml-auto shrink-0 text-[10px] text-white/35">
+              <span className="ml-auto shrink-0 text-[10px] text-neutral-400 dark:text-white/35">
                 Follow
               </span>
             )}
@@ -119,7 +119,7 @@ export function PresenceRoster({
         );
       })}
       {peers.length > MAX_ROWS && (
-        <span className="px-2 py-1 text-[10px] text-white/40">
+        <span className="px-2 py-1 text-[10px] text-neutral-400 dark:text-white/40">
           +{peers.length - MAX_ROWS} more
         </span>
       )}

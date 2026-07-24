@@ -15,7 +15,7 @@ import {
   type KicadDoc,
   type Tool,
 } from "@pcbjam/shared";
-import { ChevronDown, ChevronUp, Eye, EyeOff, Loader2, PanelsTopLeft } from "lucide-react";
+import { ChevronDown, ChevronUp, Eye, EyeOff, Loader2, Moon, PanelsTopLeft, Sun } from "lucide-react";
 import {
   API_BASE_URL,
   APP_URL,
@@ -31,6 +31,7 @@ import {
 import { defaultFileName, newFileTemplate, withExtension } from "@/lib/new-file";
 import { redirectTargetFor } from "@/lib/redirect";
 import { loadSessionIdentity } from "@/lib/session-identity";
+import { setTheme, useThemeValue } from "@/lib/theme";
 import { bootKicadTool } from "@/wasm/boot";
 import { resolveWasmBase } from "@/wasm/wasm-assets";
 import {
@@ -905,6 +906,21 @@ export function WasmTool({
   const [commentsSlot, setCommentsSlot] = React.useState<HTMLDivElement | null>(null);
   const [viewportState, setViewportState] = React.useState<ViewportState | null>(null);
   const commentsRef = React.useRef<CommentsController | null>(null);
+  // Unread-comments rollup for the FAB badge (comments-ux 0001 C).
+  const [commentsUnread, setCommentsUnread] = React.useState({ threads: 0, mentioned: false });
+  const onCommentsUnread = React.useCallback(
+    (threads: number, mentioned: boolean) => setCommentsUnread({ threads, mentioned }),
+    [],
+  );
+  // Live canvas theme (comments-ux 0002 F4): shell toggles drive the GAL color
+  // theme through the bridge when the loaded wasm exposes it; older builds
+  // just keep their boot-seeded theme.
+  const theme = useThemeValue();
+  React.useEffect(() => {
+    if (!ready) return;
+    const mod = (window as { Module?: { kicadSetColorTheme?: (name: string) => void } }).Module;
+    mod?.kicadSetColorTheme?.(theme === "dark" ? "pcbjam-dark" : "_builtin_default");
+  }, [theme, ready]);
   // Dev-time presence style tuner (VITE_PRESENCE_TUNER=1) — set once the wasm
   // exposes the style bridge, mounts the floating panel.
   const [tunerMod, setTunerMod] = React.useState<TunerModule | null>(null);
@@ -1688,7 +1704,11 @@ export function WasmTool({
           comments (portal slot filled by CommentLayer), chrome toggle. It is
           the one control that stays up in canvas-only (chrome-hidden) mode. */}
       {ready && (
-        <OverlayMenu badge={peers.length}>
+        <OverlayMenu
+          badge={peers.length}
+          unread={commentsUnread.threads}
+          unreadMention={commentsUnread.mentioned}
+        >
           {/* PEOPLE — who else is here, and whose view you're locked to. The
               follow state lives on each person's own row (PresenceRoster), so
               there is no separate "Following…" banner to keep in sync. */}
@@ -1722,9 +1742,9 @@ export function WasmTool({
                   data-testid="view-only-pill"
                   className={`${overlayRowClass} cursor-default`}
                 >
-                  <EyeOff size={14} className="shrink-0 text-white/50" />
+                  <EyeOff size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
                   <span>View only</span>
-                  <span className="ml-auto text-[10px] text-white/40">
+                  <span className="ml-auto text-[10px] text-neutral-400 dark:text-white/40">
                     read-only
                   </span>
                 </div>
@@ -1742,8 +1762,8 @@ export function WasmTool({
             </OverlayMenuSection>
           )}
 
-          {setChromeFn !== null && !readOnly && (
-            <OverlayMenuSection label="View">
+          <OverlayMenuSection label="View">
+            {setChromeFn !== null && !readOnly && (
               <button
                 data-testid="chrome-toggle"
                 aria-pressed={chromeHidden}
@@ -1752,17 +1772,34 @@ export function WasmTool({
                 onClick={() => toggleChromeHidden()}
               >
                 {chromeHidden ? (
-                  <PanelsTopLeft size={14} className="shrink-0 text-white/50" />
+                  <PanelsTopLeft size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
                 ) : (
-                  <EyeOff size={14} className="shrink-0 text-white/50" />
+                  <EyeOff size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
                 )}
                 <span>{chromeHidden ? "Show UI" : "Hide UI"}</span>
-                <kbd className="ml-auto rounded bg-white/10 px-1.5 py-0.5 text-[10px] font-medium text-white/50">
+                <kbd className="ml-auto rounded bg-black/10 px-1.5 py-0.5 text-[10px] font-medium text-neutral-500 dark:bg-white/10 dark:text-white/50">
                   {CHROME_HOTKEY_LABEL}
                 </kbd>
               </button>
-            </OverlayMenuSection>
-          )}
+            )}
+            {/* Light/dark toggle (comments-ux 0002): flips the shell theme;
+                the F4 effect above re-themes the GAL canvas through the
+                bridge. Available to viewers too — theming isn't editing. */}
+            <button
+              data-testid="overlay-theme-toggle"
+              aria-pressed={theme === "dark"}
+              className={overlayRowClass}
+              title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
+              onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+            >
+              {theme === "dark" ? (
+                <Sun size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
+              ) : (
+                <Moon size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
+              )}
+              <span>{theme === "dark" ? "Light mode" : "Dark mode"}</span>
+            </button>
+          </OverlayMenuSection>
         </OverlayMenu>
       )}
 
@@ -1775,6 +1812,11 @@ export function WasmTool({
           viewport={viewportState}
           currentUser={presenceUser().id}
           menuSlot={commentsSlot}
+          onUnreadChange={onCommentsUnread}
+          mentionPeers={peers.map((p) => ({
+            slug: p.user.id,
+            name: p.user.name || p.user.id,
+          }))}
         />
       )}
 

@@ -10,11 +10,14 @@ import {
   field,
   kicadItemsMap,
   listThreads,
+  markThreadSeen,
   observeComments,
   removeMessage,
   resolveAnchor,
   setThreadAnchor,
   setThreadResolved,
+  threadUnreadCount,
+  toggleReaction,
   yToItemUnchecked,
   type CommentAnchor,
   type CommentThread,
@@ -91,8 +94,13 @@ export interface CommentsController {
   /** Build an anchor for a world-pos click: nearest positioned item within
    *  `maxDistIu` becomes the tracked anchor (+offset), else pos-only. */
   anchorAt(world: { x: number; y: number }, maxDistIu: number): CommentAnchor;
-  create(anchor: CommentAnchor, body: string): string;
-  reply(threadId: string, body: string): void;
+  create(anchor: CommentAnchor, body: string, mentions?: string[]): string;
+  reply(threadId: string, body: string, mentions?: string[]): void;
+  /** Advance the bound user's seen watermark on a thread (0001 C) — pins and
+   *  badges refresh through the normal observe → subscribe cycle. */
+  markSeen(threadId: string): void;
+  /** Toggle the bound user's emoji reaction on a message (0001 D). */
+  toggleReaction(threadId: string, messageId: string, emoji: string): void;
   edit(threadId: string, messageId: string, body: string): boolean;
   remove(threadId: string, messageId: string): "removed" | "thread-deleted" | false;
   setResolved(threadId: string, resolved: boolean): void;
@@ -165,6 +173,7 @@ export function createComments(opts: {
                 y: t.world.y,
                 color: colorFor(t.createdBy),
                 resolved: t.resolved,
+                unread: threadUnreadCount(t, user.id) > 0,
               })),
       }),
     );
@@ -226,22 +235,30 @@ export function createComments(opts: {
 
       return { pos: { x: world.x, y: world.y } };
     },
-    create(anchor, body) {
+    create(anchor, body, mentions) {
       return createThread(doc, {
         anchor,
         author: user.id,
         authorName: user.name,
         authorEmail: user.email,
         body,
+        mentions,
       });
     },
-    reply(threadId, body) {
+    reply(threadId, body, mentions) {
       addMessage(doc, threadId, {
         author: user.id,
         authorName: user.name,
         authorEmail: user.email,
         body,
+        mentions,
       });
+    },
+    markSeen(threadId) {
+      markThreadSeen(doc, threadId, user.id);
+    },
+    toggleReaction(threadId, messageId, emoji) {
+      toggleReaction(doc, threadId, messageId, user.id, emoji);
     },
     edit(threadId, messageId, body) {
       return editMessage(doc, threadId, messageId, body);

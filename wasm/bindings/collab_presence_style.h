@@ -24,6 +24,7 @@
 #include <view/view_overlay.h>
 #include <nlohmann/json.hpp>
 #include <algorithm>
+#include <cmath>
 #include <memory>
 #include <string>
 #include <vector>
@@ -75,12 +76,20 @@ struct STYLE
     std::string              fixedColor;
     std::vector<std::string> palette;
 
-    // ── comment pin dots ──────────────────────────────────────────────────
+    // ── comment pins ──────────────────────────────────────────────────────
+    // 0 circle dot · 1 figma-style bubble: a round body whose bottom-left
+    // corner is squared off — the SHARP CORNER is the anchored point
+    // (comments-ux 0001 A, reshaped per user feedback 2026-07-24).
+    // Shipped look picked with the tuner 2026-07-24: r9 body, 4px ring,
+    // slightly translucent ring+fill. pinRadiusPx is MIRRORED in the
+    // standalone's pin-geometry.ts (DEFAULT_PIN_RADIUS_PX) — change together.
+    int    pinShape        = 1;
     double pinRadiusPx     = 9.0;
-    double pinRingPx       = 3.0;
-    double pinRingAlpha    = 1.0;
-    double pinFillAlpha    = 1.0;
+    double pinRingPx       = 4.0;
+    double pinRingAlpha    = 0.9;
+    double pinFillAlpha    = 0.9;
     double pinResolvedAlpha = 0.3;
+    std::string pinUnreadRingColor = "#ffb020"; // unread accent ring ("" = plain white)
 
     // ── cross-app "ghost" selection (0006) ────────────────────────────────
     // A peer's selection in the OTHER editor (eeschema symbol ⇄ pcbnew
@@ -159,11 +168,13 @@ inline void patchStyle( STYLE& aStyle, const json& j )
         }
     }
 
+    aStyle.pinShape         = j.value( "pinShape", aStyle.pinShape );
     aStyle.pinRadiusPx      = j.value( "pinRadiusPx", aStyle.pinRadiusPx );
     aStyle.pinRingPx        = j.value( "pinRingPx", aStyle.pinRingPx );
     aStyle.pinRingAlpha     = j.value( "pinRingAlpha", aStyle.pinRingAlpha );
     aStyle.pinFillAlpha     = j.value( "pinFillAlpha", aStyle.pinFillAlpha );
     aStyle.pinResolvedAlpha = j.value( "pinResolvedAlpha", aStyle.pinResolvedAlpha );
+    aStyle.pinUnreadRingColor = j.value( "pinUnreadRingColor", aStyle.pinUnreadRingColor );
 
     aStyle.xselAlphaScale = j.value( "xselAlphaScale", aStyle.xselAlphaScale );
 }
@@ -494,21 +505,60 @@ inline void drawCursor( KIGFX::VIEW_OVERLAY* aOv, KIGFX::VIEW_OVERLAY* aChipOv,
     }
 }
 
-/** Comment pin dot. Draw onto the CHIPS overlay: at the shapes depth an
- *  earlier-painted selection fill would reject the dot's fragments (the 0005
- *  "drawn last sits above" comment had it backwards — later fragments LOSE). */
+/** Comment pin. Draw onto the CHIPS overlay: at the shapes depth an
+ *  earlier-painted selection fill would reject the pin's fragments (the 0005
+ *  "drawn last sits above" comment had it backwards — later fragments LOSE).
+ *  Bubble shape (comments-ux 0001 A, figma-style): a round body whose
+ *  bottom-left corner is squared off; `aPos` is that SHARP CORNER = the
+ *  anchored world point, the body center sits at aPos + (r, -r) (screen
+ *  up-right; KiCad IU y grows downward). One closed polygon — three sampled
+ *  round corners + the sharp one — so the stroke traces the outline exactly
+ *  with no depth-order seams. */
 inline void drawPin( KIGFX::VIEW_OVERLAY* aOv, const VECTOR2D& aPos, const KIGFX::COLOR4D& aColor,
-                     bool aResolved, double aPx, const STYLE& aS )
+                     bool aResolved, bool aUnread, double aPx, const STYLE& aS )
 {
     double fillAlpha = aResolved ? aS.pinResolvedAlpha : aS.pinFillAlpha;
     double ringAlpha = aResolved ? aS.pinRingAlpha * 0.4 : aS.pinRingAlpha;
 
+    KIGFX::COLOR4D ring( 1, 1, 1, ringAlpha );
+
+    if( aUnread && !aResolved && !aS.pinUnreadRingColor.empty() )
+        ring = parseHexColor( aS.pinUnreadRingColor, ring ).WithAlpha( ringAlpha );
+
     aOv->SetIsStroke( true );
     aOv->SetIsFill( true );
     aOv->SetFillColor( aColor.WithAlpha( fillAlpha ) );
-    aOv->SetStrokeColor( KIGFX::COLOR4D( 1, 1, 1, ringAlpha ) );
+    aOv->SetStrokeColor( ring );
     aOv->SetLineWidth( aS.pinRingPx * aPx );
-    aOv->Circle( aPos, aS.pinRadiusPx * aPx );
+
+    if( aS.pinShape == 0 )
+    {
+        aOv->Circle( aPos, aS.pinRadiusPx * aPx );
+        return;
+    }
+
+    double   r = aS.pinRadiusPx * aPx;
+    VECTOR2D c = aPos + VECTOR2D( r, -r );
+
+    constexpr int SEGS = 24; // sampling of the 270° round part
+    VECTOR2D      pts[SEGS + 3];
+    int           n = 0;
+
+    pts[n++] = aPos; // the sharp corner
+
+    for( int i = 0; i <= SEGS; i++ )
+    {
+        // South (90° in y-down coords) → east → north → west: the round part.
+        double th = ( 90.0 - 270.0 * i / SEGS ) * M_PI / 180.0;
+        pts[n++] = c + VECTOR2D( cos( th ) * r, sin( th ) * r );
+    }
+
+    // Close the outline explicitly: the overlay strokes the point list as a
+    // polyline, so without repeating the first point the west → sharp-corner
+    // edge would have fill but no ring.
+    pts[n++] = aPos;
+
+    aOv->Polygon( pts, n );
 }
 
 } // namespace pcbjam_presence

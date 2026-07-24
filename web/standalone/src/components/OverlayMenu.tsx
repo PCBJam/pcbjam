@@ -1,5 +1,6 @@
 import * as React from "react";
 import { Users } from "lucide-react";
+import { useDraggablePanel } from "@/components/useDraggablePanel";
 
 /**
  * Unified overlay menu (collab-presence 0010): the single circular icon that
@@ -32,8 +33,9 @@ import { Users } from "lucide-react";
  *  reads as a list; the hover/active states are the only affordance needed. */
 export const overlayRowClass =
   "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs " +
-  "text-white/90 transition-colors hover:bg-white/10 " +
-  "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/40";
+  "text-neutral-800 transition-colors hover:bg-black/5 " +
+  "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-black/30 " +
+  "dark:text-white/90 dark:hover:bg-white/10 dark:focus-visible:ring-white/40";
 
 /** A labelled group. `label` is omitted for the first/unnamed group. */
 export function OverlayMenuSection({
@@ -44,9 +46,9 @@ export function OverlayMenuSection({
   children: React.ReactNode;
 }) {
   return (
-    <div className="flex w-full flex-col gap-1 border-t border-white/10 pt-2 first:border-t-0 first:pt-0">
+    <div className="flex w-full flex-col gap-1 border-t border-black/10 pt-2 first:border-t-0 first:pt-0 dark:border-white/10">
       {label && (
-        <div className="px-2 text-[10px] font-semibold uppercase tracking-wide text-white/40">
+        <div className="px-2 text-[10px] font-semibold uppercase tracking-wide text-neutral-400 dark:text-white/40">
           {label}
         </div>
       )}
@@ -57,50 +59,32 @@ export function OverlayMenuSection({
 
 const POS_KEY = "pcbjam:overlay-menu-pos";
 const FAB_SIZE = 36;
-const DRAG_THRESHOLD_PX = 4;
-
-type Pos = { x: number; y: number };
-
-function loadPos(): Pos | null {
-  try {
-    const raw = localStorage.getItem(POS_KEY);
-    if (!raw) return null;
-    const p = JSON.parse(raw) as Pos;
-    return typeof p.x === "number" && typeof p.y === "number" ? p : null;
-  } catch {
-    return null;
-  }
-}
-
-function clamp(p: Pos): Pos {
-  return {
-    x: Math.min(Math.max(p.x, 4), window.innerWidth - FAB_SIZE - 4),
-    y: Math.min(Math.max(p.y, 4), window.innerHeight - FAB_SIZE - 4),
-  };
-}
 
 export function OverlayMenu({
   badge,
+  unread = 0,
+  unreadMention = false,
   children,
 }: {
   /** Peer count shown on the FAB (0 hides the badge). */
   badge: number;
+  /** Unread comment threads (comments-ux 0001 C) — amber FAB badge, bottom
+   *  corner; rose when one of them mentions the current user. 0 hides it. */
+  unread?: number;
+  unreadMention?: boolean;
   /** Panel sections, rendered top-to-bottom. Falsy children collapse. */
   children: React.ReactNode;
 }) {
   const [open, setOpen] = React.useState(false);
-  const [pos, setPos] = React.useState<Pos | null>(() =>
-    typeof window === "undefined" ? null : loadPos(),
-  );
   const rootRef = React.useRef<HTMLDivElement | null>(null);
-  const dragRef = React.useRef<{
-    pointerId: number;
-    startX: number;
-    startY: number;
-    fabX: number;
-    fabY: number;
-    moved: boolean;
-  } | null>(null);
+  // Drag/clamp/persist behavior shared with the comments panel (0001 B) —
+  // including the always-onscreen restore guarantee.
+  const drag = useDraggablePanel({
+    storageKey: POS_KEY,
+    handleWidth: FAB_SIZE,
+    handleHeight: FAB_SIZE,
+  });
+  const pos = drag.pos;
 
   // Esc closes (bubble phase, same etiquette as the comment layer — wx also
   // sees the key, matching how every other overlay treats Escape).
@@ -125,57 +109,16 @@ export function OverlayMenu({
   }, [open]);
 
   const onFabPointerDown = (e: React.PointerEvent) => {
-    (e.target as HTMLElement).setPointerCapture(e.pointerId);
-    const rect = rootRef.current!.getBoundingClientRect();
-    dragRef.current = {
-      pointerId: e.pointerId,
-      startX: e.clientX,
-      startY: e.clientY,
-      fabX: rect.x,
-      fabY: rect.y,
-      moved: false,
-    };
+    drag.onPointerDown(e, rootRef.current!.getBoundingClientRect());
   };
 
   const onFabPointerMove = (e: React.PointerEvent) => {
-    const d = dragRef.current;
-    if (!d) return;
-    if (!d.moved) {
-      if (
-        Math.hypot(e.clientX - d.startX, e.clientY - d.startY) <
-        DRAG_THRESHOLD_PX
-      ) {
-        return;
-      }
-      d.moved = true;
-      setOpen(false); // dragging repositions; the click that follows reopens
-    }
-    setPos(
-      clamp({
-        x: d.fabX + (e.clientX - d.startX),
-        y: d.fabY + (e.clientY - d.startY),
-      }),
-    );
+    // Dragging repositions; the click that follows reopens.
+    if (drag.onPointerMove(e)) setOpen(false);
   };
 
   const onFabPointerUp = () => {
-    const d = dragRef.current;
-    dragRef.current = null;
-    if (!d) return;
-    if (d.moved) {
-      setPos((p) => {
-        if (p) {
-          try {
-            localStorage.setItem(POS_KEY, JSON.stringify(p));
-          } catch {
-            /* private mode — position just doesn't persist */
-          }
-        }
-        return p;
-      });
-    } else {
-      setOpen((o) => !o);
-    }
+    if (!drag.onPointerUp()) setOpen((o) => !o);
   };
 
   // Default anchor: top-right (the old row's home). After a drag, explicit px.
@@ -196,10 +139,11 @@ export function OverlayMenu({
         onPointerDown={onFabPointerDown}
         onPointerMove={onFabPointerMove}
         onPointerUp={onFabPointerUp}
-        className={`relative flex h-9 w-9 items-center justify-center rounded-full text-white shadow-lg ring-1 ring-inset transition-colors ${
+        className={`relative flex h-9 w-9 items-center justify-center rounded-full shadow-lg ring-1 ring-inset transition-colors ${
           open
-            ? "bg-sky-600 ring-sky-300/40"
-            : "bg-neutral-950/80 ring-white/15 backdrop-blur-sm hover:bg-neutral-900/90"
+            ? "bg-sky-600 text-white ring-sky-300/40"
+            : "bg-white/90 text-neutral-700 ring-black/15 backdrop-blur-sm hover:bg-white " +
+              "dark:bg-neutral-950/80 dark:text-white dark:ring-white/15 dark:hover:bg-neutral-900/90"
         }`}
         style={{ touchAction: "none" }}
       >
@@ -212,21 +156,32 @@ export function OverlayMenu({
             {badge}
           </span>
         )}
+        {unread > 0 && (
+          <span
+            data-testid="overlay-menu-unread-badge"
+            title={unreadMention ? "Unread comments — you were mentioned" : "Unread comments"}
+            className={`absolute -bottom-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-semibold text-white ${
+              unreadMention ? "bg-rose-500" : "bg-amber-500"
+            }`}
+          >
+            {unread}
+          </span>
+        )}
       </button>
 
       {open && (
         <div
           data-testid="overlay-menu-panel"
-          className={`absolute flex w-72 flex-col gap-2 rounded-xl bg-neutral-950/90 p-2 shadow-2xl ring-1 ring-inset ring-white/15 backdrop-blur-sm ${
+          className={`absolute flex w-72 flex-col gap-2 rounded-xl bg-white/95 p-2 shadow-2xl ring-1 ring-inset ring-black/10 backdrop-blur-sm dark:bg-neutral-950/90 dark:ring-white/15 ${
             onLeftHalf ? "left-0" : "right-0"
           } ${onTopHalf ? "top-11" : "bottom-11"}`}
         >
           <div className="flex items-center justify-between px-2 pt-0.5">
-            <span className="text-[11px] font-semibold tracking-wide text-white/70">
+            <span className="text-[11px] font-semibold tracking-wide text-neutral-600 dark:text-white/70">
               Session
             </span>
             {badge > 0 && (
-              <span className="text-[10px] text-white/40">
+              <span className="text-[10px] text-neutral-400 dark:text-white/40">
                 {badge} {badge === 1 ? "other" : "others"} here
               </span>
             )}

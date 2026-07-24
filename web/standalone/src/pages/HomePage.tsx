@@ -2,6 +2,7 @@ import * as React from "react";
 import { useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { type Tool, libPath, projectPath } from "@pcbjam/shared";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import { FolderOpen, Library, Loader2, Package } from "lucide-react";
 import { useLibs } from "@/lib/api";
 import {
@@ -230,6 +231,7 @@ export function HomePage() {
         <span className="rounded-full border border-amber-500/50 bg-amber-500/10 px-2.5 py-0.5 text-xs font-medium text-amber-600 dark:text-amber-400">
           Early-access alpha
         </span>
+        <ThemeToggle className="ml-auto" />
       </h1>
       <p className="mb-8 text-sm text-muted-foreground">
         {staticMode

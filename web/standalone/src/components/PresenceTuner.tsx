@@ -1,4 +1,5 @@
 import * as React from "react";
+import { setPinRadiusPx } from "@/wasm/collab/pin-geometry";
 import { PRESENCE_COLORS } from "@pcbjam/shared";
 import { Palette, X } from "lucide-react";
 
@@ -57,11 +58,13 @@ const DEFAULT_STYLE = {
   cursorLabelChip: true,
   fixedColor: "",
   palette: [] as string[],
+  pinShape: 1,
   pinRadiusPx: 9,
-  pinRingPx: 3,
-  pinRingAlpha: 1,
-  pinFillAlpha: 1,
+  pinRingPx: 4,
+  pinRingAlpha: 0.9,
+  pinFillAlpha: 0.9,
   pinResolvedAlpha: 0.3,
+  pinUnreadRingColor: "#ffb020",
 };
 
 type Style = typeof DEFAULT_STYLE;
@@ -98,6 +101,7 @@ const SEL_SHAPES = [
   "exact outline (pcb)",
 ];
 const CURSOR_SHAPES = ["cross", "pointer", "circle + dot"];
+const PIN_SHAPES = ["circle dot", "bubble (sharp corner)"];
 const VPOS = ["top", "bottom"];
 const HPOS = ["start", "end", "center"];
 
@@ -118,6 +122,10 @@ export function PresenceTuner({ mod, tool }: { mod: TunerModule; tool: string })
   // Push on mount (restores a stored style after reload) + on every change.
   React.useEffect(() => {
     mod.kicadCollabSetStyle(JSON.stringify(style));
+    // The DOM half of the comment pins (hit target / highlight / popover
+    // offset in CommentLayer) mirrors the GAL radius — keep it in step with
+    // the live re-style, or the highlight drifts off the drawn bubble.
+    setPinRadiusPx(style.pinRadiusPx);
     try {
       localStorage.setItem(storeKey(tool), JSON.stringify(style));
     } catch {
@@ -298,9 +306,13 @@ export function PresenceTuner({ mod, tool }: { mod: TunerModule; tool: string })
         <ColorsSection style={style} set={set} />
 
         <Section title="Comment pins">
+          <Select label="shape" value={style.pinShape} options={PIN_SHAPES} onChange={(v) => set("pinShape", v)} />
           <Range label="radius px" v={style.pinRadiusPx} min={3} max={16} step={0.5} onChange={(v) => set("pinRadiusPx", v)} />
           <Range label="ring px" v={style.pinRingPx} min={0} max={5} step={0.25} onChange={(v) => set("pinRingPx", v)} />
           <Range label="ring α" v={style.pinRingAlpha} min={0} max={1} step={0.05} onChange={(v) => set("pinRingAlpha", v)} />
+          {/* Bubble radius mirrors into the DOM hit target via pin-geometry.ts
+              — tuner drift is dev-only, ship values must land in BOTH
+              collab_presence_style.h and pin-geometry.ts. */}
           <Range label="fill α" v={style.pinFillAlpha} min={0.2} max={1} step={0.05} onChange={(v) => set("pinFillAlpha", v)} />
         </Section>
       </div>

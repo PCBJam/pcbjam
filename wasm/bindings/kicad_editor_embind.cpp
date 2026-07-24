@@ -79,6 +79,9 @@ void        pcbCollabReleaseSelection( std::string aUuidsJson, std::string aHold
 std::string pcbCollabTestGetLocked();
 std::string pcbCollabTestSelectFirst();
 bool        pcbCollabTestClearSelection();
+// Live color-theme switch (comments-ux 0002 F4).
+void        pcbSetColorTheme( std::string aTheme );
+void        pcbSetDarkChrome( bool aDark );
 
 bool        schEditorActive();
 int         schLibsSymbolUsage( std::string aLibNickname, std::string aSymbolName );
@@ -101,6 +104,8 @@ void        schCollabSetViewport( double aCx, double aCy );
 // Follow-user (collab-presence 0008).
 void        schCollabFitViewport( double aCx, double aCy, double aHalfW, double aHalfH );
 void        schCollabSetStyle( std::string aJson );
+// Live color-theme switch (comments-ux 0002 F4).
+void        schSetColorTheme( std::string aTheme );
 std::string schCollabTestListItems( int aCount );
 std::string schCollabTestDemoSet();
 std::string schCollabGetViewport();
@@ -388,6 +393,21 @@ static void collabSetStyle( std::string aJson )
     pcbEditorActive() ? pcbCollabSetStyle( aJson ) : schCollabSetStyle( aJson );
 }
 
+// Theme switch (comments-ux 0002 F4): BOTH editors, not just the active one —
+// a later frame switch (eeschema-switch-nav) must come up already themed.
+// Each side no-ops on a null frame.
+static void setColorTheme( std::string aTheme )
+{
+    pcbSetColorTheme( aTheme );
+    schSetColorTheme( aTheme );
+}
+
+// The chrome flag is process-global — one call suffices.
+static void setDarkChrome( bool aDark )
+{
+    pcbSetDarkChrome( aDark );
+}
+
 static std::string collabTestListItems( int aCount )
 {
     return pcbEditorActive() ? pcbCollabTestListItems( aCount ) : schCollabTestListItems( aCount );
@@ -490,6 +510,9 @@ EMSCRIPTEN_BINDINGS(kicad_editor) {
     function("kicadCollabSetRemote", &collabSetRemote);
     function("kicadCollabSetPins", &collabSetPins);
     function("kicadCollabSetViewport", &collabSetViewport);
+    // Live color-theme switch (comments-ux 0002 F4).
+    function("kicadSetColorTheme", &setColorTheme);
+    function("kicadSetDarkChrome", &setDarkChrome);
     // Follow-user (collab-presence 0008).
     function("kicadCollabFitViewport", &collabFitViewport);
     function("kicadCollabSetStyle", &collabSetStyle);

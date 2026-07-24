@@ -53,6 +53,7 @@
 #include "collab_common.h"
 #include "collab_presence_core.h"
 #include "collab_presence_style.h"
+#include "pcbjam_theme.h"
 #include "pcbjam_libs_reload.h"
 #include <algorithm>
 #include <chrono>
@@ -1603,6 +1604,18 @@ void pcbCollabSetStyle( std::string aJson )
     presenceCore().setStyle( aJson );
 }
 
+// JS → C++ (comments-ux 0002 F4): live color-theme switch (see pcbjam_theme.h).
+void pcbSetColorTheme( std::string aTheme )
+{
+    pcbjam_theme::setColorTheme( pcbFrame(), aTheme );
+}
+
+// Pre-main chrome appearance seed (called at onRuntimeInitialized).
+void pcbSetDarkChrome( bool aDark )
+{
+    pcbjam_theme::setDarkChromeFlag( aDark );
+}
+
 // Tuner helper: a VARIED demo-selection set — labeled uuid groups (smallest +
 // largest footprint, the two busiest nets' track segments) so the style
 // preview shows the real range of shapes instead of two overlapping items.
@@ -2351,6 +2364,9 @@ EMSCRIPTEN_BINDINGS(pcbnew) {
     // Follow-user (collab-presence 0008).
     function("kicadCollabFitViewport", &pcbCollabFitViewport);
     function("kicadCollabSetStyle", &pcbCollabSetStyle);
+    // Live color-theme switch (comments-ux 0002 F4).
+    function("kicadSetColorTheme", &pcbSetColorTheme);
+    function("kicadSetDarkChrome", &pcbSetDarkChrome);
     function("kicadCollabTestListItems", &pcbCollabTestListItems);
     function("kicadCollabTestDemoSet", &pcbCollabTestDemoSet);
     function("kicadCollabGetViewport", &pcbCollabGetViewport);
