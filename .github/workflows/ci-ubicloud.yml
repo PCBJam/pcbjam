@@ -11,14 +11,19 @@ name: CI full build + e2e (Ubicloud)
 # in scripts/deploy/wasm-cache-hash.mjs does. For inputs the sc-hash can't see
 # (base-image / apt drift, a bad cache) bump .ci-cache-epoch; for a one-off
 # rebuild put [no-cache] or [rebuild-wasm] in the commit message / PR title.
+#
+# site/** is ignored: the Astro marketing site shares no build inputs with the
+# WASM tools and ships from its own deploy-site.yml. Without the exclusion every
+# blog post or landing-page tweak queued a full 6-tool build + both e2e suites —
+# and since concurrency never cancels, a multi-commit push stacked them up.
 
 on:
   push:
     branches: ["main", "ubicloud-ci"]
-    paths-ignore: ["docs/**", "**.md"]
+    paths-ignore: ["docs/**", "**.md", "site/**"]
   pull_request:
     branches: ["main"]
-    paths-ignore: ["docs/**", "**.md"]
+    paths-ignore: ["docs/**", "**.md", "site/**"]
   workflow_dispatch:
     inputs:
       no_cache:
