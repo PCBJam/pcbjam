@@ -241,11 +241,19 @@ assert_parity() {
 
   # 6) prod-only
   if [ "$_scope" = prod ]; then
+    # HSTS is a deliberate, independent choice — one zone toggle, unrelated to
+    # whether the migration worked. Absent is a WARN, not a FAIL: failing here
+    # would tell an operator to roll back a healthy cutover. Set EXPECT_HSTS=1
+    # once you have enabled it, and it becomes a hard assertion.
     _hsts="$(_hdr "$(_headers "$_base/")" strict-transport-security)"
     case "$_hsts" in
       *max-age=63072000*) pass hsts - "$_hsts" ;;
-      "") fail hsts - "absent (Vercel sent max-age=63072000)" ;;
-      *) soft hsts - "$_hsts (differs from the Vercel baseline)" ;;
+      "") if [ "${EXPECT_HSTS:-0}" = 1 ]; then
+            fail hsts - "absent, but EXPECT_HSTS=1"
+          else
+            soft hsts - "absent (Vercel sent max-age=63072000) — enable it in SSL/TLS -> Edge Certificates, then set EXPECT_HSTS=1"
+          fi ;;
+      *) soft hsts - "$_hsts (differs from the Vercel baseline max-age=63072000)" ;;
     esac
   fi
 

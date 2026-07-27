@@ -15,13 +15,20 @@ require_cmd curl dig jq awk sed
 rc=0
 
 section "DNS now resolves to Cloudflare"
-www_cname="$(dig +short CNAME "www.$ZONE_NAME" || true)"
-echo "  www CNAME: ${www_cname:-<none>}"
-case "$www_cname" in
-  *pages.dev*) echo "  PASS   points at Pages" ;;
-  *vercel-dns*) echo "  FAIL   still points at Vercel — DNS has not propagated (or the swap did not run)"; rc=1 ;;
-  *) echo "  WARN   unexpected target" ;;
-esac
+# A PROXIED record answers with Cloudflare anycast A records and exposes no CNAME,
+# so an empty CNAME lookup here is the expected result once the custom domain is
+# attached — not a problem. What would be wrong is failing to resolve at all, or
+# still CNAMEing to Vercel. The authoritative "are we on Cloudflare" check is the
+# cf-ray / x-vercel-id pair below.
+for h in "$ZONE_NAME" "www.$ZONE_NAME"; do
+  a="$(dig +short A "$h" | tr '\n' ' ')"
+  c="$(dig +short CNAME "$h" | tr '\n' ' ')"
+  printf '  %-20s A=%s%s\n' "$h" "${a:-<none>}" "${c:+  CNAME=$c}"
+  if [ -z "$a" ]; then echo "  FAIL   $h does not resolve"; rc=1; fi
+  case "$c" in
+    *vercel-dns*) echo "  FAIL   $h still CNAMEs to Vercel — not propagated, or the attach did not happen"; rc=1 ;;
+  esac
+done
 
 section "we are actually being served by Cloudflare, not a stale Vercel cache"
 h="$(_headers "$PROD_BASE/")"
