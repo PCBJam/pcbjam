@@ -1,7 +1,7 @@
 ---
 title: Privacy Policy
 description: How PCBJam handles your personal data.
-updated: 2026-07-15
+updated: 2026-07-27
 ---
 
 ## 1. A quick summary
@@ -142,11 +142,10 @@ We do **not** sell your personal data. We share it only with the following categ
 
 | Recipient | What they do | Their role | More info |
 |---|---|---|---|
-| **Vercel** | Hosting/infrastructure | **Processor** | [Vercel DPA](https://vercel.com/legal/dpa) · [Privacy](https://vercel.com/legal/privacy-policy) |
 | **Plausible** | Cookieless web analytics | **Processor** | [Plausible DPA](https://plausible.io/dpa) · [Data policy](https://plausible.io/data-policy) |
 | **Paddle** | Payments / Merchant of Record | **Independent controller** (for payment data) | [Paddle Privacy](https://www.paddle.com/legal/privacy) |
 | **Resend** | Sending transactional and marketing email | **Processor** | [Resend DPA](https://resend.com/legal/dpa) · [Subprocessors](https://resend.com/legal/subprocessors) |
-| **Cloudflare** | Storing your project files (R2 object storage), hosting application/account data, and network delivery & security (CDN, DNS, WAF) | **Processor** | [Cloudflare DPA](https://www.cloudflare.com/cloudflare-customer-dpa/) · [GDPR hub](https://www.cloudflare.com/trust-hub/gdpr/) |
+| **Cloudflare** | Hosting this website, storing your project files (R2 object storage), hosting application/account data, and network delivery & security (CDN, DNS, WAF) | **Processor** | [Cloudflare DPA](https://www.cloudflare.com/cloudflare-customer-dpa/) · [GDPR hub](https://www.cloudflare.com/trust-hub/gdpr/) |
 | **Google (Google Workspace)** | Our business email and support correspondence | **Processor** | [Google Cloud DPA](https://cloud.google.com/terms/data-processing-addendum) |
 | **Professional advisers & authorities** | Lawyers, accountants, auditors; courts, regulators, and law-enforcement where legally required | Controller / as required | — |
 | **A successor entity** | If we are involved in a merger, acquisition, financing, or sale of assets, your data may transfer to the successor under this policy | As required | — |
@@ -168,7 +167,7 @@ PCBJam lets you **publish projects and share them** with others (for example via
 
 ## 11. International data transfers
 
-We are based in the EU, but some of our providers (for example, Vercel, Cloudflare, Paddle, and Resend) may process data **outside the European Economic Area**, including in the United States. Where personal data is transferred outside the EEA/UK, we rely on an appropriate safeguard under Chapter V GDPR, such as:
+We are based in the EU, but some of our providers (for example, Cloudflare, Paddle, and Resend) may process data **outside the European Economic Area**, including in the United States. Where personal data is transferred outside the EEA/UK, we rely on an appropriate safeguard under Chapter V GDPR, such as:
 
 - an **adequacy decision** by the European Commission (including, where applicable, the **EU–US Data Privacy Framework** for certified US providers); or
 - the European Commission's **Standard Contractual Clauses** (and the UK International Data Transfer Addendum), together with additional safeguards where needed.

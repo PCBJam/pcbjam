@@ -7,7 +7,7 @@
  * deliberately do NOT apply to the landing page: that would block the YouTube
  * hero embed (a no-COEP cross-origin iframe can't load in an isolated document).
  * So Launch opens the standalone viewer (/gerber-demo/) in a NEW TAB: that page
- * IS cross-origin isolated (vercel.json) and boots the board immediately.
+ * IS cross-origin isolated (public/_headers) and boots the board immediately.
  */
 import SectionBand from '../components/SectionBand.astro';
 

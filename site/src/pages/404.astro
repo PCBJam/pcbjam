@@ -1,0 +1,46 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+
+// Prerendered to dist/404.html, which Cloudflare Pages serves with a real 404
+// status for any unmatched path. This page is NOT optional: without a 404.html
+// in the output, Pages answers every unknown URL with the homepage at HTTP 200 —
+// a soft 404 that invites search engines to index arbitrary URLs as the
+// homepage. (On Vercel the SSR function rendered Astro's built-in 404 instead.)
+---
+
+<BaseLayout title="Page not found" description="That page doesn't exist.">
+  <section class="notfound">
+    <p class="code">404</p>
+    <h1>That page doesn't exist.</h1>
+    <p class="muted">
+      It may have moved, or the link may be wrong. The blog index and the
+      homepage are good places to pick things back up.
+    </p>
+    <p class="links">
+      <a href="/">Homepage</a>
+      <a href="/blog">Blog</a>
+    </p>
+  </section>
+</BaseLayout>
+
+<style>
+  .notfound {
+    padding: 5rem 0 6rem;
+    max-width: 34rem;
+  }
+  .code {
+    font-family: var(--font-display, inherit);
+    font-size: 3rem;
+    line-height: 1;
+    margin: 0 0 0.5rem;
+    opacity: 0.35;
+  }
+  .notfound h1 {
+    margin: 0 0 0.75rem;
+  }
+  .links {
+    display: flex;
+    gap: 1.25rem;
+    margin-top: 2rem;
+  }
+</style>

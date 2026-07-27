@@ -1,19 +1,33 @@
-import type { APIRoute } from 'astro';
 import { Resend } from 'resend';
-// Typed server secrets (schema in astro.config.mjs). Optional, so RESEND_API_KEY
-// and RESEND_SEGMENT_ID are `string | undefined`; WAITLIST_FROM_EMAIL has a
-// schema default so it's always a `string`. The Vercel adapter reads these from
-// process.env at runtime — never inlined.
-import {
-  RESEND_API_KEY,
-  RESEND_SEGMENT_ID,
-  WAITLIST_FROM_EMAIL,
-  WAITLIST_ALLOWED_ORIGINS,
-} from 'astro:env/server';
 
-// Opt this single route into on-demand (serverless) rendering. The rest of the
-// site stays static; Vercel emits exactly one function for /api/waitlist.
-export const prerender = false;
+/**
+ * Waitlist endpoint — a Cloudflare Pages Function.
+ *
+ * The rest of the site is fully static, so this is the only server-side code we
+ * ship. It lives in functions/ rather than src/pages/ because the Astro build
+ * has no adapter; Pages routes /api/waitlist here (see public/_routes.json,
+ * which keeps every other path a plain static asset request).
+ *
+ * Secrets arrive as bindings on `context.env`:
+ *   wrangler pages secret put RESEND_API_KEY --project-name pcbjam-site
+ * Locally they come from site/.dev.vars (gitignored). Without RESEND_API_KEY the
+ * endpoint still accepts submits (logs + no email), so the form UX is testable
+ * without keys.
+ */
+interface Env {
+  RESEND_API_KEY?: string;
+  RESEND_SEGMENT_ID?: string;
+  WAITLIST_FROM_EMAIL?: string;
+  WAITLIST_ALLOWED_ORIGINS?: string;
+}
+
+/**
+ * These two used to be `default:` values in astro.config.mjs's env schema. That
+ * schema is gone with the adapter, so they live here — WAITLIST_ALLOWED_ORIGINS
+ * especially, since `undefined.split(',')` would throw on every preflight.
+ */
+const DEFAULT_FROM_EMAIL = 'PCBJam <hello@pcbjam.com>';
+const DEFAULT_ALLOWED_ORIGINS = 'https://demo.pcbjam.com';
 
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
@@ -30,9 +44,9 @@ function maskEmail(email: string): string {
 
 /**
  * Best-effort per-key rate limit — an in-process sliding window that bounds
- * bursts from one warm instance. NOT a complete defense on serverless (fresh
- * instances don't share it), so production should ALSO front this with a shared
- * store (Vercel KV / Upstash) or a CAPTCHA. Kept dependency-free so it runs.
+ * bursts from one warm isolate. NOT a complete defense (fresh isolates don't
+ * share it), so production should ALSO front this with a shared store or a
+ * CAPTCHA. Kept dependency-free so it runs.
  */
 const RATE_WINDOW_MS = 60 * 60 * 1000; // 1 hour
 const RATE_MAX_PER_IP = 5;
@@ -50,8 +64,14 @@ function rateLimited(key: string, max: number, now: number): boolean {
   return false;
 }
 
-/** Client IP from the standard proxy headers (Vercel sets x-forwarded-for). */
+/**
+ * Client IP. Cloudflare sets CF-Connecting-IP and it cannot be spoofed by the
+ * client; x-forwarded-for is kept as a fallback for `wrangler pages dev` and the
+ * unit tests.
+ */
 function clientIp(request: Request): string {
+  const cf = request.headers.get('cf-connecting-ip');
+  if (cf) return cf;
   const xff = request.headers.get('x-forwarded-for');
   return (xff ? xff.split(',')[0] : '').trim() || 'unknown';
 }
@@ -61,14 +81,21 @@ function clientIp(request: Request): string {
  * static demo (demo.pcbjam.com, no backend of its own) cross-post the form. A
  * same-origin submit sends no Origin and gets no CORS headers (it doesn't need
  * them). The JSON content-type triggers a preflight, hence the OPTIONS handler.
+ *
+ * Note this endpoint must be reachable on www WITHOUT a redirect: a CORS
+ * preflight cannot follow one, so the demo posts to the canonical www host.
  */
-function corsHeaders(request: Request): Record<string, string> {
-  const origin = request.headers.get('origin');
-  if (!origin) return {};
-  const allowed = WAITLIST_ALLOWED_ORIGINS.split(',')
+function allowedOrigins(env: Env): string[] {
+  return (env.WAITLIST_ALLOWED_ORIGINS ?? DEFAULT_ALLOWED_ORIGINS)
+    .split(',')
     .map((o) => o.trim())
     .filter(Boolean);
-  if (!allowed.includes(origin)) return {};
+}
+
+function corsHeaders(request: Request, env: Env): Record<string, string> {
+  const origin = request.headers.get('origin');
+  if (!origin) return {};
+  if (!allowedOrigins(env).includes(origin)) return {};
   return {
     'access-control-allow-origin': origin,
     'access-control-allow-methods': 'POST, OPTIONS',
@@ -97,18 +124,44 @@ function redirect(status: 'ok' | 'error') {
   });
 }
 
-export const OPTIONS: APIRoute = ({ request }) =>
-  new Response(null, { status: 204, headers: corsHeaders(request) });
+export const onRequestOptions: PagesFunction<Env> = ({ request, env }) =>
+  new Response(null, { status: 204, headers: corsHeaders(request, env) });
 
-export const POST: APIRoute = async ({ request }) => {
-  const cors = corsHeaders(request);
+export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
+  const cors = corsHeaders(request, env);
   const ct = request.headers.get('content-type') ?? '';
   const wantsJson = ct.includes('application/json');
+
+  /**
+   * Cross-site form-POST guard.
+   *
+   * Vercel's edge did this for free ("Cross-site POST form submissions are
+   * forbidden", HTTP 403) and Cloudflare Pages does not, so it is reproduced here
+   * rather than silently lost in the migration. A form-encoded POST carrying a
+   * foreign Origin is the classic CSRF shape: unlike fetch(), a cross-site <form>
+   * submit needs no CORS permission to be *sent*, so the allowlist above cannot
+   * stop it. Without this, any page could sign arbitrary addresses up and have us
+   * email them.
+   *
+   * JSON posts are deliberately exempt — that is the demo's cross-origin path,
+   * and it IS governed by the CORS allowlist. Browsers that omit Origin on a
+   * same-origin form submit are unaffected: the check only fires when Origin is
+   * present and foreign.
+   */
+  if (!wantsJson) {
+    const origin = request.headers.get('origin');
+    if (origin && origin !== new URL(request.url).origin && !allowedOrigins(env).includes(origin)) {
+      return new Response('Cross-site POST form submissions are forbidden', {
+        status: 403,
+        headers: { 'content-type': 'text/plain;charset=UTF-8' },
+      });
+    }
+  }
 
   let data: Record<string, unknown> = {};
   try {
     data = wantsJson
-      ? await request.json()
+      ? ((await request.json()) as Record<string, unknown>)
       : Object.fromEntries(await request.formData());
   } catch {
     return wantsJson ? json(400, { ok: false, error: 'bad_request' }, cors) : redirect('error');
@@ -118,7 +171,10 @@ export const POST: APIRoute = async ({ request }) => {
   const honeypot = String(data.company_url ?? ''); // hidden field — must stay empty
   const source = String(data.source ?? 'unknown');
 
-  // Bot caught by honeypot: silently "succeed" so we don't tip them off.
+  // Bot caught by honeypot: silently "succeed" so we don't tip them off. This
+  // branch deliberately precedes validation, the rate limiter and any Resend
+  // call, which also makes it the one probe that can exercise the full request
+  // path against production without side effects.
   if (honeypot) return wantsJson ? json(200, { ok: true }, cors) : redirect('ok');
 
   if (!EMAIL_RE.test(email) || email.length > 254) {
@@ -139,14 +195,14 @@ export const POST: APIRoute = async ({ request }) => {
   }
 
   // No key configured (e.g. local dev without secrets): accept + log, don't 500.
-  if (!RESEND_API_KEY) {
+  if (!env.RESEND_API_KEY) {
     console.warn(
       `[waitlist] RESEND_API_KEY not set — skipping send. email=${maskEmail(email)} source=${source}`,
     );
     return wantsJson ? json(200, { ok: true }, cors) : redirect('ok');
   }
 
-  const resend = new Resend(RESEND_API_KEY);
+  const resend = new Resend(env.RESEND_API_KEY);
 
   try {
     // Add to the segment (the modern name for an "audience"). The SDK returns
@@ -154,11 +210,11 @@ export const POST: APIRoute = async ({ request }) => {
     // no stable error code (it surfaces as a validation_error), so we treat the
     // contact step as best-effort: log any error but never fail the request on
     // it — the user-facing promise is the confirmation email below.
-    if (RESEND_SEGMENT_ID) {
+    if (env.RESEND_SEGMENT_ID) {
       const { error: contactError } = await resend.contacts.create({
         email,
         unsubscribed: false,
-        segments: [{ id: RESEND_SEGMENT_ID }],
+        segments: [{ id: env.RESEND_SEGMENT_ID }],
       });
       if (contactError) {
         console.error('[waitlist] contacts.create failed (non-fatal)', contactError);
@@ -166,7 +222,7 @@ export const POST: APIRoute = async ({ request }) => {
     }
 
     const { error: sendError } = await resend.emails.send({
-      from: WAITLIST_FROM_EMAIL,
+      from: env.WAITLIST_FROM_EMAIL ?? DEFAULT_FROM_EMAIL,
       to: email,
       subject: "You're on the PCBJam waitlist",
       text: [
@@ -199,4 +255,5 @@ export const POST: APIRoute = async ({ request }) => {
 };
 
 // A bare GET (e.g. someone visiting the URL) shouldn't 500.
-export const GET: APIRoute = () => json(405, { ok: false, error: 'method_not_allowed' });
+export const onRequestGet: PagesFunction<Env> = () =>
+  json(405, { ok: false, error: 'method_not_allowed' });

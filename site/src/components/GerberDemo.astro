@@ -9,7 +9,7 @@
  * The live viewer needs cross-origin isolation (SharedArrayBuffer + pthreads)
  * and WebGL2. We feature-detect and degrade gracefully: capable browsers get the
  * live viewer; everything else gets a static poster + a short note. COOP/COEP are
- * applied to this route (dev: astro.config.mjs; prod: vercel.json); because
+ * applied to this route (dev: astro.config.mjs; prod: public/_headers); because
  * Astro's <ClientRouter/> can deliver this page via a soft SPA swap (which is
  * NOT cross-origin isolated), the client script does one guarded reload so the
  * route headers take effect.
@@ -148,7 +148,7 @@ const caption =
     }
 
     // Reloaded moments ago and STILL not isolated (stale cache, missing headers,
-    // a preview without vercel.json…). Don't dead-end and don't blame the
+    // a preview without _headers…). Don't dead-end and don't blame the
     // browser: the standalone viewer page is isolated on its own, so let the
     // button open it in a new tab — capable browsers get the full viewer there.
     if (launchEl) {

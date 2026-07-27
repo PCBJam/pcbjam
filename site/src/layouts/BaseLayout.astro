@@ -68,7 +68,7 @@ const ogImageAbs = new URL(ogImage, Astro.site ?? Astro.url).href;
         pcbjam properties. Prod builds only — `astro dev` stays untracked, and
         Plausible ignores localhost regardless. Auto-tracks pageviews across
         ClientRouter navigations (History API). crossorigin="anonymous" so the
-        script still loads on the COEP require-corp routes (see vercel.json):
+        script still loads on the COEP require-corp routes (see public/_headers):
         cross-origin subresources there must be fetched with CORS. */}
     {
       import.meta.env.PROD && (

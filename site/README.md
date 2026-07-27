@@ -11,9 +11,9 @@ It uses **npm** (not the monorepo's pnpm) and has its own `package-lock.json`.
 
 - Static by default: every page is prerendered to HTML and ships **zero client
   JavaScript**. A visitor downloads HTML + CSS only — no React/JS bundle.
-- SSR-capable: the Vercel adapter is wired in, so any individual route can be
-  switched to per-request server rendering without ripping anything out (see
-  below).
+- No adapter and no server bundle: the build emits `dist/` only. The single
+  dynamic endpoint, `/api/waitlist`, ships as a **Cloudflare Pages Function**
+  from `functions/` (see below).
 
 ## Routes
 
@@ -38,38 +38,60 @@ Requires **Node ≥ 22.12** (Astro 6 requirement).
 cd site
 npm install
 npm run dev        # http://localhost:4321
-npm run build      # outputs to dist/ (+ .vercel/output for the adapter)
+npm run build      # outputs to dist/ (static only — no adapter)
 npm run preview    # serve the production build locally
 ```
 
-## SSR per route
+## Dynamic routes
 
-Pages are static by default. To render a specific page or endpoint on demand
-(per request, as a Vercel Function), add this to its frontmatter:
+Every page is static. The one server-side endpoint is a **Cloudflare Pages
+Function**, not an Astro SSR route:
 
-```astro
----
-export const prerender = false;
----
+```
+functions/api/waitlist.ts   ->  POST/OPTIONS/GET  /api/waitlist
 ```
 
-That's the only change needed — the `@astrojs/vercel` adapter in
-`astro.config.mjs` already provides the server runtime. The rest of the site
-stays static.
+Pages maps the `functions/` tree to routes by path, and the handlers are named
+exports (`onRequestPost`, `onRequestOptions`, `onRequestGet`). Config arrives on
+`context.env`, not via `astro:env/server`. `public/_routes.json` restricts
+Function invocation to `/api/*`, so every page and asset stays a plain static
+request.
 
-## Deploying to Vercel
+To add another endpoint, drop a new file in `functions/` — no Astro adapter and
+no `prerender = false` involved.
 
-The `@astrojs/vercel` adapter emits the Vercel Build Output API format, so **no
-`vercel.json` is required**.
+Locally, run the built site the way Pages will serve it (this is the only way to
+exercise the Function, `astro dev` does not run `functions/`):
 
-1. Push this repo to GitHub.
-2. Vercel dashboard → **New Project** → import this repo.
-3. Click **Edit** next to **Root Directory** and set it to **`site`**. This is
-   the standard way to deploy a project that lives in a subdirectory.
-4. Vercel auto-detects the **Astro** framework preset and the package manager
-   from the lockfile. Leave the build/install commands at their defaults.
-5. Deploy. Static pages are served from the CDN; any route with
-   `prerender = false` is deployed as a Vercel Function automatically.
+```bash
+cp .dev.vars.example .dev.vars   # fill in as needed; gitignored
+npm run build
+npm run pages:dev                # http://localhost:8788
+```
 
-Note: do **not** use `vercel.json` for URL rewrites with Astro — use Astro's
-`redirects` option in `astro.config.mjs` instead.
+## Deploying
+
+`www.pcbjam.com` is a **Cloudflare Pages** project (`pcbjam-site`), deployed by
+`.github/workflows/deploy-site.yml` on every push to `main` touching `site/**` —
+content and blog posts do not wait for a release tag.
+
+```
+push to main (site/**)  ->  npm ci  ->  npm test  ->  astro build
+                        ->  wrangler pages deploy  ->  www.pcbjam.com
+```
+
+Two things live outside the repo and are set once:
+
+- **Secrets** — `wrangler pages secret put <NAME> --project-name pcbjam-site`
+  for `RESEND_API_KEY`, `RESEND_SEGMENT_ID`, `WAITLIST_FROM_EMAIL`.
+  `WAITLIST_ALLOWED_ORIGINS` is deliberately unset; it keeps the in-code default.
+- **The custom domain** — attached to the Pages project (there is no
+  `wrangler pages domain` subcommand). The apex `pcbjam.com` 308s to `www` via a
+  Cloudflare Redirect Rule.
+
+Response headers come from `public/_headers` (copied verbatim into `dist/`), which
+carries the COOP/COEP rules the embedded Gerber viewer needs. Do **not** widen
+them to `/*` — the landing page must stay un-isolated so the YouTube hero embed
+loads.
+
+The full one-time setup and the cutover runbook are in `../deploy/site/README.md`.

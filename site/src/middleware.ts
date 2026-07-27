@@ -9,7 +9,7 @@ import { defineMiddleware } from 'astro:middleware';
  * cross-origin isolated, and the embedded Gerber viewer's SharedArrayBuffer
  * would be unavailable. Set them here for `npm run dev`.
  *
- * Production is static (output: 'static'); these headers come from vercel.json
+ * Production is static (output: 'static'); these headers come from public/_headers
  * scoped to the post + /gerber-demo routes, so we no-op outside dev to keep the
  * prerender/build output untouched.
  */

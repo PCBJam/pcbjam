@@ -9,11 +9,14 @@ const GITHUB_URL = 'https://github.com/emergence-engineering';
 
 // Build provenance: the pcbjam commit this site was built from — it pins the
 // KiCad + wxWidgets submodule revisions implicitly and is our GPLv3
-// corresponding-source pointer (see /licenses). Resolved at build time:
-// Vercel sets VERCEL_GIT_COMMIT_SHA; local builds fall back to git.
+// corresponding-source pointer (see /licenses), so it must not silently degrade
+// to 'main'. Resolved at build time, in order: Cloudflare Pages CI
+// (CF_PAGES_COMMIT_SHA), GitHub Actions (GITHUB_SHA), then git. A direct-upload
+// `wrangler pages deploy` sets neither variable, but deploy-site.yml runs in
+// Actions on a real checkout, so the git fallback is correct there too.
 function resolveBuildSha(): string {
-  const vercelSha = process.env.VERCEL_GIT_COMMIT_SHA;
-  if (vercelSha) return vercelSha.slice(0, 7);
+  const ciSha = process.env.CF_PAGES_COMMIT_SHA || process.env.GITHUB_SHA;
+  if (ciSha) return ciSha.slice(0, 7);
   try {
     return execSync('git rev-parse --short=7 HEAD', { encoding: 'utf8' }).trim();
   } catch {

@@ -28,4 +28,15 @@ Don't try to guess what's broken , use debug tools / symbols, supported by the b
 
 Feature docs/patches are in features/<branch-name>/. Run scripts/create-feature-patches.sh to save patches for root, kicad, wxwidgets submodules.
 
-The landing page / website is in /site (Astro, built and deployed by Vercel on push). The footer shows a build SHA that links to the pcbjam commit the site was built from; because it pins the kicad + wxwidgets submodule revisions implicitly, it is our GPLv3 corresponding-source pointer (see /licenses). It resolves automatically at build time in site/src/components/Footer.astro (VERCEL_GIT_COMMIT_SHA on Vercel, `git rev-parse` locally) — no manual bump needed.
+The landing page / website is in /site (Astro, static, deployed to Cloudflare Pages
+by .github/workflows/deploy-site.yml on every push to main touching site/**).
+It has no Astro adapter; the one dynamic route (/api/waitlist) is a Cloudflare
+Pages Function in site/functions/. Prod response headers come from
+site/public/_headers (COOP/COEP for the embedded Gerber viewer — never widen
+them to /*, the landing page must stay un-isolated for the YouTube embed).
+The footer shows a build SHA that links to the pcbjam commit the site was built
+from; because it pins the kicad + wxwidgets submodule revisions implicitly, it is
+our GPLv3 corresponding-source pointer (see /licenses). It resolves automatically
+at build time in site/src/components/Footer.astro (CF_PAGES_COMMIT_SHA / GITHUB_SHA
+in CI, `git rev-parse` locally) — no manual bump needed.
+The Cloudflare setup + cutover runbook is in pcbjam/deploy/site/README.md.

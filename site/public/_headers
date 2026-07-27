@@ -1,0 +1,35 @@
+# Cloudflare Pages response headers for www.pcbjam.com.
+# Copied verbatim from public/ into dist/ by the Astro build. Replaces the
+# `headers` block of the old vercel.json.
+#
+# Cross-origin isolation is required for the embedded KiCad Gerber viewer
+# (SharedArrayBuffer + pthreads). The big WASM blobs it pulls are cross-origin on
+# cdn.pcbjam.com and satisfy COEP via their own CORP/ACAO headers, set by a
+# Cloudflare Transform Rule on that hostname (see deploy/demo/README.md).
+#
+# DO NOT widen these to `/*`. The landing page deliberately is NOT isolated: a
+# require-corp document cannot load the no-COEP YouTube hero iframe. See the
+# comment in src/sections/GerberDemoSection.astro.
+#
+# Both URL forms of the blog post are listed on purpose. Pages serves the
+# trailing-slash form at 200 and 308s the bare form to it, so an exact-match rule
+# alone would attach these headers to the redirect and not to the document —
+# which is precisely the bug this file inherited from vercel.json.
+
+# Content-hashed build output: safe to cache forever. This used to come from the
+# Vercel adapter's generated route config; with no adapter, nothing sets it unless
+# we do.
+/_astro/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/blog/porting-kicad-graphics-to-webgl-in-2026
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
+
+/blog/porting-kicad-graphics-to-webgl-in-2026/*
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
+
+/gerber-demo/*
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp

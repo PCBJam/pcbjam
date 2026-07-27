@@ -1,0 +1,120 @@
+name: deploy-site (marketing site)
+
+# Deploys the Astro marketing site + blog in site/ to Cloudflare Pages
+# (www.pcbjam.com, Pages project `pcbjam-site`).
+#
+#   push to main touching site/**  ──▶  npm ci → npm test → astro build
+#                                       → wrangler pages deploy → www.pcbjam.com
+#
+# NOT tag-gated, deliberately. The site was previously deployed by Vercel's git
+# integration on every push, and blog posts / copy fixes must not have to wait
+# for a vX.Y.Z release. The tag-gated pipeline (release.yml) ships the WASM
+# editor; this ships content, and the two are independent.
+#
+# The site is a STANDALONE npm project (its own package-lock.json, not the
+# web/ pnpm workspace) and needs Node >= 22.12 for Astro 6 — hence npm ci and
+# node-version 22 rather than the pnpm + node 20 used by the other workflows.
+#
+# The one dynamic route, /api/waitlist, ships as a Cloudflare Pages Function
+# from site/functions/. Its secrets (RESEND_API_KEY, RESEND_SEGMENT_ID,
+# WAITLIST_FROM_EMAIL) are NOT deploy inputs: set once with
+# `wrangler pages secret put <NAME> --project-name pcbjam-site`.
+# See deploy/site/README.md for the full runbook.
+#
+# Secrets (Settings → Secrets → Actions) — already present for demo/editor:
+#   CLOUDFLARE_API_TOKEN   Cloudflare Pages:Edit
+#   CLOUDFLARE_ACCOUNT_ID
+
+on:
+  push:
+    branches: ["main"]
+    paths: ["site/**", ".github/workflows/deploy-site.yml"]
+  workflow_dispatch:
+
+# Serialize site deploys so two pushes don't race the live host (don't cancel a
+# half-finished deploy — let it complete).
+concurrency:
+  group: deploy-site
+  cancel-in-progress: false
+
+env:
+  PAGES_PROJECT: pcbjam-site
+  # MUST be the Pages project's PRODUCTION branch — any other value makes
+  # `wrangler pages deploy` a PREVIEW deploy and www.pcbjam.com won't update.
+  # Direct-Upload projects default to "production".
+  PAGES_PROD_BRANCH: production
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # No submodules: the site shares no code with the WASM tools. A real
+      # checkout is still needed — Footer.astro resolves the GPLv3
+      # corresponding-source SHA from GITHUB_SHA (with a `git rev-parse`
+      # fallback), and that value is user-visible in the footer.
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+
+      - name: Install site deps
+        working-directory: site
+        run: npm ci
+
+      # 1) Gate on the site's own vitest suite (waitlist Function hardening +
+      #    the gerber-demo boot.js override gate). Nothing else runs it.
+      - name: Test
+        working-directory: site
+        run: npm test
+
+      # 2) Static build. Emits dist/ only — no adapter, no server bundle. The
+      #    Function comes from site/functions/, which wrangler bundles at deploy.
+      - name: Build
+        working-directory: site
+        run: npm run build
+
+      # 3) Ensure the Pages project exists (first deploy creates it; no-op
+      #    after). Its production branch must equal PAGES_PROD_BRANCH or deploys
+      #    land as previews and www.pcbjam.com won't update.
+      - name: Ensure Pages project exists
+        working-directory: site
+        run: >
+          npx --yes wrangler@4 pages project create "$PAGES_PROJECT"
+          --production-branch "$PAGES_PROD_BRANCH"
+          --compatibility-date 2026-06-01 --compatibility-flags nodejs_compat
+          || echo "pages project create skipped (already exists)"
+
+      # 4) Deploy. Run from site/ so wrangler picks up site/wrangler.toml (which
+      #    sets pages_build_output_dir + nodejs_compat) AND discovers
+      #    site/functions/ — deploying from the repo root would silently ship a
+      #    static-only site with /api/waitlist 404ing.
+      - name: Deploy to Cloudflare Pages
+        working-directory: site
+        run: >
+          npx --yes wrangler@4 pages deploy
+          --project-name "$PAGES_PROJECT"
+          --branch "$PAGES_PROD_BRANCH"
+          --commit-dirty=true
+
+      # 5) Smoke: the deployed Function answers a preflight for the demo origin.
+      #    demo.pcbjam.com cross-posts the waitlist form here and a CORS
+      #    preflight cannot follow a redirect, so this must be 204 directly on
+      #    www — not after a hop.
+      - name: Smoke-check the waitlist endpoint
+        run: |
+          for i in $(seq 1 20); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -X OPTIONS \
+              -H 'Origin: https://demo.pcbjam.com' \
+              -H 'Access-Control-Request-Method: POST' \
+              https://www.pcbjam.com/api/waitlist || true)
+            [ "$code" = "204" ] && break; sleep 3
+          done
+          test "$code" = "204" || { echo "waitlist preflight returned $code, expected 204"; exit 1; }

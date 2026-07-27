@@ -1,0 +1,30 @@
+# PCBJam marketing site — server-side secrets for the waitlist Pages Function.
+#
+# Copy to `.dev.vars` (gitignored) for local dev; `wrangler pages dev` loads it
+# and exposes the values on the Function's `context.env`. Note this is NOT `.env`
+# any more: the endpoint is a Cloudflare Pages Function, not an Astro SSR route,
+# so it reads bindings rather than `astro:env/server`.
+#
+# In production these are set once, out of band, and are NOT deploy inputs:
+#   wrangler pages secret put RESEND_API_KEY      --project-name pcbjam-site
+#   wrangler pages secret put RESEND_SEGMENT_ID   --project-name pcbjam-site
+#   wrangler pages secret put WAITLIST_FROM_EMAIL --project-name pcbjam-site
+#
+# Without RESEND_API_KEY the endpoint still accepts submits (logs + no email),
+# so the form UX is testable locally without keys.
+
+# Resend API key (https://resend.com/api-keys). Server-only — never PUBLIC_.
+RESEND_API_KEY=
+
+# Resend Segment to add waitlist contacts to (https://resend.com/segments).
+# (Resend renamed "Audiences" → "Segments"; this is the Segment ID.)
+RESEND_SEGMENT_ID=
+
+# Optional: confirmation sender. Domain must be verified in Resend.
+# Defaults to "PCBJam <hello@pcbjam.com>" (see functions/api/waitlist.ts).
+WAITLIST_FROM_EMAIL=
+
+# Optional: comma-separated origins allowed to cross-post the waitlist form.
+# Deliberately UNSET in production so it keeps the in-code default
+# (https://demo.pcbjam.com) — the static demo has no backend of its own.
+# WAITLIST_ALLOWED_ORIGINS=

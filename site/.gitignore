@@ -1,9 +1,12 @@
 # build output
 dist/
-.vercel/
 
 # generated content collection types & cache
 .astro/
+
+# wrangler local state/cache + migration scratch
+.wrangler/
+.cf-migrate/
 
 # dependencies
 node_modules/
@@ -11,6 +14,11 @@ node_modules/
 # environment
 .env
 .env.production
+# wrangler local-only vars — this is where RESEND_API_KEY lives for
+# `wrangler pages dev`. The root repo's `**/.dev.vars` does NOT cover a nested
+# git repo, so it must be listed here.
+.dev.vars
+.migration-secrets.env
 
 # macOS
 .DS_Store

@@ -41,7 +41,7 @@ mirrors the standalone editor's `web/standalone/src/wasm/boot.ts`.
 | `src/sections/GerberDemoSection.astro` | The landing-page showcase: a poster + launch button that opens `/gerber-demo/` in a new tab (the landing itself is not cross-origin isolated). |
 | `src/components/GerberDemo.astro` | The blog embed: lazy click-to-load iframe, cross-origin-isolation reload guard, feature-detect + poster fallback. |
 | `astro.config.mjs` + `src/middleware.ts` | Dev cross-origin-isolation headers (COOP/COEP `require-corp`). |
-| `vercel.json` | Prod COOP/COEP, scoped to the blog post + `/gerber-demo/` routes. |
+| `public/_headers` | Prod COOP/COEP on Cloudflare Pages, scoped to the blog post + `/gerber-demo/` routes (both URL forms of the post). |
 
 ## Dev overrides
 

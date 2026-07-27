@@ -12,17 +12,18 @@
     "preview": "astro preview",
     "check": "astro check",
     "astro": "astro",
-    "test": "vitest run"
+    "test": "vitest run",
+    "pages:dev": "npx --yes wrangler@4 pages dev"
   },
   "dependencies": {
     "@astrojs/mdx": "^6.0.3",
-    "@astrojs/vercel": "^10.0.8",
     "@fontsource/oswald": "^5.2.8",
     "astro": "^6.4.4",
     "resend": "^6.12.4"
   },
   "devDependencies": {
     "@astrojs/check": "^0.9.9",
+    "@cloudflare/workers-types": "^4.20260610.1",
     "@tailwindcss/postcss": "^4.3.0",
     "@types/node": "^26.1.0",
     "happy-dom": "^15.11.6",
