@@ -823,8 +823,9 @@ export function WasmTool({
   // Mobile device (features/mobile): boot installs the touch-gesture shim.
   // Chrome/overlay visibility is the separate runtime toggle below.
   const mobileUi = React.useMemo(() => isMobileMode(), []);
-  // Figma-like "hide UI" toggle: mobile defaults to hidden, the floating
-  // button / Cmd+\ flips it live; shell overlays key off this, and the layout
+  // Figma-like "hide UI" toggle: small screens (phones, tablets, narrow
+  // windows — startsChromeHidden) default to hidden, the floating button /
+  // Cmd+\ flips it live; shell overlays key off this, and the layout
   // effect below applies it to the wasm frame.
   const chromeHidden = useChromeHidden();
   // Read-only sessions force-hide the chrome without touching the module-global

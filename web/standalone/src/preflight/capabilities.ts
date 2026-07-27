@@ -214,10 +214,11 @@ export function probeCapabilities(): CapabilityReport {
 
   // --- warn: mobile ----------------------------------------------------------
   const uaMobile = nav?.userAgentData?.mobile;
+  // Coarse PRIMARY pointer at any width = phone or tablet (touch laptops keep
+  // a fine primary pointer) — mirrors lib/mobile-mode isMobileMode.
   const coarsePointer =
     typeof matchMedia === "function" &&
-    matchMedia("(pointer: coarse)").matches &&
-    matchMedia("(max-width: 900px)").matches;
+    matchMedia("(pointer: coarse)").matches;
   const isMobile = uaMobile === true || coarsePointer;
   info.mobile = isMobile;
   if (isMobile) {

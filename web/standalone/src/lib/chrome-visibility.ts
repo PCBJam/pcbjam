@@ -8,14 +8,15 @@
  * console toggle) key their visibility off it.
  *
  * Session semantics, like Figma: nothing is persisted — a reload restores the
- * device default (isMobileMode: mobile → hidden, desktop → shown; `?mobile=`
- * still forces it). Being module-global the toggled state survives SPA
+ * device default (startsChromeHidden: small screens — phones, tablets, narrow
+ * windows — → hidden, desktop → shown; `?mobile=` still forces it). Being
+ * module-global the toggled state survives SPA
  * navigation (e.g. editor → Home keeps the badge hidden); tool switches are
  * full page loads, so in practice that only affects Home.
  */
 
 import { useSyncExternalStore } from "react";
-import { isMobileMode } from "./mobile-mode";
+import { startsChromeHidden } from "./mobile-mode";
 
 // Resolved lazily so merely importing the module never touches `window`
 // (unit tests run in the node environment).
@@ -23,7 +24,7 @@ let hidden: boolean | null = null;
 const listeners = new Set<() => void>();
 
 export function getChromeHidden(): boolean {
-  hidden ??= typeof window === "undefined" ? false : isMobileMode();
+  hidden ??= typeof window === "undefined" ? false : startsChromeHidden();
   return hidden;
 }
 
