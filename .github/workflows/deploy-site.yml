@@ -19,7 +19,8 @@ name: deploy-site (marketing site)
 # from site/functions/. Its secrets (RESEND_API_KEY, RESEND_SEGMENT_ID,
 # WAITLIST_FROM_EMAIL) are NOT deploy inputs: set once with
 # `wrangler pages secret put <NAME> --project-name pcbjam-site`.
-# See deploy/site/README.md for the full runbook.
+# deploy/site/README.md documents the setup, the invariants that fail silently,
+# and deploy/site/verify.sh (a fuller health check than step 5 below).
 #
 # Secrets (Settings → Secrets → Actions) — already present for demo/editor:
 #   CLOUDFLARE_API_TOKEN   Cloudflare Pages:Edit

@@ -94,4 +94,5 @@ carries the COOP/COEP rules the embedded Gerber viewer needs. Do **not** widen
 them to `/*` — the landing page must stay un-isolated so the YouTube hero embed
 loads.
 
-The full one-time setup and the cutover runbook are in `../deploy/site/README.md`.
+One-time setup, the invariants that fail silently if changed, and the health
+check (`deploy/site/verify.sh`) are in `../deploy/site/README.md`.

@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
-# The one HTTP parity sweep. Sourced by the verify scripts and run against four
-# bases, so "did anything change?" is always the same question:
+# The one HTTP parity sweep. Point it at any base URL and it asks the same
+# question, so a regression has nowhere to hide:
 #
-#   https://www.pcbjam.com                  live Vercel (baseline)
-#   http://127.0.0.1:8788                   wrangler pages dev
-#   https://<hash>.pcbjam-site.pages.dev    the Pages deployment, pre-DNS
-#   https://www.pcbjam.com                  after cutover
+#   https://www.pcbjam.com                  production
+#   https://<hash>.pcbjam-site.pages.dev    a specific deployment, before promoting
+#   http://127.0.0.1:8788                   `wrangler pages dev` locally
+#
+# It was written for the Vercel -> Cloudflare Pages migration and several
+# assertions exist because that migration found real defects; the comments say
+# which, since the reason is the only thing stopping someone "simplifying" them
+# back out.
 #
 # Usage:  assert_parity <base-url> [--scope local|preview|prod] [--live-post]
 # Exit:   0 if every hard assertion passed (warnings do not fail), else 1.
@@ -331,8 +335,8 @@ assert_apex_serves() {
   return $_rc
 }
 
-# APEX_MODE=redirect: apex -> www, path + query preserved. Also used by
-# 00-baseline.sh, since that is what Vercel does today.
+# APEX_MODE=redirect: apex -> www, path + query preserved. Unused with the
+# current `serve` topology; kept in case that decision is revisited.
 assert_apex_redirect() {
   _apex="${1:-$APEX_BASE}"
   section "apex redirect: $_apex"

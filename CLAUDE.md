@@ -39,4 +39,5 @@ from; because it pins the kicad + wxwidgets submodule revisions implicitly, it i
 our GPLv3 corresponding-source pointer (see /licenses). It resolves automatically
 at build time in site/src/components/Footer.astro (CF_PAGES_COMMIT_SHA / GITHUB_SHA
 in CI, `git rev-parse` locally) — no manual bump needed.
-The Cloudflare setup + cutover runbook is in pcbjam/deploy/site/README.md.
+Cloudflare setup, the invariants that fail silently, and the health check
+(deploy/site/verify.sh) are documented in pcbjam/deploy/site/README.md.

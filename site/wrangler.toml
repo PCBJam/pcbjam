@@ -12,8 +12,8 @@
 # and locally come from .dev.vars (gitignored). WAITLIST_ALLOWED_ORIGINS is
 # deliberately unset so it keeps the default in functions/api/waitlist.ts.
 #
-# The custom domain (www.pcbjam.com) is attached out of band too — there is no
-# `wrangler pages domain` subcommand; see deploy/site/README.md.
+# The custom domains (www.pcbjam.com and the apex) are attached out of band too —
+# there is no `wrangler pages domain` subcommand; see deploy/site/README.md.
 
 name = "pcbjam-site"
 pages_build_output_dir = "./dist"
