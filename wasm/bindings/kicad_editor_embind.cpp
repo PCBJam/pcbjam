@@ -83,6 +83,14 @@ bool        pcbCollabTestClearSelection();
 void        pcbSetColorTheme( std::string aTheme );
 void        pcbSetDarkChrome( bool aDark );
 
+// Post-theme-apply hook shared with pcbjam_theme.h — identical inline-variable
+// definition instead of including that header (this TU stays header-light);
+// keep the two declarations in sync.
+namespace pcbjam_theme
+{
+inline void ( *g_afterThemeApplied )() = nullptr;
+}
+
 bool        schEditorActive();
 int         schLibsSymbolUsage( std::string aLibNickname, std::string aSymbolName );
 void        schCollabApply( std::string aJson );
@@ -398,6 +406,15 @@ static void collabSetStyle( std::string aJson )
 // Each side no-ops on a null frame.
 static void setColorTheme( std::string aTheme )
 {
+    // A real theme apply rebuilds the menubar/toolbars, which come back
+    // SHOWN — re-hide them when the chrome is supposed to be hidden
+    // (read-only viewer / mobile canvas-only). Installed here, not in
+    // pcbjam_theme.h, because the chrome snapshot is merged-image state.
+    pcbjam_theme::g_afterThemeApplied = []() {
+        if( s_chromeSnap.valid )
+            kicadSetChrome( false );
+    };
+
     pcbSetColorTheme( aTheme );
     schSetColorTheme( aTheme );
 }

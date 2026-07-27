@@ -31,6 +31,17 @@ extern "C" bool wxWasmGetDarkAppearance();
 
 namespace pcbjam_theme {
 
+/** Merged-image hook (installed by kicad_editor_embind.cpp): re-assert the
+ *  canvas-only chrome state after a theme apply. CommonSettingsChanged
+ *  recreates the menubar (CallAfter-deferred, eda_base_frame.cpp) and the
+ *  toolbars, and they come back SHOWN — without this, a theme apply
+ *  resurrects the chrome kicadSetChrome(false) hid (read-only viewer /
+ *  mobile canvas-only). Inline variable: the dispatcher TU re-declares the
+ *  identical definition instead of including this (deliberately
+ *  header-light) — keep the two in sync. Null in the standalone bundles,
+ *  which have no chrome API. */
+inline void ( *g_afterThemeApplied )() = nullptr;
+
 /** Set the chrome appearance FLAG only — no widget traffic, no fiber. Safe
  *  from the browser main thread at any point (it writes one bool in shared
  *  wasm memory); the embedder calls it at onRuntimeInitialized, BEFORE main()
@@ -77,22 +88,40 @@ inline void setColorTheme( EDA_DRAW_FRAME* aFrame, const std::string& aTheme )
         return;
 
     pcbjam_collab::runOnFiber( aFrame, [aFrame, aTheme]() {
-        if( APP_SETTINGS_BASE* cfg = aFrame->config() )
+        // The shell only ever sends our dark theme name or the builtin
+        // default, so the chrome appearance rides on that distinction.
+        const bool         dark = aTheme != "_builtin_default";
+        const wxString     theme = wxString::FromUTF8( aTheme.c_str() );
+        APP_SETTINGS_BASE* cfg = aFrame->config();
+
+        // The shell re-sends its theme on EVERY boot (a warm relaunch can
+        // have stale MEMFS settings from a HomePage theme switch) — skip the
+        // apply when nothing changes: CommonSettingsChanged below is not
+        // free, it rebuilds the menubar and toolbars.
+        if( cfg && cfg->m_ColorTheme == theme && dark == wxWasmGetDarkAppearance() )
+            return;
+
+        if( cfg )
         {
-            cfg->m_ColorTheme = wxString::FromUTF8( aTheme.c_str() );
+            cfg->m_ColorTheme = theme;
             // Persist now — wasm sessions never exit cleanly, so the normal
             // save-on-close path would lose the choice.
             Pgm().GetSettingsManager().Save( cfg );
         }
 
-        // wx chrome first (panels/toolbars), then the GAL canvas colors. The
-        // shell only ever sends our dark theme name or the builtin default,
-        // so the chrome appearance rides on that distinction.
-        syncChromeAppearance( aTheme != "_builtin_default" );
+        // wx chrome first (panels/toolbars), then the GAL canvas colors.
+        syncChromeAppearance( dark );
 
         // 0 flags: no env/text vars changed; the frame's override chain still
         // unconditionally reloads colors and recaches the view.
         aFrame->CommonSettingsChanged( 0 );
+
+        // Queued from INSIDE the fiber body, AFTER CommonSettingsChanged: the
+        // menubar rebuild it triggers is itself a CallAfter on this same
+        // handler, so FIFO puts the re-assert behind the rebuilt (shown)
+        // menubar.
+        if( void ( *hook )() = g_afterThemeApplied )
+            aFrame->CallAfter( hook );
     } );
 }
 
