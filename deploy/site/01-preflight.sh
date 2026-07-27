@@ -96,8 +96,10 @@ case "$ns" in *becky*|*ernest*) chk "on Cloudflare NS ($ns)" 0 ;;
   *) chk "on Cloudflare NS ($ns)" 1 "the zone must be on Cloudflare nameservers" ;;
 esac
 
-section "vercel (needed only by 09-detach / 99-rollback)"
-if command -v vercel >/dev/null 2>&1 || [ -n "${VERCEL_TOKEN:-}" ]; then
+section "vercel (env-var names for 04-set-secrets; detach/rollback for 09/99)"
+# Deliberately via npx rather than a global `vercel` binary — that is how this
+# repo invokes it everywhere else, and a global install is not a prerequisite.
+if [ "${SKIP_VERCEL_CHECK:-0}" != 1 ]; then
   names="$(npx --yes vercel@latest env ls production --project "$VERCEL_PROJECT" --scope "$VERCEL_TEAM" 2>/dev/null \
            | awk '/^ [A-Z]/{print $1}' | sort | tr '\n' ' ' || true)"
   echo "  env var NAMES on Vercel (values never read): ${names:-<unavailable>}"
@@ -108,7 +110,7 @@ if command -v vercel >/dev/null 2>&1 || [ -n "${VERCEL_TOKEN:-}" ]; then
     esac
   done
 else
-  warn "vercel CLI not on PATH and VERCEL_TOKEN unset — skipping (only 09/99 need it)"
+  warn "SKIP_VERCEL_CHECK=1 — skipping the Vercel probe"
 fi
 
 section "summary"
