@@ -58,11 +58,12 @@ function parseArgs(argv) {
   a.cdn = a.cdn.replace(/\/+$/, "");
   a.repo = a.repo.replace(/\/+$/, "");
   a.landing = a.landing.replace(/\/+$/, "");
-  // The cross-origin demo POSTs the waitlist to the marketing site's serverless
-  // endpoint. The apex (pcbjam.com) 308-redirects to www on Vercel, and a CORS
-  // preflight can't follow redirects, so the demo must hit the canonical www host
-  // directly. Derive from --landing for custom/staging hosts, but pin the
-  // production apex to www. (Landing/version-badge link stays on the apex.)
+  // The cross-origin demo POSTs the waitlist to the marketing site's endpoint (a
+  // Cloudflare Pages Function). Always target the canonical www host: a CORS
+  // preflight cannot follow a redirect, so aiming at a host that might ever
+  // redirect is a latent breakage. Derive from --landing for custom/staging
+  // hosts, but pin the production apex to www. (The landing/version-badge link
+  // stays on the apex.)
   const waitlistHost =
     a.landing === "https://pcbjam.com" ? "https://www.pcbjam.com" : a.landing;
   a.waitlist = a.waitlist || `${waitlistHost}/api/waitlist`;

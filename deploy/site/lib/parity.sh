@@ -262,7 +262,62 @@ assert_parity() {
   echo "parity: PASS"; return 0
 }
 
-# Apex -> www redirect, path + query preserved. Prod only.
+# Dispatch on the chosen apex topology (see APEX_MODE in lib/common.sh).
+assert_apex() {
+  case "${APEX_MODE:-serve}" in
+    serve)    assert_apex_serves "${1:-$APEX_BASE}" ;;
+    redirect) assert_apex_redirect "${1:-$APEX_BASE}" ;;
+    *) die "APEX_MODE must be 'serve' or 'redirect' (got '${APEX_MODE}')" ;;
+  esac
+}
+
+# APEX_MODE=serve: the apex is its own Pages custom domain. It must answer 200
+# directly (no hop), and it must still declare www as canonical — that tag is the
+# only thing consolidating the two hostnames for search, since we are deliberately
+# not redirecting.
+assert_apex_serves() {
+  _apex="${1:-$APEX_BASE}"
+  section "apex serves directly: $_apex (APEX_MODE=serve)"
+  _rc=0
+
+  _t="$(_trace "$_apex/")"
+  _st="$(printf '%s' "$_t" | cut -f2)"; _hops="$(printf '%s' "$_t" | cut -f3)"
+  if [ "$_st" = "200" ]; then
+    echo "PASS   $_apex/ -> 200 (hops $_hops)"
+  else
+    echo "FAIL   $_apex/ -> $_st (expected 200; is the apex attached as a custom domain?)"; _rc=1
+  fi
+
+  _h="$(_headers "$_apex/")"
+  if [ -n "$(_hdr "$_h" x-vercel-id)" ]; then
+    echo "FAIL   x-vercel-id present on the apex — still Vercel (stale DNS, not a pass)"; _rc=1
+  else
+    echo "PASS   no x-vercel-id on the apex"
+  fi
+
+  _can="$($CURL -L "$_apex/" 2>/dev/null | tr -d '\n' \
+           | sed -n 's/.*rel="canonical" href="\([^"]*\)".*/\1/p' | head -1)"
+  case "$_can" in
+    https://www.pcbjam.com/*|https://www.pcbjam.com)
+      echo "PASS   apex declares canonical $_can" ;;
+    *)
+      echo "FAIL   apex canonical is '${_can:-absent}' — must point at www, otherwise the"
+      echo "       two hostnames compete instead of consolidating"; _rc=1 ;;
+  esac
+
+  # The demo cross-posts to www, but if anyone ever points it at the apex, the
+  # endpoint has to be reachable there too. Cheap to confirm.
+  _pre="$($CURL -o /dev/null -w '%{http_code}' -X OPTIONS "$_apex/api/waitlist" \
+            -H 'Origin: https://demo.pcbjam.com' \
+            -H 'Access-Control-Request-Method: POST' 2>/dev/null || true)"
+  [ "$_pre" = "204" ] && echo "PASS   apex /api/waitlist preflight 204" \
+    || { echo "FAIL   apex /api/waitlist preflight $_pre"; _rc=1; }
+
+  return $_rc
+}
+
+# APEX_MODE=redirect: apex -> www, path + query preserved. Also used by
+# 00-baseline.sh, since that is what Vercel does today.
 assert_apex_redirect() {
   _apex="${1:-$APEX_BASE}"
   section "apex redirect: $_apex"

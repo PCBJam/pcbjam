@@ -54,48 +54,64 @@ Two things you can get wrong here, both of which fail quietly:
 
 ## Migration / cutover (one time, from Vercel)
 
-Every mutating script is **dry-run by default**; add `--apply`. Read the dry-run
-output before applying — that is the whole point of the split.
+Two supported apex topologies, selected by `APEX_MODE` (see `lib/common.sh`):
 
-| when | command | live? |
+- **`serve` (default, and what we chose).** The apex is a *second* Pages custom
+  domain and answers 200 directly. No redirect rule, no placeholder record, no
+  zone-level scopes — the same two clicks as `app.`/`demo.`/`editor.`. The pages
+  still emit `canonical=www`, which is what consolidates the two hostnames for
+  search.
+- **`redirect`.** The apex 308s to www via a zone Redirect Rule plus a proxied
+  placeholder record. This is what Vercel did. It needs Zone→DNS:Edit and
+  Zone→Dynamic Redirect:Edit, and the rule is the single riskiest artefact in the
+  whole migration: Redirect Rules are **zone-scoped**, so a `contains` match
+  instead of `eq` catches every subdomain and 308s `app.`, `editor.`, `demo.` and
+  `api.` to www. Dynamic redirects run *before* Workers/Pages routing, so that
+  breaks the product, not just a marketing page. `07 --phase rules` refuses any
+  expression that is not an exact `eq` match.
+
+Every mutating script is **dry-run by default**; add `--apply`. Read the dry-run
+output before applying — that is the point of the split.
+
+| when | action | live? |
 |---|---|---|
 | T−days | `00-baseline.sh` | no — read-only |
 | T−days | `01-preflight.sh` | no — read-only |
-| T−days | `07-dns-cutover.sh --phase probe --apply` | no — throwaway hostname |
 | T−days | `02-verify-local.sh` | no |
 | T−days | `03-ensure-project.sh --apply` → `04-set-secrets.sh --apply` | new project only |
 | T−days | `05-deploy.sh --preview --apply` → `06-verify-deploy.sh --latest` | no — pages.dev only |
-| T−1d | `07-dns-cutover.sh --phase rules --apply` | no — inert until the apex is proxied |
-| T−1d | `07-dns-cutover.sh --phase hsts --apply` | no — additive |
-| T−24h | `07-dns-cutover.sh --phase prelower --apply` | no — TTL only |
+| T−1d | *(optional)* HSTS: `07-dns-cutover.sh --phase hsts --apply`, or the dashboard | no — additive |
+| T−24h | *(optional)* `07-dns-cutover.sh --phase prelower --apply` — www TTL → 60 | no — TTL only |
 | T−1h | `05-deploy.sh --production --apply` → `06-verify-deploy.sh --scope prod-deploy` | no — no DNS yet |
-| **T+0** | `07-dns-cutover.sh --phase swap --apply` | **yes** |
-| T+2m | `07-dns-cutover.sh --phase apex --apply` | yes (auto-rollback armed) |
+| **T+0** | attach **www.pcbjam.com** to `pcbjam-site` (dashboard → Custom domains) | **yes** |
+| **T+0** | attach **pcbjam.com** the same way (`APEX_MODE=serve`) | **yes** |
 | T+5m | `08-verify-prod.sh` | verify only |
 | T+24h | `09-detach-vercel.sh --apply` | Vercel only |
 
-Rollback, any time: **`99-rollback.sh --apply --yes`**. Keep it ready in a second
-terminal during the swap.
+For `APEX_MODE=redirect` instead, replace the two attach rows with
+`07 --phase rules --apply` (early, inert) then `07 --phase swap --apply` and
+`07 --phase apex --apply`, and export `APEX_MODE=redirect` so `08` asserts a 308.
 
-### Why the swap is a PATCH, not a delete + create
+Rollback, any time: **`99-rollback.sh --apply --yes`**, or by hand — point `www`
+and the apex back to CNAME `dcfb2907091b7240.vercel-dns-016.com`, **DNS-only**.
+Vercel keeps both domains attached until `09`, so it resumes serving as soon as
+DNS propagates. Keep rollback ready in a second terminal during the attach.
 
-A single `PATCH` flips the `www` record's content and proxied status atomically,
-so there is **no DNS gap**. Delete-then-create leaves the name with no record for
-a second or two, and any resolver that queries in that instant caches NODATA for
-the zone's **SOA minimum** — typically 1800s. That is an un-flushable ~30-minute
-partial outage. `00-baseline.sh` records the zone's actual value so the exposure
-is a number, not a guess.
+### Attach, don't delete-and-recreate
 
-The residual risk with `PATCH` is HTTP-only and self-healing: for a second or two
-the edge has no route for the hostname and serves the Pages not-found page.
-Universal SSL already covers `*.pcbjam.com`, so TLS is never in question.
+Cloudflare's Custom Domains flow *updates* the existing `www` CNAME in place. That
+matters: deleting the record and creating a new one leaves the name with no answer
+for a second or two, and any resolver that asks in that instant caches NODATA for
+the zone's **SOA minimum** — measured at **1800s** on this zone by
+`00-baseline.sh`. That is an un-flushable ~30-minute partial outage. The in-place
+update has no DNS gap at all; the only residual window is HTTP-level and
+self-healing (a second or two where the edge has no route for the host and serves
+the Pages not-found page). Universal SSL already covers `*.pcbjam.com`, so TLS is
+never in question.
 
-`--phase probe` settles whether Pages will attach a custom domain over an
-existing CNAME, days early, on a throwaway hostname. `--swap-mode auto` reads
-that result and only falls back to `delete-create` if it has to.
-
-Throughout, Vercel stays attached, so resolvers still holding the old answer keep
-serving the identical site. The cutover is a fade, not a switch.
+`07 --phase swap` does the same thing via the API (`PATCH`, not `DELETE`+`POST`),
+and `--phase probe` settles days in advance — on a throwaway hostname — whether
+Pages will attach over an existing CNAME at all.
 
 ## The parity sweep
 

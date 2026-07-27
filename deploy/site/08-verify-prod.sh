@@ -35,7 +35,7 @@ fi
 [ -n "$(_hdr "$h" cf-ray)" ] && echo "  PASS   cf-ray present" || echo "  WARN   no cf-ray header"
 
 assert_parity "$PROD_BASE" --scope prod || rc=$?
-assert_apex_redirect "$APEX_BASE" || rc=$?
+assert_apex "$APEX_BASE" || rc=$?
 
 section "the two baseline failures must now pass"
 # This is the whole point of having captured a baseline: prove the fix.
@@ -65,15 +65,20 @@ else
   echo "  FAIL   status=$st hops=$hops (both 204 and 0 hops are required)"; rc=1
 fi
 
-section "custom domain status"
-dom="$(cf_pages_domains 2>/dev/null || true)"
-if [ -n "$dom" ]; then
-  printf '%s' "$dom" | jq -r '.result[]? | "  \(.name): \(.status)"'
-  printf '%s' "$dom" | jq -e --arg n "www.$ZONE_NAME" \
-    '[.result[]? | select(.name==$n and .status=="active")] | length > 0' >/dev/null 2>&1 \
-    && echo "  PASS   www.$ZONE_NAME active" \
-    || { echo "  FAIL   www.$ZONE_NAME not active"; rc=1; }
-fi
+section "custom domains attached to $PAGES_PROJECT"
+# Via wrangler (works with `wrangler login`); the REST endpoint would need an API
+# token that nothing else in the serve-mode path requires.
+doms="$($WRANGLER pages project list --json 2>/dev/null \
+         | jq -r --arg n "$PAGES_PROJECT" '.[] | select(."Project Name"==$n) | ."Project Domains"')"
+echo "  $doms"
+want="www.$ZONE_NAME"
+[ "${APEX_MODE:-serve}" = serve ] && want="$want $ZONE_NAME"
+for d in $want; do
+  case ",$(printf '%s' "$doms" | tr -d ' ')," in
+    *",$d,"*) echo "  PASS   $d attached" ;;
+    *) echo "  FAIL   $d NOT attached to $PAGES_PROJECT"; rc=1 ;;
+  esac
+done
 
 section "summary"
 if [ "$rc" -ne 0 ]; then

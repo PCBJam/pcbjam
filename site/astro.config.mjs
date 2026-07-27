@@ -7,8 +7,10 @@ import mdx from '@astrojs/mdx';
 // The one dynamic route, /api/waitlist, is a Cloudflare Pages Function in
 // functions/ rather than an Astro SSR route. See README.md ("Deploying").
 export default defineConfig({
-  // Canonical origin (apex 308s to www). Without this, prerendered Astro.url
-  // is localhost, which leaked into canonical/OG tags on production.
+  // Canonical origin. Both www.pcbjam.com and the apex are custom domains on the
+  // same Pages project and serve identically, so this tag is what consolidates
+  // them for search — keep it pointing at www. Without `site` at all, prerendered
+  // Astro.url is localhost, which leaked into canonical/OG tags on production.
   site: 'https://www.pcbjam.com',
   output: 'static',
   // Deliberately NO trailingSlash setting: Astro's default emits the canonical

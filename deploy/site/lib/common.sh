@@ -23,6 +23,13 @@ APEX_BASE="${APEX_BASE:-https://pcbjam.com}"
 VERCEL_PROJECT="${VERCEL_PROJECT:-pcbjam}"
 VERCEL_TEAM="${VERCEL_TEAM:-pcbj-am}"
 VERCEL_DNS_TARGET="${VERCEL_DNS_TARGET:-dcfb2907091b7240.vercel-dns-016.com}"
+# How the apex behaves. Two supported topologies:
+#   serve    (default) apex is a SECOND Pages custom domain and serves 200. No
+#            redirect rule, no placeholder record — the same two clicks as any
+#            other host. Pages still emit canonical=www so search consolidates.
+#   redirect apex 308s to www via a zone Redirect Rule + proxied placeholder
+#            record. This is what Vercel did, and needs zone DNS/rules scopes.
+APEX_MODE="${APEX_MODE:-serve}"
 WRANGLER="${WRANGLER_CMD:-npx --yes wrangler@4}"
 
 mkdir -p "$STATE_DIR/state" "$STATE_DIR/stamps" "$STATE_DIR/baseline" "$STATE_DIR/logs"
