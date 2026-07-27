@@ -10,8 +10,17 @@
 
 CF_API="https://api.cloudflare.com/client/v4"
 
+# True when a REST token is available. `wrangler login` gives an OAuth token that
+# wrangler itself uses but that cannot be replayed as a REST bearer token, and its
+# zone scope is read-only — so the DNS/ruleset/HSTS steps need a real API token
+# while the Pages steps are happy with either. Scripts branch on this.
+cf_have_token() { [ -n "${CLOUDFLARE_API_TOKEN:-}" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; }
+
 cf_token() {
-  [ -n "${CLOUDFLARE_API_TOKEN:-}" ] || die "CLOUDFLARE_API_TOKEN is not set"
+  [ -n "${CLOUDFLARE_API_TOKEN:-}" ] || die "CLOUDFLARE_API_TOKEN is not set.
+     \`wrangler login\` is not enough for this step: its OAuth token cannot be used
+     as a REST bearer token, and it only carries zone:read. Create an API token with
+     the scopes at the top of this file and export it (plus CLOUDFLARE_ACCOUNT_ID)."
   printf '%s' "$CLOUDFLARE_API_TOKEN"
 }
 cf_account() {

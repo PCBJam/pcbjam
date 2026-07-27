@@ -55,15 +55,19 @@ nf="$(curl -sS -L -o /dev/null -w '%{http_code}' "$URL/__cfm-parity-404__/" 2>/d
 
 if [ "$SCOPE" = prod-deploy ]; then
   section "confirming this is the PRODUCTION deployment"
-  latest="$(cf_api GET "/accounts/$(cf_account)/pages/projects/$PAGES_PROJECT/deployments?per_page=1" 2>/dev/null || true)"
-  envname="$(printf '%s' "$latest" | jq -r '.result[0].environment // "?"')"
-  did="$(printf '%s' "$latest" | jq -r '.result[0].id // "?"')"
-  if [ "$envname" != "production" ]; then
-    echo "FAIL   latest deployment environment is '$envname', not 'production'"
+  # Via wrangler, not the REST API: `wrangler login` is enough for this, whereas
+  # the REST call would need an API token that the Pages steps otherwise don't.
+  latest="$($WRANGLER pages deployment list --project-name "$PAGES_PROJECT" \
+             --environment production --json 2>/dev/null || true)"
+  envname="$(printf '%s' "$latest" | jq -r '.[0].Environment // "?"' 2>/dev/null || echo '?')"
+  did="$(printf '%s' "$latest" | jq -r '.[0].Id // "?"' 2>/dev/null || echo '?')"
+  brn="$(printf '%s' "$latest" | jq -r '.[0].Branch // "?"' 2>/dev/null || echo '?')"
+  if [ "$envname" != "Production" ]; then
+    echo "FAIL   latest deployment environment is '$envname', not 'Production'"
     echo "       (a branch name other than $PAGES_PROD_BRANCH makes it a preview)"
     rc=1
   else
-    echo "PASS   latest deployment is production ($did)"
+    echo "PASS   latest deployment is Production (branch=$brn id=$did)"
   fi
 fi
 
