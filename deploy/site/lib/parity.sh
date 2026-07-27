@@ -247,13 +247,20 @@ assert_parity() {
     # once you have enabled it, and it becomes a hard assertion.
     _hsts="$(_hdr "$(_headers "$_base/")" strict-transport-security)"
     case "$_hsts" in
+      *max-age=0*)
+        # Distinct from — and worse than — absent. max-age=0 actively instructs
+        # browsers to DISCARD any HSTS policy they hold for this host, so it
+        # revokes the 2-year policy Vercel was setting for every returning
+        # visitor. Always a hard failure, regardless of EXPECT_HSTS: nobody
+        # deliberately wants a header whose only effect is to switch protection off.
+        fail hsts - "max-age=0 — HSTS is OFF and this actively clears the policy browsers already hold. Set Max Age to 12 months or 2 years in SSL/TLS -> Edge Certificates." ;;
       *max-age=63072000*) pass hsts - "$_hsts" ;;
       "") if [ "${EXPECT_HSTS:-0}" = 1 ]; then
             fail hsts - "absent, but EXPECT_HSTS=1"
           else
             soft hsts - "absent (Vercel sent max-age=63072000) — enable it in SSL/TLS -> Edge Certificates, then set EXPECT_HSTS=1"
           fi ;;
-      *) soft hsts - "$_hsts (differs from the Vercel baseline max-age=63072000)" ;;
+      *) soft hsts - "$_hsts (differs from the Vercel baseline max-age=63072000, but non-zero so protection is on)" ;;
     esac
   fi
 
