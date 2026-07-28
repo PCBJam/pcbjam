@@ -193,6 +193,7 @@ all: minimal_test.html \
      $(S)/maximize/maximize_test.html \
      $(S)/earlysize/earlysize_test.html \
      $(S)/selectheight/selectheight_test.html \
+     $(S)/uipolish/uipolish_test.html \
      $(S)/threadpool/threadpool_test.html \
      $(S)/logerror/logerror_test.html \
      $(S)/retinascale/retinascale_test.html \
@@ -815,6 +816,16 @@ selectheight: $(S)/selectheight/selectheight_test.html
 threadpool: $(S)/threadpool/threadpool_test.html
 logerror: $(S)/logerror/logerror_test.html
 
+# UI polish regression guards (wasm-ui-polish: DC clip box, blit origin,
+# mask alpha, checkbox/statbmp best size)
+$(S)/uipolish/uipolish_test.o: $(S)/uipolish/uipolish_test.cpp
+	$(CXX) -c $(CXXFLAGS) $< -o $@
+
+$(S)/uipolish/uipolish_test.html: $(S)/uipolish/uipolish_test.o $(WX_CORE_LIB) $(JS_FILES)
+	$(CXX) $< $(LDFLAGS_NOGL) --pre-js $(JS) --shell-file $(HTML) -o $@
+
+uipolish: $(S)/uipolish/uipolish_test.html
+
 # Retina/HiDPI scaling test
 $(S)/retinascale/retinascale_test.o: $(S)/retinascale/retinascale_test.cpp
 	$(CXX) -c $(CXXFLAGS) $< -o $@
@@ -835,7 +846,7 @@ clean:
 	rm -f $(S)/*/*_test*.html $(S)/*/*_test*.js $(S)/*/*_test*.wasm
 	rm -f $(S)/*/*_repro*.html $(S)/*/*_repro*.js $(S)/*/*_repro*.wasm
 
-.PHONY: all clean menu contextmenu scrollbar clipboard filedialog layout aui toolbar grid dialog timer tree dataview htmlwin stc print dnd propgrid pickers collapsible listctrl infobar dataviewvirtual auinotebook wizard gridedit calendar gridrenderers printpreview bitmapbuttons specialized validators ownerdrawn popup xml wasmedge fontenum textdecor bitmask regions maximize earlysize selectheight threadpool logerror retinascale coroutine coroutine-nested asyncify-races notebook radiogroups collapse-relayout
+.PHONY: all clean menu contextmenu scrollbar clipboard filedialog layout aui toolbar grid dialog timer tree dataview htmlwin stc print dnd propgrid pickers collapsible listctrl infobar dataviewvirtual auinotebook wizard gridedit calendar gridrenderers printpreview bitmapbuttons specialized validators ownerdrawn popup xml wasmedge fontenum textdecor bitmask regions maximize earlysize selectheight uipolish threadpool logerror retinascale coroutine coroutine-nested asyncify-races notebook radiogroups collapse-relayout
 
 # === Coroutine pthread variant — reproduces the KiCad Asyncify-fiber x pthreads crash ===
 # Same modal-free harness as `coroutine`, but compiled/linked with pthreads to match
