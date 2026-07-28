@@ -66,6 +66,15 @@ test.beforeAll(async ({ browser }: { browser: Browser }) => {
   // Loading overlays (boot + lib fat-load, both `inset-0 z-30`) must be gone
   // before geometry is trusted.
   await expect(page.locator('div.inset-0.z-30')).toHaveCount(0, { timeout: 180000 });
+  // The WRL→STEP migration notice self-dismisses after 10 s
+  // (pcb_edit_frame.cpp ShowMessageFor) and shifts the GL canvas when it
+  // goes — wait it out so the pre-hide baseline and the post-restore box
+  // are measured in the same layout. It is shown synchronously during the
+  // file load the title poll above already gates on, and its DOM node
+  // outlives the dismiss, so wait for hidden, not absent. The un-timed
+  // "older version of KiCad" infobar stays up on both sides of the
+  // comparison, so it cancels out.
+  await expect(page.getByText(/WRL 3D model/)).toBeHidden({ timeout: 30000 });
 });
 
 test.afterAll(async () => {
