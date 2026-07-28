@@ -13,7 +13,14 @@ import {
   writeFileSync,
 } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { gzipSync, brotliCompressSync, constants as zc } from "node:zlib";
+import {
+  brotliCompress,
+  brotliCompressSync,
+  gzip,
+  gzipSync,
+  constants as zc,
+} from "node:zlib";
+import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 
@@ -25,6 +32,13 @@ export const NO_STORE = "no-store";
 
 export const sha256hex = (buf) => createHash("sha256").update(buf).digest("hex");
 
+const brotliOpts = (bytes, quality) => ({
+  params: {
+    [zc.BROTLI_PARAM_QUALITY]: quality ?? 5,
+    [zc.BROTLI_PARAM_SIZE_HINT]: bytes.length,
+  },
+});
+
 /** Compress bytes; returns { bytes, encoding }. mode: "gzip" | "br" | "none". */
 export function compressBytes(bytes, mode, quality) {
   if (mode === "none") return { bytes, encoding: null };
@@ -32,9 +46,28 @@ export function compressBytes(bytes, mode, quality) {
     return { bytes: gzipSync(bytes, { level: quality ?? 6 }), encoding: "gzip" };
   // brotli — default quality 5 (good ratio, far faster than 11 on 100s of MB).
   return {
-    bytes: brotliCompressSync(bytes, {
-      params: { [zc.BROTLI_PARAM_QUALITY]: quality ?? 5 },
-    }),
+    bytes: brotliCompressSync(bytes, brotliOpts(bytes, quality)),
+    encoding: "br",
+  };
+}
+
+const gzipAsync = promisify(gzip);
+const brotliCompressAsync = promisify(brotliCompress);
+
+/**
+ * Async compressBytes: runs on the libuv threadpool, so N calls awaited
+ * together compress on N cores (set UV_THREADPOOL_SIZE before the first call).
+ * Byte-identical output to compressBytes.
+ */
+export async function compressBytesAsync(bytes, mode, quality) {
+  if (mode === "none") return { bytes, encoding: null };
+  if (mode === "gzip")
+    return {
+      bytes: await gzipAsync(bytes, { level: quality ?? 6 }),
+      encoding: "gzip",
+    };
+  return {
+    bytes: await brotliCompressAsync(bytes, brotliOpts(bytes, quality)),
     encoding: "br",
   };
 }

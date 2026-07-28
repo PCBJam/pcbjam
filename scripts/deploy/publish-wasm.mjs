@@ -17,15 +17,20 @@
 // needs only CLOUDFLARE_API_TOKEN (+ CLOUDFLARE_ACCOUNT_ID).
 
 import { existsSync, readFileSync } from "node:fs";
+import { availableParallelism } from "node:os";
 import { join } from "node:path";
 import {
-  compressBytes,
+  compressBytesAsync,
   IMMUTABLE,
   makeStore,
   NO_STORE,
   putJSON,
   sha256hex,
 } from "./lib/cdn-store.mjs";
+
+// Compression fans out over the libuv threadpool (compressBytesAsync); size it
+// to the machine BEFORE the first async zlib call or the default of 4 sticks.
+process.env.UV_THREADPOOL_SIZE ||= String(Math.max(4, availableParallelism()));
 
 // --- tools & per-file rules ---------------------------------------------------
 
@@ -134,24 +139,33 @@ function gather(tool, srcDir) {
   });
 }
 
-function putFile(store, key, bytes, name, compress, quality) {
-  const rule = fileRule(name);
-  let body = bytes;
-  let encoding = null;
+// Compress a gathered file in place (adds .body/.encoding). Async so the whole
+// upload set compresses concurrently on the threadpool — brotli q11 over the
+// ~300MB wasm set is BY FAR the slow step of a publish, and serially it took
+// sum-of-files; in parallel it takes roughly the largest single file.
+async function compressFile(f, compress, quality) {
+  const rule = fileRule(f.name);
   if (rule.compress && compress !== "none") {
-    const c = compressBytes(bytes, compress, quality);
-    body = c.bytes;
-    encoding = c.encoding;
+    const c = await compressBytesAsync(f.bytes, compress, quality);
+    f.body = c.bytes;
+    f.encoding = c.encoding;
+  } else {
+    f.body = f.bytes;
+    f.encoding = null;
   }
-  store.put(key, body, {
-    contentType: rule.contentType,
-    contentEncoding: encoding,
-    cacheControl: rule.cacheControl,
-  });
-  return { name, raw: bytes.length, stored: body.length, encoding };
 }
 
-function main() {
+function putFile(store, key, f) {
+  const rule = fileRule(f.name);
+  store.put(key, f.body, {
+    contentType: rule.contentType,
+    contentEncoding: f.encoding,
+    cacheControl: rule.cacheControl,
+  });
+  return { name: f.name, raw: f.bytes.length, stored: f.body.length, encoding: f.encoding };
+}
+
+async function main() {
   const a = parseArgs(process.argv);
   const builtAt = a.builtAt || new Date().toISOString();
   const store = makeStore(a.driver, a);
@@ -191,9 +205,10 @@ function main() {
     `publish-wasm: tag=${a.tag} src=${a.src} driver=${store.kind} compress=${a.compress}`,
   );
 
-  let uploaded = 0;
   let reused = 0;
 
+  // Plan: hash every tool, decide reuse vs upload (moved-tag guard included).
+  const plan = [];
   for (const tool of a.tools) {
     const files = gather(tool, a.src);
     const hash = toolContentHash(files);
@@ -205,8 +220,7 @@ function main() {
       console.log(`  ${tool}: reuse ${ver} (${hash.slice(0, 19)}…)`);
     } else {
       ver = a.tag;
-      const metaKey = `${P}/${tool}/${ver}/meta.json`;
-      const existing = store.getJSON(metaKey)?.hash ?? null;
+      const existing = store.getJSON(`${P}/${tool}/${ver}/meta.json`)?.hash ?? null;
       if (existing && existing !== hash) {
         throw new Error(
           `moved-tag guard: ${P}/${tool}/${ver}/ already holds ${existing} ` +
@@ -214,35 +228,41 @@ function main() {
             `overwrite an immutable folder.`,
         );
       }
-      const sizes = [];
-      for (const f of files) {
-        const key = `${P}/${tool}/${ver}/${f.name}`;
-        sizes.push(putFile(store, key, f.bytes, f.name, a.compress, a.quality));
-      }
-      // meta.json LAST — its presence marks the bundle complete.
-      putJSON(
-        store,
-        metaKey,
-        {
-          tool,
-          ver,
-          hash,
-          builtAt,
-          files: Object.fromEntries(files.map((f) => [f.name, "sha256:" + sha256hex(f.bytes)])),
-        },
-        IMMUTABLE,
-      );
+      plan.push({ tool, files, hash, ver });
       idx[hash] = ver;
-      uploaded++;
-      const tot = sizes.reduce((s, x) => s + x.stored, 0);
-      console.log(
-        `  ${tool}: UPLOAD ${ver} (${hash.slice(0, 19)}…) ` +
-          `${(tot / 1e6).toFixed(1)}MB stored`,
-      );
     }
     registry.tools[tool] = { version: ver, hash };
     manifest.tools[tool] = ver;
   }
+
+  // Compress every to-be-uploaded file concurrently, then upload. Uploads stay
+  // sequential per tool with meta.json LAST — its presence marks the bundle
+  // complete — and the registry is only written after every bundle is.
+  await Promise.all(
+    plan.flatMap(({ files }) => files.map((f) => compressFile(f, a.compress, a.quality))),
+  );
+
+  for (const { tool, files, hash, ver } of plan) {
+    const sizes = files.map((f) => putFile(store, `${P}/${tool}/${ver}/${f.name}`, f));
+    putJSON(
+      store,
+      `${P}/${tool}/${ver}/meta.json`,
+      {
+        tool,
+        ver,
+        hash,
+        builtAt,
+        files: Object.fromEntries(files.map((f) => [f.name, "sha256:" + sha256hex(f.bytes)])),
+      },
+      IMMUTABLE,
+    );
+    const tot = sizes.reduce((s, x) => s + x.stored, 0);
+    console.log(
+      `  ${tool}: UPLOAD ${ver} (${hash.slice(0, 19)}…) ` +
+        `${(tot / 1e6).toFixed(1)}MB stored`,
+    );
+  }
+  const uploaded = plan.length;
 
   // Browser-facing manifest + convenience pointer, both uncached.
   putJSON(store, `${P}/manifest-${a.tag}.json`, manifest, NO_STORE);
@@ -256,4 +276,4 @@ function main() {
   if (store.kind === "local") console.log(`local layout under: ${a.out}`);
 }
 
-main();
+await main();

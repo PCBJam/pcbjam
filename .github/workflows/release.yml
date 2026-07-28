@@ -75,10 +75,12 @@ jobs:
       upload_output: true
 
   # 2) Publish the build to the CDN (content-addressed; unchanged tools reuse)
-  #    and write manifest-<tag>.json. Cheap runner — just downloads + uploads.
+  #    and write manifest-<tag>.json. The slow step is brotli-q11 over ~300MB of
+  #    wasm; the script compresses all files in parallel (one core per file), so
+  #    give it enough cores that wall time ≈ the largest single file.
   publish-wasm:
     needs: [meta, build]
-    runs-on: ubuntu-latest
+    runs-on: ubicloud-standard-8
     steps:
       - uses: actions/checkout@v4
         with:
