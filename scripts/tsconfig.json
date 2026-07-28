@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  // IDE-only project for the plain-node .mjs scripts (deploy/, etc.). Without
+  // it the TS server attaches these files to a neighboring src-scoped project
+  // and flags their relative imports as outside that project. No package.json
+  // lives up this tree, so @types/node is unreachable — keep checkJs OFF; this
+  // config exists for module resolution, not type-checking. Nothing builds
+  // from it (noEmit; the scripts run directly under node).
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022"],
+    "allowJs": true,
+    "checkJs": false,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": ["**/*.mjs"]
+}

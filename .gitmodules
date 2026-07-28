@@ -1,16 +1,16 @@
 [submodule "kicad"]
 	path = kicad
-	url = https://github.com/emergence-engineering/kicad-source-mirror.git
+	url = https://github.com/PCBJam/kicad-source-mirror.git
 	branch = wasm-port
 [submodule "wxwidgets"]
 	path = wxwidgets
-	url = https://github.com/emergence-engineering/wxWidgets.git
+	url = https://github.com/PCBJam/wxWidgets.git
 	branch = wasm-port
 [submodule "web/pcbjam-shared"]
 	path = web/pcbjam-shared
-	url = https://github.com/emergence-engineering/pcbjam-shared.git
+	url = https://github.com/PCBJam/pcbjam-shared.git
 	branch = main
 [submodule "binaryen"]
 	path = binaryen
-	url = https://github.com/emergence-engineering/binaryen
+	url = https://github.com/PCBJam/binaryen
 	branch = wasm-port
