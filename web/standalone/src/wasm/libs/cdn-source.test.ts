@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { encodeBundle, sha256Hex, type SyncManifest } from "@pcbjam/shared";
-import { memStore } from "@pcbjam/sync-client";
+import { memStore, type LayerStore } from "@pcbjam/sync-client";
 import { cdnLibsSource } from "./cdn-source";
 
 const MANIFEST_URL = "https://cdn.test/libs/kicad/9.0.0/manifest.json";
@@ -23,7 +23,7 @@ async function makeLib(items: Record<string, string>) {
   return { manifest, bundle: encodeBundle(manifest, bodies) };
 }
 
-async function fakeCdn() {
+async function fakeCdn(opts?: { sizes?: boolean }) {
   const device = await makeLib({
     "symbol/R": "(kicad_symbol_lib (symbol R))",
     "symbol/C": "(kicad_symbol_lib (symbol C))",
@@ -39,6 +39,13 @@ async function fakeCdn() {
       { id: "Resistor_SMD", name: "Resistor_SMD", kind: "footprint", itemCount: 1 },
     ],
   };
+  // Publish-time bundle byte counts (sizes.json) — served unless disabled to
+  // model a tag published before the file existed.
+  const sizes = {
+    schema: 1,
+    tag: "9.0.0",
+    libs: { Device: device.bundle.byteLength, Resistor_SMD: resistors.bundle.byteLength },
+  };
   const json = (obj: unknown) => ({ ok: true, json: async () => obj });
   const bin = (bytes: Uint8Array) => ({
     ok: true,
@@ -46,16 +53,25 @@ async function fakeCdn() {
   });
   const fetchImpl = (async (url: string) => {
     if (url === MANIFEST_URL) return json(top);
+    if (url === `${BASE}/sizes.json` && opts?.sizes !== false) return json(sizes);
     if (url === `${BASE}/Device/manifest`) return json(device.manifest);
     if (url === `${BASE}/Device/bundle`) return bin(device.bundle);
     if (url === `${BASE}/Resistor_SMD/manifest`) return json(resistors.manifest);
     if (url === `${BASE}/Resistor_SMD/bundle`) return bin(resistors.bundle);
     return { ok: false, status: 404 };
   }) as unknown as typeof fetch;
-  return cdnLibsSource(MANIFEST_URL, {
+  // Namespace-keyed persistent stores — the "browser's IDB": syncState's
+  // read-only peek must observe the same cache presync/openStack warmed.
+  const stores = new Map<string, LayerStore>();
+  const src = cdnLibsSource(MANIFEST_URL, {
     fetchImpl,
-    storeFactory: () => memStore(),
+    storeFactory: (ns) => {
+      let s = stores.get(ns);
+      if (!s) stores.set(ns, (s = memStore()));
+      return s;
+    },
   });
+  return Object.assign(src, { __sizes: sizes });
 }
 
 describe("cdn libs source", () => {
@@ -135,6 +151,46 @@ describe("cdn libs source", () => {
   it("is read-only (no save path)", async () => {
     const src = await fakeCdn();
     expect(src.saveItemBody).toBeUndefined();
+  });
+
+  it("syncState reports cold bytes from sizes.json without downloading", async () => {
+    const src = await fakeCdn();
+    const cold = await src.syncState!("symbol");
+    expect(cold).toEqual({
+      total: 1,
+      warm: 0,
+      coldBytes: src.__sizes.libs.Device,
+      sizesKnown: true,
+    });
+    // The probe itself must not have warmed anything (no bundle fetch).
+    expect((await src.syncState!("symbol"))!.warm).toBe(0);
+  });
+
+  it("syncState sees presync's warmth; the other kind stays cold", async () => {
+    const src = await fakeCdn();
+    await src.presync!({ kind: "symbol" });
+    expect(await src.syncState!("symbol")).toEqual({
+      total: 1,
+      warm: 1,
+      coldBytes: 0,
+      sizesKnown: true,
+    });
+    expect(await src.syncState!("footprint")).toEqual({
+      total: 1,
+      warm: 0,
+      coldBytes: src.__sizes.libs.Resistor_SMD,
+      sizesKnown: true,
+    });
+  });
+
+  it("syncState on a tag without sizes.json: counts right, sizesKnown false", async () => {
+    const src = await fakeCdn({ sizes: false });
+    expect(await src.syncState!("footprint")).toEqual({
+      total: 1,
+      warm: 0,
+      coldBytes: 0,
+      sizesKnown: false,
+    });
   });
 
   it("getFpIndex fetches fp-index.json as raw text, null on 404", async () => {

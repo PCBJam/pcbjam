@@ -69,6 +69,18 @@ export interface BootOptions {
    *  real bar. `total` is 0 when the server sends no usable Content-Length (or it
    *  disagrees with the decoded stream under gzip/br) — then show bytes, not a %. */
   onProgress?: (loaded: number, total: number) => void;
+  /** RAW (decoded) `.wasm` byte count from the release manifest (schema 2), when
+   *  known. The progress stream counts DECODED bytes, so this — unlike a
+   *  compressed Content-Length — is the correct bar total. */
+  expectedWasmBytes?: number | null;
+  /** The download-completion marker was this bundle's — a previous load finished
+   *  downloading it, so the fetch should ride the HTTP cache. Only flips the
+   *  status label ("Loading" vs "Downloading"); the mechanics are identical. */
+  warmStart?: boolean;
+  /** The `.wasm` finished downloading AND instantiated — the moment the
+   *  download-completion marker is safe to record (a truncated/failed stream
+   *  never gets here). */
+  onWasmInstantiated?: () => void;
   /** Library source backing `window.kicadLibs`. Null/omitted disables libs
    *  (empty lib-tables are seeded). Its libs become sym-lib-table and/or
    *  fp-lib-table rows depending on the tool (see `libKinds` in doBoot). */
@@ -172,21 +184,30 @@ function pthreadWorkerScript(
  * `Content-Length` is the COMPRESSED size when the CDN gzip/br-encodes the wasm,
  * while the stream yields DECODED bytes — so `loaded` can exceed `total`. The
  * caller treats `total` as unknown in that case and shows MB rather than a %.
+ * A manifest-provided `expectedBytes` (the RAW size, schema 2) wins over
+ * Content-Length: it's in the same units the stream counts.
+ *
+ * `onDone` fires when the LAST byte has arrived (the compile tail is still
+ * running inside instantiateStreaming) — the boot flips the status to
+ * "Compiling…" there so the post-download freeze reads truthfully.
  */
 async function fetchWasmWithProgress(
   url: string,
   onProgress?: (loaded: number, total: number) => void,
+  expectedBytes?: number | null,
+  onDone?: () => void,
 ): Promise<Response> {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`HTTP ${res.status} fetching ${url}`);
   if (!res.body || !onProgress) return res;
-  const total = Number(res.headers.get("content-length")) || 0;
+  const total = expectedBytes || Number(res.headers.get("content-length")) || 0;
   let loaded = 0;
   const reader = res.body.getReader();
   const stream = new ReadableStream<Uint8Array>({
     async pull(controller) {
       const { done, value } = await reader.read();
       if (done) {
+        onDone?.();
         controller.close();
         return;
       }
@@ -211,9 +232,15 @@ async function doBoot(opts: BootOptions): Promise<void> {
     onStatus,
     onAbort,
     onProgress,
+    expectedWasmBytes,
+    warmStart,
+    onWasmInstantiated,
     libsSource,
     modelsSource,
   } = opts;
+  // Truthful fetch label: a warm start (download-completion marker present)
+  // reads from the HTTP cache, so "Downloading" would be a lie — and vice versa.
+  const fetchLabel = warmStart ? "Loading the editor…" : "Downloading the editor…";
   // The deployed bundle backing this tool. footprint_editor/symbol_editor share
   // the pcbnew/eeschema engine, so their `.wasm`/`.js`/pthread-worker files are the
   // parent's; `tool` still drives identity (thisProgram), config-seed and lib-kind.
@@ -315,7 +342,7 @@ async function doBoot(opts: BootOptions): Promise<void> {
     }
   }
 
-  onStatus("Downloading…");
+  onStatus(fetchLabel);
 
   // Prefetch images.tar.gz in parallel with the (much larger) wasm download —
   // exactly as the harness does. writeResources (in preRun) writes it once ready.
@@ -511,7 +538,9 @@ async function doBoot(opts: BootOptions): Promise<void> {
       mod.kicadSetDarkChrome?.(currentTheme() === "dark");
       const canvas = (w.Module as { canvas?: HTMLCanvasElement }).canvas;
       if (canvas) canvas.style.display = "block";
-      onStatus("");
+      // The runtime is up; main() is booting the wx UI next (the open-flow's
+      // own "Opening…" statuses take over from there).
+      onStatus("Starting the editor…");
     },
     // Resolve wasm + pthread worker against the asset base, not the SPA route.
     locateFile: (path: string) => `${base}/${path}`,
@@ -527,8 +556,14 @@ async function doBoot(opts: BootOptions): Promise<void> {
     ): Record<string, never> => {
       void (async () => {
         try {
-          onStatus("Downloading…");
-          const resp = await fetchWasmWithProgress(`${base}/${bundle}.wasm`, onProgress);
+          onStatus(fetchLabel);
+          const resp = await fetchWasmWithProgress(
+            `${base}/${bundle}.wasm`,
+            onProgress,
+            expectedWasmBytes,
+            // Last byte in — only the compile tail is left running.
+            () => onStatus("Compiling…"),
+          );
           const ct = resp.headers.get("content-type") ?? "";
           if (ct.includes("application/wasm") && WebAssembly.instantiateStreaming) {
             const { instance, module } = await WebAssembly.instantiateStreaming(
@@ -540,9 +575,14 @@ async function doBoot(opts: BootOptions): Promise<void> {
             // Fallback (no streaming, or a server that mislabels the MIME type):
             // buffer then compile. Costs peak memory but always works.
             const bytes = await resp.arrayBuffer();
+            onStatus("Compiling…");
             const { instance, module } = await WebAssembly.instantiate(bytes, imports);
             success(instance, module);
           }
+          // Download + compile both succeeded — safe to record "downloaded"
+          // (a truncated stream would have thrown above).
+          onWasmInstantiated?.();
+          onStatus("Starting KiCad…");
         } catch (e) {
           log(`[boot] wasm instantiate failed: ${String(e)}`);
           onStatus(`Error: ${String(e)}`);

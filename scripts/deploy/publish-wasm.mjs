@@ -179,7 +179,13 @@ async function main() {
   registry.index ||= {};
   registry.tools ||= {};
 
-  const manifest = { schema: 1, tag: a.tag, builtAt, tools: {} };
+  // schema 2: adds `sizes` — per-tool byte counts the standalone's download
+  // consent dialog + progress bar read (standalone-load-ux 0001). `wasm` is the
+  // RAW (decoded) size (matches the byte-counting progress stream), `wasmStored`
+  // / `totalStored` are over-the-wire (post-br/gzip) sizes. Additive: old
+  // clients read only `tools`; new clients tolerate a missing/partial `sizes`
+  // (tools published before this schema carry none in the registry).
+  const manifest = { schema: 2, tag: a.tag, builtAt, tools: {}, sizes: {} };
 
   // Snapshot mode (the tag deploy): pin manifest-<tag> to the CURRENT published
   // per-tool versions and STOP — no build, no upload. Honors "reuse prebuilt":
@@ -193,6 +199,7 @@ async function main() {
             `mode) before snapshotting a release manifest`,
         );
       manifest.tools[tool] = entry.version;
+      if (entry.sizes) manifest.sizes[tool] = entry.sizes;
     }
     putJSON(store, `${P}/manifest-${a.tag}.json`, manifest, NO_STORE);
     console.log(
@@ -207,16 +214,27 @@ async function main() {
 
   let reused = 0;
 
+  // Per-tool sizes destined for manifest.sizes + the registry entry. Reused
+  // tools inherit the registry's stored sizes when they match this version
+  // (compression is skipped on reuse, so stored sizes can't be recomputed);
+  // pre-schema-2 registry entries yield a raw-only partial the client treats
+  // as "stored size unknown".
+  const sizesByTool = {};
+
   // Plan: hash every tool, decide reuse vs upload (moved-tag guard included).
   const plan = [];
   for (const tool of a.tools) {
     const files = gather(tool, a.src);
     const hash = toolContentHash(files);
     const idx = (registry.index[tool] ||= {});
+    const rawWasm = files.find((f) => f.name === `${tool}.wasm`).bytes.length;
 
     let ver = idx[hash];
     if (ver) {
       reused++;
+      const prev = registry.tools[tool];
+      sizesByTool[tool] =
+        prev?.version === ver && prev.sizes ? prev.sizes : { wasm: rawWasm };
       console.log(`  ${tool}: reuse ${ver} (${hash.slice(0, 19)}…)`);
     } else {
       ver = a.tag;
@@ -244,6 +262,12 @@ async function main() {
 
   for (const { tool, files, hash, ver } of plan) {
     const sizes = files.map((f) => putFile(store, `${P}/${tool}/${ver}/${f.name}`, f));
+    const wasmFile = sizes.find((s) => s.name === `${tool}.wasm`);
+    sizesByTool[tool] = {
+      wasm: wasmFile.raw,
+      wasmStored: wasmFile.stored,
+      totalStored: sizes.reduce((s, x) => s + x.stored, 0),
+    };
     putJSON(
       store,
       `${P}/${tool}/${ver}/meta.json`,
@@ -263,6 +287,13 @@ async function main() {
     );
   }
   const uploaded = plan.length;
+
+  for (const tool of a.tools) {
+    const s = sizesByTool[tool];
+    if (!s) continue;
+    manifest.sizes[tool] = s;
+    registry.tools[tool].sizes = s;
+  }
 
   // Browser-facing manifest + convenience pointer, both uncached.
   putJSON(store, `${P}/manifest-${a.tag}.json`, manifest, NO_STORE);

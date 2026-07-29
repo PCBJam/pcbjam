@@ -18,6 +18,12 @@ export interface LibInfo {
   /** Item count, when the source knows it cheaply (manifest/backend) — shown as a
    *  badge in the home-page library list. Omitted ⇒ no badge. */
   itemCount?: number;
+  /** The lib's r2-idb-sync cache identity from the backend (wire `libSchema.sync`,
+   *  standalone-load-ux 0002): the primary sync layer's namespace (= the local
+   *  IDB cache key a cold open hydrates) + expected cold-download bytes (null =
+   *  unknown). Powers {@link LibsSource.syncState} on the synced source without
+   *  resolving N stacks. Omitted by sources without a client-side sync cache. */
+  sync?: { namespace: string; bytes?: number | null } | null;
 }
 
 export interface LibItemInfo {
@@ -31,6 +37,19 @@ export interface LibPresyncProgress {
   total: number;
   /** Display name of the lib currently being synced (one of the in-flight set). */
   current: string;
+}
+
+/** What {@link LibsSource.syncState} reports (drives the consent dialog). */
+export interface LibsSyncState {
+  /** Libs of the requested kind this source serves. */
+  total: number;
+  /** How many of them are already cached locally. */
+  warm: number;
+  /** Bytes still to download to warm the rest (publish-time bundle sizes). */
+  coldBytes: number;
+  /** False when the CDN carries no size info (old tag) — coldBytes is then 0
+   *  and meaningless even though cold libs exist. */
+  sizesKnown: boolean;
 }
 
 export interface LibsSource {
@@ -76,6 +95,17 @@ export interface LibsSource {
     onProgress?: (p: LibPresyncProgress) => void;
     signal?: AbortSignal;
   }): Promise<void>;
+  /**
+   * How warm this source's local cache is for `kind`, WITHOUT downloading
+   * anything (a read-only probe — presync's dry-run counterpart). Feeds the
+   * download-consent dialog (standalone-load-ux 0001): `coldBytes` sums the
+   * publish-time bundle sizes of the not-yet-cached libs (0 for libs whose size
+   * the source doesn't know — `sizesKnown` says whether sizes were available at
+   * all). Resolves null when the source can't tell (e.g. a backend that doesn't
+   * expose cache identities) — the dialog then shows the row without figures.
+   * Optional: sources without a client-side cache omit it.
+   */
+  syncState?(kind?: string): Promise<LibsSyncState | null>;
   /**
    * Persist one item body into a writable (user) lib. Optional: read-only
    * sources omit it (a save into a non-writable source resolves false).

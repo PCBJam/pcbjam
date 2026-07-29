@@ -23,8 +23,13 @@ describe("loadSessionIdentity", () => {
     expect(await loadSessionIdentity("http://api")).toEqual({
       slug: "alice",
       name: "Alice A",
+      email: "a@x.y",
     });
-    expect(sessionIdentity()).toEqual({ slug: "alice", name: "Alice A" });
+    expect(sessionIdentity()).toEqual({
+      slug: "alice",
+      name: "Alice A",
+      email: "a@x.y",
+    });
     expect(f).toHaveBeenCalledWith("http://api/api/me", {
       credentials: "include",
     });
@@ -35,6 +40,7 @@ describe("loadSessionIdentity", () => {
     expect(await loadSessionIdentity("http://api")).toEqual({
       slug: "bob",
       name: "bob@x.y",
+      email: "bob@x.y",
     });
   });
 

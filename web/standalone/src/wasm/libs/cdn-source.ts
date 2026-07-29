@@ -1,6 +1,6 @@
-import { SyncStack, type SyncStackOptions } from "@pcbjam/sync-client";
+import { peekNamespaces, SyncStack, type SyncStackOptions } from "@pcbjam/sync-client";
 import { asyncMap } from "@/lib/async-map";
-import type { LibInfo, LibItemInfo, LibsSource } from "./source";
+import type { LibInfo, LibItemInfo, LibsSource, LibsSyncState } from "./source";
 
 /**
  * A read-only, no-backend `LibsSource` that serves the FULL default KiCad symbol
@@ -14,6 +14,8 @@ import type { LibInfo, LibItemInfo, LibsSource } from "./source";
  * Layout under the manifest's directory (`<cdn>/libs/kicad/<tag>/`):
  *   manifest.json            top index: every lib (id, name, kind, itemCount)
  *   fp-index.json            footprint index: per-lib [name, uniquePadCount]
+ *   sizes.json               per-lib bundle byte counts (consent dialog; may
+ *                            be absent on tags published before it existed)
  *   <libId>/manifest         per-lib SyncManifest (GET .../manifest)
  *   <libId>/bundle           per-lib bundle: manifest + all bodies (cold init)
  * Item paths inside a lib follow the `"<kind>/<name>"` scheme.
@@ -30,6 +32,11 @@ interface CdnLibsManifest {
   schema: number;
   tag: string;
   libs: CdnLibEntry[];
+}
+interface CdnLibsSizes {
+  schema: number;
+  tag: string;
+  libs: Record<string, number>;
 }
 
 export function cdnLibsSource(
@@ -72,6 +79,22 @@ export function cdnLibsSource(
       });
     }
     return manifestP;
+  };
+
+  // Per-lib bundle byte counts (sizes.json). Null when the tag predates the
+  // file — syncState then reports sizesKnown: false. A resolved null is cached:
+  // the consent gate reads this once, and a 404 is a stable answer.
+  let sizesP: Promise<CdnLibsSizes | null> | null = null;
+  const loadSizes = (): Promise<CdnLibsSizes | null> => {
+    return (sizesP ??= (async () => {
+      try {
+        const r = await fetchImpl(`${baseDir}/sizes.json`, { cache: "no-store" });
+        if (!r.ok) return null;
+        return (await r.json()) as CdnLibsSizes;
+      } catch {
+        return null;
+      }
+    })());
   };
 
   // One lazily-opened SyncStack per lib (its IDB store is keyed by namespace, so
@@ -121,6 +144,26 @@ export function cdnLibsSource(
     async listItems(libId: string): Promise<LibItemInfo[]> {
       const stack = await openStack(libId);
       return (await stack.list()).map((e) => splitPath(e.path));
+    },
+    async syncState(kind): Promise<LibsSyncState> {
+      const m = await loadManifest();
+      const libs = m.libs.filter((l) => !kind || l.kind === kind);
+      const [sizes, peeked] = await Promise.all([
+        loadSizes(),
+        // Read-only probe (never downloads); same namespaces openStack uses,
+        // same default "sync:" IDB prefix as the SyncStack it fronts.
+        peekNamespaces(
+          libs.map((l) => `kicad:${m.tag}:${l.id}`),
+          opts?.storeFactory ? { storeFactory: opts.storeFactory } : undefined,
+        ),
+      ]);
+      let warm = 0;
+      let coldBytes = 0;
+      for (const l of libs) {
+        if (peeked.get(`kicad:${m.tag}:${l.id}`)) warm++;
+        else coldBytes += sizes?.libs[l.id] ?? 0;
+      }
+      return { total: libs.length, warm, coldBytes, sizesKnown: sizes !== null };
     },
     async presync(opts): Promise<void> {
       const { kind, concurrency = 8, onProgress, signal } = opts ?? {};

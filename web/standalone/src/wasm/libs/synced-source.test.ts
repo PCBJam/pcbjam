@@ -6,8 +6,13 @@ import {
   type ServerMsg,
   type SyncManifest,
 } from "@pcbjam/shared";
-import { memStore, type RealtimeChannel } from "@pcbjam/sync-client";
-import { syncedLibsSource } from "./synced-source";
+import {
+  memStore,
+  type LayerStore,
+  type RealtimeChannel,
+} from "@pcbjam/sync-client";
+import { syncedLibsSource, syncedScopeLibsSource } from "./synced-source";
+import type { LibInfo, LibsSource } from "./source";
 
 /**
  * The subscribe → editor-reload bridge (r2-idb-sync task E): a REMOTE change
@@ -226,5 +231,90 @@ describe("syncedLibsSource → editor reload bridge", () => {
     await server.remotePut("symbol/A", "(kicad_symbol_lib A)");
     await vi.advanceTimersByTimeAsync(500); // must not throw
     expect(reload).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * syncedScopeLibsSource.syncState (standalone-load-ux 0002): warmth from the
+ * LOCAL caches (peekNamespaces on the backend-named namespaces) + cold-byte
+ * sums from the list envelope — no stack resolves, no bundle fetches.
+ */
+describe("syncedScopeLibsSource.syncState", () => {
+  function scoped(libs: LibInfo[]) {
+    const remote: LibsSource = {
+      listLibs: async () => libs,
+      listItems: async () => [],
+      getItemBody: async () => null,
+    };
+    const stores = new Map<string, LayerStore>();
+    const storeFactory = (ns: string): LayerStore => {
+      let s = stores.get(ns);
+      if (!s) stores.set(ns, (s = memStore()));
+      return s;
+    };
+    const src = syncedScopeLibsSource(remote, {
+      apiBase: API,
+      scope: "s",
+      storeFactory,
+    });
+    return { src, storeFactory };
+  }
+
+  /** Seed a namespace's store so the peek sees it warm. */
+  async function warmUp(storeFactory: (ns: string) => LayerStore, ns: string) {
+    await storeFactory(ns).setManifest({
+      version: 1,
+      entries: { "symbol/R": { hash: "h", size: 5, mtime: 0 } },
+    });
+  }
+
+  it("counts local warmth + sums the cold libs' envelope bytes", async () => {
+    const { src, storeFactory } = scoped([
+      { id: "a", name: "A", sync: { namespace: "origin:a@v1", bytes: 1000 } },
+      { id: "b", name: "B", sync: { namespace: "origin:b@v1", bytes: 2000 } },
+      { id: "c", name: "C", sync: { namespace: "origin:c@v1", bytes: 4000 } },
+    ]);
+    await warmUp(storeFactory, "origin:a@v1");
+    expect(await src.syncState!("symbol")).toEqual({
+      total: 3,
+      warm: 1,
+      coldBytes: 6000,
+      sizesKnown: true,
+    });
+  });
+
+  it("a cold lib without a byte figure degrades to sizesKnown: false", async () => {
+    const { src, storeFactory } = scoped([
+      { id: "a", name: "A", sync: { namespace: "origin:a@v1", bytes: 1000 } },
+      // live org layer: namespace but no stamped size
+      { id: "u", name: "User", type: "user", sync: { namespace: "org:u", bytes: null } },
+    ]);
+    expect(await src.syncState!()).toEqual({
+      total: 2,
+      warm: 0,
+      coldBytes: 1000,
+      sizesKnown: false,
+    });
+    // …but once the unknown-size lib is the WARM one, sizes are known again.
+    await warmUp(storeFactory, "org:u");
+    expect(await src.syncState!()).toEqual({
+      total: 2,
+      warm: 1,
+      coldBytes: 1000,
+      sizesKnown: true,
+    });
+  });
+
+  it("returns null (unknown) when the backend names no namespaces at all", async () => {
+    const { src } = scoped([{ id: "a", name: "A" }]); // pre-`sync`-field backend
+    expect(await src.syncState!()).toBeNull();
+  });
+
+  it("probing never initializes a cold cache", async () => {
+    const { src, storeFactory } = scoped([
+      { id: "a", name: "A", sync: { namespace: "origin:a@v1", bytes: 1000 } },
+    ]);
+    await src.syncState!();
+    expect(await storeFactory("origin:a@v1").getManifest()).toBeNull();
   });
 });

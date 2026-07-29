@@ -21,9 +21,15 @@
 //   — the publish-time footprint index: unique electrical pad count per footprint,
 //   so the editor's symbol-chooser footprint selector can filter EVERY footprint
 //   lib without fat-loading a single body (kicad pcbnew.cpp `filterFootprints`).
+// + `<prefix>/<libTag>/sizes.json` { schema, tag, libs: { <libId>: <bundleBytes> } }
+//   — per-lib bundle byte counts for the standalone's download-consent dialog
+//   (standalone-load-ux 0001). A SEPARATE key (not a manifest.json field) on
+//   purpose: manifest.json is stored IMMUTABLE, so re-putting it to add sizes
+//   could serve stale from edge caches; a new key can't.
 // All immutable (content is pinned by the tag).
-// A tag published before fp-index.json existed gets an INDEX-ONLY top-up run:
-// bundles/manifests are skipped (immutable + present), only the index is put.
+// A tag published before fp-index.json / sizes.json existed gets a TOP-UP run:
+// bundles/manifests are skipped (immutable + present), only the missing index
+// and/or sizes files are computed (pure local work) and put.
 
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
@@ -107,19 +113,23 @@ async function main(): Promise<void> {
   const enc = new TextEncoder();
   const topKey = `${a.prefix}/${a.libTag}/manifest.json`;
   const indexKey = `${a.prefix}/${a.libTag}/fp-index.json`;
+  const sizesKey = `${a.prefix}/${a.libTag}/sizes.json`;
 
   // Skip-if-exists: the snapshot is immutable + content-pinned by the tag.
-  // A tag published before fp-index.json existed drops into INDEX-ONLY mode:
-  // recompute + put just the footprint index (pure local work; no bundle puts).
-  const indexOnly = !a.force && !!store.getJSON(topKey);
-  if (indexOnly && store.getJSON(indexKey)) {
+  // A tag published before fp-index.json / sizes.json existed drops into a
+  // TOP-UP run: recompute + put just the missing derived files (pure local
+  // work; no bundle/manifest puts).
+  const published = !a.force && !!store.getJSON(topKey);
+  const haveIndex = published && !!store.getJSON(indexKey);
+  const haveSizes = published && !!store.getJSON(sizesKey);
+  if (published && haveIndex && haveSizes) {
     console.log(`publish-libs: ${topKey} already published — skipping (use --force)`);
     return;
   }
 
   console.log(
     `publish-libs: tag=${a.libTag} driver=${store.kind} → ${a.prefix}/${a.libTag}/` +
-      (indexOnly ? " (index-only top-up)" : ""),
+      (published ? " (top-up: derived files only)" : ""),
   );
 
   // Source the full set from upstream when asked (CI path); --symbols-src /
@@ -134,19 +144,24 @@ async function main(): Promise<void> {
   }
 
   const libs = await extractAllLibs({
-    // Index-only: the index covers footprints only, so skip symbol extraction.
-    symbolsSrc: indexOnly ? undefined : (a.symbolsSrc ?? undefined),
+    // Symbols are only needed for bundles (fresh publish) or sizes (top-up);
+    // the fp-index alone covers footprints only.
+    symbolsSrc: published && haveSizes ? undefined : (a.symbolsSrc ?? undefined),
     footprintsSrc: a.footprintsSrc ?? undefined,
   });
 
   const topLibs: Array<{ id: string; name: string; kind: string; itemCount: number }> = [];
   const fpIndexLibs: Record<string, Array<[string, number]>> = {};
+  const sizesLibs: Record<string, number> = {};
   let totalItems = 0;
   for (const { lib, kind, items } of libs) {
-    if (kind === "footprint") {
+    if (kind === "footprint" && !haveIndex) {
       fpIndexLibs[lib] = items.map((it) => [it.name, countUniquePads(it.body)]);
     }
-    if (indexOnly) continue; // bundles/manifests already live under this tag
+    // bundles/manifests already live under a published tag; a sizes top-up
+    // still re-encodes each bundle LOCALLY (deterministic from the same tag's
+    // sources) to measure it — nothing is re-put.
+    if (published && haveSizes) continue;
 
     const bodies = items.map(
       (it): [string, Uint8Array] => [`${it.kind}/${it.name}`, enc.encode(it.body)],
@@ -156,9 +171,13 @@ async function main(): Promise<void> {
       entries[path] = { hash: sha256hex(body), size: body.length, mtime: 0 };
     }
     const manifest: SyncManifest = { version: 1, entries };
+    const bundle = encodeBundle(manifest, bodies);
+    sizesLibs[lib] = bundle.byteLength;
+    if (published) continue;
+
     const base = `${a.prefix}/${a.libTag}/${lib}`;
     putJSON(store, `${base}/manifest`, manifest, IMMUTABLE);
-    store.put(`${base}/bundle`, encodeBundle(manifest, bodies), {
+    store.put(`${base}/bundle`, bundle, {
       contentType: "application/octet-stream",
       contentEncoding: null,
       cacheControl: IMMUTABLE,
@@ -167,18 +186,25 @@ async function main(): Promise<void> {
     totalItems += items.length;
   }
 
-  if (!indexOnly) {
+  if (!published) {
     topLibs.sort((x, y) => x.id.localeCompare(y.id));
     putJSON(store, topKey, { schema: 1, tag: a.libTag, libs: topLibs }, IMMUTABLE);
   }
-  putJSON(store, indexKey, { schema: 1, tag: a.libTag, libs: fpIndexLibs }, IMMUTABLE);
+  if (!haveIndex) {
+    putJSON(store, indexKey, { schema: 1, tag: a.libTag, libs: fpIndexLibs }, IMMUTABLE);
+  }
+  if (!haveSizes) {
+    putJSON(store, sizesKey, { schema: 1, tag: a.libTag, libs: sizesLibs }, IMMUTABLE);
+  }
 
   const fpIndexCount = Object.values(fpIndexLibs).reduce((n, v) => n + v.length, 0);
   console.log(
-    indexOnly
-      ? `publish-libs: done — fp-index only (${fpIndexCount} footprints) → ${indexKey}`
+    published
+      ? `publish-libs: done — top-up (${haveIndex ? "" : `fp-index: ${fpIndexCount} footprints`}` +
+          `${!haveIndex && !haveSizes ? ", " : ""}` +
+          `${haveSizes ? "" : `sizes: ${Object.keys(sizesLibs).length} libs`})`
       : `publish-libs: done — ${topLibs.length} libs, ${totalItems} items ` +
-          `(+fp-index: ${fpIndexCount} footprints) → ${topKey}`,
+          `(+fp-index: ${fpIndexCount} footprints, +sizes) → ${topKey}`,
   );
   if (store.kind === "local") console.log(`local layout under: ${a.out}`);
 }

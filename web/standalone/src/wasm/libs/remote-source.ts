@@ -48,6 +48,9 @@ export function remoteLibsSource(
         description: l.description ?? null,
         type: l.type,
         itemCount: l.itemCount,
+        // Cache identity + cold-download bytes (standalone-load-ux 0002) —
+        // absent on backends predating the field.
+        sync: l.sync ?? null,
       }));
     },
 
@@ -93,6 +96,7 @@ export function remoteLibsSource(
         name: res.body.name,
         description: res.body.description ?? null,
         type: res.body.type,
+        sync: res.body.sync ?? null,
       };
     },
   };

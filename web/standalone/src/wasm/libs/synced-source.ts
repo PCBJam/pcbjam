@@ -1,5 +1,6 @@
 import { PROJECT_HEADER, SCOPE_HEADER, USER_HEADER } from "@pcbjam/shared";
 import {
+  peekNamespaces,
   SyncStack,
   type ChannelFactory,
   type LayerDescriptor,
@@ -11,6 +12,7 @@ import {
   type LibItemInfo,
   type LibItemUpdatedDetail,
   type LibsSource,
+  type LibsSyncState,
 } from "./source";
 
 /**
@@ -290,6 +292,44 @@ export function syncedScopeLibsSource(
     listLibs: (kind) => remote.listLibs(kind),
     createLib: remote.createLib?.bind(remote),
     getFpIndex: remote.getFpIndex?.bind(remote),
+    async syncState(kind): Promise<LibsSyncState | null> {
+      // Read-only warmth probe for the download-consent gate (standalone-
+      // load-ux 0002): the backend's list envelope names each lib's primary
+      // sync namespace (= its IDB cache key) + expected cold bytes, so warmth
+      // is answerable from the local cache alone — no stack resolves, no
+      // bundle fetches. A backend predating the `sync` field yields no
+      // namespaces at all → null (unknown), never a fake all-cold answer.
+      const libs = await remote.listLibs(kind);
+      const withNs = libs.filter(
+        (l): l is LibInfo & { sync: { namespace: string; bytes?: number | null } } =>
+          !!l.sync?.namespace,
+      );
+      if (withNs.length === 0) return null;
+      const peeked = await peekNamespaces(
+        withNs.map((l) => l.sync.namespace),
+        opts.storeFactory ? { storeFactory: opts.storeFactory } : undefined,
+      );
+      let warm = 0;
+      let coldBytes = 0;
+      // Libs with no namespace at all are cold-with-unknown-size by definition
+      // (they can't be probed and carry no byte figure).
+      let coldUnknown = libs.length - withNs.length;
+      for (const l of withNs) {
+        if (peeked.get(l.sync.namespace)) warm++;
+        else if (typeof l.sync.bytes === "number") coldBytes += l.sync.bytes;
+        else coldUnknown++;
+      }
+      const cold = libs.length - warm;
+      return {
+        total: libs.length,
+        warm,
+        coldBytes,
+        // "Sizes known" = every cold lib had a byte figure. Cold libs WITHOUT
+        // one (live org/mirror layers, unstamped versions) make the MB figure
+        // an undercount, so degrade to the count-only wording instead.
+        sizesKnown: cold > 0 ? coldUnknown === 0 : true,
+      };
+    },
     listItems: (libId) => forLib(libId).listItems(libId),
     getAllItems: (libId) => forLib(libId).getAllItems!(libId),
     getItemBody: (libId, kind, name) =>

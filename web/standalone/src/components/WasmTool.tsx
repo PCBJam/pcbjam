@@ -15,7 +15,7 @@ import {
   type KicadDoc,
   type Tool,
 } from "@pcbjam/shared";
-import { ChevronDown, ChevronUp, Eye, EyeOff, Loader2, Moon, PanelsTopLeft, Sun } from "lucide-react";
+import { ChevronDown, ChevronUp, Download, Eye, EyeOff, Loader2, Moon, PanelsTopLeft, Sun } from "lucide-react";
 import {
   API_BASE_URL,
   APP_URL,
@@ -33,7 +33,16 @@ import { redirectTargetFor } from "@/lib/redirect";
 import { loadSessionIdentity } from "@/lib/session-identity";
 import { setTheme, useThemeValue } from "@/lib/theme";
 import { bootKicadTool } from "@/wasm/boot";
-import { resolveWasmBase } from "@/wasm/wasm-assets";
+import {
+  autoDownloadEnabled,
+  fetchWasmStoredSize,
+  hasAnyWasmDownload,
+  isWasmDownloaded,
+  markWasmDownloaded,
+  resolveWasmMeta,
+  setAutoDownloadEnabled,
+  type WasmMeta,
+} from "@/wasm/wasm-assets";
 import {
   LIB_BUSY_EVENT,
   LIB_ERROR_EVENT,
@@ -44,12 +53,13 @@ import {
   type LibItemUpdatedDetail,
   type LibLoadingDetail,
   type LibsSource,
+  type LibsSyncState,
 } from "@/wasm/libs/source";
 import {
   MODELS_LOADING_EVENT,
   type ModelsLoadingDetail,
 } from "@/wasm/libs/models-bridge";
-import { memfsFilePath, memfsProjectDir, TOOL_FRAME } from "@/wasm/constants";
+import { memfsFilePath, memfsProjectDir, TOOL_BUNDLE, TOOL_FRAME } from "@/wasm/constants";
 import { driveProjectIntoTool, type ToolFile } from "@/wasm/kicad-runner";
 import { registerSaveHook, type SaveBytes } from "@/wasm/save-flow";
 import type {
@@ -143,6 +153,64 @@ const LIB_KIND_FOR_TOOL: Partial<Record<Tool, "symbol" | "footprint">> = {
   footprint_editor: "footprint",
   pcbnew: "footprint",
 };
+
+/** What the download-consent dialog quotes (standalone-load-ux 0001). */
+interface ConsentInfo {
+  /** Over-the-wire bytes for the editor bundle — null when the CDN carries no
+   *  size info and HEAD yielded none ("large download" wording then). */
+  toolBytes: number | null;
+  /** A previous version of this bundle was downloaded → word it as an update. */
+  update: boolean;
+  /** The lib kind pre-synced at boot for this tool ("downloaded now"). */
+  libNowKind: "symbol" | "footprint" | null;
+  libNow: LibsSyncState | null;
+  /** The other kind a merged-bundle session can pull lazily ("only if used"). */
+  libLaterKind: "symbol" | "footprint" | null;
+  libLater: LibsSyncState | null;
+}
+
+/**
+ * Gather the consent dialog's figures. Everything is best-effort: only small
+ * JSON/HEAD requests run here (never a bundle or the wasm), and any missing
+ * piece degrades to vaguer wording rather than blocking the dialog.
+ */
+async function gatherConsentInfo(
+  meta: WasmMeta,
+  source: LibsSource | null,
+  tool: Tool,
+): Promise<ConsentInfo> {
+  let toolBytes = meta.sizes?.totalStored ?? null;
+  if (toolBytes === null) {
+    toolBytes = await fetchWasmStoredSize(meta.base, meta.bundle);
+  }
+  const libNowKind = LIB_KIND_FOR_TOOL[tool] ?? null;
+  // The merged kicad_editor bundle seeds BOTH lib tables — the other kind loads
+  // lazily per-lib when a cross-face feature reaches it (see boot.ts libKinds).
+  const libLaterKind =
+    TOOL_BUNDLE[tool] === "kicad_editor" && libNowKind
+      ? libNowKind === "symbol"
+        ? ("footprint" as const)
+        : ("symbol" as const)
+      : null;
+  const state = async (
+    kind: "symbol" | "footprint" | null,
+  ): Promise<LibsSyncState | null> => {
+    if (!kind || !source?.syncState) return null;
+    try {
+      return await source.syncState(kind);
+    } catch {
+      return null;
+    }
+  };
+  return {
+    toolBytes,
+    update: hasAnyWasmDownload(meta.bundle),
+    libNowKind,
+    libNow: await state(libNowKind),
+    libLaterKind,
+    libLater: await state(libLaterKind),
+  };
+}
 const LEGACY_EXTENSION_TOOL: Record<string, Tool> = {
   ".sch": "eeschema",
   ".brd": "pcbnew",
@@ -858,6 +926,13 @@ export function WasmTool({
     total: number;
   } | null>(null);
   const [slow, setSlow] = React.useState(false);
+  // Download-consent gate (standalone-load-ux 0001): non-null while the boot
+  // waits on the user's OK before pulling the (large) cold wasm + lib bundles.
+  const [consent, setConsent] = React.useState<ConsentInfo | null>(null);
+  const consentResolveRef = React.useRef<((ok: boolean) => void) | null>(null);
+  // This bundle+version finished downloading before (completion marker) — the
+  // load overlay says "from cache" instead of the first-download excuse.
+  const [warmBoot, setWarmBoot] = React.useState(false);
   // A library item currently being fetched (open/save), for a transient spinner.
   const [libBusy, setLibBusy] = React.useState<string | null>(null);
   // Load-screen pre-sync progress: warming the project's lib bundles into IDB in
@@ -1041,12 +1116,13 @@ export function WasmTool({
 
   // "Taking too long": once the tool has been loading for a while without
   // becoming ready, surface a hint (slow link / something may be wrong) + a
-  // reload, so a stalled boot doesn't look like a frozen blank screen.
+  // reload, so a stalled boot doesn't look like a frozen blank screen. Paused
+  // while the consent dialog is up — waiting on the user isn't "slow".
   React.useEffect(() => {
-    if (ready) return;
+    if (ready || consent) return;
     const t = setTimeout(() => setSlow(true), 60_000);
     return () => clearTimeout(t);
-  }, [ready]);
+  }, [ready, consent]);
 
   React.useEffect(() => {
     const win = window as ToolWindow;
@@ -1242,12 +1318,32 @@ export function WasmTool({
         const identityReady = loadSessionIdentity(API_BASE_URL);
         // Resolve the per-tool asset base at runtime (CDN manifest → versioned
         // folder, or the flat local /wasm in dev). See wasm/wasm-assets.ts.
-        const base = await resolveWasmBase(tool, assetBaseUrl);
+        const meta = await resolveWasmMeta(tool, assetBaseUrl);
+        const base = meta.base;
         // One source instance, shared by the wasm provider AND the pre-sync below
         // (libsSourceConfig builds a fresh one each call — their SyncStack caches
         // must be the same object for the warm-up to benefit the editor).
         const source =
           libsSource !== undefined ? libsSource : libsSourceConfig(projectId);
+        // Download-consent gate (standalone-load-ux 0001): before pulling the
+        // (large) cold wasm + lib bundles, say how many MB and wait for the OK.
+        // Runs only on versioned CDN deploys (`meta.ver` — flat dev roots and
+        // e2e assetBaseUrl overrides have no version and skip it), when this
+        // exact bundle+version hasn't finished downloading before, and the user
+        // hasn't opted into silent downloads. Only small JSON/HEAD requests
+        // happen before consent.
+        const warm = isWasmDownloaded(meta.bundle, meta.ver);
+        setWarmBoot(warm);
+        if (meta.ver && !warm && !autoDownloadEnabled()) {
+          const info = await gatherConsentInfo(meta, source, tool);
+          const ok = await new Promise<boolean>((resolve) => {
+            consentResolveRef.current = resolve;
+            setConsent(info);
+          });
+          consentResolveRef.current = null;
+          setConsent(null);
+          if (!ok) return; // unmounted while waiting — never start the download
+        }
         // Pre-warm the lib bundles into IDB in PARALLEL with the wasm download, so
         // the editor's first enumerate reads a warm cache instead of freezing on N
         // cold bundle fetches. Non-blocking + best-effort; the SyncStack dedups, so
@@ -1276,6 +1372,13 @@ export function WasmTool({
           onStatus: setStatus,
           onAbort: oom.onAbort,
           onProgress: (loaded, total) => setProgress({ loaded, total }),
+          // Truthful loading states (standalone-load-ux 0001): the manifest's
+          // raw wasm size fixes the progress total under br/gzip; the marker
+          // flips the label to "Loading" (HTTP cache) vs "Downloading"; the
+          // completion marker is recorded once download + compile succeeded.
+          expectedWasmBytes: meta.sizes?.wasm ?? null,
+          warmStart: warm,
+          onWasmInstantiated: () => markWasmDownloaded(meta.bundle, meta.ver),
           libsSource: source,
           // 3D models: lazy per-board source (null unless the CDN manifest is
           // configured) — feeds the board prescan + the viewer's ensure fallback.
@@ -1490,6 +1593,10 @@ export function WasmTool({
     })();
 
     return () => {
+      // A consent dialog pending at unmount resolves false — the boot IIFE
+      // bails without ever starting the download.
+      consentResolveRef.current?.(false);
+      consentResolveRef.current = null;
       win.removeEventListener("keydown", swallowBrowserSave, true);
       win.removeEventListener("keydown", chromeHotkey, true);
       commentsRef.current?.destroy();
@@ -1596,6 +1703,14 @@ export function WasmTool({
                 Reload
               </button>
             </>
+          ) : consent ? (
+            <DownloadConsent
+              info={consent}
+              onAccept={(always) => {
+                if (always) setAutoDownloadEnabled(true);
+                consentResolveRef.current?.(true);
+              }}
+            />
           ) : (
             <>
               <Loader2 className="animate-spin" size={32} />
@@ -1609,7 +1724,9 @@ export function WasmTool({
                 </p>
               )}
               <p className="font-mono text-xs text-white/40">
-                First load downloads the tool (large) — this can take a moment.
+                {warmBoot
+                  ? "Loading from your browser's cache — no download needed."
+                  : "Downloading the editor — it's cached for future visits."}
               </p>
               {slow && (
                 <>
@@ -1898,6 +2015,115 @@ export function WasmTool({
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+/** "~173 MB" — coarse on purpose; these are quotes, not meters. */
+function approxMB(bytes: number): string {
+  const mb = bytes / 1e6;
+  return `~${mb >= 10 ? Math.round(mb) : Math.max(0.1, mb).toFixed(1)} MB`;
+}
+
+/** One consent row's size figure, from a (possibly partial) LibsSyncState. */
+function libStateLabel(s: LibsSyncState | null): string | null {
+  if (!s) return null;
+  if (s.total > 0 && s.warm >= s.total) return "already cached";
+  const cold = s.total - s.warm;
+  const count = `${cold} librar${cold === 1 ? "y" : "ies"}`;
+  if (!s.sizesKnown) return count;
+  return s.warm > 0 ? `${approxMB(s.coldBytes)} (${count})` : approxMB(s.coldBytes);
+}
+
+/**
+ * The download-consent card (standalone-load-ux 0001): what's about to be
+ * pulled onto this device — the editor bundle now, the tool's lib kind now,
+ * the other kind later on demand — and an OK that actually gates the fetches.
+ */
+function DownloadConsent({
+  info,
+  onAccept,
+}: {
+  info: ConsentInfo;
+  onAccept: (always: boolean) => void;
+}) {
+  const [always, setAlways] = React.useState(false);
+  const kindTitle = (k: "symbol" | "footprint") =>
+    k === "symbol" ? "Symbol libraries" : "Footprint libraries";
+  const row = (
+    title: string,
+    detail: string,
+    figure: string | null,
+    testid: string,
+  ) => (
+    <li
+      data-testid={testid}
+      className="flex items-baseline gap-3 border-t border-white/10 py-2 first:border-t-0"
+    >
+      <div className="min-w-0 flex-1">
+        <p className="text-sm text-white/90">{title}</p>
+        <p className="text-xs text-white/50">{detail}</p>
+      </div>
+      {figure && (
+        <span className="whitespace-nowrap font-mono text-xs text-white/70">
+          {figure}
+        </span>
+      )}
+    </li>
+  );
+  return (
+    <div
+      data-testid="download-consent"
+      className="flex w-full max-w-md flex-col items-center gap-4 px-6"
+    >
+      <Download size={32} className="text-white/70" />
+      <h2 className="text-base font-semibold">
+        {info.update ? "Editor update available" : "One-time download needed"}
+      </h2>
+      <p className="text-center text-sm text-white/70">
+        PCBJam runs KiCad fully in your browser.{" "}
+        {info.update
+          ? "This release ships a new editor build, so it needs downloading again — it's cached after that."
+          : "Opening this tool downloads it once — repeat visits load from your browser's cache."}
+      </p>
+      <ul className="w-full rounded-lg bg-white/5 px-4 py-1">
+        {row(
+          "Editor engine",
+          "the KiCad build, downloaded now",
+          info.toolBytes !== null ? approxMB(info.toolBytes) : "large (hundreds of MB)",
+          "consent-row-tool",
+        )}
+        {info.libNowKind &&
+          row(
+            kindTitle(info.libNowKind),
+            "downloaded now — this editor browses them",
+            libStateLabel(info.libNow),
+            "consent-row-now",
+          )}
+        {info.libLaterKind &&
+          row(
+            kindTitle(info.libLaterKind),
+            "downloaded later, only if you use them",
+            libStateLabel(info.libLater),
+            "consent-row-later",
+          )}
+      </ul>
+      <label className="flex cursor-pointer items-center gap-2 text-xs text-white/60">
+        <input
+          type="checkbox"
+          checked={always}
+          onChange={(e) => setAlways(e.target.checked)}
+          className="accent-white/80"
+        />
+        Always download without asking
+      </label>
+      <button
+        data-testid="consent-accept"
+        className="rounded bg-white/90 px-4 py-1.5 text-sm font-medium text-[#1a1a2e] hover:bg-white"
+        onClick={() => onAccept(always)}
+      >
+        Download &amp; open
+      </button>
     </div>
   );
 }
