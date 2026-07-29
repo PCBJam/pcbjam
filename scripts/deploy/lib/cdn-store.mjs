@@ -126,26 +126,54 @@ export function r2Driver({ bucket, remote }) {
       maxBuffer: 1024 * 1024 * 512,
     });
   const tmp = join(tmpdir(), `r2put-${process.pid}`);
+
+  // Transient CF API failures (5xx, "terminated") are routine from CI runners —
+  // two consecutive publish-libs runs died on them. Retry with backoff; a
+  // definitive missing-object error is NOT transient and rethrows immediately
+  // (getJSON turns it into its null). Sync on purpose: the whole driver is
+  // execFileSync-based.
+  const MISS_RE = /does not exist|no such object|not found|404/i;
+  const errText = (e) => `${e?.stderr ?? ""}${e?.stdout ?? ""}${e?.message ?? ""}`;
+  const sleep = (ms) =>
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  const withRetries = (what, fn) => {
+    let last;
+    for (let i = 0; i < 4; i++) {
+      if (i) {
+        console.log(`  ${what}: transient failure, retry ${i}/3…`);
+        sleep(2000 * 2 ** (i - 1));
+      }
+      try {
+        return fn();
+      } catch (e) {
+        if (MISS_RE.test(errText(e))) throw e;
+        last = e;
+      }
+    }
+    throw new Error(
+      `${what} failed after 4 attempts (NOT a missing-object miss): ` +
+        errText(last).slice(0, 400),
+    );
+  };
   return {
     kind: "r2",
     getJSON(key) {
       const dest = `${tmp}-get`;
       try {
         // Probe: a missing object is the normal "not published yet" case.
-        run(["r2", "object", "get", `${bucket}/${key}`, "--file", dest, ...flags], {
-          quiet: true,
-        });
-      } catch (e) {
-        // ONLY a definitive "no such object" reads as absent. Any other failure
-        // (CF API 5xx, auth, network) must THROW: publishers branch on these
-        // probes — publish-libs once misread a transient 502 on manifest.json
-        // as "tag not published" and started a full republish of an existing
-        // immutable tag (harmless bytes-wise, ~30 min wasted).
-        const msg = `${e?.stderr ?? ""}${e?.stdout ?? ""}${e?.message ?? ""}`;
-        if (/does not exist|no such object|not found|404/i.test(msg)) return null;
-        throw new Error(
-          `r2 get ${bucket}/${key} failed (NOT a missing-object miss): ${msg.slice(0, 400)}`,
+        // ONLY a definitive "no such object" reads as absent; any other failure
+        // (CF API 5xx, auth, network) retries then THROWS: publishers branch on
+        // these probes — publish-libs once misread a transient 502 on
+        // manifest.json as "tag not published" and started a full republish of
+        // an existing immutable tag (harmless bytes-wise, ~30 min wasted).
+        withRetries(`r2 get ${bucket}/${key}`, () =>
+          run(["r2", "object", "get", `${bucket}/${key}`, "--file", dest, ...flags], {
+            quiet: true,
+          }),
         );
+      } catch (e) {
+        if (MISS_RE.test(errText(e))) return null;
+        throw e;
       }
       try {
         return JSON.parse(readFileSync(dest, "utf8"));
@@ -164,7 +192,8 @@ export function r2Driver({ bucket, remote }) {
         ...flags,
       ];
       if (meta.contentEncoding) args.push("--content-encoding", meta.contentEncoding);
-      run(args);
+      // Puts are idempotent (content-addressed/immutable keys) — retry freely.
+      withRetries(`r2 put ${bucket}/${key}`, () => run(args));
       rmSync(tmp, { force: true });
     },
   };
