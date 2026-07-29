@@ -91,7 +91,12 @@ async function partyKitProvider(
   params: ProviderConfig["params"],
 ): Promise<YjsProvider> {
   const { default: YProvider } = await import("y-partyserver/provider");
-  const provider = new YProvider(endpoint, room, doc, {
+  // The provider splices the room into the WS URL verbatim, so it must travel
+  // as ONE percent-encoded path segment — otherwise a docPath containing
+  // `/`, ` `, `#`, `%` or `?` truncates or corrupts the room name. The sync
+  // worker decodes it once at its edge; the decoded string is the canonical
+  // room/DO name everywhere.
+  const provider = new YProvider(endpoint, encodeURIComponent(room), doc, {
     party: PARTYKIT_PARTY,
     connect: true,
     params,
