@@ -1,6 +1,15 @@
 #!/bin/bash
 # Build wxWidgets for WebAssembly (the DOM port: widgets are real HTML
 # elements; owner-drawn widgets render into per-window canvas islands)
+#
+# CI cache epoch: 2 (2026-07-29). CI's wx cache key hashes THIS FILE
+# (.github/workflows/wasm-build.yml "Restore wx build cache"), so editing this
+# header is how a poisoned build-wasm/wxwidgets cache gets discarded. Bumped
+# after a restored cache failed with "No rule to make target
+# 3rdparty/pcre/src/pcre2_chartables.c": pcre's makefile rm's that path and
+# re-links it to pcre2_chartables.c.dist at configure time, so a cache captured
+# around that window restores a build tree whose pcre rule can no longer be
+# satisfied from a clean checkout. Bump the number to force a fresh wx build.
 
 # Redirect all output to a log file (re-execs script with redirection)
 source "$(dirname "$0")/common/logging.sh"
