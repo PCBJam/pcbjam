@@ -66,23 +66,48 @@ export function restageFile(
   log(`[memfs] wrote ${dest} (${bytes.length} bytes)`);
 }
 
-/** Mirror the whole project tree into the tool's MEMFS (sync-whole-tree). */
+/** How many project files are fetched at once by the MEMFS staging below.
+ *  Matches the lib presync's default: enough to hide per-request latency on a
+ *  many-file project, low enough not to starve the parallel wasm download. */
+const STAGE_CONCURRENCY = 8;
+
+/**
+ * Mirror the whole project tree into the tool's MEMFS (sync-whole-tree).
+ *
+ * Fetches run CONCURRENTLY (bounded by STAGE_CONCURRENCY): a project with a
+ * few hundred files — an uploaded repo, say — spent one full request
+ * round-trip per file when this was serial, which dominated the open on any
+ * real-latency connection. The writes themselves are synchronous FS calls on
+ * distinct paths, so they can land in whatever order the fetches complete.
+ */
 async function syncProjectToMemfs(win: ToolWindow, opts: DriveOptions): Promise<void> {
   getFS(win).mkdirTree(memfsProjectDir(opts.slug));
-  for (const file of opts.files) {
-    const bytes = await opts.fetchBytes(file.path);
-    restageFile(win, opts.slug, file.path, bytes, opts.log);
-    // 3D models: prefetch every model this board references (R2 → IDB → MEMFS)
-    // so the 3D viewer's first open resolves locally. Fire-and-forget — project
-    // open never waits on it; a ref that misses falls back to the C++ per-model
-    // ensure. No-op unless a model source is installed (bootKicadTool).
-    if (file.path.endsWith(".kicad_pcb")) {
-      const text = new TextDecoder().decode(bytes);
-      void prescanBoardModels(text).catch((e) =>
-        opts.log(`[3d] prescan failed: ${String(e)}`),
-      );
+
+  const queue = [...opts.files];
+  const worker = async (): Promise<void> => {
+    for (let file = queue.shift(); file; file = queue.shift()) {
+      const bytes = await opts.fetchBytes(file.path);
+      restageFile(win, opts.slug, file.path, bytes, opts.log);
+      // 3D models: prefetch every model this board references (R2 → IDB → MEMFS)
+      // so the 3D viewer's first open resolves locally. Fire-and-forget — project
+      // open never waits on it; a ref that misses falls back to the C++ per-model
+      // ensure. No-op unless a model source is installed (bootKicadTool).
+      if (file.path.endsWith(".kicad_pcb")) {
+        const text = new TextDecoder().decode(bytes);
+        void prescanBoardModels(text).catch((e) =>
+          opts.log(`[3d] prescan failed: ${String(e)}`),
+        );
+      }
     }
-  }
+  };
+  // One rejection fails the stage (same as the serial loop did), but let the
+  // in-flight siblings settle first so a failure can't leave a fetch writing
+  // into MEMFS after the caller has moved on.
+  const results = await Promise.allSettled(
+    Array.from({ length: Math.min(STAGE_CONCURRENCY, opts.files.length) }, worker),
+  );
+  const failed = results.find((r) => r.status === "rejected");
+  if (failed) throw (failed as PromiseRejectedResult).reason;
 }
 
 /**
