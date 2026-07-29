@@ -61,6 +61,36 @@ inline bool& fiberBusy()
     return busy;
 }
 
+/**
+ * True while an Asyncify unwind/rewind or park is IN FLIGHT (the single
+ * `currData` slot is taken by somebody else's suspended context).
+ *
+ * Starting a fiber in that window is the documented crash family
+ * (docs/features/async/13, "scheduler invariant"): `emscripten_fiber_swap`
+ * calls `stop_unwind`, which asserts/corrupts when another context is parked —
+ * surfacing as "index out of bounds", "unreachable executed" or "indirect call
+ * signature mismatch", after which the runtime is poisoned and every later
+ * event traps.
+ *
+ * Normally the slot is FREE here: the main loop's per-frame
+ * `wxWasmYieldToBrowser` completes every frame, so `drainFibers` (a
+ * CallAfter, drained from ProcessEvents) runs between yields with nothing in
+ * flight. It is NOT free when a nested/modal pump tick drives ProcessEvents
+ * while the chain that opened the modal is parked deeper down the stack —
+ * exactly what a big board open does (progress dialog over a parked load),
+ * and the window in which a presence/collab body arriving off the WebSocket
+ * used to swap a fiber and take the runtime down.
+ *
+ * The wx dispatch interlock (wx/wasm/private/dispatch.h) does not cover this:
+ * the modal parks deliberately zero its count so their own pump may dispatch.
+ */
+inline bool asyncifyInFlight()
+{
+    return EM_ASM_INT( {
+        return ( typeof Asyncify !== "undefined" && Asyncify.currData ) ? 1 : 0;
+    } ) != 0;
+}
+
 /* The in-flight body. HEAP-allocated and pinned for the body's whole life:
  * when a body PARKS (asyncify suspension inside commit.Push), COROUTINE::Call
  * RETURNS EARLY — the later asyncify rewind re-enters the fiber through the
@@ -118,6 +148,18 @@ inline void drainFibers()
 
     while( !q.empty() )
     {
+        // Someone else's context is parked in the single Asyncify slot: swapping
+        // to a fiber now corrupts it (see asyncifyInFlight). Re-queue and retry
+        // on the next drained tick — bodies are viewport/overlay/apply work, so
+        // waiting out the park costs latency, never correctness.
+        if( asyncifyInFlight() )
+        {
+            if( wxEvtHandler* h = fiberHandler() )
+                h->CallAfter( []() { drainFibers(); } );
+
+            return;
+        }
+
         fiberBusy() = true;
         slot.done = false;
         slot.body = new std::function<void()>( std::move( q.front() ) );
