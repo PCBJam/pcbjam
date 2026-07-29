@@ -79,9 +79,11 @@ export interface LibsSource {
   ): Promise<Array<{ kind: string; name: string; body: Uint8Array }>>;
   /**
    * Pre-warm this source's per-lib caches (IndexedDB bundles) WITHOUT touching the
-   * WASM runtime — call it in parallel with the wasm download so the editor's
-   * first enumerate reads a warm cache instead of freezing on N cold bundle
-   * fetches. Best-effort: a lib that fails to presync is skipped (it still loads
+   * WASM runtime, so the editor's first enumerate reads a warm cache instead of
+   * freezing on N cold bundle fetches. Call it AFTER the wasm bundle and the
+   * project's own files are in — with a scope of ~155 libs this is hundreds of
+   * fetches, and running it any earlier just starves the downloads the user is
+   * actually blocked on. Best-effort: a lib that fails to presync is skipped (it still loads
    * lazily later); the SyncStack dedups, so a lib the wasm reaches mid-presync
    * just awaits the same in-flight fetch. `onProgress` reports per-lib so the load
    * screen can name what's syncing. Optional: sources without a client-side cache

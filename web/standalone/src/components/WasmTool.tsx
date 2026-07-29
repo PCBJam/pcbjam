@@ -156,12 +156,19 @@ const LIB_KIND_FOR_TOOL: Partial<Record<Tool, "symbol" | "footprint">> = {
 
 /** What the download-consent dialog quotes (standalone-load-ux 0001). */
 interface ConsentInfo {
-  /** Over-the-wire bytes for the editor bundle — null when the CDN carries no
-   *  size info and HEAD yielded none ("large download" wording then). */
+  /** Over-the-wire (COMPRESSED) bytes for the editor bundle — null when the CDN
+   *  carries no size info and HEAD yielded none ("large download" wording then).
+   *  Quoted as "compressed" in the dialog: the load screen's progress bar counts
+   *  RAW decoded bytes, which are several times this. */
   toolBytes: number | null;
+  /** Raw (decoded) wasm bytes — the same total the progress bar counts, quoted
+   *  next to `toolBytes` so the two figures can't read as a contradiction. Null
+   *  when the manifest prices nothing (HEAD fallback knows the wire size only). */
+  toolRawBytes: number | null;
   /** A previous version of this bundle was downloaded → word it as an update. */
   update: boolean;
-  /** The lib kind pre-synced at boot for this tool ("downloaded now"). */
+  /** The lib kind this tool pre-syncs — warmed in the background once the
+   *  editor is open, not ahead of it (see startLibPresync). */
   libNowKind: "symbol" | "footprint" | null;
   libNow: LibsSyncState | null;
   /** The other kind a merged-bundle session can pull lazily ("only if used"). */
@@ -204,6 +211,9 @@ async function gatherConsentInfo(
   };
   return {
     toolBytes,
+    // Only the manifest prices the DECODED wasm (wasm-assets WasmBundleSizes);
+    // the HEAD fallback above sees the compressed body alone.
+    toolRawBytes: meta.sizes?.wasm ?? null,
     update: hasAnyWasmDownload(meta.bundle),
     libNowKind,
     libNow: await state(libNowKind),
@@ -1308,6 +1318,13 @@ export function WasmTool({
     };
     win.addEventListener("keydown", chromeHotkey, true);
 
+    // The background lib pre-sync outlives the boot IIFE (it keeps warming IDB
+    // long after the editor is interactive), so unmount has to be able to stop
+    // it: `presync` checks this signal between libs. Declared out here — the
+    // cleanup below closes over it — and never rejected, so aborting mid-sync
+    // leaks nothing and throws nothing.
+    const presyncAbort = new AbortController();
+
     void (async () => {
       try {
         // Real identity (collab-presence 0009 A): resolve the session user in
@@ -1344,26 +1361,38 @@ export function WasmTool({
           setConsent(null);
           if (!ok) return; // unmounted while waiting — never start the download
         }
-        // Pre-warm the lib bundles into IDB in PARALLEL with the wasm download, so
-        // the editor's first enumerate reads a warm cache instead of freezing on N
-        // cold bundle fetches. Non-blocking + best-effort; the SyncStack dedups, so
-        // a lib the wasm reaches mid-presync just awaits the same in-flight fetch.
+        // Pre-warm the lib bundles into IDB — started LATER (right after the
+        // project is staged + opened, below). It used to run in parallel with the
+        // wasm download, but a scope with ~155 team libs then fired hundreds of
+        // bundle fetches that contended with the 26MB+ wasm and the project's own
+        // files on the same connection, so opening a board took minutes before
+        // anything was interactive. The warm-up is an OPTIMIZATION (the editor's
+        // first enumerate reads a warm cache instead of freezing on N cold bundle
+        // fetches), never a precondition — so it yields to everything the user is
+        // actually blocked on and fills in behind them.
         const libKind = LIB_KIND_FOR_TOOL[tool];
-        if (source?.presync && libKind) {
+        const startLibPresync = () => {
+          if (!source?.presync || !libKind) return;
+          // Fire-and-forget + best-effort, unchanged: a lib that fails to presync
+          // still loads lazily later, and the SyncStack dedups — a lib the wasm
+          // reaches mid-presync just awaits the same in-flight fetch. The signal
+          // stops the walk on unmount; the setLibSync guards keep a late progress
+          // callback from re-lighting the indicator of a torn-down session.
           void source
             .presync({
               kind: libKind,
-              onProgress: ({ done, total }) =>
-                setLibSync(
-                  done >= total ? null : { kind: libKind, done, total },
-                ),
+              signal: presyncAbort.signal,
+              onProgress: ({ done, total }) => {
+                if (presyncAbort.signal.aborted) return;
+                setLibSync(done >= total ? null : { kind: libKind, done, total });
+              },
             })
             .then(() => setLibSync(null))
             .catch((e) => {
               append(`[presync] ${String(e)}`);
               setLibSync(null);
             });
-        }
+        };
         await bootKicadTool({
           tool,
           base,
@@ -1450,6 +1479,14 @@ export function WasmTool({
           log: append,
           onStatus: setStatus,
         });
+        // Everything the user is blocked on has now downloaded: the wasm bundle
+        // is up and the project's own files are staged into MEMFS with the target
+        // file open. NOW warm the scope's lib bundles, in the background — the
+        // boot tail below (collab rooms, wx UI build) is latency-bound chatter,
+        // not bandwidth, so the pre-sync no longer delays the editor becoming
+        // interactive. Whatever it hasn't reached by the time the user opens a
+        // chooser is fetched lazily on demand, as it always was.
+        startLibPresync();
         // Read-only viewer (read-only-viewer): lock the wasm frame BEFORE the
         // boot overlay drops — the file is open, so the frame exists; poll the
         // export like the chrome toggle does. Fails CLOSED (boot error overlay):
@@ -1597,6 +1634,10 @@ export function WasmTool({
       // bails without ever starting the download.
       consentResolveRef.current?.(false);
       consentResolveRef.current = null;
+      // Stop the background lib warm-up: presync checks the signal between libs,
+      // so in-flight bundle fetches finish (their IDB writes are still useful for
+      // the next mount) and no further ones start.
+      presyncAbort.abort();
       win.removeEventListener("keydown", swallowBrowserSave, true);
       win.removeEventListener("keydown", chromeHotkey, true);
       commentsRef.current?.destroy();
@@ -1718,11 +1759,11 @@ export function WasmTool({
                 {status || "Loading…"}
               </p>
               <DownloadProgress progress={progress} />
-              {libSync && (
-                <p className="whitespace-pre font-mono text-xs text-emerald-300/90">
-                  {libSyncLabel(libSync)}
-                </p>
-              )}
+              {/* The lib pre-sync deliberately has NO line here anymore: it now
+                  starts only once the wasm + project files are in (see the boot
+                  IIFE), so the overlay would be showing a counter the user is not
+                  waiting on. Its progress surfaces in the unobtrusive bottom-left
+                  indicator below, after `ready`. */}
               <p className="font-mono text-xs text-white/40">
                 {warmBoot
                   ? "Loading from your browser's cache — no download needed."
@@ -1941,8 +1982,10 @@ export function WasmTool({
       {/* DEV: presence style tuner (VITE_PRESENCE_TUNER=1). */}
       {ready && tunerMod && <PresenceTuner mod={tunerMod} tool={tool} />}
 
-      {/* Lib pre-sync still warming IDB after the editor opened (big set) — small
-          unobtrusive indicator so the user knows browsing is still filling in. */}
+      {/* Lib pre-sync warming IDB after the editor opened (big set) — the ONLY
+          surface for it now that the warm-up starts post-open: a small unobtrusive
+          indicator so the user knows browsing is still filling in behind them,
+          never something they are waiting on. */}
       {ready && libSync && (
         <div className="pointer-events-none absolute bottom-9 left-3 z-20 flex items-center gap-2 rounded bg-black/80 px-3 py-1.5 font-mono text-xs text-emerald-200">
           <Loader2 className="animate-spin" size={14} />{" "}
@@ -2025,14 +2068,83 @@ function approxMB(bytes: number): string {
   return `~${mb >= 10 ? Math.round(mb) : Math.max(0.1, mb).toFixed(1)} MB`;
 }
 
-/** One consent row's size figure, from a (possibly partial) LibsSyncState. */
+/** "1 library" / "155 libraries". */
+function libCount(n: number): string {
+  return `${n} librar${n === 1 ? "y" : "ies"}`;
+}
+
+/**
+ * One consent row's size figure — MB only; the COUNTS live in the row's detail
+ * line (libNowDetail/libLaterDetail), because "download" and "check" cover
+ * different sets of libs and one number can't stand for both.
+ */
 function libStateLabel(s: LibsSyncState | null): string | null {
-  if (!s) return null;
-  if (s.total > 0 && s.warm >= s.total) return "already cached";
+  if (!s || s.total === 0) return null;
+  if (s.warm >= s.total) return "already cached";
+  // sizesKnown false ⇒ some cold libs carry no published size, so coldBytes is a
+  // FLOOR, never the total: say "at least", and quote nothing at all when not a
+  // single cold lib was priced.
+  if (!s.sizesKnown) {
+    return s.coldBytes > 0 ? `at least ${approxMB(s.coldBytes)}` : null;
+  }
+  return approxMB(s.coldBytes);
+}
+
+/**
+ * Detail line for the kind this editor PRE-SYNCS at boot. Two different numbers
+ * matter here and quoting either alone reads as a lie: only the libs that aren't
+ * cached yet download their contents ("1 library"), but the pre-sync walks EVERY
+ * library of the kind to see whether it changed — and that walk is what the
+ * "Syncing footprint libraries — 99/155" bar counts. A null state (source can't
+ * tell) keeps the old count-free wording.
+ */
+function libNowDetail(s: LibsSyncState | null): string {
+  const base = "this editor browses them";
+  // No warmth answer at all: say only what stays true regardless of counts —
+  // the warm-up runs in the background once the editor is open (it moved off
+  // the critical path, so "downloaded now" would be wrong as well as vague).
+  if (!s || s.total === 0) return `${base} — fetched in the background`;
   const cold = s.total - s.warm;
-  const count = `${cold} librar${cold === 1 ? "y" : "ies"}`;
-  if (!s.sizesKnown) return count;
-  return s.warm > 0 ? `${approxMB(s.coldBytes)} (${count})` : approxMB(s.coldBytes);
+  if (cold === 0) {
+    return `${base} — ${libCount(s.total)} already here, just checked for updates`;
+  }
+  if (s.warm === 0) return `${base} — downloads ${libCount(s.total)}`;
+  return `${base} — downloads ${libCount(cold)}, checks all ${s.total} for updates`;
+}
+
+/**
+ * Detail line for the OTHER kind of a merged-bundle session: never walked at
+ * boot (no pre-sync, no update check) — each lib is fetched lazily the first
+ * time a cross-face feature reaches it.
+ */
+function libLaterDetail(s: LibsSyncState | null): string {
+  const base = "downloaded later, only if you use them";
+  if (!s || s.total === 0) return base;
+  const cold = s.total - s.warm;
+  if (cold === 0) return `${libCount(s.total)} already here — nothing to download`;
+  return `${base} (${libCount(cold)} not here yet)`;
+}
+
+/**
+ * The editor bundle's figure. `toolBytes` is the OVER-THE-WIRE (compressed)
+ * size, while the load screen's progress bar counts RAW decoded bytes — quoting
+ * the first bare is what made "~32 MB" look like a lie next to a ~150 MB bar.
+ * Show both whenever the manifest prices them; the HEAD fallback knows only the
+ * wire size, so it says just that.
+ */
+function toolFigure(info: ConsentInfo): React.ReactNode {
+  if (info.toolBytes === null) return "large (hundreds of MB)";
+  const wire = `${approxMB(info.toolBytes)} compressed`;
+  if (info.toolRawBytes === null) return wire;
+  return (
+    <>
+      {wire}
+      <br />
+      <span className="text-white/50">
+        {approxMB(info.toolRawBytes)} uncompressed
+      </span>
+    </>
+  );
 }
 
 /**
@@ -2053,7 +2165,7 @@ function DownloadConsent({
   const row = (
     title: string,
     detail: string,
-    figure: string | null,
+    figure: React.ReactNode,
     testid: string,
   ) => (
     <li
@@ -2065,7 +2177,7 @@ function DownloadConsent({
         <p className="text-xs text-white/50">{detail}</p>
       </div>
       {figure && (
-        <span className="whitespace-nowrap font-mono text-xs text-white/70">
+        <span className="whitespace-nowrap text-right font-mono text-xs leading-snug text-white/70">
           {figure}
         </span>
       )}
@@ -2090,20 +2202,20 @@ function DownloadConsent({
         {row(
           "Editor engine",
           "the KiCad build, downloaded now",
-          info.toolBytes !== null ? approxMB(info.toolBytes) : "large (hundreds of MB)",
+          toolFigure(info),
           "consent-row-tool",
         )}
         {info.libNowKind &&
           row(
             kindTitle(info.libNowKind),
-            "downloaded now — this editor browses them",
+            libNowDetail(info.libNow),
             libStateLabel(info.libNow),
             "consent-row-now",
           )}
         {info.libLaterKind &&
           row(
             kindTitle(info.libLaterKind),
-            "downloaded later, only if you use them",
+            libLaterDetail(info.libLater),
             libStateLabel(info.libLater),
             "consent-row-later",
           )}
