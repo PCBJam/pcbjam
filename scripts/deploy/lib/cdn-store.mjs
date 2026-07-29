@@ -135,8 +135,17 @@ export function r2Driver({ bucket, remote }) {
         run(["r2", "object", "get", `${bucket}/${key}`, "--file", dest, ...flags], {
           quiet: true,
         });
-      } catch {
-        return null; // not found / error → absent (expected on first publish)
+      } catch (e) {
+        // ONLY a definitive "no such object" reads as absent. Any other failure
+        // (CF API 5xx, auth, network) must THROW: publishers branch on these
+        // probes — publish-libs once misread a transient 502 on manifest.json
+        // as "tag not published" and started a full republish of an existing
+        // immutable tag (harmless bytes-wise, ~30 min wasted).
+        const msg = `${e?.stderr ?? ""}${e?.stdout ?? ""}${e?.message ?? ""}`;
+        if (/does not exist|no such object|not found|404/i.test(msg)) return null;
+        throw new Error(
+          `r2 get ${bucket}/${key} failed (NOT a missing-object miss): ${msg.slice(0, 400)}`,
+        );
       }
       try {
         return JSON.parse(readFileSync(dest, "utf8"));
