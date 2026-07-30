@@ -52,6 +52,7 @@
 #include <nlohmann/json.hpp>
 #include "collab_common.h"
 #include "collab_presence_core.h"
+#include "open_gate.h"
 #include "collab_presence_style.h"
 #include "pcbjam_theme.h"
 #include "pcbjam_libs_reload.h"
@@ -84,6 +85,12 @@ using json = nlohmann::json;
 #ifndef KICAD_MERGED_EMBIND
 bool kicadOpenFile( std::string path )
 {
+    // Held across every Asyncify park of the load; see open_gate.h.
+    pcbjam_open::BusyGuard busy;
+
+    if( pcbjam_open::testParkMs() > 0 )
+        emscripten_sleep( pcbjam_open::testParkMs() );
+
     KIWAY_PLAYER* frame =
             wxTheApp ? static_cast<KIWAY_PLAYER*>( wxTheApp->GetTopWindow() ) : nullptr;
 
@@ -93,8 +100,28 @@ bool kicadOpenFile( std::string path )
     if( wxWindow* blocking = frame->Kiway().GetBlockingDialog() )
         blocking->Close( true );
 
-    return frame->OpenProjectFiles(
+    bool ok = frame->OpenProjectFiles(
             std::vector<wxString>( 1, wxString::FromUTF8( path.c_str() ) ) );
+
+    // Test-only post-load park (open_gate.h): model fully loaded, gate still
+    // closed — the deterministic window the collab-load-fuzz spec hammers.
+    if( pcbjam_open::testParkMs() > 0 )
+        emscripten_sleep( pcbjam_open::testParkMs() );
+
+    return ok;
+}
+
+// JS-pollable open-in-flight probe (open_gate.h): the web shell defers the
+// collab/presence attach until the open chain has truly completed.
+bool kicadOpenFileBusy()
+{
+    return pcbjam_open::busy();
+}
+
+// Test-only (collab-load-fuzz): arm the deterministic open parks.
+void kicadTestSetOpenPark( int aMs )
+{
+    pcbjam_open::testParkMs() = aMs;
 }
 
 // Read-only viewer lock (read-only-viewer): flips the process-global
@@ -1382,6 +1409,13 @@ void schedulePresenceSelCheck()
 // mis-dispatch and trap inside KiCad core, on it they dispatch correctly (eeschema 0007).
 void pcbCollabApply( std::string aJson )
 {
+    // Open-in-flight guard (open_gate.h): never touch the model while a
+    // kicadOpenFile Asyncify chain is parked mid-load — commits/virtuals on a
+    // half-built board mis-dispatch ("indirect call signature mismatch").
+    // Callers gate on kicadOpenFileBusy; fuzzed by tests/kicad/collab-load-fuzz.spec.ts.
+    if( pcbjam_open::busy() )
+        return;
+
     json delta = json::parse( aJson, nullptr, /*allow_exceptions*/ false );
 
     if( delta.is_discarded() )
@@ -1400,6 +1434,9 @@ void pcbCollabApply( std::string aJson )
 // (the blob parse + commit must run where native edits run — see above).
 void pcbCollabApplyItems( std::string aJson )
 {
+    if( pcbjam_open::busy() ) // open in flight (open_gate.h) — see pcbCollabApply
+        return;
+
     json wire = json::parse( aJson, nullptr, /*allow_exceptions*/ false );
 
     if( wire.is_discarded() )
@@ -1418,6 +1455,10 @@ void pcbCollabApplyItems( std::string aJson )
 // change listener on first call.
 std::string pcbCollabSnapshot()
 {
+    if( pcbjam_open::busy() ) // open in flight (open_gate.h) — see pcbCollabApply
+        return json{ { "added", json::array() }, { "changed", json::array() },
+                     { "removed", json::array() } }.dump();
+
     BOARD* board = ensureBridge();
 
     json added = json::array();
@@ -1441,6 +1482,10 @@ std::string pcbCollabSnapshot()
 // listener + rebaselines exactly like kicadCollabSnapshot.
 std::string pcbCollabSnapshotItems()
 {
+    if( pcbjam_open::busy() ) // open in flight (open_gate.h) — see pcbCollabApply
+        return json{ { "added", json::array() }, { "changed", json::array() },
+                     { "removed", json::array() } }.dump();
+
     BOARD* board = ensureBridge();
 
     json added = json::array();
@@ -2339,6 +2384,8 @@ EMSCRIPTEN_BINDINGS(pcbnew) {
     // registered once by kicad_editor_embind.cpp, dispatching on the active frame.
     // Programmatic file open (preferred over UI automation from the web app).
     function("kicadOpenFile", &kicadOpenFile);
+    function("kicadOpenFileBusy", &kicadOpenFileBusy);
+    function("kicadTestSetOpenPark", &kicadTestSetOpenPark);
     function("kicadCollabFiberBusy", &kicadCollabFiberBusyProbe);
     // Read-only viewer lock (read-only-viewer).
     function("kicadSetReadOnly", &kicadSetReadOnly);

@@ -40,6 +40,7 @@
 #include <project.h>
 
 #include "pcbjam_libs_reload.h"
+#include "open_gate.h"
 
 using namespace emscripten;
 
@@ -135,6 +136,12 @@ bool        schCollabTestClearSelection();
 // standalone bundles compile from their own binding TU.
 static bool kicadOpenFile( std::string path )
 {
+    // Held across every Asyncify park of the load; see open_gate.h.
+    pcbjam_open::BusyGuard busy;
+
+    if( pcbjam_open::testParkMs() > 0 )
+        emscripten_sleep( pcbjam_open::testParkMs() );
+
     KIWAY_PLAYER* frame =
             wxTheApp ? static_cast<KIWAY_PLAYER*>( wxTheApp->GetTopWindow() ) : nullptr;
 
@@ -144,8 +151,28 @@ static bool kicadOpenFile( std::string path )
     if( wxWindow* blocking = frame->Kiway().GetBlockingDialog() )
         blocking->Close( true );
 
-    return frame->OpenProjectFiles(
+    bool ok = frame->OpenProjectFiles(
             std::vector<wxString>( 1, wxString::FromUTF8( path.c_str() ) ) );
+
+    // Test-only post-load park (open_gate.h): model fully loaded, gate still
+    // closed — the deterministic window the collab-load-fuzz spec hammers.
+    if( pcbjam_open::testParkMs() > 0 )
+        emscripten_sleep( pcbjam_open::testParkMs() );
+
+    return ok;
+}
+
+// JS-pollable open-in-flight probe (open_gate.h): the web shell defers the
+// collab/presence attach until the open chain has truly completed.
+static bool kicadOpenFileBusy()
+{
+    return pcbjam_open::busy();
+}
+
+// Test-only (collab-load-fuzz): arm the deterministic open parks.
+static void kicadTestSetOpenPark( int aMs )
+{
+    pcbjam_open::testParkMs() = aMs;
 }
 
 
@@ -500,6 +527,8 @@ EMSCRIPTEN_BINDINGS(kicad_editor) {
     function("kicadCollabFiberBusy", &kicadCollabFiberBusyProbe);
     // Programmatic file open (preferred over UI automation from the web app).
     function("kicadOpenFile", &kicadOpenFile);
+    function("kicadOpenFileBusy", &kicadOpenFileBusy);
+    function("kicadTestSetOpenPark", &kicadTestSetOpenPark);
 
     // Canvas-only mobile mode (features/mobile).
     function("kicadSetChrome", &kicadSetChrome);

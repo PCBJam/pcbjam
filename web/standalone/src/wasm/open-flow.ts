@@ -15,6 +15,8 @@
 export interface OpenFlowOptions {
   log: (msg: string) => void;
   timeoutMs?: number;
+  /** Override the load-settle budget (kicadOpenFileBusy poll) — tests only. */
+  settleTimeoutMs?: number;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -111,6 +113,79 @@ function schematicLoaded(win: ToolWindow): boolean {
   return title.length > 0 && !/untitled/i.test(title);
 }
 
+/**
+ * How long a load may stay in flight before we give up waiting and boot on
+ * without collab (slow Firefox + big board loads run minutes, and the poll is
+ * free — see waitForOpenSettled).
+ */
+const OPEN_SETTLE_TIMEOUT_MS = 300_000;
+
+/**
+ * A modal dialog other than the load's own progress dialog is up — the open
+ * chain is parked waiting for USER input (file-version confirm, remap…). We
+ * must not keep the shell blocked (the boot overlay would sit on top of the
+ * dialog, unanswerable), so the settle wait treats this as "proceed".
+ */
+function inputDialogVisible(win: ToolWindow): boolean {
+  return visible(win, {}).some(
+    (e) => /Dialog/.test(e.typeName) && !/Progress/i.test(e.typeName),
+  );
+}
+
+/**
+ * Wait until the kicadOpenFile Asyncify chain has TRULY completed.
+ *
+ * kicadOpenFile suspends and unwinds back to JS long before the load finishes;
+ * for the whole load the chain stays parked mid-mutation of the board/schematic.
+ * Any bare embind entry that walks the model during such a park (collab
+ * snapshot, presence bind) can virtual-dispatch through a half-built item and
+ * trap with "indirect call signature mismatch" — the same reentrancy class the
+ * wx dispatch interlock guards, but through a JS entry it cannot see. The old
+ * readiness signal (the "untitled" title heuristic below) passes IMMEDIATELY
+ * for any real project (the pre-open title is just "PCB Editor"), so it never
+ * actually gated anything.
+ *
+ * The truthful signal is the wasm's kicadOpenFileBusy probe (open_gate.h): an
+ * RAII counter on the open's C++ stack, held across every park, dropped when
+ * OpenProjectFiles really returns. Feature-detected — wasm builds predating it
+ * fall back to the legacy title poll. Returns false when the load never
+ * settled (caller reports "failed"; the shell then skips the wasm-entering
+ * collab/presence attach instead of trapping).
+ */
+async function waitForOpenSettled(
+  win: ToolWindow,
+  log: (m: string) => void,
+  legacyTimeoutMs: number,
+  settleTimeoutMs = OPEN_SETTLE_TIMEOUT_MS,
+): Promise<boolean> {
+  const mod = win.Module as { kicadOpenFileBusy?: () => boolean } | undefined;
+  const busyFn = mod?.kicadOpenFileBusy;
+  if (typeof busyFn === "function") {
+    const settled = await waitFor(
+      () => !busyFn.call(mod) || inputDialogVisible(win),
+      settleTimeoutMs,
+    );
+    if (!settled) {
+      log("[open] load chain never settled (kicadOpenFileBusy stuck) — giving up");
+      return false;
+    }
+    if (busyFn.call(mod)) {
+      log("[open] modal dialog during load — proceeding so it stays answerable");
+    } else {
+      log("[open] load chain settled (kicadOpenFileBusy cleared)");
+    }
+    return true;
+  }
+  // Legacy wasm without the probe: the old title heuristic.
+  const loaded = await waitFor(() => schematicLoaded(win), legacyTimeoutMs);
+  if (!loaded) {
+    log("[open] kicadOpenFile did not load the schematic within timeout");
+    return false;
+  }
+  log(`[open] schematic loaded: ${win.document.title}`);
+  return true;
+}
+
 export async function openFileInTool(
   win: ToolWindow,
   absPath: string,
@@ -141,18 +216,14 @@ export async function openFileInTool(
 
   // Strategy 1: programmatic hook (preferred — deterministic, no UI automation).
   // Because the call is Asyncify-async we can't trust its return value; instead
-  // we invoke it and poll the frame title until the schematic loads. We must NOT
-  // fall back to UI automation while the hook is in flight — synthesizing input
-  // would re-enter the suspended Asyncify call and corrupt it.
+  // we invoke it and wait for the open chain to settle (kicadOpenFileBusy — see
+  // waitForOpenSettled). We must NOT fall back to UI automation while the hook
+  // is in flight — synthesizing input would re-enter the suspended Asyncify
+  // call and corrupt it.
   if (hasProgrammaticHook(win)) {
     invokeProgrammaticOpen(win, absPath, log);
-    const loaded = await waitFor(() => schematicLoaded(win), timeoutMs);
-    if (loaded) {
-      log(`[open] schematic loaded: ${win.document.title}`);
-      return "programmatic";
-    }
-    log("[open] kicadOpenFile did not load the schematic within timeout");
-    return "failed";
+    const settled = await waitForOpenSettled(win, log, timeoutMs, opts.settleTimeoutMs);
+    return settled ? "programmatic" : "failed";
   }
 
   // Strategy 2: UI automation fallback (EXPERIMENTAL, fragile). Only when the

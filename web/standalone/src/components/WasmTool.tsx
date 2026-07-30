@@ -1514,7 +1514,7 @@ export function WasmTool({
         const docResult = await docSessionReady;
         if ("error" in docResult) throw docResult.error;
         const { session, targetBytes } = docResult;
-        await driveProjectIntoTool(win, {
+        const openResult = await driveProjectIntoTool(win, {
           tool,
           slug,
           files,
@@ -1556,6 +1556,12 @@ export function WasmTool({
             );
           }
         }
+        // Everything below drives BARE embind entries that walk the loaded
+        // model (collab snapshot/adopt, presence bind, drift). Deferred until
+        // the open chain settled (openResult) — calling them while the
+        // kicadOpenFile Asyncify chain is still parked mid-load walks a
+        // half-built model and traps ("indirect call signature mismatch").
+        const attachCollabAndPresence = async () => {
         // Drift detection: while a sheet is collaboratively edited, periodically (every N
         // edits + at session end) compare the WASM serialization to the Y.Doc and report
         // divergence. Gated on a real collab session; re-targeted per active sheet below.
@@ -1660,6 +1666,23 @@ export function WasmTool({
               targetPath,
               log: append,
             });
+          }
+        }
+        };
+        if (openResult === "failed") {
+          // The load never settled (or a legacy-wasm open timed out): entering
+          // the wasm now would race the parked open chain. Boot on without
+          // collab/presence — the board stays viewable, saves still route.
+          append("[collab] file open never settled — collab/presence disabled for this session");
+        } else {
+          try {
+            await attachCollabAndPresence();
+          } catch (err) {
+            // Version-skew refusal must still surface as the boot error.
+            if ((err as { name?: string } | undefined)?.name === "SexprVersionError") throw err;
+            // Degrade, don't die: a residual wasm trap here (reentrancy during
+            // some other parked chain) used to fail the whole boot.
+            append(`[collab] attach failed — continuing without collab: ${String(err)}`);
           }
         }
         // Lib editors: the enumerate gate holds their whole-set hydrate until

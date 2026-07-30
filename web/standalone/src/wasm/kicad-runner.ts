@@ -141,11 +141,17 @@ function synthesizeProjectFile(win: ToolWindow, opts: DriveOptions): void {
  * Drive a project into an already-booting tool runtime (booted into `win` by
  * bootKicadTool — the top-level window). Waits for the Emscripten FS, syncs the
  * project tree into MEMFS, then auto-opens the target file.
+ *
+ * Returns the open outcome: "failed" means the load never settled — the caller
+ * must NOT drive further bare embind entries that walk the model (collab
+ * snapshot, presence bind); they'd race the still-parked open chain and can
+ * trap ("indirect call signature mismatch"). "none" = no open was attempted
+ * (fileless tool / no target).
  */
 export async function driveProjectIntoTool(
   win: ToolWindow,
   opts: DriveOptions,
-): Promise<void> {
+): Promise<"programmatic" | "ui" | "failed" | "none"> {
   const { log, onStatus } = opts;
 
   onStatus("Waiting for runtime…");
@@ -159,11 +165,13 @@ export async function driveProjectIntoTool(
   await syncProjectToMemfs(win, opts);
   synthesizeProjectFile(win, opts);
 
+  let result: "programmatic" | "ui" | "failed" | "none" = "none";
   if (opts.targetPath && !FILELESS_TOOLS.has(opts.tool)) {
     onStatus("Opening file…");
     const abs = memfsFilePath(opts.slug, opts.targetPath);
-    const result = await openFileInTool(win, abs, { log });
+    result = await openFileInTool(win, abs, { log });
     log(`[open] result: ${result}`);
   }
   onStatus("");
+  return result;
 }
