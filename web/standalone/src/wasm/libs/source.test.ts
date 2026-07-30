@@ -152,3 +152,59 @@ describe("installLibsProvider — fat list (arg=bodies)", () => {
     expect(await request("index", "/mnt/pcbjam/", "", "footprint")).toBeNull();
   });
 });
+
+describe("installLibsProvider — enumerate gate (load-fanout)", () => {
+  beforeEach(() => {
+    (globalThis as unknown as { window: unknown }).window = {
+      location: { search: "" },
+      dispatchEvent: () => true,
+    };
+  });
+  afterEach(() => {
+    delete (globalThis as unknown as { window?: unknown }).window;
+  });
+
+  it("parks list (names AND bodies) until the gate resolves; get is never gated", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const gateKinds: string[] = [];
+    installLibsProvider(
+      baseSource({ getAllItems: async () => itemsAsBytes() }),
+      () => {},
+      {
+        enumerateGate: (kind) => {
+          gateKinds.push(kind);
+          return gate;
+        },
+      },
+    );
+    const request = (
+      globalThis as unknown as { window: { kicadLibs: { request: Req } } }
+    ).window.kicadLibs.request;
+
+    let fatDone = false;
+    let namesDone = false;
+    const fat = request("list", libUri("Device"), "bodies", "symbol").then((r) => {
+      fatDone = true;
+      return r;
+    });
+    const names = request("list", libUri("Device"), "", "symbol").then((r) => {
+      namesDone = true;
+      return r;
+    });
+    // A user-triggered item open resolves while the gate is still held — only
+    // enumerates are parked.
+    await expect(request("get", libUri("Device"), "R", "symbol")).resolves.toBe(
+      "(kicad_symbol_lib (symbol R))",
+    );
+    expect(fatDone).toBe(false);
+    expect(namesDone).toBe(false);
+
+    release();
+    expect(parseFramed(await fat, "symbols")).toHaveLength(2);
+    expect(JSON.parse((await names) as string)).toEqual({ symbols: ["R", "C"] });
+    expect(gateKinds).toEqual(["symbol", "symbol"]);
+  });
+});

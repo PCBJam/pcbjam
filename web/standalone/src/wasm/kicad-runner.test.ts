@@ -94,6 +94,24 @@ describe("MEMFS project staging", () => {
     expect(peak).toBeLessThanOrEqual(8);
   });
 
+  it("reports per-file progress from 0 up to the total", async () => {
+    const { win } = fakeWin();
+    const files = ["a.kicad_sym", "b.kicad_sym", "c.kicad_sym"];
+    const seen: Array<[number, number]> = [];
+
+    await driveProjectIntoTool(win, {
+      ...opts(files, async () => new Uint8Array([1])),
+      onFileProgress: (done, total) => seen.push([done, total]),
+    });
+
+    // One up-front (0, total) so the line shows immediately, then one tick per
+    // staged file, ending exactly at the total.
+    expect(seen[0]).toEqual([0, files.length]);
+    expect(seen).toHaveLength(files.length + 1);
+    expect(seen.map(([done]) => done).sort((a, b) => a - b)).toEqual([0, 1, 2, 3]);
+    expect(seen.at(-1)?.[1]).toBe(files.length);
+  });
+
   it("rejects when a fetch fails", async () => {
     const { win } = fakeWin();
     const files = ["ok1.kicad_sym", "bad.kicad_sym", "ok2.kicad_sym"];

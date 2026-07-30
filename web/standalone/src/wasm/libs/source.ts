@@ -13,7 +13,10 @@ export interface LibInfo {
   /** Display nickname for the sym-lib-table row. */
   name: string;
   description?: string | null;
-  /** 'origin' | 'mirror' | 'user' — drives "ensure a user lib exists" at boot. */
+  /** 'origin' | 'mirror' | 'user' | 'org' — drives "ensure a writable lib
+   *  exists" at boot. 'org' is the private platform's name for a scope's own
+   *  writable lib (renamed from 'user' in the team-libs rework); the example
+   *  backend and local sources still say 'user'. */
   type?: string;
   /** Item count, when the source knows it cheaply (manifest/backend) — shown as a
    *  badge in the home-page library list. Omitted ⇒ no badge. */
@@ -310,9 +313,26 @@ export function buildFpLibTable(libsList: LibInfo[]): string {
  *   "index" -> the publish-time footprint index JSON (source-global; lib arg
  *              ignored) / null when the source has none — see getFpIndex.
  */
+export interface LibsProviderOptions {
+  /**
+   * Hold every enumerate ("list", including the fat "bodies" variant — a plain
+   * name list also opens the lib's sync stack, i.e. cold-fetches its bundle)
+   * for the given kind until the returned promise resolves. The lib editors
+   * pass their presync-settled promise: their frame eagerly enumerates EVERY
+   * lib of its kind at boot, one mutex-serialized bridge crossing at a time
+   * (see g_pcbjamProxyMutex in the plugins), so a cold lib would network-fetch
+   * inside its serial crossing — the gate lets the 8-wide parallel presync
+   * warm IndexedDB first and the crossings become local read + parse.
+   * MUST always resolve (the presync is best-effort and never rejects);
+   * "get"/"save"/"index" are user-triggered and never gated.
+   */
+  enumerateGate?: (kind: string) => Promise<void>;
+}
+
 export function installLibsProvider(
   source: LibsSource,
   log: (msg: string) => void,
+  opts?: LibsProviderOptions,
 ): void {
   if (window.kicadLibs) return;
   const delay = artificialDelayMs();
@@ -353,6 +373,9 @@ export function installLibsProvider(
     try {
       switch (op) {
         case "list": {
+          // Enumerate gate (load-fanout): park this crossing (Asyncify) until
+          // the caller's precondition — typically the presync — has settled.
+          if (opts?.enumerateGate) await opts.enumerateGate(kind);
           // Each plugin parses its own key: footprints / symbols.
           const key = kind === "footprint" ? "footprints" : "symbols";
           // "bodies" (arg) = the fat list: every item's body in one crossing, so

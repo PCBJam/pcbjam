@@ -167,8 +167,9 @@ interface ConsentInfo {
   toolRawBytes: number | null;
   /** A previous version of this bundle was downloaded → word it as an update. */
   update: boolean;
-  /** The lib kind this tool pre-syncs — warmed in the background once the
-   *  editor is open, not ahead of it (see startLibPresync). */
+  /** The lib kind this tool pre-syncs — warmed in parallel with the wasm
+   *  download (the boot fan-out; see startLibPresync). Editors with a project
+   *  file open without waiting on it; the lib editors wait (enumerate gate). */
   libNowKind: "symbol" | "footprint" | null;
   libNow: LibsSyncState | null;
   /** The other kind a merged-bundle session can pull lazily ("only if used"). */
@@ -954,6 +955,12 @@ export function WasmTool({
     done: number;
     total: number;
   } | null>(null);
+  // Project-file staging progress (fetch + MEMFS write, overlapping the wasm
+  // download) for the boot overlay's "Project files" line. Null when idle/done.
+  const [fileSync, setFileSync] = React.useState<{
+    done: number;
+    total: number;
+  } | null>(null);
   // Last lib error (e.g. a backend 404 on open), shown as a dismissible toast.
   const [libError, setLibError] = React.useState<string | null>(null);
   // A collaborator updated library items that are PLACED in the open document
@@ -1361,24 +1368,34 @@ export function WasmTool({
           setConsent(null);
           if (!ok) return; // unmounted while waiting — never start the download
         }
-        // Pre-warm the lib bundles into IDB — started LATER (right after the
-        // project is staged + opened, below). It used to run in parallel with the
-        // wasm download, but a scope with ~155 team libs then fired hundreds of
-        // bundle fetches that contended with the 26MB+ wasm and the project's own
-        // files on the same connection, so opening a board took minutes before
-        // anything was interactive. The warm-up is an OPTIMIZATION (the editor's
-        // first enumerate reads a warm cache instead of freezing on N cold bundle
-        // fetches), never a precondition — so it yields to everything the user is
-        // actually blocked on and fills in behind them.
+        // Boot fan-out (load-fanout): everything that doesn't need the wasm
+        // starts NOW, in parallel with the (large) wasm download.
+        //
+        // - Lib presync: warms the per-lib IDB bundles. It briefly lived AFTER
+        //   the project open (2a47103) because opening a board took minutes —
+        //   but the real problem was ordering (libs awaited before the project
+        //   files, which fetched serially), not bandwidth: the ~155 lib
+        //   requests are latency-bound, and the files now stage 8-wide the
+        //   moment FS is up. So the presync overlaps the whole download again.
+        // - Doc-room connect: the collab websocket is up BEFORE the project
+        //   files are fetched, so a file changed while we load still reaches
+        //   this client (the room materializes the target; sheet/sibling rooms
+        //   bind after open, as before).
+        // - Project files: driveProjectIntoTool below starts fetching as soon
+        //   as the glue scripts have evaluated — the non-modularized glue runs
+        //   FS.staticInit() at script-eval, so MEMFS staging overlaps the wasm
+        //   download/compile rather than following it.
         const libKind = LIB_KIND_FOR_TOOL[tool];
-        const startLibPresync = () => {
-          if (!source?.presync || !libKind) return;
-          // Fire-and-forget + best-effort, unchanged: a lib that fails to presync
-          // still loads lazily later, and the SyncStack dedups — a lib the wasm
-          // reaches mid-presync just awaits the same in-flight fetch. The signal
-          // stops the walk on unmount; the setLibSync guards keep a late progress
-          // callback from re-lighting the indicator of a torn-down session.
-          void source
+        // Best-effort and NEVER rejects: `presyncSettled` resolves when the
+        // warm-up finished, failed, or was aborted (immediately when the source
+        // has none). A lib that fails to presync still loads lazily later, and
+        // the SyncStack dedups — a lib the wasm reaches mid-presync just awaits
+        // the same in-flight fetch. The signal stops the walk on unmount; the
+        // setLibSync guards keep a late progress callback from re-lighting the
+        // indicator of a torn-down session.
+        const startLibPresync = (): Promise<void> => {
+          if (!source?.presync || !libKind) return Promise.resolve();
+          return source
             .presync({
               kind: libKind,
               signal: presyncAbort.signal,
@@ -1393,6 +1410,41 @@ export function WasmTool({
               setLibSync(null);
             });
         };
+        const presyncSettled = startLibPresync();
+        // Lib editors (fileless): their frame eagerly enumerates EVERY lib of
+        // its kind at boot, one mutex-serialized bridge crossing at a time
+        // (g_pcbjamProxyMutex in the plugins) — a cold lib would network-fetch
+        // inside its serial crossing. Hold enumerates until the 8-wide presync
+        // settles so the crossings read warm IDB. pcbnew/eeschema are NOT
+        // gated: their choosers open on demand, and a mid-session park with no
+        // overlay would read as a hang.
+        const enumerateGate =
+          FILELESS_TOOLS.has(tool) && libKind
+            ? (kind: string) =>
+                kind === libKind ? presyncSettled : Promise.resolve()
+            : undefined;
+        // Connect the doc's collab room in parallel with the wasm download (it
+        // needs identity, not the wasm). Errors are captured and rethrown at
+        // the await below — rejecting here would surface as an unhandled
+        // rejection while the download is still running.
+        const docSessionReady: Promise<
+          | { session?: KicadDocSession; targetBytes?: Uint8Array }
+          | { error: unknown }
+        > = (async () => {
+          try {
+            await identityReady;
+            return await maybeConnectDocSession(win, {
+              docSource,
+              tool,
+              scopeId,
+              projectId,
+              targetPath,
+              log: append,
+            });
+          } catch (error) {
+            return { error };
+          }
+        })();
         await bootKicadTool({
           tool,
           base,
@@ -1409,6 +1461,7 @@ export function WasmTool({
           warmStart: warm,
           onWasmInstantiated: () => markWasmDownloaded(meta.bundle, meta.ver),
           libsSource: source,
+          enumerateGate,
           // 3D models: lazy per-board source (null unless the CDN manifest is
           // configured) — feeds the board prescan + the viewer's ensure fallback.
           modelsSource: modelsSourceConfig(),
@@ -1456,14 +1509,11 @@ export function WasmTool({
                 },
               }),
         });
-        const { session, targetBytes } = await maybeConnectDocSession(win, {
-          docSource,
-          tool,
-          scopeId,
-          projectId,
-          targetPath,
-          log: append,
-        });
+        // The room connect started in the fan-out above — settle it before
+        // staging so the target file materializes from the doc when it has one.
+        const docResult = await docSessionReady;
+        if ("error" in docResult) throw docResult.error;
+        const { session, targetBytes } = docResult;
         await driveProjectIntoTool(win, {
           tool,
           slug,
@@ -1478,15 +1528,9 @@ export function WasmTool({
               : fetchBytes,
           log: append,
           onStatus: setStatus,
+          onFileProgress: (done, total) =>
+            setFileSync(done >= total ? null : { done, total }),
         });
-        // Everything the user is blocked on has now downloaded: the wasm bundle
-        // is up and the project's own files are staged into MEMFS with the target
-        // file open. NOW warm the scope's lib bundles, in the background — the
-        // boot tail below (collab rooms, wx UI build) is latency-bound chatter,
-        // not bandwidth, so the pre-sync no longer delays the editor becoming
-        // interactive. Whatever it hasn't reached by the time the user opens a
-        // chooser is fetched lazily on demand, as it always was.
-        startLibPresync();
         // Read-only viewer (read-only-viewer): lock the wasm frame BEFORE the
         // boot overlay drops — the file is open, so the frame exists; poll the
         // export like the chrome toggle does. Fails CLOSED (boot error overlay):
@@ -1618,6 +1662,10 @@ export function WasmTool({
             });
           }
         }
+        // Lib editors: the enumerate gate holds their whole-set hydrate until
+        // the presync settles — wait for it here too, so the boot overlay (with
+        // its ticking lib line) stays up instead of revealing an empty tree.
+        if (enumerateGate) await presyncSettled;
         // Tool booted + project opened. Wait for the wx UI to actually build
         // before dropping the overlay, so we don't reveal a still-blank editor.
         await waitForWxUi(win);
@@ -1759,11 +1807,21 @@ export function WasmTool({
                 {status || "Loading…"}
               </p>
               <DownloadProgress progress={progress} />
-              {/* The lib pre-sync deliberately has NO line here anymore: it now
-                  starts only once the wasm + project files are in (see the boot
-                  IIFE), so the overlay would be showing a counter the user is not
-                  waiting on. Its progress surfaces in the unobtrusive bottom-left
-                  indicator below, after `ready`. */}
+              {/* The parallel fan-out's other progress: project files staging
+                  into MEMFS, and the lib warm-up. The lib line says "checking"
+                  on purpose — the walk visits every lib but downloads only new
+                  or changed ones, so a bare 15/155 next to the consent dialog's
+                  MB figures would read as 155 big downloads. */}
+              {fileSync && fileSync.total > 0 && (
+                <p className="whitespace-pre font-mono text-xs text-white/50">
+                  Project files — {String(fileSync.done).padStart(String(fileSync.total).length, " ")}/{fileSync.total}
+                </p>
+              )}
+              {libSync && (
+                <p className="whitespace-pre font-mono text-xs text-white/50">
+                  {libSyncLabel(libSync)}
+                </p>
+              )}
               <p className="font-mono text-xs text-white/40">
                 {warmBoot
                   ? "Loading from your browser's cache — no download needed."
@@ -2101,8 +2159,8 @@ function libStateLabel(s: LibsSyncState | null): string | null {
 function libNowDetail(s: LibsSyncState | null): string {
   const base = "this editor browses them";
   // No warmth answer at all: say only what stays true regardless of counts —
-  // the warm-up runs in the background once the editor is open (it moved off
-  // the critical path, so "downloaded now" would be wrong as well as vague).
+  // the warm-up runs alongside the editor download and finishes in the
+  // background, so "downloaded now" would overpromise as well as vague.
   if (!s || s.total === 0) return `${base} — fetched in the background`;
   const cold = s.total - s.warm;
   if (cold === 0) {
@@ -2241,15 +2299,18 @@ function DownloadConsent({
 }
 
 /**
- * Fixed-width lib pre-sync line, e.g. "Syncing symbol libraries —  42/208".
- * The prefix is constant and `done` is space-padded to `total`'s digit count,
- * so the text stays still while the counter ticks (render it in a font-mono +
- * whitespace-pre element so the pad spaces hold their width).
+ * Fixed-width lib pre-sync line, e.g. "Checking symbol libraries —  42/208".
+ * "Checking", not "downloading": the walk visits every lib of the kind but
+ * downloads only the new/changed ones — a bare counter read as 155 downloads
+ * (standalone-load-ux follow-up). The prefix is constant and `done` is
+ * space-padded to `total`'s digit count, so the text stays still while the
+ * counter ticks (render it in a font-mono + whitespace-pre element so the pad
+ * spaces hold their width).
  */
 function libSyncLabel(s: { kind: string; done: number; total: number }): string {
   const total = String(s.total);
   const done = String(Math.min(s.done, s.total)).padStart(total.length, " ");
-  return `Syncing ${s.kind} libraries — ${done}/${total}`;
+  return `Checking ${s.kind} libraries — ${done}/${total}`;
 }
 
 /**

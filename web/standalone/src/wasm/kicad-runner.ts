@@ -22,6 +22,10 @@ export interface DriveOptions {
   fetchBytes: (relPath: string) => Promise<Uint8Array>;
   log: (msg: string) => void;
   onStatus: (text: string) => void;
+  /** Per-file staging progress (files fetched+written so far, total) — drives
+   *  the boot overlay's "Project files — n/m" line. Reported once up front
+   *  with done=0 so the line appears as soon as staging starts. */
+  onFileProgress?: (done: number, total: number) => void;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -83,11 +87,14 @@ const STAGE_CONCURRENCY = 8;
 async function syncProjectToMemfs(win: ToolWindow, opts: DriveOptions): Promise<void> {
   getFS(win).mkdirTree(memfsProjectDir(opts.slug));
 
+  let staged = 0;
+  opts.onFileProgress?.(0, opts.files.length);
   const queue = [...opts.files];
   const worker = async (): Promise<void> => {
     for (let file = queue.shift(); file; file = queue.shift()) {
       const bytes = await opts.fetchBytes(file.path);
       restageFile(win, opts.slug, file.path, bytes, opts.log);
+      opts.onFileProgress?.(++staged, opts.files.length);
       // 3D models: prefetch every model this board references (R2 → IDB → MEMFS)
       // so the 3D viewer's first open resolves locally. Fire-and-forget — project
       // open never waits on it; a ref that misses falls back to the C++ per-model

@@ -30,6 +30,18 @@ import pcbjamDarkTheme from "./themes/pcbjam-dark.json";
 const DEFAULT_USER_LIB_NAME = "My Symbols";
 
 /**
+ * True when any per-kind lib list already contains a writable lib — "user" on
+ * the example backend / local sources, "org" on the private platform (a scope's
+ * own writable lib; renamed from "user" in the team-libs rework). Missing "org"
+ * here made boot re-create "My Symbols" on every load, which the backend 409'd.
+ */
+export function hasWritableLib(lists: Iterable<LibInfo[]>): boolean {
+  return [...lists].some((libs) =>
+    libs.some((l) => l.type === "user" || l.type === "org"),
+  );
+}
+
+/**
  * Boot a KiCad tool directly in the main React document — no iframe.
  *
  * This is a faithful port of the proven harness HTML (tests/apps/kicad/<tool>.html):
@@ -85,6 +97,12 @@ export interface BootOptions {
    *  (empty lib-tables are seeded). Its libs become sym-lib-table and/or
    *  fp-lib-table rows depending on the tool (see `libKinds` in doBoot). */
   libsSource?: LibsSource | null;
+  /** Hold provider enumerates for a kind until this resolves — the lib editors
+   *  pass their presync-settled promise so the boot-time whole-set hydrate
+   *  reads a warm IndexedDB instead of cold-fetching one lib at a time inside
+   *  the serialized bridge crossings. See `LibsProviderOptions.enumerateGate`.
+   *  Never gates boot's own `listLibs` table seeding (a direct source call). */
+  enumerateGate?: (kind: string) => Promise<void>;
   /** 3D model source (lazy, per-board). Null/omitted ⇒ the viewer renders the
    *  bare board only, exactly as before models existed. */
   modelsSource?: Model3dSource | null;
@@ -237,6 +255,7 @@ async function doBoot(opts: BootOptions): Promise<void> {
     onWasmInstantiated,
     libsSource,
     modelsSource,
+    enumerateGate,
   } = opts;
   // Truthful fetch label: a warm start (download-completion marker present)
   // reads from the HTTP cache, so "Downloading" would be a lie — and vice versa.
@@ -298,7 +317,7 @@ async function doBoot(opts: BootOptions): Promise<void> {
   }
 
   if (libsSource && libKinds.length) {
-    installLibsProvider(libsSource, log);
+    installLibsProvider(libsSource, log, { enumerateGate });
     // 3D models ride the same provider (kind "model3d"): the C++ ensure fallback
     // and the board prescan both resolve through this source.
     if (modelsSource) {
@@ -310,12 +329,9 @@ async function doBoot(opts: BootOptions): Promise<void> {
       // kind-agnostic containers and appear in every list).
       const listsByKind = new Map<"symbol" | "footprint", LibInfo[]>();
       for (const k of libKinds) listsByKind.set(k, await libsSource.listLibs(k));
-      // Ensure the owner has at least one writable user lib to save items into.
-      // A user lib holds either kind, so the created lib joins every table.
-      const hasUserLib = [...listsByKind.values()].some((libs) =>
-        libs.some((l) => l.type === "user"),
-      );
-      if (libsSource.createLib && !hasUserLib) {
+      // Ensure the owner has at least one writable lib to save items into.
+      // A writable lib holds either kind, so the created lib joins every table.
+      if (libsSource.createLib && !hasWritableLib(listsByKind.values())) {
         const created = await libsSource.createLib(DEFAULT_USER_LIB_NAME);
         if (created) {
           for (const libs of listsByKind.values()) libs.push(created);
