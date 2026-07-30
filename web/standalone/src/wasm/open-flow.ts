@@ -17,6 +17,13 @@ export interface OpenFlowOptions {
   timeoutMs?: number;
   /** Override the load-settle budget (kicadOpenFileBusy poll) — tests only. */
   settleTimeoutMs?: number;
+  /**
+   * Replace the programmatic invocation (default: `Module.kicadOpenFile(path)`)
+   * while keeping the readiness handling around it — the frame wait, the
+   * settle gate, the no-UI-automation-while-parked rule. GerbView uses this to
+   * open a whole fabrication set through `kicadOpenFiles`.
+   */
+  open?: () => void;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -220,8 +227,9 @@ export async function openFileInTool(
   // waitForOpenSettled). We must NOT fall back to UI automation while the hook
   // is in flight — synthesizing input would re-enter the suspended Asyncify
   // call and corrupt it.
-  if (hasProgrammaticHook(win)) {
-    invokeProgrammaticOpen(win, absPath, log);
+  if (opts.open || hasProgrammaticHook(win)) {
+    if (opts.open) opts.open();
+    else invokeProgrammaticOpen(win, absPath, log);
     const settled = await waitForOpenSettled(win, log, timeoutMs, opts.settleTimeoutMs);
     return settled ? "programmatic" : "failed";
   }

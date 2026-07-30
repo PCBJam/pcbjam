@@ -1445,6 +1445,44 @@ export function WasmTool({
             return { error };
           }
         })();
+        // Project presence room, same fan-out slot as the doc room: it needs
+        // identity and a socket, NOT the wasm, so the websocket handshake
+        // happens while the wasm still downloads instead of queueing behind a
+        // multi-second board load (which also starves the handshake — Firefox
+        // drops it as "interrupted while the page was loading"). Only the
+        // wasm-bound half (bindKicadPresence) waits for the open to settle.
+        // Never rejects: presence is best-effort, exactly as before.
+        // Read-only viewers skip the room entirely — the server rejects their
+        // connection anyway (presence requires write).
+        const collabOptOut =
+          new URLSearchParams(win.location.search).get("collab") === "0" ||
+          new URLSearchParams(win.location.search).get("collab") === "false";
+        const crossAppReady: Promise<CrossAppHandle | undefined> =
+          (tool === "pcbnew" || tool === "eeschema") && !collabOptOut && !readOnly
+            ? (async () => {
+                try {
+                  await identityReady;
+                  return await startCrossAppPresence({
+                    scopeId,
+                    projectId,
+                    provider: yjsProviderConfig(),
+                    user: presenceUser(),
+                    tool,
+                  });
+                } catch (err) {
+                  append(`[collab] cross-app presence connect failed: ${String(err)}`);
+                  return undefined;
+                }
+              })()
+            : Promise.resolve(undefined);
+        // Take ownership the moment it lands — a boot that dies before the
+        // handoff below would otherwise leave this socket open, since unmount
+        // only tears down what reached crossAppRef.
+        void crossAppReady.then((h) => {
+          if (!h) return;
+          if (presyncAbort.signal.aborted) h.destroy(); // unmounted mid-connect
+          else crossAppRef.current = h;
+        });
         await bootKicadTool({
           tool,
           base,
@@ -1570,25 +1608,14 @@ export function WasmTool({
         // Cross-app selection (0006): join the project-wide presence room BEFORE
         // the per-file collab starts, so the first startPresence bind already
         // routes xsel. Honors the same ?collab=0 opt-out as the room collab.
-        const collabOptOut =
-          new URLSearchParams(win.location.search).get("collab") === "0" ||
-          new URLSearchParams(win.location.search).get("collab") === "false";
-        // Read-only viewers skip the project presence room entirely — the
-        // server rejects their connection anyway (presence requires write).
-        if ((tool === "pcbnew" || tool === "eeschema") && !collabOptOut && !readOnly) {
-          crossAppRef.current =
-            (await startCrossAppPresence({
-              scopeId,
-              projectId,
-              provider: yjsProviderConfig(),
-              user: presenceUser(),
-              tool,
-            })) ?? null;
-          // Test/debug handle (mirrors __pcbjamComments): lets the e2e assert
-          // the project-room peer view without driving pixels.
-          (win as { __pcbjamCrossApp?: CrossAppHandle | null }).__pcbjamCrossApp =
-            crossAppRef.current;
-        }
+        // Cross-app presence: the ROOM was joined back in the boot fan-out
+        // (pure network + Y.Doc, no wasm) — only the handoff to the wasm-bound
+        // presence below has to wait for the open. Settle it here.
+        crossAppRef.current = (await crossAppReady) ?? null;
+        // Test/debug handle (mirrors __pcbjamComments): lets the e2e assert
+        // the project-room peer view without driving pixels.
+        (win as { __pcbjamCrossApp?: CrossAppHandle | null }).__pcbjamCrossApp =
+          crossAppRef.current;
 
         if (tool === "eeschema") {
           // Multi-room (subschema) collab: every .kicad_sch is its own warm room; the

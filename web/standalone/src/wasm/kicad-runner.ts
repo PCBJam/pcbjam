@@ -1,5 +1,5 @@
 import type { Tool } from "@pcbjam/shared";
-import { FILELESS_TOOLS } from "@pcbjam/shared";
+import { FILELESS_TOOLS, toolForFile } from "@pcbjam/shared";
 import { defaultKicadPro } from "../lib/new-file";
 import { memfsFilePath, memfsProjectDir } from "./constants";
 import { prescanBoardModels } from "./libs/models-bridge";
@@ -138,6 +138,70 @@ function synthesizeProjectFile(win: ToolWindow, opts: DriveOptions): void {
 }
 
 /**
+ * Every gerber/drill sibling of `targetPath`, in stable filename order.
+ *
+ * A fabrication set is a stack — copper layers, mask, silk, edge cuts, plus the
+ * Excellon drill files — and they are conventionally emitted into one folder.
+ * Opening only the clicked layer shows a near-empty canvas, so the clicked
+ * FOLDER is the real unit. `toolForFile` owns the extension list (it is what
+ * decided this route is gerbview in the first place); drill files come along
+ * because GerbView routes them to the Excellon loader itself.
+ */
+export function gerberSiblings(files: ToolFile[], targetPath: string): string[] {
+  const slash = targetPath.lastIndexOf("/");
+  const dir = slash < 0 ? "" : targetPath.slice(0, slash + 1);
+  const inDir = files
+    .map((f) => f.path)
+    .filter((path) => {
+      if (!path.startsWith(dir)) return false;
+      if (path.slice(dir.length).includes("/")) return false; // nested deeper
+      return toolForFile(path) === "gerbview";
+    })
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  // The clicked file always opens, even if its extension is unusual enough that
+  // toolForFile missed it (the route named it, so the user meant it).
+  return inDir.includes(targetPath) ? inDir : [targetPath, ...inDir];
+}
+
+/**
+ * Open a whole gerber set in GerbView. Prefers the multi-file embind entry
+ * (`kicadOpenFiles`); a bundle predating it falls back to the single-file open
+ * of just the clicked layer, which is the old behavior and still renders.
+ */
+async function openGerberSet(
+  win: ToolWindow,
+  opts: DriveOptions,
+): Promise<"programmatic" | "ui" | "failed"> {
+  const paths = gerberSiblings(opts.files, opts.targetPath!);
+  const abs = paths.map((path) => memfsFilePath(opts.slug, path));
+  return openFileInTool(win, abs[0]!, {
+    log: opts.log,
+    open: () => {
+      // Feature-detect HERE, not before the call: embind registers the Module
+      // functions during runtime init, which lands AFTER the Emscripten FS is
+      // ready — i.e. after we get here from driveProjectIntoTool. Probing any
+      // earlier always misses and silently degrades to the single-file open
+      // (openFileInTool's frame wait is what guarantees the exports exist).
+      const mod = win.Module as
+        | {
+            kicadOpenFiles?: (json: string) => boolean;
+            kicadOpenFile?: (path: string) => unknown;
+          }
+        | undefined;
+      if (typeof mod?.kicadOpenFiles === "function") {
+        opts.log(`[open] gerbview: opening ${abs.length} file(s) from ${opts.targetPath}`);
+        mod.kicadOpenFiles(JSON.stringify(abs));
+        return;
+      }
+      opts.log(
+        "[open] gerbview bundle has no kicadOpenFiles — opening the clicked layer only",
+      );
+      mod?.kicadOpenFile?.(abs[0]!);
+    },
+  });
+}
+
+/**
  * Drive a project into an already-booting tool runtime (booted into `win` by
  * bootKicadTool — the top-level window). Waits for the Emscripten FS, syncs the
  * project tree into MEMFS, then auto-opens the target file.
@@ -166,7 +230,14 @@ export async function driveProjectIntoTool(
   synthesizeProjectFile(win, opts);
 
   let result: "programmatic" | "ui" | "failed" | "none" = "none";
-  if (opts.targetPath && !FILELESS_TOOLS.has(opts.tool)) {
+  if (opts.targetPath && opts.tool === "gerbview") {
+    // GerbView boots fileless, but a project route can still name a gerber —
+    // and a single layer on its own is not a useful view, so open the whole
+    // fabrication set that lives beside it (see openGerberSet).
+    onStatus("Opening gerbers…");
+    result = await openGerberSet(win, opts);
+    log(`[open] result: ${result}`);
+  } else if (opts.targetPath && !FILELESS_TOOLS.has(opts.tool)) {
     onStatus("Opening file…");
     const abs = memfsFilePath(opts.slug, opts.targetPath);
     result = await openFileInTool(win, abs, { log });
