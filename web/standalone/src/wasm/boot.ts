@@ -166,6 +166,24 @@ function loadScript(src: string): Promise<void> {
  *     the page is COEP `require-corp`). The `.wasm`/`images.tar.gz` fetches just
  *     need `ACAO` + `CORP` on the CDN. See docs/features/demo-deploy/0001-*.
  */
+/**
+ * C++ diagnostics that must reach the BROWSER console, not just the in-page log.
+ *
+ * Module.print normally feeds only the in-page buffer (capped at 800 lines, and
+ * echoed to the console only under ?trace=). That is right for ordinary wasm
+ * chatter, but wrong for these: production crash reports reach us as saved
+ * browser-console dumps, so a diagnostic that never leaves the page is invisible
+ * in the one artifact we actually receive — and it can be evicted from the
+ * capped buffer by a long load before anyone reads it.
+ *
+ * Deliberately narrow. Both emitters are rate-limited in C++ and silent on a
+ * healthy load (see wxwidgets src/wasm/{evtloop,timer}.cpp), so this cannot
+ * become noise.
+ */
+function isWasmDiagnostic(line: string): boolean {
+  return line.startsWith("[wx-dispatch]") || line.startsWith("[wx-timer]");
+}
+
 function pthreadWorkerScript(
   base: string,
   bundle: Bundle,
@@ -526,12 +544,12 @@ async function doBoot(opts: BootOptions): Promise<void> {
       log(`[out] ${m}`);
       // With ?trace=, also echo to the JS console (the in-page log buffer is
       // capped at 800 lines and would truncate a full-set trace run).
-      if (traceMask) console.log(m);
+      if (traceMask || isWasmDiagnostic(m)) console.log(m);
     },
     printErr: (...args: unknown[]) => {
       const m = args.join(" ");
       log(`[err] ${m}`);
-      if (traceMask) console.warn(m);
+      if (traceMask || isWasmDiagnostic(m)) console.warn(m);
     },
     setStatus: (text: string) => {
       if (text) onStatus(text);
