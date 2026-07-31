@@ -1185,8 +1185,12 @@ export function WasmTool({
   // genuinely terminal signatures promote to the fatal overlay; ordinary app
   // errors must not hijack a working editor.
   React.useEffect(() => {
+    // NOTE: matched against `e.error.message`, which is BARE — Firefox's first
+    // trap is literally "index out of bounds" (no "RuntimeError", no "table")
+    // and slipped through the original pattern; the v0.1.19 prod log opens with
+    // exactly that message.
     const terminal = (msg: string) =>
-      /RuntimeError|\babort(ed)?\b|table index is out of bounds|indirect call signature|memory access out of bounds|unreachable executed/i.test(
+      /RuntimeError|\babort(ed)?\b|\bindex out of bounds|indirect call signature|memory access out of bounds|unreachable executed|null function or function signature/i.test(
         msg,
       );
     const onError = (e: ErrorEvent) => {
@@ -1203,9 +1207,35 @@ export function WasmTool({
       append(dumpTrace());
       setFatal(msg);
     };
+    // With PROXY_TO_PTHREAD, main()/wx/timers — and therefore every asyncify
+    // trap in this family — throw INSIDE a pthread worker. A worker's uncaught
+    // error fires an ErrorEvent on the Worker OBJECT, never on `window`, so the
+    // two listeners below can't see the very traps this overlay exists for
+    // (v0.1.19 prod: three "Uncaught RuntimeError"s, overlay never promoted).
+    // Wrap the constructor attach-only: the glue spawns all pthread workers
+    // from this realm, so every one gets an error tap.
+    const NativeWorker = window.Worker;
+    const onWorkerError = (e: ErrorEvent) => {
+      const msg = String(e.message ?? "");
+      if (!terminal(msg)) return;
+      append(`[fatal] worker error: ${msg}`);
+      append(dumpTrace());
+      setFatal(msg);
+    };
+    const PatchedWorker = function (
+      this: unknown,
+      ...args: ConstructorParameters<typeof Worker>
+    ) {
+      const w = new NativeWorker(...args);
+      w.addEventListener("error", onWorkerError);
+      return w;
+    } as unknown as typeof Worker;
+    PatchedWorker.prototype = NativeWorker.prototype;
+    window.Worker = PatchedWorker;
     window.addEventListener("error", onError);
     window.addEventListener("unhandledrejection", onRejection);
     return () => {
+      window.Worker = NativeWorker;
       window.removeEventListener("error", onError);
       window.removeEventListener("unhandledrejection", onRejection);
     };
