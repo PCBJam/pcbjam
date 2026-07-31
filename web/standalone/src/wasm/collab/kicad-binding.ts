@@ -156,6 +156,14 @@ export function bindKicadCollab(
   const libDefs = (libId: string): string | undefined =>
     kicadLibSymbolsMap(doc).get(libId);
 
+  // A wire entry the conversion could not resolve to an item (typically the
+  // sender serializing an unlifted child → item-less board envelope). The
+  // conversion skips it so the rest of the batch survives; log it loudly —
+  // this line is also the breadcrumb for the still-open question of how a
+  // child reaches the sender's serializer unlifted.
+  const warnSkip = (w: { sexpr: string }, err: unknown): void =>
+    cwarn("wire entry skipped (un-resolvable):", err, w.sexpr.slice(0, 200));
+
   // DOWN: local editor change → Y.Doc
   bridge.onItems((json: string) => {
     if (readOnly) return; // viewer: local state never reaches the doc
@@ -167,20 +175,29 @@ export function bindKicadCollab(
       cwarn("⬇ onItems from wasm: UNPARSEABLE", err, json);
       return;
     }
-    const delta = itemsWireToDelta(wire, itemsView());
-    // Library definitions the blob carried (a placed symbol's lib_symbols
-    // context — miss 08): store them alongside the items, same transaction.
-    const defs = wireLibSymbols(wire);
-    if (isEmptyKicadDelta(delta) && Object.keys(defs).length === 0) return;
-    clog("⬇ onItems (local edit):", {
-      added: delta.added.length,
-      updated: delta.updated.length,
-      removed: delta.removed.length,
-    });
-    doc.transact(() => {
-      applyDeltaToY(doc, delta, ORIGIN);
-      upsertLibSymbolsToY(doc, defs, ORIGIN);
-    }, ORIGIN);
+    // This handler runs synchronously inside the C++ emit; a throw escaping it
+    // unwinds through embind as a bare pageerror AND discards the whole batch
+    // after the sender already rebaselined (the batch-loss bug). Entry-level
+    // failures are already skipped inside the conversion; this catch is the
+    // backstop for everything else.
+    try {
+      const delta = itemsWireToDelta(wire, itemsView(), warnSkip);
+      // Library definitions the blob carried (a placed symbol's lib_symbols
+      // context — miss 08): store them alongside the items, same transaction.
+      const defs = wireLibSymbols(wire);
+      if (isEmptyKicadDelta(delta) && Object.keys(defs).length === 0) return;
+      clog("⬇ onItems (local edit):", {
+        added: delta.added.length,
+        updated: delta.updated.length,
+        removed: delta.removed.length,
+      });
+      doc.transact(() => {
+        applyDeltaToY(doc, delta, ORIGIN);
+        upsertLibSymbolsToY(doc, defs, ORIGIN);
+      }, ORIGIN);
+    } catch (err) {
+      cwarn("⬇ onItems from wasm: batch failed to apply", err);
+    }
   });
 
   // UP: remote Y change → editor. The subscription + origin policy live HERE
@@ -287,7 +304,7 @@ export function bindKicadCollab(
       // and defeat upsertYItem's no-op skip. Meta + layout stay file-derived.
       try {
         const wire = parseItemsWireDelta(bridge.snapshotItems());
-        const local = itemsWireToDelta(wire, itemsView());
+        const local = itemsWireToDelta(wire, itemsView(), warnSkip);
         if (!isEmptyKicadDelta(local)) applyDeltaToY(doc, local, ORIGIN);
       } catch (err) {
         cwarn("seed: post-file-seed baseline failed", err);
@@ -311,7 +328,7 @@ export function bindKicadCollab(
         return;
       }
       // First tab, no file source: seed the shared doc from the editor model.
-      const local = itemsWireToDelta(wire, {});
+      const local = itemsWireToDelta(wire, {}, warnSkip);
       clog(`seed: doc empty → SEEDING from editor snapshot (${local.added.length} item(s))`);
       doc.transact(() => {
         applyDeltaToY(doc, local, ORIGIN);
@@ -328,8 +345,8 @@ export function bindKicadCollab(
     // adopt undo-bomb, miss 09) shrinks to the real changed set, and a clean
     // rebind degrades to baseline-only.
     const view = itemsView();
-    const editorDelta = itemsWireToDelta(wire, view); // editor state vs doc view
-    const editorUuids = wireItemUuids(wire);
+    const editorDelta = itemsWireToDelta(wire, view, warnSkip); // editor state vs doc view
+    const editorUuids = wireItemUuids(wire, warnSkip);
 
     // Doc authority, inverted per class:
     //  - doc-only ROOTS → add to the editor (their sexprs embed descendants;
