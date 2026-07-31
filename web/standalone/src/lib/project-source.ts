@@ -1,8 +1,12 @@
 import {
   DEMO_SCOPE,
+  docToFile,
+  isYdocResponse,
   type Project,
   type ProjectFile,
   type ProjectWithFiles,
+  YDOC_CONTENT_TYPE,
+  ydocUpdateToKicadDoc,
 } from "@pcbjam/shared";
 import {
   API_BASE_URL,
@@ -83,11 +87,32 @@ function remoteProjectSource(): ProjectSource {
       // credentials: session-cookie auth (see contract-client.ts). The static
       // gallery fetches below stay credential-less — a CDN's wildcard CORS
       // rejects credentialed requests.
+      //
+      // Accept a ydoc (backend-wire.ts): for a file whose collab room has been
+      // opened, the backend would otherwise re-derive the KiCad text on EVERY
+      // download — a Y -> KicadDoc traversal plus an s-expr build that measured
+      // ~2.0 s on a ~2300-item board and exceeded the Workers CPU limit in
+      // production. We hold the same converters, so we ask for the raw update
+      // and do it here, where CPU is free. A backend that doesn't negotiate
+      // simply answers with text and the branch below never fires.
       const res = await fetch(fileUrl(slug, relPath), {
         credentials: "include",
+        headers: { accept: `${YDOC_CONTENT_TYPE}, */*` },
       });
       if (!res.ok) throw new Error(`download failed (${res.status}): ${relPath}`);
-      return new Uint8Array(await res.arrayBuffer());
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      if (!isYdocResponse(res)) return bytes;
+      try {
+        return new TextEncoder().encode(docToFile(ydocUpdateToKicadDoc(bytes)));
+      } catch (err) {
+        // A ydoc we can't convert must not make the file undownloadable: retry
+        // without negotiating and let the backend materialize it as before.
+        const plain = await fetch(fileUrl(slug, relPath), { credentials: "include" });
+        if (!plain.ok) {
+          throw new Error(`download failed (${plain.status}): ${relPath} (${String(err)})`);
+        }
+        return new Uint8Array(await plain.arrayBuffer());
+      }
     },
     async uploadFileBytes(slug, relPath, bytes) {
       const name = relPath.split("/").pop() ?? relPath;

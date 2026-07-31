@@ -1,4 +1,11 @@
-import { PROJECT_HEADER, SCOPE_HEADER, USER_HEADER } from "@pcbjam/shared";
+import {
+  fetchSyncStacks,
+  PROJECT_HEADER,
+  SCOPE_HEADER,
+  SYNC_STACKS_BATCH_MAX,
+  type SyncStackDescriptor,
+  USER_HEADER,
+} from "@pcbjam/shared";
 import {
   peekNamespaces,
   SyncStack,
@@ -35,6 +42,13 @@ export function syncedLibsSource(
     user?: string;
     project?: string;
     log?: (msg: string) => void;
+    /**
+     * Already-resolved stack for this lib, from the scope-level batch resolve
+     * (see syncedScopeLibsSource). When it answers, the per-lib POST is skipped
+     * entirely — that request is the one a board load makes 156-200 times.
+     * Returning undefined falls back to resolving this lib on its own.
+     */
+    stackFor?: (libId: string) => SyncStackDescriptor | null | undefined;
     /** Test seams (default: global fetch / IDB stores / real WebSockets). */
     fetchImpl?: typeof fetch;
     storeFactory?: (namespace: string) => LayerStore;
@@ -200,6 +214,7 @@ async function resolveAndOpen(
     scope: string;
     user?: string;
     project?: string;
+    stackFor?: (libId: string) => SyncStackDescriptor | null | undefined;
     fetchImpl?: typeof fetch;
     storeFactory?: (namespace: string) => LayerStore;
     channelFactory?: ChannelFactory;
@@ -212,18 +227,26 @@ async function resolveAndOpen(
     ...(opts.user ? { [USER_HEADER]: opts.user } : {}),
     ...(opts.project ? { [PROJECT_HEADER]: opts.project } : {}),
   };
-  const res = await baseFetch(
-    `${opts.apiBase}/api/scopes/${encodeURIComponent(opts.scope)}/libs/${encodeURIComponent(libId)}/sync-stack`,
-    // credentials: session-cookie auth, here and on every layer fetch below —
-    // live layers are membership-gated by the API worker per request.
-    { method: "POST", headers, credentials: "include" },
-  );
-  if (!res.ok) throw new Error(`sync-stack resolve failed: HTTP ${res.status}`);
-  const body = (await res.json()) as {
-    lib: { id: string; name: string };
-    layers: LayerDescriptor[];
-  };
-  log(`[synced] resolved ${body.layers.length} layer(s) for lib ${libId}`);
+  // Batch-resolved already? Then this lib costs no request at all. `null` is a
+  // deliberate "the backend says this lib does not resolve" and must not be
+  // retried per-lib; only `undefined` (not in the batch) falls through.
+  const prefetched = opts.stackFor?.(libId);
+  if (prefetched === null) throw new Error(`sync-stack resolve failed: unknown lib ${libId}`);
+  let body: SyncStackDescriptor;
+  if (prefetched) {
+    body = prefetched;
+    log(`[synced] resolved ${body.layers.length} layer(s) for lib ${libId} (batched)`);
+  } else {
+    const res = await baseFetch(
+      `${opts.apiBase}/api/scopes/${encodeURIComponent(opts.scope)}/libs/${encodeURIComponent(libId)}/sync-stack`,
+      // credentials: session-cookie auth, here and on every layer fetch below —
+      // live layers are membership-gated by the API worker per request.
+      { method: "POST", headers, credentials: "include" },
+    );
+    if (!res.ok) throw new Error(`sync-stack resolve failed: HTTP ${res.status}`);
+    body = (await res.json()) as SyncStackDescriptor;
+    log(`[synced] resolved ${body.layers.length} layer(s) for lib ${libId}`);
+  }
 
   // The descriptors carry no bearer token — live-layer HTTP ops authenticate
   // with the session cookie, so the stack's fetch must send credentials. The
@@ -279,14 +302,57 @@ export function syncedScopeLibsSource(
   },
 ): LibsSource {
   const perLib = new Map<string, LibsSource>();
+  // Stacks resolved in bulk by `prefetchStacks`. A hit means the per-lib source
+  // makes NO resolve request; `null` records "backend says unresolvable" so a
+  // stale pin isn't retried one-by-one. Misses simply fall back per-lib, which
+  // is also what happens against a backend predating the batch route.
+  const batchedStacks = new Map<string, SyncStackDescriptor | null>();
   const forLib = (libId: string): LibsSource => {
     let src = perLib.get(libId);
     if (!src) {
-      src = syncedLibsSource(libId, opts);
+      src = syncedLibsSource(libId, {
+        ...opts,
+        stackFor: (id) => (batchedStacks.has(id) ? batchedStacks.get(id) : undefined),
+      });
       perLib.set(libId, src);
     }
     return src;
   };
+
+  /**
+   * Resolve every lib's stack up front, in a handful of paged requests instead
+   * of one per lib. A board load resolves 156-200 libraries, and each per-lib
+   * POST is a separate serverless invocation before any library CONTENT is
+   * fetched — the dominant cost of the whole phase.
+   *
+   * Best-effort by design: any failure (older backend without the route, a
+   * network blip) leaves the map empty and every lib resolves the old way, so
+   * this can only ever remove requests, never break the load.
+   */
+  async function prefetchStacks(libs: LibInfo[]): Promise<void> {
+    const missing = libs.map((l) => l.id).filter((id) => !batchedStacks.has(id));
+    if (missing.length === 0) return;
+    const headers: Record<string, string> = {
+      [SCOPE_HEADER]: opts.scope,
+      ...(opts.user ? { [USER_HEADER]: opts.user } : {}),
+      ...(opts.project ? { [PROJECT_HEADER]: opts.project } : {}),
+    };
+    try {
+      const resolved = await fetchSyncStacks({
+        url: `${opts.apiBase}/api/scopes/${encodeURIComponent(opts.scope)}/libs/sync-stacks`,
+        libIds: missing,
+        ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
+        headers,
+      });
+      for (const [id, stack] of resolved) batchedStacks.set(id, stack);
+      opts.log?.(
+        `[synced] batch-resolved ${resolved.size} lib stack(s) in ` +
+          `${Math.ceil(missing.length / SYNC_STACKS_BATCH_MAX)} request(s)`,
+      );
+    } catch (err) {
+      opts.log?.(`[synced] batch resolve unavailable (${String(err)}) — falling back per-lib`);
+    }
+  }
 
   return {
     listLibs: (kind) => remote.listLibs(kind),
@@ -341,6 +407,9 @@ export function syncedScopeLibsSource(
       const total = libs.length;
       let done = 0;
       presyncOpts?.onProgress?.({ done, total, current: "libraries" });
+      // One batched resolve for the whole set before the per-lib fan-out, so
+      // the workers below open stacks without a request each.
+      if (!presyncOpts?.signal?.aborted) await prefetchStacks(libs);
       const concurrency = presyncOpts?.concurrency ?? 8;
       const queue = [...libs];
       const worker = async (): Promise<void> => {
