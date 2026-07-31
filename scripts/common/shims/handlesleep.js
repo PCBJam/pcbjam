@@ -16,6 +16,29 @@ if (typeof Asyncify !== "undefined") {
     // Stack of handleSleep contexts awaiting their allocateData association.
     Asyncify.__pendingSleepContexts = [];
 
+    // Anomaly reporting (diagnostics only — behavior unchanged). This shim has
+    // been SILENTLY repairing currData aliasing between concurrent parks since
+    // it was written; production traps in exactly this family ("index out of
+    // bounds" / "unreachable executed" during doRewind) keep arriving with no
+    // way to tell whether the shim fired, mislinked, or was bypassed (fiber
+    // swaps don't allocate through allocateData). Make every repair and every
+    // concurrent-park window loud, so a saved console dump answers that.
+    // Rate-limited per kind: first 10 in full, then every 100th.
+    var __wxAsyncifyReport = (function() {
+      var counts = {};
+      return function(kind, msg, withStack) {
+        var n = (counts[kind] = (counts[kind] || 0) + 1);
+        if (n > 10 && n % 100 !== 0) return;
+        var line = "[wx-asyncify] " + kind + ": " + msg + " (occurrence " + n + ")";
+        if (withStack) {
+          // The stack names WHICH EM_ASYNC_JS parked (__asyncjs__wxWasmYieldToBrowser,
+          // startModal, js_enumerateFonts, ...) — the missing actor in every prod dump.
+          try { line += "\n" + String(new Error().stack).split("\n").slice(1, 8).join("\n"); } catch (e) {}
+        }
+        console.warn(line);
+      };
+    })();
+
     var __originalAllocateData = Asyncify.allocateData.bind(Asyncify);
     Asyncify.allocateData = function() {
       var ptr = __originalAllocateData();
@@ -32,6 +55,29 @@ if (typeof Asyncify !== "undefined") {
 
     var __originalHandleSleep = Asyncify.handleSleep.bind(Asyncify);
     Asyncify.handleSleep = function(startAsync) {
+      // A FRESH park (state 0 = Normal) starting while another chain's park is
+      // still live: the single-slot currData is about to be overwritten. The
+      // shim's restore below makes the POINTER survive, but nothing protects
+      // deeper state (fiber swaps, freed buffers, out-of-order wakes) — this
+      // window is where the trap family lives, and until now it was invisible.
+      // state 2 (Rewinding) entries are NOT reported: every resume legally
+      // re-enters handleSleep while rewinding with currData set (verified
+      // empirically 2026-07-31 — the timer-park e2e produced ~100/s of them
+      // on a healthy run).
+      if (Asyncify.state === 0 && Asyncify.currData) {
+        __wxAsyncifyReport(
+          "concurrent-park",
+          "handleSleep entered while currData=" + Asyncify.currData,
+          true);
+      }
+      if (Asyncify.state === 1) {
+        // Parking while an UNWIND is literally in progress is never legal —
+        // if this ever fires it IS the bug.
+        __wxAsyncifyReport(
+          "reentrant-state",
+          "handleSleep entered mid-unwind (state=1) currData=" + Asyncify.currData,
+          true);
+      }
       var sleepCtx = { capturedData: null, cleanedUp: false };
       Asyncify.__pendingSleepContexts.push(sleepCtx);
 
@@ -49,6 +95,19 @@ if (typeof Asyncify !== "undefined") {
             // the await may have overwritten Asyncify.currData. Restore OUR buffer
             // so handleSleep's _asyncify_start_rewind and doRewind use it.
             if (sleepCtx.capturedData) {
+              if (Asyncify.currData !== sleepCtx.capturedData) {
+                // The repair firing. currData=null → the overlapping chain
+                // already completed (benign overlap, but COUNT it: it proves
+                // concurrent parks happen on this load). currData=<other> → a
+                // DIFFERENT chain is parked right now and we are rewinding
+                // around it — the dangerous interleave.
+                __wxAsyncifyReport(
+                  Asyncify.currData ? "aliased-wake-live" : "overlapped-wake",
+                  "restoring currData=" + sleepCtx.capturedData +
+                    " over " + (Asyncify.currData || "null") +
+                    " state=" + Asyncify.state,
+                  !!Asyncify.currData);
+              }
               Asyncify.currData = sleepCtx.capturedData;
             }
             cleanup();
