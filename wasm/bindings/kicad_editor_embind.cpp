@@ -41,6 +41,7 @@
 
 #include "pcbjam_libs_reload.h"
 #include "open_gate.h"
+#include "timer_park.h"
 
 using namespace emscripten;
 
@@ -173,6 +174,18 @@ static bool kicadOpenFileBusy()
 static void kicadTestSetOpenPark( int aMs )
 {
     pcbjam_open::testParkMs() = aMs;
+}
+
+// Test-only (timer-park repro, timer_park.h): a one-shot wx timer whose
+// Notify() Asyncify-parks — the deterministic concurrent-park window.
+static bool kicadTestArmTimerPark( int aDelayMs, int aParkMs )
+{
+    return pcbjam_timer_park::arm( aDelayMs, aParkMs );
+}
+
+static std::string kicadTestTimerParkState()
+{
+    return pcbjam_timer_park::stateJson();
 }
 
 
@@ -529,6 +542,8 @@ EMSCRIPTEN_BINDINGS(kicad_editor) {
     function("kicadOpenFile", &kicadOpenFile);
     function("kicadOpenFileBusy", &kicadOpenFileBusy);
     function("kicadTestSetOpenPark", &kicadTestSetOpenPark);
+    function("kicadTestArmTimerPark", &kicadTestArmTimerPark);
+    function("kicadTestTimerParkState", &kicadTestTimerParkState);
 
     // Canvas-only mobile mode (features/mobile).
     function("kicadSetChrome", &kicadSetChrome);

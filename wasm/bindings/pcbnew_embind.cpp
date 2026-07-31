@@ -53,6 +53,7 @@
 #include "collab_common.h"
 #include "collab_presence_core.h"
 #include "open_gate.h"
+#include "timer_park.h"
 #include "collab_presence_style.h"
 #include "pcbjam_theme.h"
 #include "pcbjam_libs_reload.h"
@@ -122,6 +123,18 @@ bool kicadOpenFileBusy()
 void kicadTestSetOpenPark( int aMs )
 {
     pcbjam_open::testParkMs() = aMs;
+}
+
+// Test-only (timer-park repro, timer_park.h): a one-shot wx timer whose
+// Notify() Asyncify-parks — the deterministic concurrent-park window.
+bool kicadTestArmTimerPark( int aDelayMs, int aParkMs )
+{
+    return pcbjam_timer_park::arm( aDelayMs, aParkMs );
+}
+
+std::string kicadTestTimerParkState()
+{
+    return pcbjam_timer_park::stateJson();
 }
 
 // Read-only viewer lock (read-only-viewer): flips the process-global
@@ -2386,6 +2399,8 @@ EMSCRIPTEN_BINDINGS(pcbnew) {
     function("kicadOpenFile", &kicadOpenFile);
     function("kicadOpenFileBusy", &kicadOpenFileBusy);
     function("kicadTestSetOpenPark", &kicadTestSetOpenPark);
+    function("kicadTestArmTimerPark", &kicadTestArmTimerPark);
+    function("kicadTestTimerParkState", &kicadTestTimerParkState);
     function("kicadCollabFiberBusy", &kicadCollabFiberBusyProbe);
     // Read-only viewer lock (read-only-viewer).
     function("kicadSetReadOnly", &kicadSetReadOnly);
