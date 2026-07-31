@@ -927,6 +927,11 @@ export function WasmTool({
   const [logs, setLogs] = React.useState<string[]>([]);
   const [showLog, setShowLog] = React.useState(false);
   const [oomExhausted, setOomExhausted] = React.useState(false);
+  // Terminal failure, rendered INDEPENDENTLY of `ready`. The boot overlay only
+  // exists while `!ready`, so anything that killed the runtime after the editor
+  // came up (a wasm abort/trap, a failed staging fetch surfacing late) used to
+  // leave a blank page with no explanation at all — the "white screen of death".
+  const [fatal, setFatal] = React.useState<string | null>(null);
   // Editor lifecycle for the loading chrome: false until the tool has booted +
   // opened (covers the big WASM-compile freeze with a full-screen overlay).
   const [ready, setReady] = React.useState(false);
@@ -1140,6 +1145,37 @@ export function WasmTool({
     const t = setTimeout(() => setSlow(true), 60_000);
     return () => clearTimeout(t);
   }, [ready, consent]);
+
+  // Runtime death AFTER the boot succeeded. A wasm trap ("indirect call
+  // signature mismatch", "table index is out of bounds") or an abort() arrives
+  // as a window error / unhandled rejection long after `ready` flipped, with the
+  // boot overlay already gone — so without this the page just goes blank. Only
+  // genuinely terminal signatures promote to the fatal overlay; ordinary app
+  // errors must not hijack a working editor.
+  React.useEffect(() => {
+    const terminal = (msg: string) =>
+      /RuntimeError|\babort(ed)?\b|table index is out of bounds|indirect call signature|memory access out of bounds|unreachable executed/i.test(
+        msg,
+      );
+    const onError = (e: ErrorEvent) => {
+      const msg = e.error instanceof Error ? `${e.error.message}` : String(e.message ?? "");
+      if (!terminal(msg)) return;
+      append(`[fatal] window error: ${msg}`);
+      setFatal(msg);
+    };
+    const onRejection = (e: PromiseRejectionEvent) => {
+      const msg = e.reason instanceof Error ? e.reason.message : String(e.reason ?? "");
+      if (!terminal(msg)) return;
+      append(`[fatal] unhandled rejection: ${msg}`);
+      setFatal(msg);
+    };
+    window.addEventListener("error", onError);
+    window.addEventListener("unhandledrejection", onRejection);
+    return () => {
+      window.removeEventListener("error", onError);
+      window.removeEventListener("unhandledrejection", onRejection);
+    };
+  }, [append]);
 
   React.useEffect(() => {
     const win = window as ToolWindow;
@@ -1724,6 +1760,7 @@ export function WasmTool({
       } catch (err) {
         append(`[fatal] ${String(err)}`);
         setStatus(`Error: ${String(err)}`);
+        setFatal(String(err));
       }
     })();
 
@@ -2150,8 +2187,45 @@ export function WasmTool({
         </button>
       )}
 
-      {!effectiveChromeHidden && (
-        <div className="absolute bottom-0 left-0 right-0 z-20">
+      {/* Terminal failure — z-35, ABOVE the boot overlay but below the console
+          panel, and independent of `ready` so a post-boot runtime death still
+          says something instead of blanking the page. */}
+      {fatal && (
+        <div
+          data-testid="fatal-overlay"
+          className="absolute inset-0 z-[35] flex flex-col items-center justify-center gap-3 bg-[#1a1a2e]/95 text-white"
+        >
+          <p className="font-mono text-sm text-red-300">Something went wrong</p>
+          <p className="max-w-lg px-6 text-center font-mono text-xs text-red-200/80">
+            {fatal}
+          </p>
+          <p className="max-w-md px-6 text-center font-mono text-xs text-white/50">
+            The editor stopped. Open the console below for the full log — it
+            records what was loading when this happened.
+          </p>
+          <div className="flex gap-2">
+            <button
+              className="rounded border border-white/30 px-3 py-1 text-xs hover:bg-white/10"
+              onClick={() => window.location.reload()}
+            >
+              Reload
+            </button>
+            <button
+              className="rounded border border-white/30 px-3 py-1 text-xs hover:bg-white/10"
+              onClick={() => setShowLog(true)}
+            >
+              Show console
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* z-40 (above the z-30 boot overlay and the z-35 fatal overlay): when a
+          load fails, the log this panel holds is the only account of WHY, so it
+          must never end up underneath the thing reporting the failure. Forced
+          visible on a fatal even with chrome hidden, for the same reason. */}
+      {(!effectiveChromeHidden || fatal) && (
+        <div className="absolute bottom-0 left-0 right-0 z-40">
           <button
             className="flex items-center gap-1 bg-black/70 px-3 py-1 font-mono text-xs text-white"
             onClick={() => setShowLog((s) => !s)}
