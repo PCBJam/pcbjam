@@ -119,7 +119,37 @@ The lever + spec stay as the regression gate for the fix regardless: they
 deterministically create and verify the concurrent-park window that all three
 shipped fixes were blind to.
 
-## Candidate real fix (only after a red)
+## Round 3 — v0.1.20 PROD crash decoded (2026-07-31 late, log console-export-2026-7-31_22-33-27.log)
+
+The crash reproduced in prod with the diagnostics live, and they discriminate
+cleanly: ZERO `concurrent-park`, ZERO `aliased-wake-live` (this spec's
+collision class is NOT the prod mechanism — the two green rounds were a true
+negative), exactly one benign `overlapped-wake … over null` 2 ms after
+`open:settled`, traps 218 ms later. Decoding the trap stack against the
+shipped runtime source:
+
+**Root cause: a KiCad coroutine is Resume()d while its body is
+asyncify-parked inside handleSleep.** libcontext-on-emscripten-fibers and
+handleSleep are two independent suspension protocols sharing one context: a
+fiber suspended by `fiber_swap` has valid rewind data at `fiber+20`; a fiber
+whose body parked via handleSleep does NOT (its live state is in the sleep's
+allocateData buffer, invisible to the fiber machinery — and to TOOL_MANAGER).
+Resume → `fiber_swap` into it → `finishContextSwitch` rewinds the STALE
+`fiber+20` → rewind-path mismatch → "unreachable executed"; every subsequent
+entry (the GAL timer's async_call cascade among them) reads poisoned asyncify
+state → "index out of bounds". Impossible on native (no parking without
+yielding), unreachable in this spec (warm fibers never park internally), and
+untouched by all three shipped fixes.
+
+Next: a `kicadTestSetFiberPark(ms)`-style lever (coroutine body that
+`emscripten_sleep()`s + a Resume poked mid-park) as spec cycle 5 — expected
+deterministically RED with exactly the prod signature — then the fix: track
+"asyncify park in flight" per fiber and defer Resume/swap-into until the
+park completes (wasm layer; `kicadCollabFiberBusy` from drift-trio #10b is
+the precedent).
+
+## Candidate real fix for the timer half (superseded by round 3 for the prod
+crash, still sound hygiene)
 
 Deliver timer notifies from the main-loop chain: the JS timer callback only
 marks the timer due and wakes the yield; the loop dispatches due timers after

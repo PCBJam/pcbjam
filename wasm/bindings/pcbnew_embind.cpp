@@ -54,6 +54,7 @@
 #include "collab_presence_core.h"
 #include "open_gate.h"
 #include "timer_park.h"
+#include "fiber_park.h"
 #include "collab_presence_style.h"
 #include "pcbjam_theme.h"
 #include "pcbjam_libs_reload.h"
@@ -135,6 +136,28 @@ bool kicadTestArmTimerPark( int aDelayMs, int aParkMs )
 std::string kicadTestTimerParkState()
 {
     return pcbjam_timer_park::stateJson();
+}
+
+// Test-only (fiber-resume-park repro, fiber_park.h): Resume() into an
+// asyncify-parked coroutine — the decoded prod board-load trap.
+bool kicadTestFiberParkStart( int aParkMs )
+{
+    return pcbjam_fiber_park::start( aParkMs );
+}
+
+bool kicadTestFiberParkPrime()
+{
+    return pcbjam_fiber_park::prime();
+}
+
+bool kicadTestFiberParkPoke()
+{
+    return pcbjam_fiber_park::poke();
+}
+
+std::string kicadTestFiberParkState()
+{
+    return pcbjam_fiber_park::stateJson();
 }
 
 // Read-only viewer lock (read-only-viewer): flips the process-global
@@ -2401,6 +2424,10 @@ EMSCRIPTEN_BINDINGS(pcbnew) {
     function("kicadTestSetOpenPark", &kicadTestSetOpenPark);
     function("kicadTestArmTimerPark", &kicadTestArmTimerPark);
     function("kicadTestTimerParkState", &kicadTestTimerParkState);
+    function("kicadTestFiberParkStart", &kicadTestFiberParkStart);
+    function("kicadTestFiberParkPrime", &kicadTestFiberParkPrime);
+    function("kicadTestFiberParkPoke", &kicadTestFiberParkPoke);
+    function("kicadTestFiberParkState", &kicadTestFiberParkState);
     function("kicadCollabFiberBusy", &kicadCollabFiberBusyProbe);
     // Read-only viewer lock (read-only-viewer).
     function("kicadSetReadOnly", &kicadSetReadOnly);

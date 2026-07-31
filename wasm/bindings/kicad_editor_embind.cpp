@@ -42,6 +42,7 @@
 #include "pcbjam_libs_reload.h"
 #include "open_gate.h"
 #include "timer_park.h"
+#include "fiber_park.h"
 
 using namespace emscripten;
 
@@ -186,6 +187,28 @@ static bool kicadTestArmTimerPark( int aDelayMs, int aParkMs )
 static std::string kicadTestTimerParkState()
 {
     return pcbjam_timer_park::stateJson();
+}
+
+// Test-only (fiber-resume-park repro, fiber_park.h): Resume() into an
+// asyncify-parked coroutine — the decoded prod board-load trap.
+static bool kicadTestFiberParkStart( int aParkMs )
+{
+    return pcbjam_fiber_park::start( aParkMs );
+}
+
+static bool kicadTestFiberParkPrime()
+{
+    return pcbjam_fiber_park::prime();
+}
+
+static bool kicadTestFiberParkPoke()
+{
+    return pcbjam_fiber_park::poke();
+}
+
+static std::string kicadTestFiberParkState()
+{
+    return pcbjam_fiber_park::stateJson();
 }
 
 
@@ -544,6 +567,10 @@ EMSCRIPTEN_BINDINGS(kicad_editor) {
     function("kicadTestSetOpenPark", &kicadTestSetOpenPark);
     function("kicadTestArmTimerPark", &kicadTestArmTimerPark);
     function("kicadTestTimerParkState", &kicadTestTimerParkState);
+    function("kicadTestFiberParkStart", &kicadTestFiberParkStart);
+    function("kicadTestFiberParkPrime", &kicadTestFiberParkPrime);
+    function("kicadTestFiberParkPoke", &kicadTestFiberParkPoke);
+    function("kicadTestFiberParkState", &kicadTestFiberParkState);
 
     // Canvas-only mobile mode (features/mobile).
     function("kicadSetChrome", &kicadSetChrome);
