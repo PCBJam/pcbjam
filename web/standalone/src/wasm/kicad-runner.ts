@@ -2,6 +2,7 @@ import type { Tool } from "@pcbjam/shared";
 import { FILELESS_TOOLS, toolForFile } from "@pcbjam/shared";
 import { defaultKicadPro } from "../lib/new-file";
 import { memfsFilePath, memfsProjectDir } from "./constants";
+import { mark } from "./load-trace";
 import { prescanBoardModels } from "./libs/models-bridge";
 import { openFileInTool } from "./open-flow";
 
@@ -219,14 +220,17 @@ export async function driveProjectIntoTool(
   const { log, onStatus } = opts;
 
   onStatus("Waiting for runtime…");
+  log(mark("fs:wait"));
   const fsReady = await waitFor(
     () => !!(win.FS && typeof win.FS.writeFile === "function"),
     90000,
   );
   if (!fsReady) throw new Error("runtime did not initialize (no FS) in 90s");
 
+  log(mark("fs:ready"));
   onStatus("Loading project files…");
   await syncProjectToMemfs(win, opts);
+  log(mark("stage:done", `${opts.files.length} file(s)`));
   synthesizeProjectFile(win, opts);
 
   let result: "programmatic" | "ui" | "failed" | "none" = "none";
@@ -240,7 +244,13 @@ export async function driveProjectIntoTool(
   } else if (opts.targetPath && !FILELESS_TOOLS.has(opts.tool)) {
     onStatus("Opening file…");
     const abs = memfsFilePath(opts.slug, opts.targetPath);
+    // The open window is where the prod crash lives: OpenProjectFiles runs the
+    // footprint-library preload INLINE on the main thread, and the GAL refresh
+    // timer re-arms every 100 ms until first paint. Bracketing it is what lets a
+    // crash report be placed inside or outside that window.
+    log(mark("open:start", opts.targetPath));
     result = await openFileInTool(win, abs, { log });
+    log(mark("open:settled", `result=${result}`));
     log(`[open] result: ${result}`);
   }
   onStatus("");

@@ -61,6 +61,7 @@ import {
 } from "@/wasm/libs/models-bridge";
 import { memfsFilePath, memfsProjectDir, TOOL_BUNDLE, TOOL_FRAME } from "@/wasm/constants";
 import { driveProjectIntoTool, type ToolFile } from "@/wasm/kicad-runner";
+import { dump as dumpTrace, mark } from "@/wasm/load-trace";
 import { registerSaveHook, type SaveBytes } from "@/wasm/save-flow";
 import type {
   KicadCollabHandle,
@@ -1161,12 +1162,14 @@ export function WasmTool({
       const msg = e.error instanceof Error ? `${e.error.message}` : String(e.message ?? "");
       if (!terminal(msg)) return;
       append(`[fatal] window error: ${msg}`);
+      append(dumpTrace());
       setFatal(msg);
     };
     const onRejection = (e: PromiseRejectionEvent) => {
       const msg = e.reason instanceof Error ? e.reason.message : String(e.reason ?? "");
       if (!terminal(msg)) return;
       append(`[fatal] unhandled rejection: ${msg}`);
+      append(dumpTrace());
       setFatal(msg);
     };
     window.addEventListener("error", onError);
@@ -1447,6 +1450,7 @@ export function WasmTool({
             });
         };
         const presyncSettled = startLibPresync();
+        void presyncSettled.then(() => append(mark("presync:settled")));
         // Lib editors (fileless): their frame eagerly enumerates EVERY lib of
         // its kind at boot, one mutex-serialized bridge crossing at a time
         // (g_pcbjamProxyMutex in the plugins) — a cold lib would network-fetch
@@ -1754,11 +1758,17 @@ export function WasmTool({
         if (enumerateGate) await presyncSettled;
         // Tool booted + project opened. Wait for the wx UI to actually build
         // before dropping the overlay, so we don't reveal a still-blank editor.
+        // First paint reached. Past this point the GAL is initialized, so the
+        // refresh-timer self-rearm loop — the precondition for the production
+        // load trap — is over. A crash report that contains this mark rules
+        // that mechanism out; one that stops before it does not.
         await waitForWxUi(win);
+        append(mark("ui:ready"));
         setStatus("");
         setReady(true);
       } catch (err) {
         append(`[fatal] ${String(err)}`);
+        append(dumpTrace());
         setStatus(`Error: ${String(err)}`);
         setFatal(String(err));
       }
