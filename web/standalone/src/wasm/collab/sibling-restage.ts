@@ -35,13 +35,25 @@ export async function startSiblingRestage(opts: {
   scopeId: string;
   projectId: string;
   files: { path: string }[];
+  /** The opened `.kicad_pcb` — scopes the watch to ITS KiCad project. */
+  targetPath?: string;
   provider: ProviderConfig;
   log: (m: string) => void;
 }): Promise<SiblingRestageHandle> {
   const { win, slug, log } = opts;
+  // Only the opened board's own KiCad project can be synced from: pcbnew's
+  // "update from schematic" reads the sheets next to the .kicad_pcb (same
+  // directory tree). A backend project holding SEVERAL KiCad projects (a
+  // repo of boards) must not fan out one room per schematic repo-wide —
+  // that held ~27 idle board-room sockets for an 8-board repo. Sheets a
+  // project references OUTSIDE its directory (rare ../ sheet paths) fall
+  // back to the boot snapshot — same gap v1 already accepts for new sheets.
+  const dir = opts.targetPath
+    ? opts.targetPath.slice(0, opts.targetPath.lastIndexOf("/") + 1)
+    : "";
   const sheetPaths = opts.files
     .map((f) => f.path)
-    .filter((p) => p.endsWith(".kicad_sch"));
+    .filter((p) => p.endsWith(".kicad_sch") && p.startsWith(dir));
 
   const sessions: KicadDocSession[] = [];
   const timers = new Map<string, ReturnType<typeof setTimeout>>();

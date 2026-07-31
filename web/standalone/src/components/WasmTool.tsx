@@ -467,6 +467,29 @@ function ensureQuitDispatcher(win: ToolWindow): boolean {
 
 if (typeof window !== "undefined") {
   ensureQuitDispatcher(window as ToolWindow);
+  // Latch off for a BROWSER-initiated unload: reload (F5), Back, closing the
+  // tab, typing a URL. markDeliberateNavigation covers only our own in-app
+  // navigations, and the pagehide latch below fires at commit time — too late.
+  // The wx port's UnloadCallback runs on beforeunload and closes the top frame,
+  // which fires wxAppTopWindowClosed; unlatched, the quit hook then navigated to
+  // the project overview OVER the in-flight reload, so every refresh of an
+  // editor URL bounced to the management app instead of reloading.
+  //
+  // Registered at MODULE scope, which runs on import — before the wasm boots and
+  // installs its own beforeunload handler. Listeners fire in registration order,
+  // so this latch is always set before UnloadCallback can close the frame.
+  //
+  // Tradeoff: if a beforeunload prompt is shown and the user chooses to stay,
+  // the latch stays set and a later File→Quit won't navigate on its own. That
+  // is strictly better than the alternative — a page that cannot be refreshed —
+  // and the user can still navigate manually.
+  window.addEventListener(
+    "beforeunload",
+    () => {
+      quitHandled = true;
+    },
+    { capture: true },
+  );
 }
 
 function installQuitHook(
@@ -924,6 +947,9 @@ export function WasmTool({
   // The single-room collab doc (pcbnew/pl_editor), for the layout save-sync
   // (miss 08B); eeschema routes per sheet through the manager instead.
   const collabDocRef = React.useRef<import("yjs").Doc | null>(null);
+  // Its owning handle, so unmount tears the room socket + doc down — eeschema's
+  // equivalent lives inside sheetManagerRef.
+  const collabHandleRef = React.useRef<KicadCollabHandle | null>(null);
   const [status, setStatus] = React.useState("Loading tool…");
   const [logs, setLogs] = React.useState<string[]>([]);
   const [showLog, setShowLog] = React.useState(false);
@@ -1370,6 +1396,10 @@ export function WasmTool({
     // cleanup below closes over it — and never rejected, so aborting mid-sync
     // leaks nothing and throws nothing.
     const presyncAbort = new AbortController();
+    // The libs source THIS boot created (vs. one injected via props, which the
+    // caller owns) — cleanup disposes it so its SyncStack sockets don't outlive
+    // the editor.
+    let ownedLibsSource: LibsSource | null = null;
 
     void (async () => {
       try {
@@ -1388,6 +1418,7 @@ export function WasmTool({
         // must be the same object for the warm-up to benefit the editor).
         const source =
           libsSource !== undefined ? libsSource : libsSourceConfig(projectId);
+        if (libsSource === undefined) ownedLibsSource = source;
         // Download-consent gate (standalone-load-ux 0001): before pulling the
         // (large) cold wasm + lib bundles, say how many MB and wait for the OK.
         // Runs only on versioned CDN deploys (`meta.ver` — flat dev roots and
@@ -1705,6 +1736,7 @@ export function WasmTool({
             log: append,
             onStatus: setStatus,
           });
+          collabHandleRef.current = collabHandle ?? null;
           collabDocRef.current = collabHandle?.doc ?? null;
           startPresence(collabHandle?.provider, undefined, collabHandle?.doc);
           startComments(collabHandle?.doc);
@@ -1719,6 +1751,7 @@ export function WasmTool({
               scopeId,
               projectId,
               files,
+              targetPath,
               provider: yjsProviderConfig(),
               log: append,
             });
@@ -1804,7 +1837,15 @@ export function WasmTool({
       // onActiveChange(null).
       sheetManagerRef.current?.destroy();
       sheetManagerRef.current = null;
+      // The single-room (pcbnew/pl_editor) counterpart: binding + provider +
+      // doc. Without this the board room's socket survived navigation.
+      collabHandleRef.current?.destroy();
+      collabHandleRef.current = null;
       collabDocRef.current = null;
+      // Close the lib SyncStacks this boot opened (mirror mux + any dedicated
+      // sockets); IDB caches stay. Injected sources belong to the caller.
+      ownedLibsSource?.dispose?.();
+      ownedLibsSource = null;
       oom.stop();
     };
     // Boot is one-shot per mount; deps intentionally exclude files/targetPath so

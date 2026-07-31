@@ -137,6 +137,13 @@ export interface LibsSource {
    * the C++ side falls back to the per-lib lazy load.
    */
   getFpIndex?(): Promise<string | null>;
+  /**
+   * Release every live resource this source holds — realtime sockets, open
+   * SyncStacks — keeping the persistent caches (IDB) intact for the next
+   * session. Called on editor unmount for sources the editor itself created.
+   * Optional: stateless sources omit it.
+   */
+  dispose?(): void;
 }
 
 /**

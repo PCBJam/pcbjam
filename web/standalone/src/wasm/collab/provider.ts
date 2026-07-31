@@ -100,6 +100,9 @@ async function partyKitProvider(
     party: PARTYKIT_PARTY,
     connect: true,
     params,
+    // Default maxBackoffTime is 2.5s — a room that's down would re-dial (and
+    // re-run the server's authorize round trip) every 2.5s forever, per room.
+    maxBackoffTime: 30_000,
   });
   return {
     whenSynced: () =>

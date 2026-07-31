@@ -49,6 +49,13 @@ export function syncedLibsSource(
      * Returning undefined falls back to resolving this lib on its own.
      */
     stackFor?: (libId: string) => SyncStackDescriptor | null | undefined;
+    /**
+     * SyncStack realtime policy (see SyncStackOptions.realtime). The scope
+     * source passes "shared-only" — a board session warming 150+ libs must not
+     * hold a dedicated WebSocket per org/mirror-direct lib; the lib-editor
+     * route keeps the default "all" so its ONE lib stays realtime.
+     */
+    realtime?: "all" | "shared-only";
     /** Test seams (default: global fetch / IDB stores / real WebSockets). */
     fetchImpl?: typeof fetch;
     storeFactory?: (namespace: string) => LayerStore;
@@ -204,6 +211,15 @@ export function syncedLibsSource(
         return false;
       }
     },
+    dispose(): void {
+      for (const t of reloadTimers.values()) clearTimeout(t);
+      reloadTimers.clear();
+      // Close the stack once its open settles (sockets + channel refcounts);
+      // the IDB cache stays for the next session. A failed open has nothing
+      // to close.
+      opened?.then((r) => r.stack.close()).catch(() => {});
+      opened = null;
+    },
   };
 }
 
@@ -215,6 +231,7 @@ async function resolveAndOpen(
     user?: string;
     project?: string;
     stackFor?: (libId: string) => SyncStackDescriptor | null | undefined;
+    realtime?: "all" | "shared-only";
     fetchImpl?: typeof fetch;
     storeFactory?: (namespace: string) => LayerStore;
     channelFactory?: ChannelFactory;
@@ -258,6 +275,7 @@ async function resolveAndOpen(
     fetchImpl: credentialedFetch,
     storeFactory: opts.storeFactory,
     channelFactory: opts.channelFactory,
+    realtime: opts.realtime,
   });
   await stack.open();
   return {
@@ -312,6 +330,14 @@ export function syncedScopeLibsSource(
     if (!src) {
       src = syncedLibsSource(libId, {
         ...opts,
+        // Bulk context: only mux-keyed layers (the one shared mirror room
+        // socket) get realtime. Without this, every org/mirror-direct lib in
+        // the scope dials a dedicated WebSocket — a board load held 60+ idle
+        // sockets, each pinning a DO and costing an authorize per reconnect.
+        // Trade-off: peer edits to those libs reach this session on the next
+        // load (or lazy sync) instead of live; origin libs keep live updates
+        // via the muxed team mirror channel.
+        realtime: "shared-only",
         stackFor: (id) => (batchedStacks.has(id) ? batchedStacks.get(id) : undefined),
       });
       perLib.set(libId, src);
@@ -428,6 +454,10 @@ export function syncedScopeLibsSource(
       await Promise.all(
         Array.from({ length: Math.min(concurrency, total) }, worker),
       );
+    },
+    dispose(): void {
+      for (const src of perLib.values()) src.dispose?.();
+      perLib.clear();
     },
   };
 }
