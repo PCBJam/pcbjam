@@ -8,6 +8,7 @@ import {
   useSourceDescriptor,
 } from "@/lib/api";
 import { docSourceConfig } from "@/lib/config";
+import { decodeRoutePath } from "@/lib/route-path";
 import { resolveReadOnly } from "@/lib/read-only-mode";
 import { WasmTool } from "@/components/WasmTool";
 import { PreflightGate } from "@/preflight/PreflightGate";
@@ -19,7 +20,10 @@ export function ToolPage() {
   // Two shapes render here: a fileless tool boot (`…/-/:tool`) sets params.tool;
   // a file route (`…/*`) sets the splat — the tool is inferred from its extension
   // unless `?tool=` overrides it.
-  const splat = params["*"] || undefined;
+  // Router leaves the splat percent-encoded (named params are decoded) — see
+  // decodeRoutePath. Everything downstream wants the decoded path.
+  const rawSplat = params["*"] || undefined;
+  const splat = rawSplat ? decodeRoutePath(rawSplat) : undefined;
   const tool: Tool | null = params.tool
     ? parseToolParam(params.tool)
     : (parseToolParam(search.get("tool")) ?? (splat ? toolForFile(splat) : null));
