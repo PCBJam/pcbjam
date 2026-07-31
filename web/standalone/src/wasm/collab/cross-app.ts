@@ -33,6 +33,13 @@ export interface CrossAppHandle {
   /** Publish this tab's selection (uuids + pcbnew footprint paths). */
   setSelection(uuids: string[], paths?: string[]): void;
   /**
+   * Publish which document this tab is actively editing (project-relative
+   * path; the active sheet for eeschema, re-announced on sheet navigation).
+   * Sibling-restage peers use it to connect a sheet's room only while someone
+   * actually has it open.
+   */
+  setDocPath(path: string | undefined): void;
+  /**
    * Peers in a DIFFERENT tool, one entry per awareness client. Unlike the
    * room roster this INCLUDES the own user's other tabs — one person with
    * the schematic and the board open gets classic cross-probing.
@@ -49,6 +56,8 @@ export async function startCrossAppPresence(opts: {
   provider: ProviderConfig;
   user: PresenceUser;
   tool: string;
+  /** Initial doc this tab edits (see CrossAppHandle.setDocPath). */
+  docPath?: string;
 }): Promise<CrossAppHandle | undefined> {
   if (opts.provider.kind === "none") return undefined;
 
@@ -72,6 +81,7 @@ export async function startCrossAppPresence(opts: {
 
   let selection: string[] = [];
   let selectionPaths: string[] | undefined;
+  let docPath = opts.docPath;
 
   const publish = () => {
     const state: PresenceState = {
@@ -82,6 +92,9 @@ export async function startCrossAppPresence(opts: {
       cursor: null,
       selection,
       ...(selectionPaths?.length ? { selectionPaths } : {}),
+      // The actively-edited document, so peers can scope work (e.g. sibling
+      // restage sockets) to sheets that are ACTUALLY open somewhere.
+      ...(docPath ? { sheetPath: docPath } : {}),
       updatedAt: Date.now(),
     };
     awareness.setLocalState(state);
@@ -107,6 +120,11 @@ export async function startCrossAppPresence(opts: {
     setSelection(uuids, paths) {
       selection = uuids;
       selectionPaths = paths;
+      publish();
+    },
+    setDocPath(path) {
+      if (path === docPath) return;
+      docPath = path;
       publish();
     },
     peers() {

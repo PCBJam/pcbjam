@@ -1539,6 +1539,10 @@ export function WasmTool({
                     provider: yjsProviderConfig(),
                     user: presenceUser(),
                     tool,
+                    // Announce the open document (the active sheet for
+                    // eeschema, re-published on navigation below) — peers'
+                    // sibling-restage scopes its sockets to announced files.
+                    docPath: targetPath,
                   });
                 } catch (err) {
                   append(`[collab] cross-app presence connect failed: ${String(err)}`);
@@ -1706,6 +1710,10 @@ export function WasmTool({
               onActiveChange: (activeRoom) => {
                 driftRef.current?.stop();
                 driftRef.current = null;
+                // Re-announce the actively-edited sheet in the project room —
+                // peers' sibling-restage tracks it (a pcbnew tab only mirrors
+                // sheets someone actually has open).
+                crossAppRef.current?.setDocPath(activeRoom?.sheetPath);
                 startPresence(activeRoom?.provider, activeRoom?.sheetPath, activeRoom?.doc);
                 startComments(activeRoom?.doc);
                 if (activeRoom && !readOnly) {
@@ -1752,6 +1760,10 @@ export function WasmTool({
               projectId,
               files,
               targetPath,
+              // Presence-scoped: connect a sheet's room only while a peer
+              // announces it open (zero sibling sockets when alone). Absent
+              // (provider "none" / connect failed) ⇒ eager fallback.
+              presence: crossAppRef.current ?? undefined,
               provider: yjsProviderConfig(),
               log: append,
             });

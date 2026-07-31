@@ -17,7 +17,7 @@ vi.mock("@pcbjam/shared", () => ({
   docToFile: () => "(kicad_sch materialized)",
 }));
 
-import { startSiblingRestage } from "./sibling-restage";
+import { startSiblingRestage, type SiblingPresence } from "./sibling-restage";
 
 interface FakeSession {
   room: string;
@@ -52,16 +52,34 @@ function makeSession(room: string): FakeSession {
   };
 }
 
-function start(files: string[]) {
+function start(files: string[], presence?: SiblingPresence) {
   return startSiblingRestage({
     win: {} as never,
     slug: "proj",
     scopeId: "S",
     projectId: "P",
     files: files.map((path) => ({ path })),
+    presence,
     provider: { kind: "none" } as never,
     log: () => {},
   });
+}
+
+/** Roster fake: `announce` swaps the open-path set and fires subscribers. */
+function fakePresence(initial: string[] = []) {
+  let paths = initial;
+  const subs = new Set<() => void>();
+  return {
+    peers: () => paths.map((sheetPath) => ({ state: { sheetPath } })),
+    subscribe(cb: () => void) {
+      subs.add(cb);
+      return () => subs.delete(cb);
+    },
+    announce(next: string[]) {
+      paths = next;
+      subs.forEach((cb) => cb());
+    },
+  };
 }
 
 beforeEach(() => {
@@ -126,5 +144,54 @@ describe("startSiblingRestage", () => {
       expect(s.provider.destroy).toHaveBeenCalled();
       expect(s.doc.destroy).toHaveBeenCalled();
     }
+  });
+
+  describe("presence-scoped mode", () => {
+    it("holds zero sockets while no peer announces a sheet", async () => {
+      await start(["main.kicad_sch", "sub.kicad_sch"], fakePresence());
+      expect(connectKicadDoc).not.toHaveBeenCalled();
+    });
+
+    it("connects only announced in-scope sheets, once", async () => {
+      const presence = fakePresence();
+      await start(["main.kicad_sch", "sub.kicad_sch"], presence);
+      presence.announce(["main.kicad_sch", "other-dir.kicad_pcb"]);
+      await vi.runAllTimersAsync();
+      expect(sessions.map((s) => s.room)).toEqual(["S:P:main.kicad_sch"]);
+      // A second announce of the same sheet (another peer joining) is a no-op.
+      presence.announce(["main.kicad_sch"]);
+      await vi.runAllTimersAsync();
+      expect(connectKicadDoc).toHaveBeenCalledTimes(1);
+    });
+
+    it("lingers after the peer leaves, flushes the pending restage, closes", async () => {
+      const presence = fakePresence(["main.kicad_sch"]);
+      await start(["main.kicad_sch"], presence);
+      await vi.runAllTimersAsync();
+      expect(sessions).toHaveLength(1);
+      restageFile.mockClear();
+      sessions[0]!.doc.emitRemote(); // debounced restage now pending
+      presence.announce([]); // peer closes their tab
+      await vi.advanceTimersByTimeAsync(60_000); // past linger + debounce
+      expect(sessions[0]!.provider.destroy).toHaveBeenCalled();
+      expect(sessions[0]!.doc.destroy).toHaveBeenCalled();
+      expect(restageFile).toHaveBeenCalled(); // last edits reached MEMFS
+      // Peer comes back: a fresh session dials again.
+      presence.announce(["main.kicad_sch"]);
+      await vi.runAllTimersAsync();
+      expect(connectKicadDoc).toHaveBeenCalledTimes(2);
+    });
+
+    it("a rejoin during the linger keeps the existing session", async () => {
+      const presence = fakePresence(["main.kicad_sch"]);
+      await start(["main.kicad_sch"], presence);
+      await vi.runAllTimersAsync();
+      presence.announce([]); // leave…
+      await vi.advanceTimersByTimeAsync(5_000); // …but rejoin within linger
+      presence.announce(["main.kicad_sch"]);
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(connectKicadDoc).toHaveBeenCalledTimes(1);
+      expect(sessions[0]!.provider.destroy).not.toHaveBeenCalled();
+    });
   });
 });

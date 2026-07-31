@@ -161,6 +161,7 @@ function stubCrossApp(initial: CrossAppPeer[] = []) {
   const subscribers = new Set<() => void>();
   const handle: CrossAppHandle & { firePeers(p: CrossAppPeer[]): void } = {
     setSelection: vi.fn(),
+    setDocPath: vi.fn(),
     peers: () => peers,
     subscribe(cb) {
       subscribers.add(cb);
