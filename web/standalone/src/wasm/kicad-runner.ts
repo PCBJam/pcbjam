@@ -71,6 +71,38 @@ export function restageFile(
   log(`[memfs] wrote ${dest} (${bytes.length} bytes)`);
 }
 
+/** Read one staged project file back from the tool's MEMFS (null if absent).
+ *  Counterpart of {@link restageFile}; used post-open to inspect the target
+ *  document (e.g. which lib nicknames it references). */
+export function readStagedFile(
+  win: ToolWindow,
+  slug: string,
+  relPath: string,
+): Uint8Array | null {
+  try {
+    const fs = getFS(win) as unknown as {
+      readFile(path: string): Uint8Array;
+    };
+    return fs.readFile(memfsFilePath(slug, relPath));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Lib-table nicknames the document references: placed symbols (`lib_id`),
+ * board footprints (`footprint`), and the embedded `lib_symbols` cache
+ * (`symbol "NICK:NAME"`). Text scan, not a parse — nicknames land in quoted
+ * `NICK:NAME` tokens in all three shapes, and a stray match only costs a
+ * no-op realtime upgrade for a name that resolves to nothing.
+ */
+export function usedLibNicknames(text: string): string[] {
+  const out = new Set<string>();
+  const re = /\((?:lib_id|footprint|symbol)\s+"([^":]+):[^"]*"/g;
+  for (let m = re.exec(text); m; m = re.exec(text)) out.add(m[1]!);
+  return [...out];
+}
+
 /** How many project files are fetched at once by the MEMFS staging below.
  *  Matches the lib presync's default: enough to hide per-request latency on a
  *  many-file project, low enough not to starve the parallel wasm download. */

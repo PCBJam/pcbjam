@@ -144,6 +144,16 @@ export interface LibsSource {
    * Optional: stateless sources omit it.
    */
   dispose?(): void;
+  /**
+   * Promote the named libs (by display name / lib-table nickname) to realtime
+   * sync — the deferred-realtime upgrade. Bulk sources open their stacks
+   * channel-less (a board session must not hold one socket per org lib); the
+   * editor calls this with the libs the OPEN DOCUMENT references, so a peer's
+   * edit to a placed symbol still reaches the session live (lib-update toast)
+   * while the ~150 unreferenced libs stay socket-free. Optional: sources that
+   * are always-realtime (or never) omit it.
+   */
+  enableRealtime?(libNames: string[]): Promise<void>;
 }
 
 /**

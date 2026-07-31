@@ -220,6 +220,12 @@ export function syncedLibsSource(
       opened?.then((r) => r.stack.close()).catch(() => {});
       opened = null;
     },
+    async enableRealtime(): Promise<void> {
+      // Names are the SCOPE source's concern (it fans out per lib); a one-lib
+      // source just promotes its own stack.
+      const { stack } = await ensure();
+      stack.connectRealtime();
+    },
   };
 }
 
@@ -458,6 +464,26 @@ export function syncedScopeLibsSource(
     dispose(): void {
       for (const src of perLib.values()) src.dispose?.();
       perLib.clear();
+    },
+    async enableRealtime(libNames): Promise<void> {
+      if (libNames.length === 0) return;
+      // Nickname → lib id via the backend listing (one request; the wasm boot
+      // has usually made the same call already). Names that don't resolve —
+      // project-local table rows, stale nicknames — are simply not ours.
+      const wanted = new Set(libNames);
+      const libs = (await remote.listLibs()).filter((l) => wanted.has(l.name));
+      opts.log?.(
+        `[synced] realtime upgrade for ${libs.length}/${libNames.length} referenced lib(s)`,
+      );
+      await Promise.all(
+        libs.map((l) =>
+          forLib(l.id)
+            .enableRealtime?.([])
+            ?.catch((e) =>
+              opts.log?.(`[synced] realtime upgrade failed for ${l.name}: ${String(e)}`),
+            ),
+        ),
+      );
     },
   };
 }

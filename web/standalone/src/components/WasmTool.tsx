@@ -60,7 +60,12 @@ import {
   type ModelsLoadingDetail,
 } from "@/wasm/libs/models-bridge";
 import { memfsFilePath, memfsProjectDir, TOOL_BUNDLE, TOOL_FRAME } from "@/wasm/constants";
-import { driveProjectIntoTool, type ToolFile } from "@/wasm/kicad-runner";
+import {
+  driveProjectIntoTool,
+  readStagedFile,
+  usedLibNicknames,
+  type ToolFile,
+} from "@/wasm/kicad-runner";
 import { dump as dumpTrace, mark } from "@/wasm/load-trace";
 import { registerSaveHook, type SaveBytes } from "@/wasm/save-flow";
 import type {
@@ -1795,6 +1800,26 @@ export function WasmTool({
             // Degrade, don't die: a residual wasm trap here (reentrancy during
             // some other parked chain) used to fail the whole boot.
             append(`[collab] attach failed — continuing without collab: ${String(err)}`);
+          }
+        }
+        // Deferred-realtime upgrade: the scope libs source opens its stacks
+        // channel-less (no socket per org lib), so promote the libs the OPEN
+        // DOCUMENT references — a peer editing a PLACED symbol must still
+        // reach this session live (lib-update toast); everything else syncs
+        // on the next load. Fire-and-forget: boot never waits on sockets.
+        if (targetPath && source?.enableRealtime) {
+          const staged = readStagedFile(win, slug, targetPath);
+          const nicks = staged
+            ? usedLibNicknames(new TextDecoder().decode(staged))
+            : [];
+          append(
+            `[libs] doc references ${nicks.length} lib nickname(s)` +
+              (staged ? "" : " (target not staged?)"),
+          );
+          if (nicks.length) {
+            void source
+              .enableRealtime(nicks)
+              .catch((e) => append(`[libs] realtime upgrade: ${String(e)}`));
           }
         }
         // Lib editors: the enumerate gate holds their whole-set hydrate until
