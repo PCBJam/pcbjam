@@ -36,8 +36,10 @@ function buildDom(): void {
   const root = doc.createElement("div");
   root.id = "pcbjam-fatal-screen";
   root.setAttribute("data-testid", "fatal-screen-dom");
+  // Same blue as the boot overlay / React fatal screen (#1a1a2e) — one
+  // coherent family across every full-screen state.
   root.style.cssText =
-    "position:fixed;inset:0;z-index:2147483000;background:#1e3a8a;color:#fff;" +
+    "position:fixed;inset:0;z-index:2147483000;background:#1a1a2e;color:#fff;" +
     "display:flex;flex-direction:column;align-items:center;justify-content:center;" +
     "gap:12px;font-family:ui-monospace,Menlo,monospace;padding:24px;box-sizing:border-box;";
 
@@ -67,14 +69,48 @@ function buildDom(): void {
     "padding:4px 14px;font-size:12px;cursor:pointer;font-family:inherit;";
   reload.onclick = () => window.location.reload();
 
+  // Console block mirroring the in-editor one: toggle bar + copy, collapsible.
+  const consoleWrap = doc.createElement("div");
+  consoleWrap.style.cssText = "position:absolute;bottom:0;left:0;right:0;text-align:left;";
+
+  const bar = doc.createElement("div");
+  bar.style.cssText =
+    "display:flex;align-items:center;background:#000000b3;font-size:11px;";
+
+  const logText = () => [...ring, "", dump()].join("\n");
+
+  const toggle = doc.createElement("button");
+  toggle.textContent = "▾ console";
+  toggle.style.cssText =
+    "border:0;background:transparent;color:#fff;padding:4px 12px;cursor:pointer;font:inherit;";
+
+  const copy = doc.createElement("button");
+  copy.textContent = "copy";
+  copy.style.cssText =
+    "border:0;background:transparent;color:#ffffffb3;padding:4px 12px;cursor:pointer;" +
+    "font:inherit;margin-left:auto;";
+  copy.onclick = () => {
+    navigator.clipboard.writeText(logText()).then(
+      () => { copy.textContent = "copied ✓"; },
+      () => { copy.textContent = "copy failed"; },
+    );
+  };
+
   const log = doc.createElement("pre");
   log.style.cssText =
-    "position:absolute;bottom:0;left:0;right:0;max-height:38vh;overflow:auto;" +
-    "margin:0;padding:10px 12px;background:#000000d9;color:#86efac;" +
-    "font-size:11px;line-height:1.35;text-align:left;";
-  log.textContent = [...ring, "", dump()].join("\n");
+    "max-height:38vh;overflow:auto;margin:0;padding:10px 12px;background:#000000d9;" +
+    "color:#86efac;font-size:11px;line-height:1.35;";
+  log.textContent = logText();
 
-  root.append(face, title, err, hint, reload, log);
+  toggle.onclick = () => {
+    const hidden = log.style.display === "none";
+    log.style.display = hidden ? "" : "none";
+    toggle.textContent = hidden ? "▾ console" : "▸ console";
+  };
+
+  bar.append(toggle, copy);
+  consoleWrap.append(bar, log);
+  root.append(face, title, err, hint, reload, consoleWrap);
   doc.body.appendChild(root);
 }
 

@@ -2373,7 +2373,7 @@ export function WasmTool({
       {fatal && (
         <div
           data-testid="fatal-overlay"
-          className="absolute inset-0 z-[35] flex flex-col items-center justify-center gap-3 bg-[#1e3a8a] text-white"
+          className="absolute inset-0 z-[35] flex flex-col items-center justify-center gap-3 bg-[#1a1a2e] text-white"
         >
           <p className="font-mono text-4xl text-white/90">:(</p>
           <p className="font-mono text-sm text-white">
@@ -2403,13 +2403,28 @@ export function WasmTool({
           visible on a fatal even with chrome hidden, for the same reason. */}
       {(!effectiveChromeHidden || fatal) && (
         <div className="absolute bottom-0 left-0 right-0 z-40">
-          <button
-            className="flex items-center gap-1 bg-black/70 px-3 py-1 font-mono text-xs text-white"
-            onClick={() => setShowLog((s) => !s)}
-          >
-            {showLog ? <ChevronDown size={14} /> : <ChevronUp size={14} />} console
-            ({logs.length})
-          </button>
+          <div className="flex items-center bg-black/70">
+            <button
+              className="flex items-center gap-1 px-3 py-1 font-mono text-xs text-white"
+              onClick={() => setShowLog((s) => !s)}
+            >
+              {showLog ? <ChevronDown size={14} /> : <ChevronUp size={14} />} console
+              ({logs.length})
+            </button>
+            {showLog && (
+              <button
+                className="ml-auto px-3 py-1 font-mono text-xs text-white/70 hover:text-white"
+                onClick={() => {
+                  void navigator.clipboard.writeText(logs.join("\n")).then(
+                    () => append("[console] copied to clipboard"),
+                    () => append("[console] clipboard copy failed"),
+                  );
+                }}
+              >
+                copy
+              </button>
+            )}
+          </div>
           {showLog && (
             <pre className="max-h-64 overflow-auto bg-black/85 p-3 font-mono text-[11px] leading-tight text-green-300">
               {logs.join("\n")}
