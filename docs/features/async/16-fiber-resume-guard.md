@@ -159,6 +159,29 @@ installed at module import in main.tsx, cooperating with the React overlay
 moment it disappears — 1 Hz ensure-loop). `fatal-overlay.spec.ts` now also
 kills the React root after the fatal and asserts the DOM floor appears.
 
+## Round 4 (2026-08-01 evening) — the recorder caught it: nested self-rewind of the root
+
+v0.1.23 still trapped, but this time with the black box
+(console-export-2026-8-1_19-16-8): dozens of benign fiber round-trips at
+`w=0`, the yield cycling healthily — then `fcs old=root new=88145920 w=1` /
+`fcs … ROOT w=1` and the trap, with the state dump frozen at
+`state=2 currData=root+20`. The fatal condition, now OBSERVED rather than
+inferred: a fiber round-trip executed inside the ROOT'S OWN sleep-wake
+continuation re-suspends and re-rewinds the root nested inside its live wake
+rewind — two rewind lifetimes on one context. Consume-once passed correctly
+(the suspension was fresh); it guards a different corruption.
+
+The retracted round-3 deferral was aimed right but unscoped: benign
+parked-fiber completions run in FIBER-owned wake windows (or at w=0) and
+must not pay the hop (that tax flaked S4). **Final form: ownership-scoped
+deferral.** Every fresh sleep is tagged root- or fiber-owned (fiber ⇔
+started inside a `finishContextSwitch` fiber slice or a fiber-owned wake);
+`finishContextSwitch(root)` defers one macrotask ONLY while a ROOT-owned
+wake is live (`Asyncify.__wakingRoot`), with the
+`root-entry-deferred` beacon. Also fixed: the resume re-entry no longer
+pushes sleep contexts (the v0.1.23 dump carried ~380 leaked zero-linked
+entries).
+
 ## Flight recorder (round 3, targeting instrument)
 
 The shim keeps a 96-entry ring of asyncify/fiber events (sleep entries with

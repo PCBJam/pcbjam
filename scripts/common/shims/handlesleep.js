@@ -133,7 +133,25 @@ if (typeof Asyncify !== "undefined") {
           "handleSleep entered mid-unwind (state=1) currData=" + Asyncify.currData,
           true);
       }
-      var sleepCtx = { capturedData: null, cleanedUp: false };
+      // Only a FRESH park (state 0) allocates data and needs tracking. The
+      // state-2 resume re-entry returns synchronously through the rewind
+      // branch — pushing a context for it leaks one per resume (the v0.1.23
+      // prod dump carried ~380 zero-linked pending contexts).
+      if (Asyncify.state !== 0) {
+        return __originalHandleSleep(startAsync);
+      }
+      var sleepCtx = {
+        capturedData: null,
+        cleanedUp: false,
+        // Ownership: does this park belong to the ROOT chain (the main
+        // loop's yield, an embind entry) or to a fiber body's slice? Root
+        // re-entry during a ROOT-owned wake is the nested-self-rewind that
+        // kills prod; fiber-owned wakes completing into root are the benign
+        // bulk (see the fiber guard below).
+        rootOwned: (typeof Fibers === "undefined")
+          || (!Fibers.__inFiberEntry
+              && !(Asyncify.__wakingOwnerFiber || false))
+      };
       Asyncify.__pendingSleepContexts.push(sleepCtx);
 
       var cleanup = function() {
@@ -149,7 +167,8 @@ if (typeof Asyncify !== "undefined") {
             // wakeUp runs from pure JS on Promise resolution. Fiber swaps during
             // the await may have overwritten Asyncify.currData. Restore OUR buffer
             // so handleSleep's _asyncify_start_rewind and doRewind use it.
-            __rec("wake buf=" + (sleepCtx.capturedData || 0) + " cdWas=" + (Asyncify.currData || 0));
+            __rec("wake buf=" + (sleepCtx.capturedData || 0) + " cdWas=" + (Asyncify.currData || 0)
+                  + (sleepCtx.rootOwned ? " R" : " f"));
             if (sleepCtx.capturedData) {
               if (Asyncify.currData !== sleepCtx.capturedData) {
                 // The repair firing. currData=null → the overlapping chain
@@ -176,6 +195,10 @@ if (typeof Asyncify !== "undefined") {
             // doRewind(root) → unreachable). The stale-fiber guard below
             // defers such root entries by one macrotask.
             Asyncify.__inSleepWake = (Asyncify.__inSleepWake || 0) + 1;
+            var prevWakingOwnerFiber = Asyncify.__wakingOwnerFiber || false;
+            Asyncify.__wakingOwnerFiber = !sleepCtx.rootOwned;
+            var prevWakingRoot = Asyncify.__wakingRoot || 0;
+            if (sleepCtx.rootOwned) Asyncify.__wakingRoot = (Asyncify.__wakingRoot || 0) + 1;
             try {
               return wakeUp(result);
             } catch (e) {
@@ -191,6 +214,8 @@ if (typeof Asyncify !== "undefined") {
               throw e;
             } finally {
               Asyncify.__inSleepWake -= 1;
+              Asyncify.__wakingOwnerFiber = prevWakingOwnerFiber;
+              if (sleepCtx.rootOwned) Asyncify.__wakingRoot = prevWakingRoot;
             }
           });
         });
@@ -297,6 +322,38 @@ if (typeof Fibers !== "undefined"
     }
 
     var isRoot = newFiber === Fibers.__rootFiber;
+
+    // THE prod killer, finally recorded by the flight recorder (v0.1.23 dump,
+    // event "fcs … ROOT w=1" immediately before the trap): a fiber round-trip
+    // executed inside the ROOT's OWN sleep-wake continuation re-suspends and
+    // re-rewinds the root NESTED inside its live wake rewind — two rewind
+    // lifetimes on one context; asyncify dies with state stuck at Rewinding.
+    // Fiber-owned wakes completing into root are the benign bulk (the same
+    // recording shows dozens at w=0 / fiber-owned) and are NOT deferred —
+    // that unscoped deferral was the retracted S4-flaking version. Only a
+    // root re-entry during a ROOT-OWNED wake defers, one macrotask, so the
+    // outer rewind fully settles first.
+    if (isRoot && (Asyncify.__wakingRoot || 0) > 0) {
+      var deferred = newFiber;
+      Fibers.__rootDeferrals = (Fibers.__rootDeferrals || 0) + 1;
+      if (Fibers.__rootDeferrals <= 10 || Fibers.__rootDeferrals % 100 === 0) {
+        console.warn("[wx-asyncify] root-entry-deferred: fiber completion inside the root's own "
+                     + "wake window; retrying next tick (occurrence " + Fibers.__rootDeferrals + ")");
+      }
+      __fcsRec("defer ROOT-self new=" + deferred);
+      var retry = function() {
+        if (Fibers.trampolineRunning || Fibers.nextFiber) {
+          setTimeout(retry, 0);
+          return;
+        }
+        __fcsRec("defer-retry new=" + deferred);
+        Fibers.nextFiber = deferred;
+        Fibers.trampoline();
+      };
+      setTimeout(retry, 0);
+      return;
+    }
+
     var HEAPU32v = (typeof GROWABLE_HEAP_U32 === "function") ? GROWABLE_HEAP_U32() : HEAPU32;
     var entryPoint = HEAPU32v[((newFiber + 12) >>> 2) >>> 0];
     if (!isRoot && Fibers.__internallyParked.has(newFiber)) {
@@ -328,7 +385,17 @@ if (typeof Fibers !== "undefined"
       Fibers.__validSuspensions.delete(newFiber);
     }
 
-    var ret = __origFinishContextSwitch(newFiber);
+    // Sleeps started inside an entered FIBER's slice are fiber-owned (see the
+    // handleSleep wrapper's rootOwned tag). Root entries don't count: the
+    // main loop's continuation after a root rewind is root-owned by
+    // definition — that's exactly the chain whose wake must not be re-entered.
+    if (!isRoot) Fibers.__inFiberEntry = (Fibers.__inFiberEntry || 0) + 1;
+    var ret;
+    try {
+      ret = __origFinishContextSwitch(newFiber);
+    } finally {
+      if (!isRoot) Fibers.__inFiberEntry -= 1;
+    }
 
     // How did the entered fiber's synchronous slice end? Another fiber swap
     // (nextFiber set — the trampoline loop continues, proper suspension) or a
