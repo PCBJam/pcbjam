@@ -114,6 +114,51 @@ crash-capable children live inside it; the fatal screen (now an actual blue
 screen) and the console panel live OUTSIDE it and survive. All fatal
 promotions auto-open the console. Pinned by `tests/web/fatal-overlay.spec.ts`.
 
+## Round 3 (2026-08-01 afternoon) — v0.1.22 still trapped: the target is the ROOT
+
+The v0.1.22 prod log (console-export-2026-8-1_13-39-41) showed both guards
+silent — because the fatal rewind's target is the ROOT context, which layer 2
+exempted outright. Reading all four identical prod stacks precisely:
+`maybeStopUnwind → Fibers.trampoline → finishContextSwitch → doRewind(root) →
+unreachable`, fired from INSIDE a sleep-wake's own rewind. A fiber completes
+its yield-back to main while main's yield wake is mid-rewind: two different
+"resume main" paths interleaved in one tick — the wake's `doRewind(Y)` and
+the fiber's `finishContextSwitch` rewind of `main+20` — replaying frames
+over live state. The 8 ms-earlier "index out of bounds" is the wake side of
+the same collision.
+
+Root entry is legal and constant in healthy flow; ONLY the wake-window
+overlap is fatal. **Layer 3: serialize, don't refuse.** The shim marks the
+synchronous wake window (`Asyncify.__inSleepWake` around `wakeUp()`);
+`finishContextSwitch(root)` inside that window is DEFERRED one macrotask
+(`[wx-asyncify] root-entry-deferred` beacon) and re-fired via the trampoline
+once the wake has settled. Ordering change only — nothing is dropped.
+
+## The white screen, round 3 (fixed at the DOM level)
+
+v0.1.22's boundary was still not enough: a commit-phase throw in WasmTool's
+OWN effects unmounts the root — no boundary below it can help.
+`web/standalone/src/wasm/fatal-screen.ts` is the floor: a plain-DOM blue
+screen with its own mirrored log ring (`recordFatalLog` from `append`),
+installed at module import in main.tsx, cooperating with the React overlay
+(stays hidden while `[data-testid="fatal-overlay"]` exists, takes over the
+moment it disappears — 1 Hz ensure-loop). `fatal-overlay.spec.ts` now also
+kills the React root after the fatal and asserts the DOM floor appears.
+
+## Flight recorder (round 3, targeting instrument)
+
+The shim keeps a 96-entry ring of asyncify/fiber events (sleep entries with
+state/currData/wake-depth, wakes with buffer + clobber info, every
+finishContextSwitch with old→new/ROOT/wake-depth, refusals, deferrals) —
+never printed in normal operation. On the FIRST trap signature it dumps the
+ring plus full machine state (`Asyncify.state/currData/__inSleepWake`,
+pending sleep buffers, `Fibers.nextFiber/trampolineRunning/root/valid/
+parked/deferrals`) to the console (`[wx-asyncify] STATE` + `RECORDER`), and
+`window.__wxAsyncifyDump()` returns it on demand. The WasmTool fatal
+promotion appends the same dump into the in-page log, so the blue screen —
+React or DOM-floor — carries it. The next prod export reads like a black-box
+recording instead of a stack-shape puzzle.
+
 ## Verification
 
 - `fiber-resume-park.spec.ts` red on unguarded build (phase-3 poll dies),

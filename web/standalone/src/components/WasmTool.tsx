@@ -131,6 +131,7 @@ import {
   toggleChromeHidden,
   useChromeHidden,
 } from "@/lib/chrome-visibility";
+import { recordFatalLog, showFatalScreen } from "@/wasm/fatal-screen";
 
 // Tools with the v2 items bridge (kicadCollabSnapshotItems/ApplyItems embind exports).
 const COLLAB_TOOLS = new Set<Tool>(["pl_editor", "eeschema", "pcbnew"]);
@@ -1086,10 +1087,12 @@ export function WasmTool({
   // exposes the style bridge, mounts the floating panel.
   const [tunerMod, setTunerMod] = React.useState<TunerModule | null>(null);
 
-  const append = React.useCallback(
-    (msg: string) => setLogs((prev) => [...prev.slice(-800), msg]),
-    [],
-  );
+  const append = React.useCallback((msg: string) => {
+    // Mirror into the React-independent fatal-screen ring: if React ever
+    // unmounts itself on a crash, the DOM floor still has the full log.
+    recordFatalLog(msg);
+    setLogs((prev) => [...prev.slice(-800), msg]);
+  }, []);
 
   // Loading/error chrome for library item fetches (open/save), driven by events
   // the libs bridge dispatches (wasm/libs/source). The fetch is otherwise
@@ -1230,8 +1233,17 @@ export function WasmTool({
     const promote = (kind: string, msg: string) => {
       append(`[fatal] ${kind}: ${msg}`);
       append(dumpTrace());
+      // The asyncify flight recorder (handlesleep.js shim): event ring +
+      // machine state at death — the targeting data for the fiber trap.
+      const rec = (
+        window as Window & { __wxAsyncifyDump?: () => string }
+      ).__wxAsyncifyDump?.();
+      if (rec) append(rec);
       setFatal(msg);
       setShowLog(true);
+      // Arm the React-independent floor too: it stays invisible while our
+      // overlay is up, and takes over the instant React dies.
+      showFatalScreen(msg);
     };
     const onError = (e: ErrorEvent) => {
       const msg = e.error instanceof Error ? `${e.error.message}` : String(e.message ?? "");
@@ -2018,6 +2030,7 @@ export function WasmTool({
           append(dumpTrace());
           setFatal(msg);
           setShowLog(true);
+          showFatalScreen(msg);
         }}
       >
       {oomExhausted && (

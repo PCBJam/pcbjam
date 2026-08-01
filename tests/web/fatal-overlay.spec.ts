@@ -49,4 +49,17 @@ test('a terminal uncaught error raises the blue fatal overlay with the console o
   await expect(page.locator('pre').filter({ hasText: '[fatal]' })).toBeVisible({
     timeout: 10000,
   });
+  // While React's overlay is alive, the DOM floor stays out of the way.
+  await expect(page.getByTestId('fatal-screen-dom')).toHaveCount(0);
+
+  // Simulate what prod actually did three releases in a row: React unmounts
+  // its whole root after the fatal. The DOM-level floor must take over —
+  // blue screen + the mirrored log — instead of a white page.
+  await page.evaluate(() => {
+    document.querySelector('[data-testid="fatal-overlay"]')?.closest('#root, body > div')?.remove();
+  });
+  await expect(page.getByTestId('fatal-screen-dom')).toBeVisible({ timeout: 5000 });
+  await expect(page.locator('#pcbjam-fatal-screen pre')).toContainText('[fatal]', {
+    timeout: 5000,
+  });
 });

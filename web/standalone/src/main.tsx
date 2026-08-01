@@ -4,7 +4,13 @@ import { BrowserRouter } from "react-router-dom";
 import App from "./App";
 import { initAnalytics } from "./lib/analytics";
 import { initTheme } from "./lib/theme";
+import { installFatalScreenListeners } from "./wasm/fatal-screen";
 import "./index.css";
+
+// The React-independent blue-screen floor: installed before React mounts so a
+// wasm trap can never end in a white page, even if React unmounts itself
+// (which it did, three prod releases in a row — see async/16).
+installFatalScreenListeners();
 
 // Privacy-friendly analytics (Plausible), only when VITE_PLAUSIBLE_SRC is set.
 initAnalytics();
