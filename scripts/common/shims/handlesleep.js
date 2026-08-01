@@ -297,48 +297,32 @@ if (typeof Fibers !== "undefined"
     }
 
     var isRoot = newFiber === Fibers.__rootFiber;
-
-    // The prod killer (four identical trap stacks, v0.1.19–22): a fiber
-    // completes and re-enters the ROOT while a sleep wake's own rewind is
-    // still on the stack — two "resume main" paths interleaved in one tick,
-    // doRewind(root) replays over live state, "unreachable executed",
-    // poisoned runtime. Root entry is legal and constant in healthy flow;
-    // ONLY the wake-window overlap is fatal. Defer it by one macrotask so
-    // the wake settles first — ordering change only, nothing is dropped.
-    if (isRoot && (Asyncify.__inSleepWake || 0) > 0) {
-      var deferred = newFiber;
-      Fibers.__rootDeferrals = (Fibers.__rootDeferrals || 0) + 1;
-      if (Fibers.__rootDeferrals <= 10 || Fibers.__rootDeferrals % 100 === 0) {
-        console.warn("[wx-asyncify] root-entry-deferred: fiber completion landed inside a "
-                     + "sleep-wake window; retrying next tick (occurrence "
-                     + Fibers.__rootDeferrals + ")");
-      }
-      __fcsRec("defer root new=" + deferred);
-      var retry = function() {
-        if (Fibers.trampolineRunning || Fibers.nextFiber) {
-          setTimeout(retry, 0);   // another switch in flight — wait our turn
-          return;
-        }
-        __fcsRec("defer-retry new=" + deferred);
-        Fibers.nextFiber = deferred;
-        Fibers.trampoline();
-      };
-      setTimeout(retry, 0);
-      return;
-    }
-
     var HEAPU32v = (typeof GROWABLE_HEAP_U32 === "function") ? GROWABLE_HEAP_U32() : HEAPU32;
     var entryPoint = HEAPU32v[((newFiber + 12) >>> 2) >>> 0];
     if (!isRoot && Fibers.__internallyParked.has(newFiber)) {
+      // Root is exempt from THIS check only: it "parks" in the main loop's
+      // yield as a matter of course (quarantining it starved every coroutine
+      // return — 19 collab e2e reds on the first guard build).
       __refuseFiber(newFiber, "is asyncify-parked mid-body (sleep in flight)");
       return;
     }
-    if (!isRoot && entryPoint === 0) {
-      // Suspended-fiber path: about to rewind newFiber+20. (The root is
-      // exempt: re-entering it with an older suspension is the long-standing
-      // ghost-resume flow, resolved by libcontext's epoch machinery.)
+    if (entryPoint === 0) {
+      // Suspended-fiber path: about to rewind newFiber+20 — root INCLUDED.
+      // Consume-once semantics are the actual prod killer's cure (all four
+      // trap stacks, v0.1.19–22): each fiber_swap suspension is rewindable
+      // exactly once. Two fibers completing against ONE root suspension
+      // epoch (a tool fiber and a collab fiber both waking around
+      // open:settled) makes the second finishContextSwitch(root) rewind
+      // already-consumed data → "unreachable executed" → poisoned runtime.
+      // Refusing the second consumption loses nothing: the fiber that
+      // yielded stays properly suspended (recorded above), and the root
+      // continues via its real pending resume (its own sleep wake or the
+      // next fresh JS entry) — the same contract as libcontext's
+      // ghost-resume epochs, enforced one layer lower.
       if (!Fibers.__validSuspensions.has(newFiber)) {
-        __refuseFiber(newFiber, "has no live suspension - rewinding would replay stale data");
+        __refuseFiber(newFiber, isRoot
+          ? "root suspension already consumed - a second rewind would replay stale frames"
+          : "has no live suspension - rewinding would replay stale data");
         return;
       }
       Fibers.__validSuspensions.delete(newFiber);

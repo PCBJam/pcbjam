@@ -127,12 +127,26 @@ the fiber's `finishContextSwitch` rewind of `main+20` — replaying frames
 over live state. The 8 ms-earlier "index out of bounds" is the wake side of
 the same collision.
 
-Root entry is legal and constant in healthy flow; ONLY the wake-window
-overlap is fatal. **Layer 3: serialize, don't refuse.** The shim marks the
-synchronous wake window (`Asyncify.__inSleepWake` around `wakeUp()`);
-`finishContextSwitch(root)` inside that window is DEFERRED one macrotask
-(`[wx-asyncify] root-entry-deferred` beacon) and re-fired via the trampoline
-once the wake has settled. Ordering change only — nothing is dropped.
+**Layer 3, first attempt (wake-window deferral) — RETRACTED same day:**
+deferring every root entry inside a sleep-wake window taxed EVERY parked
+fiber completion with a macrotask hop; under CI load that stretched
+three-client apply chains and flaked drift-trio S4 twice in a row (green
+26/26 locally). It also modeled the wrong condition.
+
+**Layer 3, final: consume-once root suspensions.** The actual fatal state is
+a SECOND rewind of the same root suspension: root suspends once per
+`fiber_swap` out of it, but two parked fibers completing against one root
+suspension epoch (a tool fiber + a collab fiber both waking around
+`open:settled`) each trigger `finishContextSwitch(root)` — the second rewinds
+already-consumed data → "unreachable executed". The shim already records
+every suspension (including root's); the fix is simply to stop exempting
+root from the validity check: first consumption proceeds synchronously (zero
+added latency anywhere), the second is refused
+(`[wx-asyncify] fiber-resume-refused: root suspension already consumed`) —
+the yielded fiber stays properly suspended and resumable, root continues via
+its real pending resume, same contract as libcontext's ghost epochs enforced
+one layer lower. Root stays exempt ONLY from the internally-parked
+quarantine (its yield park is routine — the 19-red lesson).
 
 ## The white screen, round 3 (fixed at the DOM level)
 
