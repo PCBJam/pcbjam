@@ -98,9 +98,19 @@ test('B follows A: viewport mirrors, then local input breaks the follow', async 
     })
     .toBe(true);
 
-  // A moves again → B tracks.
+  // A moves again → B tracks. Sequence on A actually LANDING first (same
+  // pattern as T1): without it, any A-side fit delay on a starved CI box gets
+  // misreported as "B never tracked" — the exact flake that ate three release
+  // runs on 2026-08-01 (green 10/10 locally on the same build). B's window
+  // starts only once A's rect demonstrably went out.
   const T2 = { cx: 180e6, cy: 120e6, hw: 25e6, hh: 20e6 };
   await fit(a, T2.cx, T2.cy, T2.hw, T2.hh);
+  await expect
+    .poll(async () => near(await viewport(a), T2.cx, T2.cy, 1e6), {
+      timeout: 20000,
+      message: 'A never landed on its second fit target',
+    })
+    .toBe(true);
   await expect
     .poll(async () => near(await viewport(b), T2.cx, T2.cy, T2.hw * 0.02), {
       timeout: 30000,
