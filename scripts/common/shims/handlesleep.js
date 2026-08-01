@@ -137,3 +137,123 @@ if (typeof Asyncify !== "undefined") {
   }
 }
 // === End nested-Asyncify handleSleep fix ===
+
+// === Stale-fiber-rewind guard (the decoded 2026-07/08 prod board-load trap) ===
+//
+// A fiber whose body asyncify-parks inside handleSleep is suspended in a way
+// the fiber machinery cannot see: its struct still holds the CONSUMED data of
+// its last real swap-out. The C++ libcontext guard (swap_suspended) closes the
+// simple case, but caller attribution can be poisoned — a fresh JS entry that
+// jumps while g_current_context still points at a parked fiber writes a fresh
+// suspension INTO that parked fiber's struct, so the flag lies. This guard is
+// attribution-proof: it tracks validity at the emscripten-fiber layer itself.
+//
+// A fiber becomes safely resumable ONLY when a real swap-out writes its
+// suspension — observable here because fiber_swap sets Asyncify.currData to
+// oldFiber's asyncify data (fiber+20) and finishContextSwitch runs before
+// anything else touches it. Consuming a suspension (the rewind path) removes
+// it. A suspended-path entry for a fiber with NO live suspension is exactly
+// the stale rewind that produced "unreachable executed" + a poisoned runtime
+// (docs/features/async/16) — REFUSE it: the dropped dispatch ghost-resolves
+// (the jump-ghost contract), the parked body completes via its own wake.
+if (typeof Fibers !== "undefined"
+    && typeof Fibers.finishContextSwitch === "function"
+    && !Fibers.__staleRewindGuardInstalled) {
+  // Fibers whose last swap-out wrote a live (unconsumed) suspension.
+  Fibers.__validSuspensions = new Set();
+  // Fibers whose last slice ended in a handleSleep park instead of a swap-out:
+  // their body is mid-sleep, so entering them is unsafe no matter what their
+  // struct holds (a misattributed jump may have written a valid-LOOKING
+  // foreign suspension into it).
+  Fibers.__internallyParked = new Set();
+  // fiber → the sleep buffer its internal park is waiting on. A LATER
+  // "swap-out" of that fiber is genuine only if this sleep has resolved
+  // (its context left __pendingSleepContexts) — a misattributed jump from a
+  // fresh JS entry writes the fiber's struct while the sleep is still
+  // pending, and must not launder the fiber back into the valid set.
+  Fibers.__parkSleepBuf = new Map();
+
+  var __origFinishContextSwitch = Fibers.finishContextSwitch.bind(Fibers);
+  var __fiberRefusals = 0;
+
+  var __refuseFiber = function(newFiber, why) {
+    ++__fiberRefusals;
+    if (__fiberRefusals <= 10 || __fiberRefusals % 100 === 0) {
+      console.warn("[wx-asyncify] fiber-resume-refused: fiber=" + newFiber + " " + why
+                   + " (occurrence " + __fiberRefusals + ")");
+    }
+    // No context is entered. The unwind that got us here already completed
+    // (state Normal); clear the dangling currData so the next fresh park
+    // does not read a foreign pointer.
+    Asyncify.currData = null;
+  };
+
+  Fibers.finishContextSwitch = function(newFiber) {
+    // The swap that scheduled this switch just suspended its old fiber and
+    // left currData = oldFiber+20 (fiber_swap's unwind path); record that
+    // suspension as live — and a GENUINE swap-out also ends any internal
+    // park. Genuine means the fiber's pending sleep (if any) has resolved;
+    // otherwise this is a misattributed fresh-entry jump writing into a
+    // parked fiber's struct, and the fiber must stay quarantined.
+    // finishContextSwitch only runs for genuine fiber switches, so currData
+    // here is never a handleSleep buffer.
+    if (Asyncify.currData) {
+      var oldFiber = Asyncify.currData - 20;
+      // The very first switch is always main → coroutine: remember the ROOT
+      // context. The root is exempt from quarantine below — after a rewind
+      // into it, execution continues into the whole main loop (which parks in
+      // its yield as a matter of course); reading that park as "the entered
+      // fiber is mid-body" quarantined MAIN and starved every coroutine
+      // return (empty collab results across the board on the first build of
+      // this guard).
+      if (Fibers.__rootFiber === undefined) {
+        Fibers.__rootFiber = oldFiber;
+      }
+      var parkBuf = Fibers.__parkSleepBuf.get(oldFiber);
+      var stillParked = parkBuf !== undefined
+          && Array.isArray(Asyncify.__pendingSleepContexts)
+          && Asyncify.__pendingSleepContexts.some(function(c) { return c.capturedData === parkBuf; });
+      if (!stillParked) {
+        Fibers.__validSuspensions.add(oldFiber);
+        Fibers.__internallyParked.delete(oldFiber);
+        Fibers.__parkSleepBuf.delete(oldFiber);
+      }
+    }
+
+    var isRoot = newFiber === Fibers.__rootFiber;
+    var HEAPU32v = (typeof GROWABLE_HEAP_U32 === "function") ? GROWABLE_HEAP_U32() : HEAPU32;
+    var entryPoint = HEAPU32v[((newFiber + 12) >>> 2) >>> 0];
+    if (!isRoot && Fibers.__internallyParked.has(newFiber)) {
+      __refuseFiber(newFiber, "is asyncify-parked mid-body (sleep in flight)");
+      return;
+    }
+    if (!isRoot && entryPoint === 0) {
+      // Suspended-fiber path: about to rewind newFiber+20. (The root is
+      // exempt: re-entering it with an older suspension is the long-standing
+      // ghost-resume flow, resolved by libcontext's epoch machinery.)
+      if (!Fibers.__validSuspensions.has(newFiber)) {
+        __refuseFiber(newFiber, "has no live suspension - rewinding would replay stale data");
+        return;
+      }
+      Fibers.__validSuspensions.delete(newFiber);
+    }
+
+    var ret = __origFinishContextSwitch(newFiber);
+
+    // How did the entered fiber's synchronous slice end? Another fiber swap
+    // (nextFiber set — the trampoline loop continues, proper suspension) or a
+    // handleSleep park (currData holds a sleep buffer — the body is mid-sleep
+    // and must not be entered until it properly swaps out). Never applied to
+    // the root: its rewound continuation runs the whole main loop, whose
+    // routine yield park says nothing about a fiber body.
+    if (!isRoot && !Fibers.nextFiber && Asyncify.currData) {
+      Fibers.__internallyParked.add(newFiber);
+      Fibers.__parkSleepBuf.set(newFiber, Asyncify.currData);
+    }
+
+    return ret;
+  };
+
+  Fibers.__staleRewindGuardInstalled = true;
+}
+// === End stale-fiber-rewind guard ===
