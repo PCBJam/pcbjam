@@ -73,6 +73,47 @@ Why refuse rather than wait: a waiting guard (park the resumer until the
 target suspends) deadlocks against the yield-back path — the target's yield
 needs to swap into the very context that is busy waiting.
 
+## Round 2 (2026-08-01) — v0.1.21 still trapped: the guard was laundered
+
+The prod crash reproduced on v0.1.21 with ZERO `jump-refused` beacons: the
+fatal swap passed the `swap_suspended` check. Mechanism: when a fresh JS
+entry executes while `g_current_context` still points at a parked fiber (the
+port has no way to know a new JS turn began), `jump_fcontext` attributes the
+jump's old side to that parked fiber — `fiber_swap` then writes a fresh
+(foreign but valid-looking) suspension INTO the parked fiber's struct and
+re-marks it `swap_suspended`. The flag lies; the later Resume passes the C++
+guard and rewinds garbage.
+
+**Layer 2 (attribution-proof, JS runtime):** `handlesleep.js` wraps
+`Fibers.finishContextSwitch` and tracks truth at the emscripten-fiber layer:
+
+- a fiber is *validly suspended* only when a real swap-out wrote its
+  suspension (observable: `fiber_swap` leaves `currData = oldFiber+20` when
+  the trampoline runs);
+- a fiber whose entered slice ends in a `handleSleep` park (currData holds a
+  sleep buffer, no `nextFiber`) is *internally parked* — quarantined until a
+  GENUINE swap-out, where genuine means its pending sleep has resolved
+  (checked against the shim's `__pendingSleepContexts`); a laundering write
+  while the sleep is still pending does not lift the quarantine;
+- entering a quarantined or suspension-less fiber is REFUSED
+  (`[wx-asyncify] fiber-resume-refused` beacon, currData cleared, ghost
+  contract as usual).
+
+Lever for the laundered scenario: `kicadTestFiberParkStartSecond/PokeSecond`
+(a second coroutine started while the first is parked = the misattributed
+jump), spec scenario 2 asserts the refusal beacon fires AND everything
+completes cleanly.
+
+## The white screen itself (fixed this round)
+
+The prod logs also revealed why every fatal-overlay attempt failed: the last
+trap of each cascade lands inside a React EFFECT (an embind call via a
+react-query subscription), React unmounts the entire root, and the overlay +
+console die with the tree. Fix: `WasmErrorBoundary` inside `WasmTool` — all
+crash-capable children live inside it; the fatal screen (now an actual blue
+screen) and the console panel live OUTSIDE it and survive. All fatal
+promotions auto-open the console. Pinned by `tests/web/fatal-overlay.spec.ts`.
+
 ## Verification
 
 - `fiber-resume-park.spec.ts` red on unguarded build (phase-3 poll dies),

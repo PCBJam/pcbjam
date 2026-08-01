@@ -33,6 +33,8 @@ type Mod = {
   kicadTestFiberParkPrime(): boolean;
   kicadTestFiberParkPoke(): boolean;
   kicadTestFiberParkState(): string;
+  kicadTestFiberParkStartSecond(): boolean;
+  kicadTestFiberParkPokeSecond(): boolean;
   kicadCollabSnapshotItems(): string;
 };
 
@@ -41,6 +43,7 @@ interface ParkState {
   pokes: number;
   parkMs: number;
   running: boolean;
+  phase2: number;
 }
 
 async function bootHarness(page: Page): Promise<void> {
@@ -135,6 +138,86 @@ test.describe("Resume() into an asyncify-parked coroutine (libcontext guard)", (
       (window.Module as unknown as Mod).kicadCollabSnapshotItems(),
     );
     expect(typeof snapshot, "snapshot entry still functional").toBe("string");
+    const trapLines = [...testLogger.consoleLogs, ...testLogger.errors].filter((l) =>
+      TRAP_SIGNATURE.test(l),
+    );
+    expect(trapLines, "no wasm trap signature anywhere in the run").toEqual([]);
+  });
+
+  test("poisoned attribution: a second coroutine launders the parked fiber; the JS guard still quarantines it", async ({
+    page,
+    testLogger,
+  }) => {
+    test.setTimeout(240000);
+    await bootHarness(page);
+
+    // Prime + park the first coroutine (same staging as scenario 1).
+    await page.evaluate(() => {
+      (window.Module as unknown as Mod).kicadTestFiberParkStart(2500);
+    });
+    await expect
+      .poll(async () => (await parkState(page)).phase, { timeout: 10000, intervals: [50] })
+      .toBe(1);
+    await page.evaluate(() => {
+      (window.Module as unknown as Mod).kicadTestFiberParkPrime();
+    });
+    await expect
+      .poll(async () => (await parkState(page)).phase, { timeout: 10000, intervals: [50] })
+      .toBe(2);
+
+    // THE LAUNDERING: start a second coroutine while the first is parked.
+    // libcontext attributes this jump's old side to the PARKED fiber
+    // (g_current_context is stale) — writing a fresh suspension into its
+    // struct and re-marking it swap_suspended, exactly how the prod resume
+    // bypassed the C++ guard on v0.1.21.
+    await page.evaluate(() => {
+      (window.Module as unknown as Mod).kicadTestFiberParkStartSecond();
+    });
+    await expect
+      .poll(async () => (await parkState(page)).phase2, { timeout: 10000, intervals: [50] })
+      .toBe(1);
+
+    // The fatal prod operation, now with the C++ guard blinded. The JS
+    // stale-rewind guard must refuse it (quarantine beacon) instead of
+    // rewinding foreign/stale data.
+    await page.evaluate(() => {
+      (window.Module as unknown as Mod).kicadTestFiberParkPoke();
+    });
+    const afterPoke = await parkState(page);
+    console.log(`[TEST] laundered mid-park poke: ${JSON.stringify(afterPoke)}`);
+    expect(afterPoke.phase, "quarantined poke left the parked body undisturbed").toBe(2);
+
+    // The park must still complete on its own wake and yield again.
+    await expect
+      .poll(async () => (await parkState(page)).phase, { timeout: 15000, intervals: [100] })
+      .toBe(3);
+
+    // Post-yield resume is legitimate again and completes the first body.
+    await page.evaluate(() => {
+      (window.Module as unknown as Mod).kicadTestFiberParkPoke();
+    });
+    await expect
+      .poll(async () => (await parkState(page)).phase, { timeout: 10000, intervals: [100] })
+      .toBe(4);
+
+    // The second coroutine also completes cleanly.
+    await page.evaluate(() => {
+      (window.Module as unknown as Mod).kicadTestFiberParkPokeSecond();
+    });
+    await expect
+      .poll(async () => (await parkState(page)).phase2, { timeout: 10000, intervals: [100] })
+      .toBe(2);
+
+    // Window-engagement proof: the JS guard must have actually refused the
+    // laundered resume — silence means the scenario never bypassed the C++
+    // guard and the test is vacuous.
+    const refusals = testLogger.consoleLogs.filter((l) =>
+      l.includes("fiber-resume-refused"),
+    );
+    console.log(`[TEST] refusal beacons: ${refusals.length}`);
+    for (const l of refusals.slice(0, 4)) console.log(`[TEST]   ${l}`);
+    expect(refusals.length, "the stale-rewind guard intercepted the laundered resume").toBeGreaterThan(0);
+
     const trapLines = [...testLogger.consoleLogs, ...testLogger.errors].filter((l) =>
       TRAP_SIGNATURE.test(l),
     );

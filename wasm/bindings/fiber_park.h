@@ -47,6 +47,13 @@ struct State
     int phase  = 0;
     int parkMs = 0;
     int pokes  = 0;
+    // Second coroutine (poisoned-attribution scenario): 0 idle · 1 yielded ·
+    // 2 completed. Starting it while the FIRST body is asyncify-parked makes
+    // libcontext attribute the jump's old side to that parked fiber
+    // (g_current_context is stale), writing a fresh suspension into its
+    // struct — the exact laundering that let the prod resume bypass the
+    // swap_suspended guard.
+    int phase2 = 0;
 };
 
 inline State& state()
@@ -114,13 +121,59 @@ inline bool poke()
     return co()->Resume();
 }
 
+inline COROUTINE<int, int>*& co2()
+{
+    static COROUTINE<int, int>* s_co2 = nullptr;
+    return s_co2;
+}
+
+inline int fiberBody2( int )
+{
+    state().phase2 = 1;
+    co2()->KiYield();
+    state().phase2 = 2;
+    return 0;
+}
+
+/**
+ * Start a SECOND coroutine while the first body is asyncify-parked. Because
+ * g_current_context still points at the parked fiber, libcontext attributes
+ * this jump's old side to it: the swap writes a fresh (foreign) suspension
+ * into the PARKED fiber's struct and re-marks it swap_suspended — the
+ * laundering that lets a later Resume bypass the C++ guard. The JS
+ * stale-rewind guard (handlesleep.js) must still quarantine it.
+ */
+inline bool startSecond()
+{
+    if( !co() )
+        return false;   // scenario needs the first coroutine in flight
+
+    if( co2() && co2()->Running() )
+        return false;
+
+    delete co2();
+    state().phase2 = 0;
+    co2() = new COROUTINE<int, int>( fiberBody2 );
+    co2()->Call( 0 );
+    return state().phase2 == 1;
+}
+
+/** Resume the second coroutine past its yield (cleanup / completion). */
+inline bool pokeSecond()
+{
+    if( !co2() )
+        return false;
+
+    return co2()->Resume();
+}
+
 inline std::string stateJson()
 {
-    char buf[112];
+    char buf[144];
     snprintf( buf, sizeof( buf ),
-              "{\"phase\":%d,\"pokes\":%d,\"parkMs\":%d,\"running\":%s}",
+              "{\"phase\":%d,\"pokes\":%d,\"parkMs\":%d,\"running\":%s,\"phase2\":%d}",
               state().phase, state().pokes, state().parkMs,
-              ( co() && co()->Running() ) ? "true" : "false" );
+              ( co() && co()->Running() ) ? "true" : "false", state().phase2 );
     return buf;
 }
 

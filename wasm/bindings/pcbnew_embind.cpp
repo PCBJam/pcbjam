@@ -160,6 +160,16 @@ std::string kicadTestFiberParkState()
     return pcbjam_fiber_park::stateJson();
 }
 
+bool kicadTestFiberParkStartSecond()
+{
+    return pcbjam_fiber_park::startSecond();
+}
+
+bool kicadTestFiberParkPokeSecond()
+{
+    return pcbjam_fiber_park::pokeSecond();
+}
+
 // Read-only viewer lock (read-only-viewer): flips the process-global
 // PCBJAM_READ_ONLY flag consumed by TOOL_MANAGER (view-only action allowlist)
 // and the selection tools (nothing selectable), and mirrors it onto the
@@ -2428,6 +2438,8 @@ EMSCRIPTEN_BINDINGS(pcbnew) {
     function("kicadTestFiberParkPrime", &kicadTestFiberParkPrime);
     function("kicadTestFiberParkPoke", &kicadTestFiberParkPoke);
     function("kicadTestFiberParkState", &kicadTestFiberParkState);
+    function("kicadTestFiberParkStartSecond", &kicadTestFiberParkStartSecond);
+    function("kicadTestFiberParkPokeSecond", &kicadTestFiberParkPokeSecond);
     function("kicadCollabFiberBusy", &kicadCollabFiberBusyProbe);
     // Read-only viewer lock (read-only-viewer).
     function("kicadSetReadOnly", &kicadSetReadOnly);

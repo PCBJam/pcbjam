@@ -211,6 +211,16 @@ static std::string kicadTestFiberParkState()
     return pcbjam_fiber_park::stateJson();
 }
 
+static bool kicadTestFiberParkStartSecond()
+{
+    return pcbjam_fiber_park::startSecond();
+}
+
+static bool kicadTestFiberParkPokeSecond()
+{
+    return pcbjam_fiber_park::pokeSecond();
+}
+
 
 // Canvas-only chrome toggle (features/mobile): hide/show every AUI pane
 // except the central draw canvas, plus the menubar and status bar, so the GAL
@@ -571,6 +581,8 @@ EMSCRIPTEN_BINDINGS(kicad_editor) {
     function("kicadTestFiberParkPrime", &kicadTestFiberParkPrime);
     function("kicadTestFiberParkPoke", &kicadTestFiberParkPoke);
     function("kicadTestFiberParkState", &kicadTestFiberParkState);
+    function("kicadTestFiberParkStartSecond", &kicadTestFiberParkStartSecond);
+    function("kicadTestFiberParkPokeSecond", &kicadTestFiberParkPokeSecond);
 
     // Canvas-only mobile mode (features/mobile).
     function("kicadSetChrome", &kicadSetChrome);
