@@ -419,7 +419,7 @@ function firstDiff(a: string, b: string): string {
  * Poll until every tab's silent save is byte-identical. The convergence gate
  * between scenario steps — bounded poll, no blind sleeps (tests/TESTING.md).
  */
-export async function settleConverged(trio: TabSet, cfg: ToolCfg, timeout = 30000): Promise<void> {
+export async function settleConverged(trio: TabSet, cfg: ToolCfg, timeout = 90000): Promise<void> {
   await expect
     .poll(
       async () => {

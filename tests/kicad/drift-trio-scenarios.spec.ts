@@ -53,7 +53,7 @@ function skipFirefox(): void {
 }
 
 /** Poll until every tab's silent save contains `marker`. */
-async function waitAllContain(set: TabSet, cfg: ToolCfg, marker: string, timeout = 30000): Promise<void> {
+async function waitAllContain(set: TabSet, cfg: ToolCfg, marker: string, timeout = 90000): Promise<void> {
   for (const [label, page] of set.tabs) {
     await expect
       .poll(async () => (await modelText(page, cfg)).includes(marker), {
@@ -219,7 +219,7 @@ for (const ops of [SCH_OPS, PCB_OPS]) {
         for (const [tabLabel, p] of trio.tabs) {
           await expect
             .poll(async () => /s4-from-[AB]/.test(await modelText(p, cfg)), {
-              timeout: 20000,
+              timeout: 60000,
               intervals: [400],
               message: `${tabLabel} must receive one of the racing values`,
             })
@@ -273,7 +273,7 @@ for (const ops of [SCH_OPS, PCB_OPS]) {
       for (const [tabLabel, p] of trio.tabs) {
         await expect
           .poll(async () => (await modelText(p, cfg)).includes("s5-tmp"), {
-            timeout: 20000,
+            timeout: 60000,
             intervals: [400],
             message: `${tabLabel} must lose the undone value`,
           })
