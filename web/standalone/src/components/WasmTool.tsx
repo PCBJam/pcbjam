@@ -850,6 +850,37 @@ async function waitForWxUi(win: ToolWindow, timeoutMs = 25_000): Promise<void> {
 }
 
 /**
+ * Keeps a poisoned wasm runtime from taking the React tree down with it.
+ *
+ * The v0.1.21 prod crash logs showed the actual white-screen mechanism: after
+ * a wasm trap, some child's EFFECT calls into the dead runtime (an embind
+ * entry via a react-query subscription), the throw lands in React's commit,
+ * and React unmounts the whole root — destroying the fatal overlay AND the
+ * console panel, the two things built to report exactly this. The boundary
+ * absorbs descendant render/effect throws: it reports up (the parent promotes
+ * its fatal screen, which lives OUTSIDE this boundary) and renders nothing in
+ * place of the dead subtree. WasmTool's own state — logs included — survives.
+ */
+class WasmErrorBoundary extends React.Component<
+  { onFatal: (msg: string) => void; children: React.ReactNode },
+  { dead: boolean }
+> {
+  state = { dead: false };
+
+  static getDerivedStateFromError() {
+    return { dead: true };
+  }
+
+  componentDidCatch(err: unknown) {
+    this.props.onFatal(err instanceof Error ? err.message : String(err));
+  }
+
+  render() {
+    return this.state.dead ? null : this.props.children;
+  }
+}
+
+/**
  * Boots a KiCad tool directly in this React document (no iframe): builds the
  * Emscripten `Module` config, injects the proven harness scripts (wx.js +
  * <tool>.js, the same artifacts the e2e tests use) into the page, then syncs the
@@ -1193,19 +1224,24 @@ export function WasmTool({
       /RuntimeError|\babort(ed)?\b|\bindex out of bounds|indirect call signature|memory access out of bounds|unreachable executed|null function or function signature/i.test(
         msg,
       );
+    // Promote to the fatal screen AND pop the console open: the log panel is
+    // the only account of what was loading, so a fatal must never leave it
+    // collapsed behind a mystery blue screen.
+    const promote = (kind: string, msg: string) => {
+      append(`[fatal] ${kind}: ${msg}`);
+      append(dumpTrace());
+      setFatal(msg);
+      setShowLog(true);
+    };
     const onError = (e: ErrorEvent) => {
       const msg = e.error instanceof Error ? `${e.error.message}` : String(e.message ?? "");
       if (!terminal(msg)) return;
-      append(`[fatal] window error: ${msg}`);
-      append(dumpTrace());
-      setFatal(msg);
+      promote("window error", msg);
     };
     const onRejection = (e: PromiseRejectionEvent) => {
       const msg = e.reason instanceof Error ? e.reason.message : String(e.reason ?? "");
       if (!terminal(msg)) return;
-      append(`[fatal] unhandled rejection: ${msg}`);
-      append(dumpTrace());
-      setFatal(msg);
+      promote("unhandled rejection", msg);
     };
     // With PROXY_TO_PTHREAD, main()/wx/timers — and therefore every asyncify
     // trap in this family — throw INSIDE a pthread worker. A worker's uncaught
@@ -1218,9 +1254,7 @@ export function WasmTool({
     const onWorkerError = (e: ErrorEvent) => {
       const msg = String(e.message ?? "");
       if (!terminal(msg)) return;
-      append(`[fatal] worker error: ${msg}`);
-      append(dumpTrace());
-      setFatal(msg);
+      promote("worker error", msg);
     };
     const PatchedWorker = function (
       this: unknown,
@@ -1974,6 +2008,18 @@ export function WasmTool({
       <div ref={containerRef} id="main-window" className="absolute inset-0 h-full w-full" />
       <div id="window-container" />
 
+      {/* Everything that can throw into React's commit lives INSIDE the
+          boundary; the fatal screen and the console panel live OUTSIDE it, so
+          a runtime death can no longer white-screen the very UI that reports
+          it (see WasmErrorBoundary). */}
+      <WasmErrorBoundary
+        onFatal={(msg) => {
+          append(`[fatal] react tree died: ${msg}`);
+          append(dumpTrace());
+          setFatal(msg);
+          setShowLog(true);
+        }}
+      >
       {oomExhausted && (
         <MemoryExhaustedDialog
           onOpenNewTab={() => respawnInNewTab()}
@@ -2305,34 +2351,34 @@ export function WasmTool({
         </button>
       )}
 
+      </WasmErrorBoundary>
+
       {/* Terminal failure — z-35, ABOVE the boot overlay but below the console
-          panel, and independent of `ready` so a post-boot runtime death still
-          says something instead of blanking the page. */}
+          panel, OUTSIDE the error boundary, and independent of `ready`: a
+          post-boot runtime death gets a proper blue screen instead of a blank
+          page, with the console panel forced open beneath it. */}
       {fatal && (
         <div
           data-testid="fatal-overlay"
-          className="absolute inset-0 z-[35] flex flex-col items-center justify-center gap-3 bg-[#1a1a2e]/95 text-white"
+          className="absolute inset-0 z-[35] flex flex-col items-center justify-center gap-3 bg-[#1e3a8a] text-white"
         >
-          <p className="font-mono text-sm text-red-300">Something went wrong</p>
-          <p className="max-w-lg px-6 text-center font-mono text-xs text-red-200/80">
+          <p className="font-mono text-4xl text-white/90">:(</p>
+          <p className="font-mono text-sm text-white">
+            The editor hit an unrecoverable error and stopped.
+          </p>
+          <p className="max-w-lg px-6 text-center font-mono text-xs text-blue-100/90">
             {fatal}
           </p>
-          <p className="max-w-md px-6 text-center font-mono text-xs text-white/50">
-            The editor stopped. Open the console below for the full log — it
-            records what was loading when this happened.
+          <p className="max-w-md px-6 text-center font-mono text-xs text-blue-200/60">
+            The console below records what was loading when this happened —
+            please copy it into a bug report.
           </p>
           <div className="flex gap-2">
             <button
-              className="rounded border border-white/30 px-3 py-1 text-xs hover:bg-white/10"
+              className="rounded border border-white/40 px-3 py-1 text-xs hover:bg-white/10"
               onClick={() => window.location.reload()}
             >
               Reload
-            </button>
-            <button
-              className="rounded border border-white/30 px-3 py-1 text-xs hover:bg-white/10"
-              onClick={() => setShowLog(true)}
-            >
-              Show console
             </button>
           </div>
         </div>
