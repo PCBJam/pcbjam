@@ -24,6 +24,59 @@ if (typeof Asyncify !== "undefined") {
     // swaps don't allocate through allocateData). Make every repair and every
     // concurrent-park window loud, so a saved console dump answers that.
     // Rate-limited per kind: first 10 in full, then every 100th.
+    // Flight recorder: a capped ring of asyncify/fiber events (never printed
+    // during normal operation), dumped to the console ONCE when a trap
+    // signature surfaces — so a prod console export carries the exact event
+    // sequence and machine state at death instead of just stack shapes.
+    // window.__wxAsyncifyDump() returns it on demand.
+    var __recMax = 96;
+    Asyncify.__rec = [];
+    var __rec = function(ev) {
+      var r = Asyncify.__rec;
+      r.push(((typeof performance !== "undefined" ? performance.now() : 0) | 0) + " " + ev);
+      if (r.length > __recMax) r.shift();
+    };
+    Asyncify.__recPush = __rec;
+
+    var __dumpState = function() {
+      var F = (typeof Fibers !== "undefined") ? Fibers : null;
+      var pend = Array.isArray(Asyncify.__pendingSleepContexts)
+        ? Asyncify.__pendingSleepContexts.map(function(c) { return c.capturedData || 0; }).join(",")
+        : "n/a";
+      var head = "[wx-asyncify] STATE"
+        + " state=" + Asyncify.state
+        + " currData=" + (Asyncify.currData || 0)
+        + " inSleepWake=" + (Asyncify.__inSleepWake || 0)
+        + " exportStack=" + (Asyncify.exportCallStack ? Asyncify.exportCallStack.length : -1)
+        + " pendingSleeps=[" + pend + "]"
+        + (F ? (" nextFiber=" + F.nextFiber
+                + " trampolining=" + F.trampolineRunning
+                + " root=" + F.__rootFiber
+                + " valid=[" + (F.__validSuspensions ? Array.from(F.__validSuspensions).join(",") : "") + "]"
+                + " parked=[" + (F.__internallyParked ? Array.from(F.__internallyParked).join(",") : "") + "]"
+                + " deferrals=" + (F.__rootDeferrals || 0))
+             : " (no Fibers)");
+      return head + "\n[wx-asyncify] RECORDER (oldest first):\n  " + Asyncify.__rec.join("\n  ");
+    };
+    if (typeof window !== "undefined") {
+      window.__wxAsyncifyDump = __dumpState;
+      // Auto-dump beside the first trap signatures in the console — the one
+      // artifact prod reports reliably contain.
+      var __dumps = 0;
+      var __onTrap = function(msg) {
+        if (__dumps >= 2) return;
+        if (!/index out of bounds|unreachable executed|table index|indirect call signature|null function or function signature|memory access out of bounds/i.test(msg)) return;
+        ++__dumps;
+        try { console.error(__dumpState()); } catch (e) {}
+      };
+      window.addEventListener("error", function(e) {
+        __onTrap(e && e.error instanceof Error ? e.error.message : String((e && e.message) || ""));
+      });
+      window.addEventListener("unhandledrejection", function(e) {
+        __onTrap(e && e.reason instanceof Error ? e.reason.message : String((e && e.reason) || ""));
+      });
+    }
+
     var __wxAsyncifyReport = (function() {
       var counts = {};
       return function(kind, msg, withStack) {
@@ -64,6 +117,8 @@ if (typeof Asyncify !== "undefined") {
       // re-enters handleSleep while rewinding with currData set (verified
       // empirically 2026-07-31 — the timer-park e2e produced ~100/s of them
       // on a healthy run).
+      __rec("sleep s=" + Asyncify.state + " cd=" + (Asyncify.currData || 0)
+            + " w=" + (Asyncify.__inSleepWake || 0));
       if (Asyncify.state === 0 && Asyncify.currData) {
         __wxAsyncifyReport(
           "concurrent-park",
@@ -94,6 +149,7 @@ if (typeof Asyncify !== "undefined") {
             // wakeUp runs from pure JS on Promise resolution. Fiber swaps during
             // the await may have overwritten Asyncify.currData. Restore OUR buffer
             // so handleSleep's _asyncify_start_rewind and doRewind use it.
+            __rec("wake buf=" + (sleepCtx.capturedData || 0) + " cdWas=" + (Asyncify.currData || 0));
             if (sleepCtx.capturedData) {
               if (Asyncify.currData !== sleepCtx.capturedData) {
                 // The repair firing. currData=null → the overlapping chain
@@ -111,6 +167,15 @@ if (typeof Asyncify !== "undefined") {
               Asyncify.currData = sleepCtx.capturedData;
             }
             cleanup();
+            // Mark the synchronous wake window: everything below wakeUp() —
+            // the rewind, the resumed code running forward, its next unwind —
+            // executes inside it. A fiber completion whose root-entry lands
+            // in this window rewinds the root WHILE the wake's own rewind is
+            // in flight (the four identical prod trap stacks:
+            // maybeStopUnwind → trampoline → finishContextSwitch →
+            // doRewind(root) → unreachable). The stale-fiber guard below
+            // defers such root entries by one macrotask.
+            Asyncify.__inSleepWake = (Asyncify.__inSleepWake || 0) + 1;
             try {
               return wakeUp(result);
             } catch (e) {
@@ -124,6 +189,8 @@ if (typeof Asyncify !== "undefined") {
                 return;
               }
               throw e;
+            } finally {
+              Asyncify.__inSleepWake -= 1;
             }
           });
         });
@@ -177,6 +244,7 @@ if (typeof Fibers !== "undefined"
   var __fiberRefusals = 0;
 
   var __refuseFiber = function(newFiber, why) {
+    __fcsRec("refuse new=" + newFiber);
     ++__fiberRefusals;
     if (__fiberRefusals <= 10 || __fiberRefusals % 100 === 0) {
       console.warn("[wx-asyncify] fiber-resume-refused: fiber=" + newFiber + " " + why
@@ -188,7 +256,15 @@ if (typeof Fibers !== "undefined"
     Asyncify.currData = null;
   };
 
+  var __fcsRec = (typeof Asyncify !== "undefined" && Asyncify.__recPush)
+    ? Asyncify.__recPush
+    : function() {};
+
   Fibers.finishContextSwitch = function(newFiber) {
+    __fcsRec("fcs old=" + (Asyncify.currData ? Asyncify.currData - 20 : 0)
+             + " new=" + newFiber
+             + (newFiber === Fibers.__rootFiber ? " ROOT" : "")
+             + " w=" + (Asyncify.__inSleepWake || 0));
     // The swap that scheduled this switch just suspended its old fiber and
     // left currData = oldFiber+20 (fiber_swap's unwind path); record that
     // suspension as live — and a GENUINE swap-out also ends any internal
@@ -221,6 +297,36 @@ if (typeof Fibers !== "undefined"
     }
 
     var isRoot = newFiber === Fibers.__rootFiber;
+
+    // The prod killer (four identical trap stacks, v0.1.19–22): a fiber
+    // completes and re-enters the ROOT while a sleep wake's own rewind is
+    // still on the stack — two "resume main" paths interleaved in one tick,
+    // doRewind(root) replays over live state, "unreachable executed",
+    // poisoned runtime. Root entry is legal and constant in healthy flow;
+    // ONLY the wake-window overlap is fatal. Defer it by one macrotask so
+    // the wake settles first — ordering change only, nothing is dropped.
+    if (isRoot && (Asyncify.__inSleepWake || 0) > 0) {
+      var deferred = newFiber;
+      Fibers.__rootDeferrals = (Fibers.__rootDeferrals || 0) + 1;
+      if (Fibers.__rootDeferrals <= 10 || Fibers.__rootDeferrals % 100 === 0) {
+        console.warn("[wx-asyncify] root-entry-deferred: fiber completion landed inside a "
+                     + "sleep-wake window; retrying next tick (occurrence "
+                     + Fibers.__rootDeferrals + ")");
+      }
+      __fcsRec("defer root new=" + deferred);
+      var retry = function() {
+        if (Fibers.trampolineRunning || Fibers.nextFiber) {
+          setTimeout(retry, 0);   // another switch in flight — wait our turn
+          return;
+        }
+        __fcsRec("defer-retry new=" + deferred);
+        Fibers.nextFiber = deferred;
+        Fibers.trampoline();
+      };
+      setTimeout(retry, 0);
+      return;
+    }
+
     var HEAPU32v = (typeof GROWABLE_HEAP_U32 === "function") ? GROWABLE_HEAP_U32() : HEAPU32;
     var entryPoint = HEAPU32v[((newFiber + 12) >>> 2) >>> 0];
     if (!isRoot && Fibers.__internallyParked.has(newFiber)) {
