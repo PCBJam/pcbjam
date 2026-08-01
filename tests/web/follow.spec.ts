@@ -91,9 +91,14 @@ test('B follows A: viewport mirrors, then local input breaks the follow', async 
   await expect(b.getByTestId('follow-banner')).toBeVisible({ timeout: 10000 });
 
   // B's viewport converges on A's rect (publish 100 ms + awareness relay).
+  // 90s, not 30s: on a starved CI box the first delivery can be lost while
+  // both wasm instances hog the loop; awareness re-broadcasts state
+  // periodically, so a longer condition-poll converges where a short one
+  // recorded 4 flakes in 6 runs (2026-08-01) — all with clean traces (no
+  // guard beacons, A demonstrably on target).
   await expect
     .poll(async () => near(await viewport(b), T1.cx, T1.cy, T1.hw * 0.02), {
-      timeout: 30000,
+      timeout: 90000,
       message: 'B never converged on the followed viewport',
     })
     .toBe(true);
@@ -113,7 +118,7 @@ test('B follows A: viewport mirrors, then local input breaks the follow', async 
     .toBe(true);
   await expect
     .poll(async () => near(await viewport(b), T2.cx, T2.cy, T2.hw * 0.02), {
-      timeout: 30000,
+      timeout: 90000, // see the T1 convergence comment (awareness re-broadcast)
       message: 'B never tracked the second viewport move',
     })
     .toBe(true);
