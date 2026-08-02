@@ -980,6 +980,9 @@ export function WasmTool({
   // eeschema sheet rebinds — the bridge re-reads it on every startPresence.
   const crossAppRef = React.useRef<CrossAppHandle | null>(null);
   const siblingRestageRef = React.useRef<SiblingRestageHandle | null>(null);
+  // Set at the boot effect's cleanup; deferred starters bail on it (the
+  // sibling-restage idle stagger can fire after unmount).
+  const disposedRef = React.useRef(false);
   const sheetManagerRef = React.useRef<SheetCollabManager | null>(null);
   // The single-room collab doc (pcbnew/pl_editor), for the layout save-sync
   // (miss 08B); eeschema routes per sheet through the manager instead.
@@ -1327,6 +1330,9 @@ export function WasmTool({
       setStatus("Error: tool container not mounted");
       return;
     }
+
+    // Fresh mount (or StrictMode re-run): re-arm the deferred starters.
+    disposedRef.current = false;
 
     const win = window as ToolWindow;
 
@@ -1833,21 +1839,51 @@ export function WasmTool({
           // files a PCB session syncs from fresh in MEMFS, instead of the
           // one-shot boot snapshot. Same opt-out as the room collab; read-only
           // viewers skip it (they can't run the sync anyway).
+          //
+          // STAGGERED out of the settle window (2026-08-02, the ladder
+          // result): warm sibling-heavy projects crash at exactly this moment
+          // (V1/V4 fail 2/2 warm, V2/V3 without siblings never do), and the
+          // asyncify flight recorder places the fatal interleave inside the
+          // settle-time wake windows. The restage's room connects + restage
+          // fetches were the only sibling-specific traffic contending with
+          // those windows. Nothing here is needed for first paint — the boot
+          // snapshot staged every sibling seconds ago — so it starts when the
+          // main thread is idle (or after 5s, whichever first), well clear of
+          // the settle storm. Unmount-safety: the ref may be populated after
+          // unmount, so the cleanup check runs inside the callback too.
           if (tool === "pcbnew" && collabHandle && !readOnly) {
-            siblingRestageRef.current = await startSiblingRestage({
-              win,
-              slug,
-              scopeId,
-              projectId,
-              files,
-              targetPath,
-              // Presence-scoped: connect a sheet's room only while a peer
-              // announces it open (zero sibling sockets when alone). Absent
-              // (provider "none" / connect failed) ⇒ eager fallback.
-              presence: crossAppRef.current ?? undefined,
-              provider: yjsProviderConfig(),
-              log: append,
-            });
+            const startRestageIdle = () => {
+              if (disposedRef.current) return;
+              void startSiblingRestage({
+                win,
+                slug,
+                scopeId,
+                projectId,
+                files,
+                targetPath,
+                // Presence-scoped: connect a sheet's room only while a peer
+                // announces it open (zero sibling sockets when alone). Absent
+                // (provider "none" / connect failed) ⇒ eager fallback.
+                presence: crossAppRef.current ?? undefined,
+                provider: yjsProviderConfig(),
+                log: append,
+              }).then((handle) => {
+                if (disposedRef.current) {
+                  handle?.destroy();
+                  return;
+                }
+                siblingRestageRef.current = handle;
+              });
+            };
+            type IdleWindow = Window & {
+              requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
+            };
+            const w = window as IdleWindow;
+            if (typeof w.requestIdleCallback === "function") {
+              w.requestIdleCallback(startRestageIdle, { timeout: 5000 });
+            } else {
+              window.setTimeout(startRestageIdle, 3000);
+            }
           }
           if (collabHandle && targetPath && COLLAB_TOOLS.has(tool) && !readOnly) {
             driftRef.current = startDriftDetection({
@@ -1921,6 +1957,9 @@ export function WasmTool({
     })();
 
     return () => {
+      // Deferred starters (the sibling-restage idle stagger) check this
+      // before creating anything after unmount.
+      disposedRef.current = true;
       // A consent dialog pending at unmount resolves false — the boot IIFE
       // bails without ever starting the download.
       consentResolveRef.current?.(false);
