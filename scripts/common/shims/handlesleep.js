@@ -52,6 +52,8 @@ if (typeof Asyncify !== "undefined") {
         + (F ? (" nextFiber=" + F.nextFiber
                 + " trampolining=" + F.trampolineRunning
                 + " root=" + F.__rootFiber
+                + " fcsTotal=" + (F.__fcsTotal || 0)
+                + " rootHotTotal=" + (F.__rootHotTotal || 0)
                 + " valid=[" + (F.__validSuspensions ? Array.from(F.__validSuspensions).join(",") : "") + "]"
                 + " parked=[" + (F.__internallyParked ? Array.from(F.__internallyParked).join(",") : "") + "]"
                 + " deferrals=" + (F.__rootDeferrals || 0))
@@ -286,6 +288,12 @@ if (typeof Fibers !== "undefined"
     : function() {};
 
   Fibers.finishContextSwitch = function(newFiber) {
+    // Cumulative, scroll-proof counters (the 96-event ring holds <1s at idle
+    // tick rate — differential-repro dose measurements need totals).
+    Fibers.__fcsTotal = (Fibers.__fcsTotal || 0) + 1;
+    if (newFiber === Fibers.__rootFiber && (Asyncify.__inSleepWake || 0) > 0) {
+      Fibers.__rootHotTotal = (Fibers.__rootHotTotal || 0) + 1;
+    }
     __fcsRec("fcs old=" + (Asyncify.currData ? Asyncify.currData - 20 : 0)
              + " new=" + newFiber
              + (newFiber === Fibers.__rootFiber ? " ROOT" : "")
