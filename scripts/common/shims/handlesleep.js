@@ -323,36 +323,18 @@ if (typeof Fibers !== "undefined"
 
     var isRoot = newFiber === Fibers.__rootFiber;
 
-    // THE prod killer, finally recorded by the flight recorder (v0.1.23 dump,
-    // event "fcs … ROOT w=1" immediately before the trap): a fiber round-trip
-    // executed inside the ROOT's OWN sleep-wake continuation re-suspends and
-    // re-rewinds the root NESTED inside its live wake rewind — two rewind
-    // lifetimes on one context; asyncify dies with state stuck at Rewinding.
-    // Fiber-owned wakes completing into root are the benign bulk (the same
-    // recording shows dozens at w=0 / fiber-owned) and are NOT deferred —
-    // that unscoped deferral was the retracted S4-flaking version. Only a
-    // root re-entry during a ROOT-OWNED wake defers, one macrotask, so the
-    // outer rewind fully settles first.
-    if (isRoot && (Asyncify.__wakingRoot || 0) > 0) {
-      var deferred = newFiber;
-      Fibers.__rootDeferrals = (Fibers.__rootDeferrals || 0) + 1;
-      if (Fibers.__rootDeferrals <= 10 || Fibers.__rootDeferrals % 100 === 0) {
-        console.warn("[wx-asyncify] root-entry-deferred: fiber completion inside the root's own "
-                     + "wake window; retrying next tick (occurrence " + Fibers.__rootDeferrals + ")");
-      }
-      __fcsRec("defer ROOT-self new=" + deferred);
-      var retry = function() {
-        if (Fibers.trampolineRunning || Fibers.nextFiber) {
-          setTimeout(retry, 0);
-          return;
-        }
-        __fcsRec("defer-retry new=" + deferred);
-        Fibers.nextFiber = deferred;
-        Fibers.trampoline();
-      };
-      setTimeout(retry, 0);
-      return;
-    }
+    // DEFERRAL RETIRED (2026-08-02, second retraction — see async/16 round 5).
+    // Both deferral variants are unsound: the main loop's every iteration runs
+    // INSIDE its yield-wake's synchronous extent, so "root re-entry during a
+    // root-owned wake" also matches every legit nested coroutine Call/return
+    // in a board open — v0.1.24 deferred thousands of them per load and the
+    // open crawled/hung (open:settled result=failed at the 60s escape,
+    // "hung forever" with a throttled background tab). The fatal interleave
+    // and the benign bulk share the same observable signature at this layer;
+    // the discriminator does not exist here. The rare nested-rewind crash is
+    // accepted until the fiber-first runtime (design B) removes the dual
+    // suspension protocols altogether; the recorder keeps every occurrence
+    // fully observable.
 
     var HEAPU32v = (typeof GROWABLE_HEAP_U32 === "function") ? GROWABLE_HEAP_U32() : HEAPU32;
     var entryPoint = HEAPU32v[((newFiber + 12) >>> 2) >>> 0];

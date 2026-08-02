@@ -182,6 +182,30 @@ wake is live (`Asyncify.__wakingRoot`), with the
 pushes sleep contexts (the v0.1.23 dump carried ~380 leaked zero-linked
 entries).
 
+## Round 5 (2026-08-02) — the scoped deferral hangs opens: RETIRED, road closed
+
+v0.1.24 in prod: `open:settled result=failed` at the 60 s escape, heap never
+past 256 MB, no traps, no beacons — the open crawled and (in a
+timer-throttled background tab) effectively hung. Cause: the main loop's
+every iteration runs INSIDE its yield-wake's synchronous extent (the v0.1.23
+recording shows `sleep … w=1` on every tick), so "root re-entry during a
+root-owned wake" matches every legitimate nested coroutine Call/return in a
+board open — thousands per load, each paying a deferred macrotask.
+
+**Verdict on the whole deferral family:** the fatal nested-rewind interleave
+and the benign nested round-trips share the same observable signature at the
+JS runtime layer. No discriminator exists here — this road is closed. What
+remains shipped and sound: the consume-once validity + internally-parked
+quarantine (never implicated in a regression), the flight recorder, the
+beacons, and the WSOD floor. The rare nested-rewind crash is ACCEPTED, fully
+observable, until the structural fix.
+
+**The structural fix is design B** (06/12/13-design-b-*): one fiber-first
+scheduler owning every suspension, so dual-protocol nesting cannot exist.
+That is the next real investment; guard-layer iteration has hit its ceiling
+— five variants, each defeated by a neighboring interleave or by taxing the
+benign bulk.
+
 ## Flight recorder (round 3, targeting instrument)
 
 The shim keeps a 96-entry ring of asyncify/fiber events (sleep entries with
