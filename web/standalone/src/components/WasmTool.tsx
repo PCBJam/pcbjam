@@ -1581,6 +1581,15 @@ export function WasmTool({
             ? (kind: string) =>
                 kind === libKind ? presyncSettled : Promise.resolve()
             : undefined;
+        // ?collab=0 is a FULL kill-switch as of 2026-08-02: it now also skips
+        // the doc-room join below, so the target file falls back to the plain
+        // fetch path instead of ydoc materialization. Before, it only gated
+        // the attach — which made the flag useless as a crash-hunt bisection
+        // lever (the 8/2 "collab=0" prod test still materialized from the
+        // room and even attached).
+        const collabOptOut =
+          new URLSearchParams(win.location.search).get("collab") === "0" ||
+          new URLSearchParams(win.location.search).get("collab") === "false";
         // Connect the doc's collab room in parallel with the wasm download (it
         // needs identity, not the wasm). Errors are captured and rethrown at
         // the await below — rejecting here would surface as an unhandled
@@ -1589,6 +1598,10 @@ export function WasmTool({
           | { session?: KicadDocSession; targetBytes?: Uint8Array }
           | { error: unknown }
         > = (async () => {
+          if (collabOptOut) {
+            append("[collab] ?collab=0 — doc room skipped, file loads from plain fetch");
+            return {};
+          }
           try {
             await identityReady;
             return await maybeConnectDocSession(win, {
@@ -1612,9 +1625,6 @@ export function WasmTool({
         // Never rejects: presence is best-effort, exactly as before.
         // Read-only viewers skip the room entirely — the server rejects their
         // connection anyway (presence requires write).
-        const collabOptOut =
-          new URLSearchParams(win.location.search).get("collab") === "0" ||
-          new URLSearchParams(win.location.search).get("collab") === "false";
         const crossAppReady: Promise<CrossAppHandle | undefined> =
           (tool === "pcbnew" || tool === "eeschema") && !collabOptOut && !readOnly
             ? (async () => {
