@@ -227,27 +227,67 @@ function pthreadWorkerScript(
  * running inside instantiateStreaming) — the boot flips the status to
  * "Compiling…" there so the post-download freeze reads truthfully.
  */
+/** How much of the wasm head gets hashed for the provenance line. */
+const WASM_HASH_PREFIX_BYTES = 128 * 1024;
+
 async function fetchWasmWithProgress(
   url: string,
   onProgress?: (loaded: number, total: number) => void,
   expectedBytes?: number | null,
   onDone?: () => void,
+  onProvenance?: (line: string) => void,
 ): Promise<Response> {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`HTTP ${res.status} fetching ${url}`);
   if (!res.body || !onProgress) return res;
   const total = expectedBytes || Number(res.headers.get("content-length")) || 0;
+  // Provenance: identify the bytes we ACTUALLY instantiate, so a saved log
+  // proves which build was under test (crash-hunt sessions have burned real
+  // time on "was that even the new wasm?"). The CDN ETag is free; the SHA-256
+  // of the first 128 KiB is computed from the same chunks the counter already
+  // sees — no second download, no full buffering. Prefix + length identifies
+  // a build as well as a full hash here (the CDN publishes content-addressed
+  // immutable version dirs).
+  const etag = res.headers.get("etag") ?? "none";
+  const prefix = new Uint8Array(WASM_HASH_PREFIX_BYTES);
+  let prefixFill = 0;
+  let provenanceSent = false;
+  const emitProvenance = (streamedBytes: number) => {
+    if (provenanceSent || !onProvenance) return;
+    provenanceSent = true;
+    void crypto.subtle
+      .digest("SHA-256", prefix.subarray(0, prefixFill))
+      .then((d) => {
+        const hex = [...new Uint8Array(d).slice(0, 12)]
+          .map((b) => b.toString(16).padStart(2, "0"))
+          .join("");
+        onProvenance(
+          `[build] wasm ${url.split("/").slice(-3).join("/")} etag=${etag} ` +
+            `head128k-sha256=${hex} streamed=${streamedBytes}B`,
+        );
+      })
+      .catch(() => onProvenance(`[build] wasm ${url} etag=${etag} (hash unavailable)`));
+  };
   let loaded = 0;
   const reader = res.body.getReader();
   const stream = new ReadableStream<Uint8Array>({
     async pull(controller) {
       const { done, value } = await reader.read();
       if (done) {
+        emitProvenance(loaded); // short files: prefix may be < 128 KiB
         onDone?.();
         controller.close();
         return;
       }
       loaded += value.byteLength;
+      if (prefixFill < WASM_HASH_PREFIX_BYTES) {
+        const take = Math.min(value.byteLength, WASM_HASH_PREFIX_BYTES - prefixFill);
+        prefix.set(value.subarray(0, take), prefixFill);
+        prefixFill += take;
+        // Emit as soon as the prefix is complete: the identity line must land
+        // in the log EARLY, so it exists even when the load dies later.
+        if (prefixFill >= WASM_HASH_PREFIX_BYTES) emitProvenance(total || loaded);
+      }
       onProgress(loaded, total);
       controller.enqueue(value);
     },
@@ -597,6 +637,9 @@ async function doBoot(opts: BootOptions): Promise<void> {
             expectedWasmBytes,
             // Last byte in — only the compile tail is left running.
             () => onStatus("Compiling…"),
+            // Provenance line into the in-app log (and the fatal ring via the
+            // append mirror): which wasm bytes were actually under test.
+            (line) => log(line),
           );
           const ct = resp.headers.get("content-type") ?? "";
           if (ct.includes("application/wasm") && WebAssembly.instantiateStreaming) {
@@ -638,4 +681,11 @@ async function doBoot(opts: BootOptions): Promise<void> {
   await loadScript(`${base}/wx-dom.js`);
   await loadScript(`${base}/${bundle}.js`);
   log(`[boot] injected wx.js + wx-dom.js + ${bundle}.js (base=${base})`);
+  // App-side provenance: the hashed chunk name pins the exact frontend build
+  // the same way the wasm line pins the runtime (import.meta.url resolves to
+  // this code's own bundled chunk).
+  log(
+    `[build] app=${new URL(import.meta.url).pathname.split("/").pop() ?? "?"} ` +
+      `base=${base} ua=${navigator.userAgent.replace(/^Mozilla\/5\.0 /, "")}`,
+  );
 }
