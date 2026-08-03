@@ -32,6 +32,10 @@ interface ImportMetaEnv {
   readonly VITE_YJS_TOKEN?: string;
   /** Plausible pa-*.js script URL; unset ⇒ no tracking (dev default). */
   readonly VITE_PLAUSIBLE_SRC?: string;
+  /** Error-tracking DSN (Sentry wire format, pointed at Better Stack); unset ⇒ no reporting (dev default). */
+  readonly VITE_ERRORS_DSN?: string;
+  /** Environment tag on reported errors: "production" | "demo" | "preview". Defaults to "development". */
+  readonly VITE_ERRORS_ENV?: string;
   /** Management app origin (e.g. https://app.pcbjam.com); set ⇒ non-editor routes redirect there (lib/redirect.ts). */
   readonly VITE_APP_URL?: string;
   /** "1" ⇒ honor `?user=`/`?libowner=` identity overrides (dev/e2e harnesses only — NEVER production builds). */

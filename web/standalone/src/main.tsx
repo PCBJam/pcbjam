@@ -3,9 +3,16 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter } from "react-router-dom";
 import App from "./App";
 import { initAnalytics } from "./lib/analytics";
+import { initErrorReporting } from "./lib/error-reporting";
 import { initTheme } from "./lib/theme";
 import { installFatalScreenListeners } from "./wasm/fatal-screen";
 import "./index.css";
+
+// Error tracking (Better Stack), only when VITE_ERRORS_DSN is set. FIRST and
+// synchronous, so its window handlers are live before anything else runs —
+// including the fatal-screen floor below and WasmTool's 175–338 MB boot, where
+// the crashes worth catching happen.
+initErrorReporting();
 
 // The React-independent blue-screen floor: installed before React mounts so a
 // wasm trap can never end in a white page, even if React unmounts itself

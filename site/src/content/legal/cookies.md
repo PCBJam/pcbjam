@@ -1,7 +1,7 @@
 ---
 title: Cookie Policy
 description: How PCBJam uses cookies and similar technologies, and the choices you have.
-updated: 2026-07-27
+updated: 2026-08-03
 ---
 
 This Cookie Policy explains how **PCBJam** ("PCBJam", "we", "us", "our") uses cookies and similar technologies — such as browser local storage, IndexedDB and cache storage — when you visit **pcbjam.com** or use the PCBJam application (the "Service"), and the choices you have.
@@ -101,6 +101,7 @@ We do **not** use Google Analytics, advertising pixels, or any cross-site tracki
 | **Paddle** (Paddle.com Market Limited and affiliates) | Merchant of Record / payments | Checkout, security and fraud-prevention cookies; their own non-essential cookies (with consent where required, via Paddle's own controls). Independent controller. | [Paddle Privacy Policy](https://www.paddle.com/legal/privacy); Paddle's cookie controls appear within its checkout. |
 | **Plausible** (Plausible Insights OÜ) | Cookieless analytics | Nothing — no cookies and no device storage (see Section 5). | [Plausible Data Policy](https://plausible.io/data-policy) · [Plausible Privacy](https://plausible.io/privacy) |
 | **Cloudflare** (Cloudflare, Inc.) | Hosting, CDN and network security | At most strictly-necessary hosting/security cookies. | [Cloudflare Privacy](https://www.cloudflare.com/privacypolicy/) |
+| **Better Stack** | Error and crash diagnostics for the editor | Nothing — no cookies. The reporting code runs in your browser only when the application errors, and sends the fault report directly; it sets no cookie and stores no identifier on your device. | [Better Stack Privacy](https://betterstack.com/legal/privacy) |
 
 We are not responsible for the privacy practices of these third parties; please review their notices. We update this list as our integrations change.
 

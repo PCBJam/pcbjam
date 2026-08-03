@@ -67,6 +67,7 @@ import {
   type ToolFile,
 } from "@/wasm/kicad-runner";
 import { dump as dumpTrace, mark } from "@/wasm/load-trace";
+import { errorMessage, isTerminalError } from "@/wasm/terminal-error";
 import { registerSaveHook, type SaveBytes } from "@/wasm/save-flow";
 import type {
   KicadCollabHandle,
@@ -1227,14 +1228,22 @@ export function WasmTool({
   // genuinely terminal signatures promote to the fatal overlay; ordinary app
   // errors must not hijack a working editor.
   React.useEffect(() => {
-    // NOTE: matched against `e.error.message`, which is BARE — Firefox's first
-    // trap is literally "index out of bounds" (no "RuntimeError", no "table")
-    // and slipped through the original pattern; the v0.1.19 prod log opens with
-    // exactly that message.
-    const terminal = (msg: string) =>
-      /RuntimeError|\babort(ed)?\b|\bindex out of bounds|indirect call signature|memory access out of bounds|unreachable executed|null function or function signature/i.test(
-        msg,
-      );
+    // The predicate lives in wasm/terminal-error.ts (unit-tested there) and is
+    // shared with the error reporter, so the overlay and Better Stack can never
+    // disagree about what "terminal" means.
+    //
+    // It checks the error's TYPE first — every trap in this family is a
+    // `WebAssembly.RuntimeError` whatever the engine calls it — with the message
+    // patterns kept only as a fallback for the paths that lose the Error object
+    // (a worker ErrorEvent crosses the realm boundary with `error: null`).
+    //
+    // That ends the per-engine spelling chase this check kept losing. Matching
+    // the message alone had three live holes: `RuntimeError` was listed but
+    // never appears IN `.message`; Chrome's bare "unreachable" and "null
+    // function" (the v0.1.20 prod log) matched nothing; and narrowing
+    // "table index is out of bounds" to `\bindex out of bounds` for Firefox's
+    // spelling silently stopped matching Chrome's. The type check covers all
+    // of them, and the fallback pattern is now a superset of the old one.
     // Promote to the fatal screen AND pop the console open: the log panel is
     // the only account of what was loading, so a fatal must never leave it
     // collapsed behind a mystery blue screen.
@@ -1254,13 +1263,13 @@ export function WasmTool({
       showFatalScreen(msg);
     };
     const onError = (e: ErrorEvent) => {
-      const msg = e.error instanceof Error ? `${e.error.message}` : String(e.message ?? "");
-      if (!terminal(msg)) return;
+      const msg = errorMessage(e.error, e.message);
+      if (!isTerminalError(e.error, msg)) return;
       promote("window error", msg);
     };
     const onRejection = (e: PromiseRejectionEvent) => {
-      const msg = e.reason instanceof Error ? e.reason.message : String(e.reason ?? "");
-      if (!terminal(msg)) return;
+      const msg = errorMessage(e.reason);
+      if (!isTerminalError(e.reason, msg)) return;
       promote("unhandled rejection", msg);
     };
     // With PROXY_TO_PTHREAD, main()/wx/timers — and therefore every asyncify
@@ -1272,8 +1281,8 @@ export function WasmTool({
     // from this realm, so every one gets an error tap.
     const NativeWorker = window.Worker;
     const onWorkerError = (e: ErrorEvent) => {
-      const msg = String(e.message ?? "");
-      if (!terminal(msg)) return;
+      const msg = errorMessage(e.error, e.message);
+      if (!isTerminalError(e.error, msg)) return;
       promote("worker error", msg);
     };
     const PatchedWorker = function (

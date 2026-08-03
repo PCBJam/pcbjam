@@ -34,6 +34,12 @@ function parseArgs(argv) {
     // Plausible pa-*.js script URL. Off unless given (or VITE_PLAUSIBLE_SRC
     // is already in the environment, which passes straight through).
     plausible: null,
+    // Better Stack error-tracking DSN (Sentry wire format). Omitted ⇒ no error
+    // reporting. The demo reports under its own environment: anonymous traffic
+    // on arbitrary hardware with no backend fails differently from the signed-in
+    // editor, and mixing them would drown the editor's real regressions.
+    errorsDsn: null,
+    errorsEnv: "demo",
   };
   for (let i = 2; i < argv.length; i++) {
     const next = () => argv[++i];
@@ -51,6 +57,8 @@ function parseArgs(argv) {
       case "--landing": a.landing = next(); break;
       case "--waitlist": a.waitlist = next(); break;
       case "--plausible": a.plausible = next(); break;
+      case "--errors-dsn": a.errorsDsn = next(); break;
+      case "--errors-env": a.errorsEnv = next(); break;
       default: throw new Error(`unknown arg: ${argv[i]}`);
     }
   }
@@ -128,6 +136,10 @@ function main() {
     VITE_WAITLIST_URL: a.waitlist,
     // Plausible analytics: explicit --plausible wins, else any env-provided value.
     ...(a.plausible ? { VITE_PLAUSIBLE_SRC: a.plausible } : {}),
+    // Error tracking. The env tag rides along only when a DSN is given.
+    ...(a.errorsDsn
+      ? { VITE_ERRORS_DSN: a.errorsDsn, VITE_ERRORS_ENV: a.errorsEnv }
+      : {}),
   };
 
   console.log(`build-demo: tag=${a.tag} cdn=${a.cdn}`);
@@ -139,6 +151,7 @@ function main() {
   console.log(`  VITE_MODELS_MANIFEST_URL=${env.VITE_MODELS_MANIFEST_URL ?? "(unset — 3D models off)"}`);
   console.log(`  VITE_LANDING_URL=${env.VITE_LANDING_URL} VITE_WAITLIST_URL=${env.VITE_WAITLIST_URL}`);
   console.log(`  VITE_PLAUSIBLE_SRC=${env.VITE_PLAUSIBLE_SRC || "(off)"}`);
+  console.log(`  VITE_ERRORS_DSN=${env.VITE_ERRORS_DSN ? `(set, env=${env.VITE_ERRORS_ENV})` : "(off)"}`);
 
   // Keep the dev-only WASM symlink out of the bundle (it'd copy 100s of MB into
   // dist/; the CDN serves it). In CI it isn't present, so this is a no-op there.

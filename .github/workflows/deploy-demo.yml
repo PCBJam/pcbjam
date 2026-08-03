@@ -37,6 +37,10 @@ env:
   # `wrangler pages deploy` a PREVIEW deploy and demo.pcbjam.com won't update.
   # Direct-Upload projects default to "production".
   PAGES_PROD_BRANCH: production
+  # Better Stack error-tracking DSN. Unset ⇒ this build reports nothing.
+  # Keep in sync with release.yml — the demo is built from BOTH workflows, and
+  # setting it in only one silently ships a demo with no error reporting.
+  ERRORS_DSN: ${{ secrets.ERRORS_DSN }}
   CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
   CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
   # The publish scripts shell wrangler; no repo dep — fetch it on demand.
@@ -100,6 +104,7 @@ jobs:
           --cdn "$CDN" --lib-tag "$LIB_TAG"
           ${MODELS_TAG:+--models-tag "$MODELS_TAG"}
           --plausible "https://plausible.io/js/pa-KjNS9YmidydULZTstsjRg.js"
+          ${ERRORS_DSN:+--errors-dsn "$ERRORS_DSN" --errors-env demo}
 
       # 4) Ensure the Pages project exists (first deploy creates it; no-op after).
       #    Its production branch must equal PAGES_PROD_BRANCH or deploys land as

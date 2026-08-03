@@ -48,6 +48,12 @@ env:
   # Mgmt app origin: non-editor routes on the editor host redirect here
   # (standalone-hardening 0006). The demo build never sets this.
   EDITOR_APP_BASE: https://app.pcbjam.com
+  # Better Stack error-tracking DSN (Sentry wire format). Unset ⇒ builds report
+  # nothing, so this is safe to leave empty. Held as a secret rather than a
+  # literal: this repo is public, and although the token becomes visible in the
+  # shipped bundle anyway, keeping it out of git makes it rotatable without a
+  # commit. Keep in sync with deploy-demo.yml.
+  ERRORS_DSN: ${{ secrets.ERRORS_DSN }}
   CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
   CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
   WRANGLER_CMD: npx --yes wrangler@4
@@ -136,6 +142,7 @@ jobs:
           --cdn "$CDN" --lib-tag "$LIB_TAG"
           ${MODELS_TAG:+--models-tag "$MODELS_TAG"}
           --plausible "https://plausible.io/js/pa-KjNS9YmidydULZTstsjRg.js"
+          ${ERRORS_DSN:+--errors-dsn "$ERRORS_DSN" --errors-env demo}
 
       - name: Ensure Pages project exists
         run: >
@@ -183,6 +190,7 @@ jobs:
           node scripts/deploy/build-editor.mjs --tag "$RELEASE_TAG"
           --cdn "$CDN" --api-base "$EDITOR_API_BASE" --app-base "$EDITOR_APP_BASE"
           --plausible "https://plausible.io/js/pa-KjNS9YmidydULZTstsjRg.js"
+          ${ERRORS_DSN:+--errors-dsn "$ERRORS_DSN" --errors-env production}
           ${MODELS_TAG:+--models-tag "$MODELS_TAG"}
 
       - name: Ensure Pages project exists

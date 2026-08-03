@@ -9,7 +9,9 @@
     "VITE_API_BASE_URL",
     "VITE_LOCAL_PROJECTS",
     "VITE_ALLOW_USER_OVERRIDE",
-    "VITE_WASM_ASSET_BASE_URL"
+    "VITE_WASM_ASSET_BASE_URL",
+    "VITE_ERRORS_DSN",
+    "VITE_ERRORS_ENV"
   ],
   "tasks": {
     "build": {

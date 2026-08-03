@@ -1,7 +1,7 @@
 ---
 title: Open-Source Licenses & Source Code
 description: The open-source software PCBJam is built on, the licences that apply, and how to get the corresponding source code.
-updated: 2026-06-18
+updated: 2026-08-03
 ---
 
 ## The short version (summary)
@@ -25,6 +25,7 @@ PCBJam is a combined work. The table below lists its principal open-source compo
 | **wxWidgets** (base) | Cross-platform GUI toolkit that KiCad uses | **wxWindows Library Licence v3.1** (LGPL v2+ with a binary-distribution exception) |
 | **wxWidgets — WebAssembly port** | The browser/WASM platform layer, derived from [ahilss/wxWidgets-wasm](https://github.com/ahilss/wxWidgets-wasm) | **GNU Lesser General Public License, version 2 (LGPL v2)** — *without* the wxWindows binary exception |
 | Other bundled libraries | Various supporting libraries used by KiCad | Their respective licences (Apache-2.0, MIT, BSD-3-Clause, Boost, CC0, ISC, CC-BY-SA-4.0, and others) |
+| Browser application libraries | The JavaScript/TypeScript libraries the editor's own interface is built from — including React, Yjs (collaborative editing), Radix UI, and the Sentry SDK (used to report crashes to our error-tracking provider; see the [Privacy Policy](/privacy)) | Predominantly **MIT**, with some Apache-2.0 and BSD. Exact versions are pinned in `web/pnpm-lock.yaml` in the source repository |
 
 The combined application is conveyed to you under the **GPLv3**. The wxWidgets components are GPL-compatible: the base toolkit's licence is explicitly compatible with GPL'd applications, and the LGPL v2 WebAssembly-port files may be combined into a GPLv3 work under the LGPL's terms.
 

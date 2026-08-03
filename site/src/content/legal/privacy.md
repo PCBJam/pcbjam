@@ -1,7 +1,7 @@
 ---
 title: Privacy Policy
 description: How PCBJam handles your personal data.
-updated: 2026-07-27
+updated: 2026-08-03
 ---
 
 ## 1. A quick summary
@@ -146,6 +146,7 @@ We do **not** sell your personal data. We share it only with the following categ
 | **Paddle** | Payments / Merchant of Record | **Independent controller** (for payment data) | [Paddle Privacy](https://www.paddle.com/legal/privacy) |
 | **Resend** | Sending transactional and marketing email | **Processor** | [Resend DPA](https://resend.com/legal/dpa) · [Subprocessors](https://resend.com/legal/subprocessors) |
 | **Cloudflare** | Hosting this website, storing your project files (R2 object storage), hosting application/account data, and network delivery & security (CDN, DNS, WAF) | **Processor** | [Cloudflare DPA](https://www.cloudflare.com/cloudflare-customer-dpa/) · [GDPR hub](https://www.cloudflare.com/trust-hub/gdpr/) |
+| **Better Stack** | Error and crash diagnostics from the editor — when the application fails in your browser, the error message, technical diagnostic context (browser, device capabilities, the file type being edited, the app's own internal log), and your account identifier are sent so we can find and fix the fault. **Processed in the EU.** Not used for analytics, profiling, or marketing. | **Processor** | [Better Stack DPA](https://betterstack.com/legal/dpa) · [Privacy](https://betterstack.com/legal/privacy) |
 | **Google (Google Workspace)** | Our business email and support correspondence | **Processor** | [Google Cloud DPA](https://cloud.google.com/terms/data-processing-addendum) |
 | **Professional advisers & authorities** | Lawyers, accountants, auditors; courts, regulators, and law-enforcement where legally required | Controller / as required | — |
 | **A successor entity** | If we are involved in a merger, acquisition, financing, or sale of assets, your data may transfer to the successor under this policy | As required | — |

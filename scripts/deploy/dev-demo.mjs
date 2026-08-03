@@ -194,6 +194,10 @@ function main() {
   env.VITE_DOC_SOURCE = "api";
   env.VITE_LOCAL_PROJECTS = "idb";
 
+  // --- Never report errors from a local demo run, even if the developer has a
+  //     production DSN sitting in their environment.
+  delete env.VITE_ERRORS_DSN;
+
   // --- Projects: the read-only example gallery (the demo.pcbjam.com experience).
   //     Default: build it locally and serve it same-origin. --content-tag <tag>
   //     pins the live CDN gallery instead. --no-gallery falls back to local-folder

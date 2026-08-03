@@ -83,6 +83,29 @@ export const WAITLIST_URL =
 export const PLAUSIBLE_SRC = import.meta.env.VITE_PLAUSIBLE_SRC || null;
 
 /**
+ * Error tracking (Better Stack). Off unless a DSN is set, so a plain dev
+ * checkout and any deploy that doesn't set the var report nothing.
+ *
+ * The DSN is in SENTRY wire format because Better Stack ingests that protocol —
+ * we run the stock @sentry/browser SDK against their host. Named by role rather
+ * than by vendor precisely because the two differ: `VITE_SENTRY_DSN` would
+ * imply Sentry receives the data (it doesn't) and `VITE_BETTERSTACK_DSN` would
+ * imply a Better Stack SDK (there isn't one). See lib/error-reporting.ts.
+ *
+ * Format: https://<application-token>@<ingesting-host>/<application-id>
+ *
+ * NOTE: this token ships in the client bundle and is public — that is inherent
+ * to browser error reporting and true of Sentry's own DSNs. It is write-only
+ * (it cannot read anything back), so the exposure is quota abuse, not data.
+ */
+export const ERRORS_DSN = import.meta.env.VITE_ERRORS_DSN || null;
+
+/** Environment tag on reported errors. Deploys set it explicitly; a build that
+ *  forgot to should be obvious in the dashboard rather than silently blending
+ *  into production. */
+export const ERRORS_ENV = import.meta.env.VITE_ERRORS_ENV || "development";
+
+/**
  * Where the standalone reads PROJECTS from (env VITE_PROJECT_SOURCE):
  *   "remote" (default) — the @pcbjam/shared REST backend at API_BASE_URL.
  *   "static"           — a read-only example gallery published to a CDN as a
