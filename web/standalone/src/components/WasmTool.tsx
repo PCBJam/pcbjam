@@ -454,6 +454,11 @@ function markDeliberateNavigation() {
 const quitDispatcher = () => {
   if (quitHandled) return;
   quitHandled = true;
+  // The wasm side only calls this when the app's top window is genuinely
+  // destroyed. When that happens unexpectedly (2026-08-03: a guarded-off
+  // settle-window dispatch cascaded into a silent frame close), the stack is
+  // the only artifact that says WHO closed it — keep it in every log.
+  console.warn("[quit] wxAppTopWindowClosed invoked — top window destroyed", new Error("quit-origin").stack);
   activeQuitHook?.();
 };
 

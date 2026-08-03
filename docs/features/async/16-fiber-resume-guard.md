@@ -230,3 +230,104 @@ recording instead of a stack-shape puzzle.
   stay green (guard must not refuse valid suspensions).
 - Prod validation: watch for `jump-refused` beacons in the next crash-free
   Leonardo load — each one is a would-have-been crash.
+
+## Round 6 (2026-08-03): local repro at last, and the microtask deferral
+
+**The trigger was never a feature.** The prod differential ladder (V0–V4,
+then V1a–V1d) exonerated every content theory one release at a time — 3D
+models, sibling restage timing, collab/ydoc/presence (valid `?collab=0`
+crashes), sibling lib-table/.kicad_pro surface (V1a: tables disabled, still
+died), sibling KiCad-extension handling (V1c: extensions neutralized byte-
+for-byte, still died), file count (V1b: +120 files, clean). What remained:
+**staged byte volume × a warm load**, with dose-response — 140MB dies on
+warm load 2, 123MB of *pure inert ballast* (V1d) dies on load 3–4, 14MB
+never dies. Volume loads the dice; the defect was always the dual-protocol
+race.
+
+**Local repro (first after 5+ failed campaigns):** seed the V1d ballast tree
+into the local stack (`seed-from-dir.ts`, 110MB), then
+`REPRO_PROFILE=<dir> repro-board-load.ts` — run 1 cold is clean, warm runs
+2/3/4 crash with the exact prod signature (`fcsTotal=68 rootHotTotal=1`,
+`currData=root+20`, state stuck Rewinding). 100% warm reproduction.
+
+**The frozen ring names the interleave.** On a crashed run the recorder
+stops at the trap and retains the whole run. Healthy iterations: root parks
+(`sleep s=0`), wakes ~8ms later, re-parks within ~3ms; ALL coroutine
+round-trips run at `w=0` — fresh JS entries while root is parked. The kill:
+one wake's forward slice runs 670ms (the volume-stretched settle work), and
+*inside that live slice* a pending event dispatches a coroutine —
+`fcs old=ROOT new=F w=1`, `fcs old=F new=ROOT w=1` — the only `w=1` pair in
+the entire run. The return rewinds root+20 nested inside the wake's own
+doRewind frame. rootHotTotal across many runs: 1 in crashed runs (the kill),
+1–3 in green runs. **The "matches thousands per open" fear that retired the
+deferral family was wrong on current code — the predicate is 1-per-crash
+rare.**
+
+**Fix (third deferral variant — microtask, entry-side primary):** both
+retired variants failed for macrotask reasons, not deferral reasons.
+`setTimeout(0)` retries are background-tab throttled (the v0.1.24 hung
+opens), and the macrotask gap lets a fresh timer entry launder root's
+suspension slot before the retry (the Nano crash 22ms after `deferrals=1`).
+A microtask retry runs after the current stack unwinds — past the hazardous
+live doRewind frame — but before ANY timer/event can enter wasm: no
+throttling, no laundering window, thousands would cost nothing. Predicate is
+root-owned-wake-scoped (`__wakingRoot > 0`) on both sides: entry-side
+(`old == root, new != root`) stops the fatal round-trip before the fiber
+ever runs nested; return-side (`new == root`, v0.1.24's predicate) remains
+as backup for laundered attributions. Chain cap (1000 microtask hops →
+setTimeout) converts any pathological livelock into a macrotask hop instead
+of starving the event loop.
+
+**Verification gate:** warm repro ×3 must survive with `deferrals≥1` and a
+settled board; cold run clean; kicad e2e (collab + drift + park suites) and
+web e2e green.
+
+### Round 6 corrections (same day, local iteration loop)
+
+**The microtask deferral trapped identically** — retried on a clean empty
+stack at `w=0` and died in the same doRewind. The suspension is broken AT
+WRITE TIME, not by nesting. Instrumentation (`rem=`/`rf=` on every fcs event)
+then showed why: healthy fresh-entry root captures record their rewind entry
+as the `dynCall_*` export they were taken under (~10KB of frames); the fatal
+in-slice capture records **`rf=__main_argc_argv`** — `emscripten_fiber_swap`
+stamps `Asyncify.exportCallStack[0]` (the re-invoked main export of the wake)
+onto a 1.3KB capture of swap-site frames. Rewinding that pairing can never
+work. Deferral family closed for good; prevention must run BEFORE
+`_asyncify_start_unwind`.
+
+**Guard v1 (refuse `old==main && hot` in jump_fcontext) was aimed wrong**: the
+only refusal it ever fired was a jump INTO main (`ctx=1`) — a fiber yield-back
+flavor — and stranding that mid-yield cascaded into a genuine top-window
+close (app quit, page reload; the "crash" became
+`~wxTopLevelWindowWasm → wxAppTopWindowClosed → quit hook → teardown trap`).
+fcsTotal read 66 = baseline 68 minus the never-completed fatal pair, so the
+refused jump was part of the fatal chain itself.
+
+**Guard v2**: refuse only `old==main && new!=main && hot` (the doomed MAIN
+suspension write); always allow jumps into main (they consume main's existing
+suspension — fiber yield-backs, laundered-null attribution included); beacon
+`jump-hot-into-main` observes the remaining hot flavors without refusing.
+
+### Round 6 verdict: refusal retracted, mechanism nailed
+
+Guard v2 (refuse `old==main && new!=main && hot`) fired exactly once per load,
+on the right event, and the `unreachable executed` cascade vanished — the
+doomed suspension was genuinely never written. The load still died: the
+dropped dispatch strands the tool coroutine, the frame tears down,
+`~wxTopLevelWindowWasm` fires the host quit notification (which the shell
+reads as "user quit" and navigates away), and the teardown itself traps
+`index out of bounds`. With the quit hook suppressed and navigation blocked,
+the open reported `settled=true` but the page was the blue screen. Same dead
+board, different obituary — so the refusal is retracted (kept as the
+`hot-main-swap-out` beacon, which names the fatal interleave in any field log,
+plus `jump-hot-into-main` for correlation).
+
+**Where this leaves the fix.** Vetoing the swap after the fact cannot work:
+by then the only choices are "write an unrewindable suspension" or "drop a
+dispatch the tool framework needs". The cure must stop main from swapping out
+inside its own wake continuation at all — either by delivering wx events from
+a fresh JS entry rather than inline in that continuation (a targeted requeue
+at the dispatch site, unexplored), or by removing the dual-protocol nesting
+entirely (design B, the fiber-first runtime). Everything needed to evaluate
+either is now in place: a 100%-reproducible local warm-load repro and beacons
+that name the exact event.

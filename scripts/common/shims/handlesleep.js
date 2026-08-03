@@ -294,10 +294,26 @@ if (typeof Fibers !== "undefined"
     if (newFiber === Fibers.__rootFiber && (Asyncify.__inSleepWake || 0) > 0) {
       Fibers.__rootHotTotal = (Fibers.__rootHotTotal || 0) + 1;
     }
+    // rem = free bytes left in the old side's asyncify buffer after its unwind
+    // finished (asyncify_data layout: [data]=write ptr, [data+4]=buffer end).
+    // A deep capture that exhausts the 512K fiber buffer overflows SILENTLY in
+    // release — rem at/below 0 here is the smoking gun for an unrewindable
+    // suspension (the 2026-08-03 deferred-retry trap hypothesis).
+    var __remStr = "";
+    if (Asyncify.currData) {
+      var __H = (typeof GROWABLE_HEAP_U32 === "function") ? GROWABLE_HEAP_U32() : HEAPU32;
+      __remStr = " rem=" + (__H[((Asyncify.currData + 4) >>> 2) >>> 0] - __H[(Asyncify.currData >>> 2) >>> 0])
+        // The rewind entry recorded for this suspension (setDataRewindFunc
+        // wrote exportCallStack[0] at unwind start) vs the export stack NOW —
+        // a capture taken under a NESTED export whose recorded entry is the
+        // outer _main-style bottom is unrewindable (the 2026-08-03 trap).
+        + " rf=" + (Asyncify.getDataRewindFuncName ? Asyncify.getDataRewindFuncName(Asyncify.currData) : "?")
+        + " es=[" + (Asyncify.exportCallStack || []).join("|") + "]";
+    }
     __fcsRec("fcs old=" + (Asyncify.currData ? Asyncify.currData - 20 : 0)
              + " new=" + newFiber
              + (newFiber === Fibers.__rootFiber ? " ROOT" : "")
-             + " w=" + (Asyncify.__inSleepWake || 0));
+             + " w=" + (Asyncify.__inSleepWake || 0) + __remStr);
     // The swap that scheduled this switch just suspended its old fiber and
     // left currData = oldFiber+20 (fiber_swap's unwind path); record that
     // suspension as live — and a GENUINE swap-out also ends any internal
@@ -331,18 +347,19 @@ if (typeof Fibers !== "undefined"
 
     var isRoot = newFiber === Fibers.__rootFiber;
 
-    // DEFERRAL RETIRED (2026-08-02, second retraction — see async/16 round 5).
-    // Both deferral variants are unsound: the main loop's every iteration runs
-    // INSIDE its yield-wake's synchronous extent, so "root re-entry during a
-    // root-owned wake" also matches every legit nested coroutine Call/return
-    // in a board open — v0.1.24 deferred thousands of them per load and the
-    // open crawled/hung (open:settled result=failed at the 60s escape,
-    // "hung forever" with a throttled background tab). The fatal interleave
-    // and the benign bulk share the same observable signature at this layer;
-    // the discriminator does not exist here. The rare nested-rewind crash is
-    // accepted until the fiber-first runtime (design B) removes the dual
-    // suspension protocols altogether; the recorder keeps every occurrence
-    // fully observable.
+    // DEFERRAL FAMILY CLOSED (2026-08-03, round 6 — the definitive finding).
+    // Deferral at this layer can never work: by the time finishContextSwitch
+    // runs, _asyncify_start_unwind has ALREADY written the suspension, and a
+    // root suspension captured inside main's own live wake window is broken
+    // AT WRITE TIME — emscripten_fiber_swap records the rewind entry as
+    // exportCallStack[0] (the re-invoked main export) while the capture only
+    // spans the swap-site frames (1.3KB vs a valid fresh-entry's ~10KB). A
+    // microtask-deferred retry on a clean empty stack trapped IDENTICALLY to
+    // the nested rewind. Prevention lives where it must: the libcontext C++
+    // guard refuses the jump BEFORE the unwind starts (jump-refused-hot-main,
+    // keyed on __wakingRoot via EM_JS) — same ghost contract as the parked
+    // guard. The consume-once/quarantine checks below remain the backstop
+    // for laundered attributions the C++ layer cannot see.
 
     var HEAPU32v = (typeof GROWABLE_HEAP_U32 === "function") ? GROWABLE_HEAP_U32() : HEAPU32;
     var entryPoint = HEAPU32v[((newFiber + 12) >>> 2) >>> 0];
