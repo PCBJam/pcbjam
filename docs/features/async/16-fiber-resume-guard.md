@@ -331,3 +331,42 @@ at the dispatch site, unexplored), or by removing the dual-protocol nesting
 entirely (design B, the fiber-first runtime). Everything needed to evaluate
 either is now in place: a 100%-reproducible local warm-load repro and beacons
 that name the exact event.
+
+## THE FIX (2026-08-03): deliver the tick's events from a fresh JS task
+
+`wxGUIEventLoop::DoRun`'s top-level loop was
+
+    while (!m_shouldExit) { ProcessEvents(); wxWasmYieldToBrowser(); }
+
+and *everything after `wxWasmYieldToBrowser()` returns runs inside that park's
+synchronous wake continuation*. So the loop's own `ProcessEvents()` — the one
+call site that dispatches from main's C stack rather than from a fresh JS
+entry — was the one that could resume a tool coroutine inside main's live
+wake and trigger the unrewindable suspension write. Every OTHER dispatch in
+the system (DOM handlers, timer callbacks, the modal pump's ccall) already
+runs as a fresh entry while main is parked; the flight recorder shows all of
+them at wake-depth 0, and none of them has ever produced the trap.
+
+The loop now schedules instead of dispatching:
+
+    while (!m_shouldExit) { wxWasmScheduleProcessEvents(); wxWasmYieldToBrowser(); }
+
+where `wxWasmScheduleProcessEvents` is an `EM_JS` that does
+`setTimeout(() => Module["_ProcessEvents"](), 0)` with the same
+abandon-on-trap guard the DOM handlers use. The scheduled task runs while main
+is parked in the rAF yield — wake-depth 0, a proper export as the rewind entry
+— which is exactly the healthy pattern. `ProcessEvents` was already
+re-entrancy-safe (it no-ops into a repaint whenever a chain is parked), so
+overlapping schedules cost nothing.
+
+**Result on the local warm repro** (the case that failed 100% of warm loads on
+every previous build): 3/3 loads settle with a fully rendered board,
+`rootHotTotal=0` (it was exactly 1 at every death), `fcsTotal=72` — the
+healthy cold-load number — and zero wasm traps. The fatal interleave no longer
+occurs, rather than being caught after the fact.
+
+**Also fixed** (`toplevel.cpp`): `~wxTopLevelWindowWasm` notified the host of
+an "app quit" whenever `wxTheApp->GetTopWindow() == this`, but wx re-points the
+top window at whatever TLW remains — so a transient frame dying mid-session
+ejected the user out of the editor. Now gated on `IsMainFrame()`
+(`wxTopLevelWindows[0]`, the real application frame).
