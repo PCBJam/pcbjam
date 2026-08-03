@@ -25,7 +25,7 @@ function parseArgs(argv) {
   const a = {
     tag: null,
     cdn: "https://cdn.pcbjam.com",
-    repo: "https://github.com/emergence-engineering/pcbjam",
+    repo: "https://github.com/PCBJam/pcbjam",
     libTag: null,
     // Marketing site the version badge links to; the in-editor waitlist form
     // cross-posts to <landing>/api/waitlist unless --waitlist overrides it.

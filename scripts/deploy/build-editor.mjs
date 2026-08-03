@@ -26,7 +26,7 @@ function parseArgs(argv) {
     tag: null,
     cdn: "https://cdn.pcbjam.com",
     apiBase: null,
-    repo: "https://github.com/emergence-engineering/pcbjam",
+    repo: "https://github.com/PCBJam/pcbjam",
     // Yjs endpoint: defaults to the API origin — board rooms are path-routed
     // (`/parties/board-room/*`) to the sync worker on the same hostname, so the
     // same-site session cookie rides the WS handshake.

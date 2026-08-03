@@ -36,18 +36,18 @@ The combined application is conveyed to you under the **GPLv3**. The wxWidgets c
 
 In line with the GNU GPL (and as referenced in §12.4 of our [Terms](/terms)), the complete **corresponding source code** for the GPL-licensed software we deliver to your browser — together with the applicable licence texts and notices — is publicly available in one place:
 
-**<https://github.com/emergence-engineering/pcbjam>**
+**<https://github.com/PCBJam/pcbjam>**
 
 The KiCad and wxWidgets forks are included in that repository as **git submodules**, so a recursive clone fetches everything needed to build PCBJam:
 
 ```sh
-git clone --recurse-submodules https://github.com/emergence-engineering/pcbjam.git
+git clone --recurse-submodules https://github.com/PCBJam/pcbjam.git
 ```
 
 For reference, the component forks pulled in as submodules are:
 
-- **KiCad fork** — <https://github.com/emergence-engineering/kicad-source-mirror> (branch `wasm-port`)
-- **wxWidgets fork** (incl. the WebAssembly port) — <https://github.com/emergence-engineering/wxWidgets> (branch `wasm-port`)
+- **KiCad fork** — <https://github.com/PCBJam/kicad-source-mirror> (branch `wasm-port`)
+- **wxWidgets fork** (incl. the WebAssembly port) — <https://github.com/PCBJam/wxWidgets> (branch `wasm-port`)
 
 The source corresponding to a specific deployed build is identified by the commit revisions — including submodule revisions — recorded in the application's **About / build information**. If you need the exact corresponding source for a build you received and cannot locate it, contact us at **hello@pcbjam.com** and we will provide it.
 

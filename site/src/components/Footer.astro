@@ -5,7 +5,7 @@ import EECredit from './EECredit.astro';
 
 const year = new Date().getFullYear();
 // TODO(links): add Roadmap (/roadmap) and dedicated How-it-works/Open pages when they ship.
-const GITHUB_URL = 'https://github.com/emergence-engineering';
+const GITHUB_URL = 'https://github.com/PCBJam';
 
 // Build provenance: the pcbjam commit this site was built from — it pins the
 // KiCad + wxWidgets submodule revisions implicitly and is our GPLv3
@@ -25,7 +25,7 @@ function resolveBuildSha(): string {
   }
 }
 const BUILD_SHA = resolveBuildSha();
-const BUILD_COMMIT_URL = `https://github.com/emergence-engineering/pcbjam/commit/${BUILD_SHA}`;
+const BUILD_COMMIT_URL = `https://github.com/PCBJam/pcbjam/commit/${BUILD_SHA}`;
 ---
 
 <footer class="site-footer">

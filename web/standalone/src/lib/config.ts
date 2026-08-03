@@ -41,7 +41,7 @@ export const APP_GIT_SHA = import.meta.env.VITE_GIT_SHA || null;
 
 /** Public source repository for the GPL editor (no trailing slash). */
 export const REPO_URL = (
-  import.meta.env.VITE_REPO_URL || "https://github.com/emergence-engineering/pcbjam"
+  import.meta.env.VITE_REPO_URL || "https://github.com/PCBJam/pcbjam"
 ).replace(/\/+$/, "");
 
 /** Marketing / landing page (no trailing slash). The version badge links here so

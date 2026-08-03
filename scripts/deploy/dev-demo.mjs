@@ -76,7 +76,7 @@ function parseArgs(argv) {
     modelsLocal: null, // local publish-models --driver local output dir (serve same-origin)
     libsLocal: null, // local publish-libs --driver local output dir (serve same-origin)
     port: null,
-    repo: "https://github.com/emergence-engineering/pcbjam",
+    repo: "https://github.com/PCBJam/pcbjam",
   };
   for (let i = 2; i < argv.length; i++) {
     const next = () => argv[++i];

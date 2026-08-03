@@ -10,7 +10,7 @@ interface ImportMetaEnv {
   readonly VITE_APP_TAG?: string;
   /** Source commit this build was made from; the badge links to it as the GPLv3 corresponding-source pointer. */
   readonly VITE_GIT_SHA?: string;
-  /** Public source repo URL for the GPL editor (default github.com/emergence-engineering/pcbjam). */
+  /** Public source repo URL for the GPL editor (default github.com/PCBJam/pcbjam). */
   readonly VITE_REPO_URL?: string;
   /** @deprecated legacy alias for VITE_WASM_ROOT. */
   readonly VITE_WASM_ASSET_BASE_URL?: string;
