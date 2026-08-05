@@ -24,7 +24,7 @@ export interface GuardBeaconCounts {
   timerRetry: BeaconFamilyCount;
   // wx dispatch interlock bookkeeping anomalies (evtloop.cpp)
   dispatchAnomaly: BeaconFamilyCount;
-  // handlesleep.js shim: nested-park / wake-aliasing / stale-fiber refusals
+  // asyncify-scheduler.js shim: nested-park / wake-aliasing / stale-fiber refusals
   wxAsyncify: BeaconFamilyCount;
   // libcontext swap-layer refusals + hot-main beacons ([collab-fcontext])
   libcontext: BeaconFamilyCount;

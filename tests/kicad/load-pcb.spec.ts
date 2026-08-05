@@ -183,7 +183,7 @@ function runLoadPcbTest(demo: DemoCfg): void {
         //    the load — not before, not after the board renders. The formerly
         //    tolerated post-load clipboard/unwind RuntimeErrors are fixed
         //    (sync clipboard IsSupported in wx; "unwind" sentinel handling in
-        //    scripts/common/shims/handlesleep.js; see docs/features/asyncify-arbiter/).
+        //    the scheduler shim; see docs/features/asyncify-arbiter/).
         const asyncifySignatures = [
             'index out of bounds',
             'indirect call to null',

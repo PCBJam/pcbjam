@@ -11,8 +11,8 @@ import { expectGuardsSilent } from "./utils/guard-beacons";
  * and the main loop spends most wall-clock time Asyncify-parked inside
  * wxWasmYieldToBrowser. A timer handler that itself parks therefore creates
  * TWO live Asyncify contexts over the single-slot `Asyncify.currData` — the
- * emscripten #9153 family that scripts/common/shims/handlesleep.js silently
- * repairs. The collab entries add the third ingredient: they run on
+ * emscripten #9153 family that the scheduler shim
+ * (scripts/common/shims/asyncify-scheduler.js) silently repairs. The collab entries add the third ingredient: they run on
  * TOOL_MANAGER coroutines (emscripten_fiber_swap), which bypass the shim's
  * allocateData accounting entirely — and `finishContextSwitch` is exactly
  * where the prod trap's second stack dies.
@@ -328,7 +328,7 @@ test.describe("timer Notify() Asyncify-park during main-loop yield (concurrent c
     );
     if (cLane) expectGuardsSilent(testLogger.consoleLogs, ["timerRetry"]);
 
-    // Window-engagement proof, independent of survival: the handlesleep shim
+    // Window-engagement proof, independent of survival: the scheduler shim
     // must have SEEN the concurrent parks (its reporting is new — silence here
     // means the lever never created the overlap and the repro is vacuous).
     const shimLines = testLogger.consoleLogs.filter((l) => l.includes("[wx-asyncify]"));
@@ -336,7 +336,7 @@ test.describe("timer Notify() Asyncify-park during main-loop yield (concurrent c
     for (const l of shimLines.slice(0, 10)) console.log(`[TEST]   ${l}`);
     expect(
       shimLines.length,
-      "handlesleep shim observed the concurrent-park window",
+      "scheduler shim observed the concurrent-park window",
     ).toBeGreaterThan(0);
   });
 });

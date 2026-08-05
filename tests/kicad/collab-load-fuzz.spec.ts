@@ -25,7 +25,7 @@ import { test, expect } from "./fixtures";
  *   - mid-load applies are DROPPED (the probe segment must not move);
  *   - after settle the entries work normally (guard released).
  *
- * VARIANT CONTRACT (docs/features/async/17 §3b): on WX_SCHEDULER=1 glue the
+ * VARIANT CONTRACT (docs/features/async/17 §3b): on scheduler glue the
  * shim's embind lane queues busy-window mutators and delivers them after
  * settle, so the "applies are DROPPED" assertions flip to "applies are
  * DELIVERED in order" — assertSettledContract branches on the lane's
@@ -301,7 +301,7 @@ async function assertSettledContract(page: Page, stats: FuzzStats): Promise<void
 
   // Variant contract (docs/features/async/17 §3b). Legacy glue: the gate
   // DROPPED the mid-load applies — the probe never moved. Scheduler glue
-  // (WX_SCHEDULER=1 shim embind lane, doc 18): the same applies were QUEUED
+  // (scheduler shim embind lane, doc 18): the same applies were QUEUED
   // and DELIVERED after settle, in order — the probe sits where the hammer's
   // deltas moved it. Same stimulus, the drop→deliver flip is the assertion.
   const schedulerLane = await page.evaluate(

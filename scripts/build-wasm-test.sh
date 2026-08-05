@@ -132,8 +132,8 @@ if [ "$make_rc" -ne 0 ]; then
     exit "$make_rc"
 fi
 
-# Inject the dyncall + handlesleep currData shims into every freshly-linked app. The
-# handlesleep currData save/restore (Emscripten #9153) is needed: without it a rewind that
+# Inject the dyncall + asyncify-scheduler shims into every freshly-linked app. The
+# scheduler's currData save/restore (Emscripten #9153) is needed: without it a rewind that
 # resumes through a fresh wasm re-entry hits _asyncify_start_rewind(null) -> "memory access out
 # of bounds" — e.g. a context-menu pick while the main loop is parked. The Makefile only injects
 # it for the coroutine apps; inject-dyncall-shims.sh is idempotent (skips an already-shimmed glue),

@@ -11,7 +11,7 @@ import { test, expect } from "./fixtures";
  *
  * The mailbox flips drop→deliver: a mutating entry issued during the open
  * becomes a queued message, applied IN ORDER after the open completes. GREEN
- * since S1's embind lane — the WX_SCHEDULER=1 shim wraps the audited mutators
+ * since S1's embind lane — the scheduler shim wraps the audited mutators
  * (doc 18) at the Module boundary, queueing busy-window calls and delivering
  * after settle with promise-returned results. S4 moves queueing worker-side.
  * Self-skips on legacy glue (the lane is a build variant until S5).

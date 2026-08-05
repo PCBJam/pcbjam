@@ -2,9 +2,9 @@ import { test, expect, tryLoadApp } from '../e2e/utils/fixtures';
 
 /**
  * S2 scheduler-core gates (docs/features/async/17 §3d N1/N4, §4 S2).
- * Runs against the races harness built with WX_SCHEDULER=1 (scheduler-only
- * glue — the legacy handlesleep shim is NOT injected on scheduler builds).
- * Both tests self-skip on legacy glue, so the file is safe in either variant.
+ * Runs against the races harness; the scheduler shim is the only runtime
+ * (the legacy handlesleep opt-out was deleted at doc 20 D-1). The self-skip
+ * on shim-less glue is kept as a stale-build guard.
  *
  * N1 — single-writer tripwire: Asyncify.currData is an accessor; a pure-JS
  * write without scheduler authorization beacons (and throws in strict mode).
@@ -48,7 +48,7 @@ async function bootAndSettle(
   );
 }
 
-test.describe('S2 scheduler core (WX_SCHEDULER=1 glue)', () => {
+test.describe('S2 scheduler core (scheduler glue)', () => {
   test('N4: battery leaves coherent books — wakes drained, no strays, battery green', async ({
     page,
     testLogger,
