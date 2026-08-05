@@ -211,6 +211,22 @@ rollback = the `WX_SCHEDULER=0` build + a per-step tag.
   (#13302) is removed. The root context never awaits JS (13 §6b). **Gate:** net green with
   emphasis on `contextmenu*`, `menu`, `popup`, coroutine apps (the June regression pair,
   13 §6d, must both stay green simultaneously).
+  > **Work log 2026-08-05 — S3 LANDED and gated.** All three remaining `await ccall(
+  > 'ProcessEvents',{async:true})` pumps — modal (`dialog.cpp` startModal), nested loop
+  > (`evtloop.cpp` wxWasmRunNestedLoop), popup (`wx-dom.js`) — now drive ProcessEvents as a
+  > PLAIN export call on scheduler builds (runtime-gated on the shim marker; legacy paths
+  > byte-identical). With the v0.1.28 top-level tick, NO pump awaits a suspending export
+  > anymore: the #13302 boundary is gone from the scheduler variant entirely. Overlapping
+  > pump ticks are parked-safe by ProcessEvents' existing gate; a chain that dies mid-park
+  > surfaces via the window error taps instead of the pump's await-catch (containment
+  > unchanged: fatal-screen + `wx_dispatch_abandon`). **Gates:** asyncify 9/9, coroutine
+  > 39/39 (the June pair green simultaneously), wx-chromium modal-heavy 45/45 (+menu,
+  > wizard, filedialog), kicad 6/6 incl. import-settings-modal-stack + contextmenu-scrollbar
+  > on a fresh warm-cache C-lane build. **N5 landed** alongside (scheduler-shim.test.ts:
+  > 500-call flood strict-FIFO, time-box chunking proven, wake-drain FIFO — 3/3).
+  > **Left open:** the doc-12 "root fiber" formalization (main loop as ctx object,
+  > `set_main_loop`-style top-off-asyncify) — not needed for the #13302 goal; revisit at S4
+  > if the waits migration wants real park/resume methods.
 - **S4 · Waits migration, one wait at a time (1–2 wk).** Implement
   `wasm_begin_async_wait`/`wasm_yield_until`/`wasm_resolve_wait` (13 §2). Order, lowest-risk
   first, each sub-step flipping its own specs (§3b/3c) and deleting its own pump:
