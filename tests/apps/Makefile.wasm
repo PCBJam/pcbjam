@@ -111,6 +111,18 @@ LDFLAGS_COROUTINE = $(DEBUG_LDFLAGS) $(COROUTINE_BASE_LDFLAGS) $(WX_LDFLAGS_NOGL
 # forbids the very multi-parked-sleep states the harness exists to exercise.
 LDFLAGS_RACES = $(DEBUG_LDFLAGS) $(COROUTINE_BASE_LDFLAGS) -sASSERTIONS=0 $(WX_LDFLAGS_NOGL)
 
+# Scheduler-context harness (docs/features/async/20 D1). Deliberately does NOT
+# link wx: the contexts layer is pure emscripten fibers + Asyncify, and keeping
+# wx out means a failure here can only be the primitives. Assertions stay ON —
+# unlike the races harness this must NOT tolerate a "cannot start an async
+# operation" state; hitting one is the bug.
+LDFLAGS_SCHED_CTX = $(DEBUG_LDFLAGS) $(EH_FLAGS) -sALLOW_MEMORY_GROWTH \
+               -sERROR_ON_UNDEFINED_SYMBOLS=0 \
+               -s "EXPORTED_RUNTIME_METHODS=['HEAPU8','HEAP8','HEAP32','ccall']" \
+               -sASYNCIFY=1 \
+               -sASYNCIFY_STACK_SIZE=65536 \
+               -sASYNCIFY_IMPORTS=['emscripten_fiber_swap']
+
 # LDFLAGS for the raytracer thread-deadlock repro. Same pthread + pool config as
 # LDFLAGS_PTHREAD, but built on COROUTINE_BASE_LDFLAGS for the 65536 ASYNCIFY
 # stack KiCad actually ships (emscripten_sleep needs Asyncify to yield).
@@ -199,6 +211,7 @@ all: minimal_test.html \
      $(S)/coroutine/coroutine_test.html \
      $(S)/coroutine-nested/nested_test.html \
      $(S)/asyncify-races/races_test.html \
+     $(S)/sched-context/sched_context_test.html \
      $(S)/coroutine-pthread/coroutine_test_wxpt.html \
      $(S)/coroutine-pthread/embind_repro.html \
      $(S)/coroutine-pthread/gl_repro.html \
@@ -744,6 +757,20 @@ $(S)/coroutine-nested/nested_test.html: $(S)/coroutine-nested/nested_test.o $(S)
 	../../scripts/common/inject-dyncall-shims.sh $(basename $@).js
 
 # Asyncify race-condition red-green harness (tests/asyncify/). Three variants of
+# Scheduler-context harness (docs/features/async/20 D1, 21). Pure fibers +
+# Asyncify, no wx: the contexts layer under test is wx-independent.
+SCHED_CTX_DIR = ../../wasm/sched
+
+$(S)/sched-context/sched_context_test.o: $(S)/sched-context/sched_context_test.cpp $(SCHED_CTX_DIR)/context.h
+	$(CXX) -c $(CXXFLAGS) -I$(SCHED_CTX_DIR) $< -o $@
+
+$(S)/sched-context/context.o: $(SCHED_CTX_DIR)/context.cpp $(SCHED_CTX_DIR)/context.h
+	$(CXX) -c $(CXXFLAGS) -I$(SCHED_CTX_DIR) $< -o $@
+
+$(S)/sched-context/sched_context_test.html: $(S)/sched-context/sched_context_test.o $(S)/sched-context/context.o
+	$(CXX) $^ $(LDFLAGS_SCHED_CTX) --shell-file $(HTML) -o $@
+	../../scripts/common/inject-dyncall-shims.sh $(basename $@).js
+
 # (The trampoline-heal / handleSleep ablation variants — races_test_noheal /
 # races_test_nosleepfix — were retired at doc 20 D-1 together with the legacy
 # runtime they pinned.)
@@ -826,6 +853,7 @@ retinascale: $(S)/retinascale/retinascale_test.html
 coroutine: $(S)/coroutine/coroutine_test.html
 coroutine-nested: $(S)/coroutine-nested/nested_test.html
 asyncify-races: $(S)/asyncify-races/races_test.html
+sched-context: $(S)/sched-context/sched_context_test.html
 
 # Only delete generated app files (*_test*, *_repro*) — a bare $(S)/*/*.js would
 # also delete checked-in sources like coroutine-pthread/worker_dom_stub.js.

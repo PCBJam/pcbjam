@@ -184,11 +184,13 @@ export default defineConfig({
       },
     },
     {
-      // Asyncify race-condition red-green harness. One heavy WASM app at a
-      // time within the (single) spec file.
+      // Asyncify-layer harnesses: the race-condition red-green battery and
+      // the Design-B scheduler-context gate. One heavy WASM app at a time.
+      // Matches EVERY spec in ./asyncify — a new harness here is covered by
+      // construction rather than by remembering to widen this pattern.
       name: 'asyncify-firefox',
       testDir: './asyncify',
-      testMatch: /asyncify-races.*\.spec\.ts$/,
+      testMatch: /\.spec\.ts$/,
       fullyParallel: false,
       timeout: 120000,
       use: {
