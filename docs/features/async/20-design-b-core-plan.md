@@ -1,6 +1,6 @@
 # 20 — Design B core: parkable activities as scheduler contexts
 
-> **Status: IN PROGRESS — D-1 DONE (2026-08-05, work log §10).** The remaining core of
+> **Status: IN PROGRESS — D-1 + D0 DONE (2026-08-05, work log §10).** The remaining core of
 > Design B ([`06`](06-design-b-fiber-first-runtime.md) B1+B2), scoped against what S0–S6
 > actually built ([`17`](17-mailbox-scheduler-plan.md)) and motivated by the
 > stranded-fiber hang ([`19`](19-quasimodal-fiber-strand.md)). Supersedes doc 12's
@@ -218,4 +218,29 @@ occ-probe `glb` case (known-unrelated, predates D-1). Vestigial `startModal` scr
 from `ASYNCIFY_IMPORTS` (Makefile.wasm) and `asyncify-imports.txt` post-gate.
 
 Consequence: every later phase is single-path — one code path per park site, one glue
-per build, one battery per gate. Next: **D0** (park-site audit + the doc-19 red spec).
+per build, one battery per gate.
+
+### D0 — park-site audit + red spec (2026-08-05) ✅
+
+- **Audit** → [`21`](21-park-site-audit.md) (pcbjam `d4b25a0`): 14 production park sites
+  (8 wx, 9 KiCad/bridge) + 3 deliberate test levers, each classified fiber /
+  entry-stack / main-loop with its routing phase. W1 `wxWasmYieldUntilJs` and W3 popup →
+  D3; the clipboard/font/lib/3D/occ/ngspice/nanosleep bridges → D4; W2's per-frame yield
+  stays safe-by-construction unless D5 is taken. Doc 20 risk 4 (pthreads) settled: all
+  Asyncify parks are main-thread-only; the lib bridge's worker path is a blocking
+  proxy, not a park, so contexts stay a main-thread concept.
+- **Red spec** → `tests/kicad/quasimodal-strand.spec.ts` (pcbjam `6ab0843`): a GREEN
+  "staging" test (the window is real) plus the `test.fail()` doc-19 pin (OK must close
+  the dialog). 6/6 identical: `closed=false dialogs=1 refused-resumes=1`. The overlap is
+  structural — the parking timer is armed *after* the dialog opens, on top of the
+  opener's open-ended fiber park.
+- **Finding worth carrying into D1:** the strand reproduces on a **2-object fixture
+  schematic**. Byte volume (the doc-17/gal-refresh dice-loader) is NOT an ingredient
+  here; two concurrent parks suffice. That makes the doc-19 class strictly easier to
+  hit than the 68/1 warm-load family, and it is why D3 — not D5 — is the phase that
+  closes it.
+- Retired `tests/kicad/dialog-deadlock-probe.spec.ts` (the 8/4 throwaway probe, and the
+  tree's only determinism-lint violations).
+
+Next: **D1** — context primitives on libcontext, exercised by a dedicated test app, no
+production path switched, with the context-count/peak-RSS gate doc 20 §7 risk 1 asks for.

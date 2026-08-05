@@ -1,14 +1,27 @@
 # 19 — Symbol Properties dialog hangs: a stranded tool fiber (live investigation)
 
-> **Status: DIAGNOSED, NOT FIXED (2026-08-05).** Reproduced end-to-end in a real browser
-> against the dev platform on the scheduler build. Regression-vs-pre-existing is **not yet
+> **Status: DIAGNOSED + PINNED RED, NOT FIXED (2026-08-05).** Reproduced end-to-end in a
+> real browser against the dev platform on the scheduler build, and since D0 also
+> **deterministically in e2e**: `tests/kicad/quasimodal-strand.spec.ts` (6/6 identical —
+> `closed=false dialogs=1 refused-resumes=1`). The fix lands at doc 20 **D3**, where that
+> spec's `test.fail()` marker comes off. Regression-vs-pre-existing is **not yet
 > determined** — see §5. Related: [`17`](17-mailbox-scheduler-plan.md) S4 (waits),
 > [`16`](16-fiber-resume-guard.md) (the quarantine guard), the 8/4 three-UI-bugs triage
 > (which blamed the interlock drain — that is the *symptom layer*, not the proximate cause).
 
-## 1. Repro (100%, ~40 s)
+## 1. Repro
 
-Dev platform (`npm run dev`), editor at `:3048`, Arduino Leonardo schematic:
+**Automated (D0, ~30 s, deterministic):**
+`npx playwright test --project=kicad-firefox kicad/quasimodal-strand.spec.ts`. The
+"staging" test proves the window is real (dialog open + timer fired + concurrent-park
+beacons); the "doc-19 red" test clicks OK and records the hang. The overlap is
+structural, not a race: the parking timer (`wasm/bindings/timer_park.h`) is armed
+*after* the dialog is confirmed open, so it necessarily parks on top of the opener's
+open-ended fiber park. Note the strand reproduces on a **2-object fixture schematic** —
+Leonardo's byte volume is not an ingredient, only concurrent parks are.
+
+**Manual (100%, ~40 s):** dev platform (`npm run dev`), editor at `:3048`, Arduino
+Leonardo schematic:
 
 1. Open the project URL, wait for load (~30 s).
 2. Double-click the USB receptacle (J1) → **Symbol Properties** opens.

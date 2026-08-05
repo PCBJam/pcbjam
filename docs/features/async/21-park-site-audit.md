@@ -87,9 +87,17 @@ belongs in the scheduler shim (it already owns `Fibers` bookkeeping and the
 
 ## 4. Red spec (the other D0 deliverable)
 
-The doc-19 strand lands as `tests/kicad/quasimodal-strand.spec.ts`: open a schematic,
-double-click a symbol → Symbol Properties (quasi-modal on a tool fiber = W1's fiber
-lane), click OK → the dialog must close and dispatch must stay live. RED today by the
-doc-19 mechanism; goes green at D3. Marked `test.fail()` so the battery stays runnable
-while red — when D3 lands, Playwright flags "expected to fail but passed", forcing the
-flip to a plain green pin.
+**Landed** as `tests/kicad/quasimodal-strand.spec.ts` (pcbjam `6ab0843`): open a
+schematic, double-click a symbol → Symbol Properties (quasi-modal on a tool fiber =
+W1's fiber lane), arm the parking timer *while the dialog is up* (so its park lands on
+top of the opener's open-ended park — structural overlap, not a race), click OK → the
+dialog must close and the wait books must balance. RED today by the doc-19 mechanism,
+6/6 identical (`closed=false dialogs=1 refused-resumes=1`); goes green at D3. Marked
+`test.fail()` so the battery stays runnable while red — when D3 lands, Playwright flags
+"expected to fail but passed", forcing the flip to a plain green pin. A separate GREEN
+"staging" test asserts the window is real, so the pin cannot rot into vacuity.
+
+**Audit consequence recorded there:** the strand reproduces on a 2-object fixture — the
+warm-load byte volume that dice-loads the 68/1 family is not an ingredient. Two
+concurrent parks suffice, which is why D3 (waits on contexts) closes this class and D5
+(main as a context) is not required for it.
