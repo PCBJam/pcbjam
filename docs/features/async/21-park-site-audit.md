@@ -77,6 +77,20 @@ Notes:
   needs no cross-thread story. The raytracer interplay (K7) is confined to "main
   thread yields while a worker boots" — unchanged by D1–D4.
 
+## 2b. What D1 built (2026-08-05)
+
+`wasm/sched/context.{h,cpp}` — the contexts every site in §1 will migrate onto, with a
+**star** topology (contexts yield to the scheduler; only the scheduler resumes) rather
+than libcontext's symmetric swap. That is what converts every "route" cell above from
+"move the park" into "move the park onto a context whose state is recorded". Nothing in
+§1 is wired to it yet: W1/W3 move at D3, the bridges at D4.
+
+Sizing note for the D4 migration: contexts run 128 KB C stack + 128 KB asyncify buffer,
+and the layer measures its own high-water use. The D1 harness's synthetic frames cost
+~34 B each — a floor, not a production figure. **When each bridge in §1 moves at D4, take
+its deep-park high-water from the beacon and size from that**; do not carry the harness
+number, and do not inherit libcontext's 512 K by default either.
+
 ## 3. What D4's assertion must cover
 
 "No `handleSleep` park happens inside a fiber" (doc 20 §6 D4) must trip on: W1/W3 if

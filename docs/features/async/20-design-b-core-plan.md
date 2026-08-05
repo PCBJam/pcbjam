@@ -1,6 +1,6 @@
 # 20 — Design B core: parkable activities as scheduler contexts
 
-> **Status: IN PROGRESS — D-1 + D0 DONE (2026-08-05, work log §10).** The remaining core of
+> **Status: IN PROGRESS — D-1, D0, D1 DONE (2026-08-05, work log §10).** The remaining core of
 > Design B ([`06`](06-design-b-fiber-first-runtime.md) B1+B2), scoped against what S0–S6
 > actually built ([`17`](17-mailbox-scheduler-plan.md)) and motivated by the
 > stranded-fiber hang ([`19`](19-quasimodal-fiber-strand.md)). Supersedes doc 12's
@@ -37,7 +37,7 @@ question has a recorded answer, so the guessing layer is deleted rather than tun
 | No awaited-ccall pumps anywhere (#13302 boundary gone) | done (S3) |
 | Mailbox for browser stimuli (timers, wheel, mutating embind) | done (S1) |
 | Teardown latch | done (S6) |
-| Registry/`park`/`resume`/`drain` | **stubs that throw — this plan fills them** |
+| Registry/`park`/`resume`/`drain` | **done (D1)** — `wasm/sched/context.{h,cpp}`, star topology, not wired to production |
 | Per-fiber 512 KB buffers (tool coroutines already are contexts, storage-wise) | done (pre-existing) |
 
 The edges are Design-B shaped; the core is not. `wxWasmYieldUntil` is still an
@@ -242,5 +242,38 @@ per build, one battery per gate.
 - Retired `tests/kicad/dialog-deadlock-probe.spec.ts` (the 8/4 throwaway probe, and the
   tree's only determinism-lint violations).
 
-Next: **D1** — context primitives on libcontext, exercised by a dedicated test app, no
-production path switched, with the context-count/peak-RSS gate doc 20 §7 risk 1 asks for.
+### D1 — context primitives (2026-08-05) ✅
+
+`wasm/sched/context.{h,cpp}` (pcbjam `01a6840`) + harness/gate (`4338bef`).
+
+**The design decision that carries the phase:** contexts are a **star**, not libcontext's
+symmetric swap. Contexts only ever swap OUT to the scheduler; only the scheduler swaps IN.
+libcontext lets any stack jump to any other, which is *why* "is this target safe to enter?"
+has no recorded answer there and must be guessed (`swap_suspended`, the parked/hot-main
+refusals). Under the star, resume is a lookup — the registry says Parked/Ready and holds
+the buffer — so doc 19's refused resume is not a thing that can happen, rather than a thing
+guarded against. Enforced mechanically: one transition in flight (drain refuses re-entry,
+so a context calling drain can't turn the star into a cycle), `mark_ready` never resumes
+inline, `yield_park` off a context is refused ("nothing parks in place", made mechanical),
+`destroy` on a non-Finished context is refused, FIFO ready queue, main-thread only.
+
+**Gate (9 scenarios, no wx linked, assertions ON):** the load-bearing one is
+`parked_does_not_block` — three workers run to completion while a context sits parked,
+which is doc 19's freeze made unrepresentable: "parked" now means "not runnable", not
+"holding a global interlock". Also `one_transition_in_flight` (with a second ready context
+queued, so a buggy nested drain would actually run something and be caught), `async_wake`
+(a real macrotask hop — every production bridge's shape), and `deep_park_sizing`.
+
+**Memory (risk 1), measured not assumed:** ~34 B/frame, 2200 B for a 64-frame park, 1 MB
+peak for 4 concurrent contexts, 0.1–1.7% of a 128 KB buffer. Sizes deliberately start at
+128 KB C stack + 128 KB asyncify buffer instead of inheriting libcontext's 512 K.
+**Caveat, load-bearing:** the harness's frames carry three locals each, so 34 B/frame is a
+FLOOR, not a production estimate — real bridges save far more per frame, which is why
+libcontext runs 512 K after a 64 K buffer silently overflowed. What D1 establishes is that
+the apparatus works and what its units are; the sizing DECISION needs deep-park numbers
+from real bridges, so it belongs to D3/D4, not here. A >75% buffer use beacons
+`BUFFER-PRESSURE`, because that overflow corrupts silently rather than crashing.
+
+Next: **D2** — the tick resumes a dispatch context instead of running handlers on the entry
+stack; scheduler policy enforces one runnable dispatch context; the interlock stays but is
+demoted to a tripwire asserting it never disagrees with the scheduler.
