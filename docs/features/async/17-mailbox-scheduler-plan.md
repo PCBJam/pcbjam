@@ -258,6 +258,36 @@ rollback = the `WX_SCHEDULER=0` build + a per-step tag.
   enumerate gates. Downgrade libcontext refusals to dev-build assertions; keep counters-only
   beacons. Retire §3c leftovers. **Gate:** net green with `WX_SCHEDULER=1` as the only build;
   a full-suite run shows zero references to deleted diagnostics.
+  > **Work log 2026-08-05 — S5 executed as DEFAULT-FLIP + LEDGER, with a correction.**
+  > This step's original demolition list over-promised relative to what S1–S4 built: the
+  > §3b fate table assumed handler-fibers ("serialization is the scheduler's job"), but
+  > parks still suspend ordinary dispatch chains in place — so the **dispatch interlock,
+  > the ProcessEvents parked gate, the zeroed-interlock windows around waits, and the C++
+  > open/fiber-busy gates remain LOAD-BEARING second lines**, not dead weight. Deleting
+  > them now would reopen the fp-selector trap class. What S5 delivered instead:
+  > **WX_SCHEDULER=1 is the DEFAULT build** (injector flip; `WX_SCHEDULER=0` = explicit
+  > legacy opt-out; `.ci-cache-epoch` 9→10), gated on the FULL kicad-firefox suite against
+  > the scheduler build, not just the trio.
+  > **Flip gate result:** full suite 136 passed on BOTH variants (an accidental legacy run
+  > — `setup:kicad` re-syncs `output/` over staged glue, converter beware — gave the
+  > fallback a free full net). Scheduler run: 30 skips (N2 runs there), 2 fails triaged:
+  > `ngspice-probe` bg_run = rerun-passes flake; `occ-probe` glb = fails IDENTICALLY on
+  > legacy → pre-existing local occ_service issue, tracked outside this plan.
+  >
+  > **Demolition ledger — each deletion with its unlock condition:**
+  > 1. Legacy opt-out + `handlesleep.js` + C++ legacy paths (`startModal`,
+  >    `wxWasmRunNestedLoop`, popup pump, `_wxModalResolvers`/`_wxNestedLoopExit`,
+  >    `emscripten_async_call` timer entry, timer 17 ms retry branch, `s_wxRunDepth` tick
+  >    gate): delete TOGETHER, after CI runs scheduler-only across the full matrix
+  >    (3 engines × both EH). They're compiled once for both variants — no partial delete.
+  > 2. Dispatch interlock + Paint-only gate + zero/restore windows: delete only when
+  >    parkable handlers run on scheduler-owned fiber contexts (the remaining Design-B
+  >    step this plan never scoped). Until then they are the mutual-exclusion story.
+  > 3. C++ `pcbjam_open::busy()` / `kicadCollabFiberBusy` gates: keep as second line under
+  >    the JS embind lane; revisit only with (2).
+  > 4. libcontext refusals: KEEP ACTIVE (not downgraded) — `jump-refused-parked` fires
+  >    BEFORE the doomed unwind write, the one place prevention works (doc 16); the JS
+  >    consume-once layer is the backstop, not a replacement.
 - **S6 · Lifetime (few d).** Cleanup ordering vs the scheduler; teardown deferred to
   unload/explicit exit; `ScheduleExit` → scheduler wake (12 §phase-4).
 

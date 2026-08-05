@@ -5,8 +5,9 @@
 # The actual JavaScript that gets injected lives in readable, standalone files in
 # scripts/common/shims/ (not inline heredocs):
 #   - handlesleep.js           nested-Asyncify handleSleep currData save/restore (#9153)
-#   - asyncify-scheduler.js    WX_SCHEDULER=1 builds only: the mailbox/scheduler
-#                              (docs/features/async/17; S0 = observation-only skeleton)
+#   - asyncify-scheduler.js    the mailbox/scheduler (docs/features/async/17) —
+#                              the DEFAULT shim; WX_SCHEDULER=0 opts back into
+#                              the legacy handlesleep.js
 #   - diagnostics.js           optional logging-only instrumentation (see SHIM_DIAGNOSTICS)
 #
 # Native wasm-EH is the only build mode, so the .js has no invoke_* wrappers / dynCall_<sig> call
@@ -19,7 +20,7 @@
 # Usage:
 #   inject-dyncall-shims.sh <pcbnew.js>
 #   SHIM_DIAGNOSTICS=1 inject-dyncall-shims.sh <pcbnew.js>   # also inject diagnostics.js
-#   WX_SCHEDULER=1 inject-dyncall-shims.sh <pcbnew.js>       # also inject the scheduler (dual-glue variant)
+#   WX_SCHEDULER=0 inject-dyncall-shims.sh <pcbnew.js>       # legacy opt-out (handlesleep.js instead of the scheduler)
 
 set -e
 
@@ -78,10 +79,14 @@ echo "Total: Fixed $TOTAL_FIXED empty callback(s)"
 # without it a rewind resuming through a fresh wasm re-entry hits
 # _asyncify_start_rewind(null) -> "memory access out of bounds").
 #
-# WX_SCHEDULER=1 (doc 17 S2): asyncify-scheduler.js REPLACES handlesleep.js — it
-# subsumes the capture/restore, fiber guard, and trampoline heal, and adds the
-# deferred-wake drain + N1 single-writer tripwire. Injecting BOTH would
-# double-manage the wake path (the scheduler refuses to install its core then).
+# WX_SCHEDULER (doc 17 S5): the scheduler is the DEFAULT since 2026-08-05 —
+# asyncify-scheduler.js REPLACES handlesleep.js. It subsumes the
+# capture/restore, fiber guard, and trampoline heal, and adds the deferred-wake
+# drain + N1 single-writer tripwire + the mailbox/wait lanes. Injecting BOTH
+# would double-manage the wake path (the scheduler refuses to install its core
+# then). WX_SCHEDULER=0 is the explicit legacy opt-out (kept until CI has run
+# scheduler-only across the full matrix; the C++ legacy paths it exercises are
+# deleted together with it — see doc 17 S5's demolition ledger).
 #
 # SHIM_DISABLE_HANDLESLEEP=1 skips the legacy shim: the asyncify-races red-green
 # harness uses it to keep the historical "sleep buffer clobbered by fiber swap"
@@ -105,13 +110,13 @@ inject_shim_at_marker() { # <shim file> <label>
     fi
 }
 
-if [ "${WX_SCHEDULER:-0}" = "1" ]; then
+if [ "${WX_SCHEDULER:-1}" = "1" ]; then
     # NOTE: idempotence via the shim-source sentinel, not __wxSchedulerInstalled —
     # that string also appears in evtloop.cpp's EM_JS probe inside every glue.
     if grep -q '__WX_SCHEDULER_SHIM_SOURCE__' "$JS_FILE"; then
         echo "asyncify-scheduler already present - skipping"
     else
-        inject_shim_at_marker asyncify-scheduler.js "asyncify-scheduler (replaces handlesleep; WX_SCHEDULER=1)"
+        inject_shim_at_marker asyncify-scheduler.js "asyncify-scheduler (default; replaces handlesleep)"
     fi
 elif [ "${SHIM_DISABLE_HANDLESLEEP:-0}" = "1" ]; then
     echo "handleSleep fix DISABLED (SHIM_DISABLE_HANDLESLEEP=1) - ablation build"
