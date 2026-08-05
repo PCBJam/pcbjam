@@ -411,9 +411,9 @@ private:
 
     // ----- scenario 1: post_park_fiber_swap -------------------------------------
     // The KiCad hang topology. OnInit already did a fiber swap, so the park throw
-    // went through the live trampoline. With the self-heal shim the guard was
-    // reset and this swap works; with SHIM_DISABLE_TRAMPOLINE_HEAL=1 the guard is
-    // stuck true, the Call() below never returns, and the watchdog fires.
+    // went through the live trampoline. With the self-heal shim the guard is
+    // reset and this swap works; historically (ablated heal, retired at doc 20
+    // D-1) the guard stuck true, Call() never returned, and the watchdog fired.
     void Scenario_PostParkFiberSwap()
     {
 #ifdef __EMSCRIPTEN__
@@ -608,9 +608,9 @@ private:
 
     // ----- scenario 5: long_parked_sleep_clobbered_by_swap ------------------------
     // The KiCad clipboard crash shape: a long-parked sleep crossed by complete
-    // fiber-swap cycles on fresh stacks. With handlesleep.js the sleep's buffer
-    // is restored at wakeUp; with SHIM_DISABLE_HANDLESLEEP=1 doRewind reads a
-    // clobbered currData -> "index out of bounds".
+    // fiber-swap cycles on fresh stacks. The scheduler shim restores the sleep's
+    // buffer at wakeUp; historically (no save/restore, ablation retired at doc 20
+    // D-1) doRewind read a clobbered currData -> "index out of bounds".
     void Scenario_LongParkedSleep()
     {
 #ifdef __EMSCRIPTEN__

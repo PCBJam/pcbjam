@@ -200,8 +200,6 @@ all: minimal_test.html \
      $(S)/coroutine/coroutine_test.html \
      $(S)/coroutine-nested/nested_test.html \
      $(S)/asyncify-races/races_test.html \
-     $(S)/asyncify-races/races_test_noheal.html \
-     $(S)/asyncify-races/races_test_nosleepfix.html \
      $(S)/coroutine-pthread/coroutine_test_wxpt.html \
      $(S)/coroutine-pthread/embind_repro.html \
      $(S)/coroutine-pthread/gl_repro.html \
@@ -747,23 +745,15 @@ $(S)/coroutine-nested/nested_test.html: $(S)/coroutine-nested/nested_test.o $(S)
 	../../scripts/common/inject-dyncall-shims.sh $(basename $@).js
 
 # Asyncify race-condition red-green harness (tests/asyncify/). Three variants of
-# the same app: full shims, trampoline-heal ablated, handleSleep-fix ablated.
-# The ablated builds keep the historical bugs reproducible (red) so the shim
-# fixes stay pinned by tests. Same .o, three link+inject passes.
+# (The trampoline-heal / handleSleep ablation variants — races_test_noheal /
+# races_test_nosleepfix — were retired at doc 20 D-1 together with the legacy
+# runtime they pinned.)
 $(S)/asyncify-races/races_test.o: $(S)/asyncify-races/races_test.cpp $(S)/coroutine/kicad_coroutine_harness.h
 	$(CXX) -c $(CXXFLAGS) -I$(KICAD_ROOT)/thirdparty/libcontext -I$(S)/coroutine $< -o $@
 
 $(S)/asyncify-races/races_test.html: $(S)/asyncify-races/races_test.o $(S)/coroutine/libcontext.o $(WX_CORE_LIB)
 	$(CXX) $^ $(LDFLAGS_RACES) --pre-js $(JS) --shell-file $(HTML) -o $@
 	../../scripts/common/inject-dyncall-shims.sh $(basename $@).js
-
-$(S)/asyncify-races/races_test_noheal.html: $(S)/asyncify-races/races_test.o $(S)/coroutine/libcontext.o $(WX_CORE_LIB)
-	$(CXX) $^ $(LDFLAGS_RACES) --pre-js $(JS) --shell-file $(HTML) -o $@
-	SHIM_DISABLE_TRAMPOLINE_HEAL=1 ../../scripts/common/inject-dyncall-shims.sh $(basename $@).js
-
-$(S)/asyncify-races/races_test_nosleepfix.html: $(S)/asyncify-races/races_test.o $(S)/coroutine/libcontext.o $(WX_CORE_LIB)
-	$(CXX) $^ $(LDFLAGS_RACES) --pre-js $(JS) --shell-file $(HTML) -o $@
-	SHIM_DISABLE_HANDLESLEEP=1 ../../scripts/common/inject-dyncall-shims.sh $(basename $@).js
 
 
 # Convenience targets
@@ -836,7 +826,7 @@ $(S)/retinascale/retinascale_test.html: $(S)/retinascale/retinascale_test.o $(WX
 retinascale: $(S)/retinascale/retinascale_test.html
 coroutine: $(S)/coroutine/coroutine_test.html
 coroutine-nested: $(S)/coroutine-nested/nested_test.html
-asyncify-races: $(S)/asyncify-races/races_test.html $(S)/asyncify-races/races_test_noheal.html $(S)/asyncify-races/races_test_nosleepfix.html
+asyncify-races: $(S)/asyncify-races/races_test.html
 
 # Only delete generated app files (*_test*, *_repro*) — a bare $(S)/*/*.js would
 # also delete checked-in sources like coroutine-pthread/worker_dom_stub.js.

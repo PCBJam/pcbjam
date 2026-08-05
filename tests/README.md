@@ -303,18 +303,14 @@ Button positions (relative to canvas):
 
 ## Open tasks
 
-- **Research: are the Asyncify fiber shims still needed under native-EH?** Two
-  `scripts/common/inject-dyncall-shims.sh` fixes — the fiber trampoline self-heal
-  (§3c) and the nested-Asyncify handleSleep save/restore (§3) — were written for the
-  legacy-EH *park-throw* model. Under native wasm-EH the top loop is a per-frame-yield
-  while-loop with no park-throw, so ablating either shim
-  (`SHIM_DISABLE_TRAMPOLINE_HEAL` / `SHIM_DISABLE_HANDLESLEEP`, wired in
-  `tests/apps/Makefile.wasm`) no longer reproduces the disease it guarded — the old
-  red "ablation pins" in `asyncify/asyncify-races.spec.ts` have been flipped to
-  green "shim-redundancy pins" that now prove the native-EH path stays clean *with the
-  shim ablated*. **To do:** sweep the real apps (modals, nested fibers, long sleeps,
-  pthread pool) with each shim ablated; if all stay green, drop the shim injection and
-  these pins. Until proven, they stay injected (belt-and-suspenders).
+- ~~Research: are the Asyncify fiber shims still needed under native-EH?~~
+  **Resolved at doc 20 D-1** (legacy-runtime deletion): the ablation builds
+  (`races_test_noheal` / `races_test_nosleepfix`) and their shim-redundancy pins in
+  `asyncify/asyncify-races.spec.ts` pinned a runtime that no longer exists — the
+  scheduler shim (`scripts/common/shims/asyncify-scheduler.js`) is the only runtime
+  and subsumes the handleSleep save/restore; the fiber trampoline self-heal (§3c)
+  remains injected unconditionally. The green battery runs every scenario against
+  the scheduler glue.
 
 ## Collab e2e — legacy vs v2 bundles, and repro markers
 

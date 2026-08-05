@@ -3,12 +3,11 @@ import { test, expect, tryLoadApp } from '../e2e/utils/fixtures';
 // Red-green specs for the Asyncify race-condition harness
 // (tests/apps/standalone/asyncify-races/races_test.cpp — see docs/features/async/).
 //
-// Two kinds of tests here:
-//  - GREEN-target tests assert the desired end state (clean pass, clean console).
-//    While a fix is missing they FAIL — that failing run is the recorded "red".
-//  - ABLATION tests run the shim-ablated builds (races_test_noheal.js /
-//    races_test_nosleepfix.js) and assert the historical bug REPRODUCES.
-//    They pin the disease so the shim fixes stay testable forever.
+// GREEN-target tests assert the desired end state (clean pass, clean console).
+// While a fix is missing they FAIL — that failing run is the recorded "red".
+// (The shim-ablation builds and their pins were retired at doc 20 D-1 together
+// with the legacy runtime they exercised; the scheduler shim is the only
+// runtime, and the battery below runs every scenario against it.)
 
 const BATTERY = [
   'post_park_fiber_swap',
@@ -174,80 +173,5 @@ test.describe('Asyncify races — green targets (full shims)', () => {
         (testLogger.errors.includes(l) || l.toLowerCase().includes('uncaught'))
     );
     expect(unwindLeaks, `unwind escaped the park: ${unwindLeaks.join(' || ')}`).toHaveLength(0);
-  });
-});
-
-// These two were "ablation pins": they ablated a JS-shim fix (via SHIM_DISABLE_*,
-// see tests/apps/Makefile.wasm) and asserted the LEGACY-EH disease came back — a
-// stuck Fibers.trampoline guard (trampolineRunning=true) / a clobbered parked-sleep
-// buffer. Under native wasm-EH the top loop is a per-frame-yield while-loop with NO
-// park-throw (docs/features/wasm-exceptions; native-EH top-loop redesign), so the
-// disease's *trigger* is gone at the root: ablating the shim no longer reproduces
-// it. (The green "battery" above already runs both scenarios full-shim.)
-//
-// So they are flipped red->green: each now pins that the native-EH path stays clean
-// EVEN with the legacy shim ablated — i.e. the scenario completes with no disease
-// signature. That keeps them as the live signal for the open question below.
-//
-// TODO(research): are these shims still needed AT ALL under native-EH-only? The
-// fiber trampoline self-heal (§3c) and the nested-Asyncify handleSleep save/restore
-// (§3) in scripts/common/inject-dyncall-shims.sh were written for the legacy
-// park-throw model; ablating either no longer breaks the scenario it guarded. If a
-// full sweep of the real apps (modals / nested fibers / long sleeps / pthread pool)
-// confirms they're dead weight under native-EH, drop the shim injection AND these
-// pins. Until then they stay injected (belt-and-suspenders). Tracked in
-// tests/README.md "Open tasks".
-test.describe('Asyncify races — shim-redundancy pins (native-EH stays clean with the legacy shim ablated)', () => {
-  test('trampoline-heal ablated: native-EH post-park swap still completes (no stuck guard)', async ({
-    page,
-    testLogger,
-  }) => {
-    await page.goto(
-      '/standalone/asyncify-races/races_test_noheal.html#only=post_park_fiber_swap'
-    );
-    await tryLoadApp(page, 30000);
-
-    await expect
-      .poll(() => findSummary(testLogger.consoleLogs) ?? null, {
-        timeout: 45000,
-        message: 'post-park swap should complete even with the trampoline self-heal ablated',
-      })
-      .not.toBeNull();
-
-    const { passed, failed } = parseSummary(findSummary(testLogger.consoleLogs)!);
-    expect(passed).toBe(1);
-    expect(failed).toBe(0);
-
-    // The legacy disease signature must be ABSENT: no stuck-trampoline watchdog dump.
-    expect(
-      testLogger.consoleLogs.some((l) =>
-        l.includes('[ASYNCIFY_RACES] WATCHDOG post_park_fiber_swap')
-      ),
-      'no stuck-trampoline watchdog should fire under native-EH'
-    ).toBe(false);
-    expect(crashLines(testLogger), 'no crash signatures in console').toHaveLength(0);
-  });
-
-  test('handleSleep ablated: native-EH long parked sleep is not clobbered by a swap', async ({
-    page,
-    testLogger,
-  }) => {
-    await page.goto(
-      '/standalone/asyncify-races/races_test_nosleepfix.html#only=long_parked_sleep_clobbered_by_swap'
-    );
-    await tryLoadApp(page, 30000);
-
-    await expect
-      .poll(() => findSummary(testLogger.consoleLogs) ?? null, {
-        timeout: 45000,
-        message: 'long parked sleep should resolve even with the handleSleep fix ablated',
-      })
-      .not.toBeNull();
-
-    const { passed, failed } = parseSummary(findSummary(testLogger.consoleLogs)!);
-    expect(passed).toBe(1);
-    expect(failed).toBe(0);
-    expect(crashLines(testLogger), 'no crash signatures in console').toHaveLength(0);
-    expect(realErrors(testLogger), 'no page errors').toHaveLength(0);
   });
 });
