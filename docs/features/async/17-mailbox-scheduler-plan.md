@@ -188,6 +188,24 @@ rollback = the `WX_SCHEDULER=0` build + a per-step tag.
   `_asyncify_stop_rewind`/`maybeStopUnwind`, never JS `finally`), fiber tracking at
   `emscripten_fiber_swap` (`fiber+20` buffers), trampoline ownership. **Gate:** races battery
   green **with the legacy shim ablated**; N1/N4/N5 green; libcontext refusal beacons ≈ 0.
+  > **Work log 2026-08-05 — S2 core LANDED and gated.** The scheduler shim now REPLACES
+  > handlesleep.js on WX_SCHEDULER=1 builds (injector either-or; the S1 "append-after"
+  > ordering is gone). Ported name-identical: capture/restore, wake-window flags
+  > (`__wakingRoot` is read by libcontext EM_JS!), consume-once/quarantine fiber guard,
+  > counters, flight recorder, trampoline heal (external catch-reset wrap). NEW:
+  > **deferred wakes** — a sleep wake arriving mid-transition (state≠Normal or trampoline
+  > live) queues and drains from a clean macrotask (the aliased-wake class is now
+  > structural, not detective); **N1 accessor** — `Asyncify.currData` is a property with a
+  > single-writer tripwire (pure-JS writes need scheduler authorization; wasm-frame writes
+  > pass; strict mode throws), meta-tested by introducing a stray.
+  > **Gates all green:** asyncify-firefox 9/9 (7 races + new N1 meta + N4 books — on glue
+  > with NO legacy shim, so the redundancy pins are now subsumption pins), coroutine 39/39,
+  > wx-chromium 30/30, kicad trio 3/3 on the C-lane build. Injector legacy path verified
+  > unchanged. **Deliberately left for S3:** the formal ctx-Map registry + park/resume
+  > methods (stubs that throw), wasm-side ProcessEvents; **open:** N5 flood spec, both-EH
+  > matrix (CI, deferred). Build-system note: `build-wasm-test.sh` only re-injects freshly
+  > relinked apps — a variant flip without C changes needs the strip+reinject converter
+  > (one-shot python in the work log commit) or a clean build.
 - **S3 · Root context + wasm-side ProcessEvents (≈1 wk).** The tick resumes the root context
   which calls `ProcessEvents` on the wasm side — the `await ccall(...,{async:true})` boundary
   (#13302) is removed. The root context never awaits JS (13 §6b). **Gate:** net green with

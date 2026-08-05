@@ -72,54 +72,53 @@ apply_fix 'var iterFunc = (() => {});' 'var iterFunc = () => wasmExports["dynCal
 apply_fix '(a1 => {})(userData);' 'wasmExports["dynCall_vi"](entryPoint, userData);' "fiber entry callback(s) (wasmExports.dynCall_vi)"
 echo "Total: Fixed $TOTAL_FIXED empty callback(s)"
 
-# --- 3. Nested-Asyncify handleSleep fix ---------------------------------------
-# Injected after Emscripten's fiber glue (the _emscripten_fiber_swap.isAsync marker).
-# SHIM_DISABLE_HANDLESLEEP=1 skips it: used by the asyncify-races red-green harness
-# to keep the historical "sleep buffer clobbered by fiber swap" crash reproducible.
-if [ "${SHIM_DISABLE_HANDLESLEEP:-0}" = "1" ]; then
+# --- 3. Asyncify shim: legacy handleSleep fix OR the S2 scheduler --------------
+# Injected after Emscripten's fiber glue (the _emscripten_fiber_swap.isAsync marker),
+# or at EOF for non-fiber apps (a plain wx app still needs the currData machinery:
+# without it a rewind resuming through a fresh wasm re-entry hits
+# _asyncify_start_rewind(null) -> "memory access out of bounds").
+#
+# WX_SCHEDULER=1 (doc 17 S2): asyncify-scheduler.js REPLACES handlesleep.js — it
+# subsumes the capture/restore, fiber guard, and trampoline heal, and adds the
+# deferred-wake drain + N1 single-writer tripwire. Injecting BOTH would
+# double-manage the wake path (the scheduler refuses to install its core then).
+#
+# SHIM_DISABLE_HANDLESLEEP=1 skips the legacy shim: the asyncify-races red-green
+# harness uses it to keep the historical "sleep buffer clobbered by fiber swap"
+# crash reproducible. On WX_SCHEDULER=1 builds the variant still gets the
+# scheduler — the ablation pins become scheduler-subsumption pins (doc 17 §3c).
+inject_shim_at_marker() { # <shim file> <label>
+    local shim_file="$1" label="$2"
+    local marker
+    marker=$(grep -n '^_emscripten_fiber_swap\.isAsync = true;$' "$JS_FILE" | head -1 | cut -d: -f1)
+    if [ -z "$marker" ]; then
+        echo "" >> "$JS_FILE"
+        cat "$SHIM_DIR/$shim_file" >> "$JS_FILE"
+        echo "Injected $label at EOF (no fiber glue)"
+    else
+        head -n "$marker" "$JS_FILE" > "${JS_FILE}.tmp"
+        echo "" >> "${JS_FILE}.tmp"
+        cat "$SHIM_DIR/$shim_file" >> "${JS_FILE}.tmp"
+        tail -n +$((marker + 1)) "$JS_FILE" >> "${JS_FILE}.tmp"
+        mv "${JS_FILE}.tmp" "$JS_FILE"
+        echo "Injected $label after line $marker"
+    fi
+}
+
+if [ "${WX_SCHEDULER:-0}" = "1" ]; then
+    # NOTE: idempotence via the shim-source sentinel, not __wxSchedulerInstalled —
+    # that string also appears in evtloop.cpp's EM_JS probe inside every glue.
+    if grep -q '__WX_SCHEDULER_SHIM_SOURCE__' "$JS_FILE"; then
+        echo "asyncify-scheduler already present - skipping"
+    else
+        inject_shim_at_marker asyncify-scheduler.js "asyncify-scheduler (replaces handlesleep; WX_SCHEDULER=1)"
+    fi
+elif [ "${SHIM_DISABLE_HANDLESLEEP:-0}" = "1" ]; then
     echo "handleSleep fix DISABLED (SHIM_DISABLE_HANDLESLEEP=1) - ablation build"
 elif grep -q '__nestedHandleSleepInstalled' "$JS_FILE"; then
     echo "handleSleep fix already present - skipping"
 else
-    HS_MARKER=$(grep -n '^_emscripten_fiber_swap\.isAsync = true;$' "$JS_FILE" | head -1 | cut -d: -f1)
-    if [ -z "$HS_MARKER" ]; then
-        # No libcontext fiber glue (a non-fiber Asyncify app — e.g. a plain wx app with
-        # modals/menus, no tool coroutines). The currData save/restore is still needed:
-        # without it a rewind resuming through a fresh wasm re-entry hits
-        # _asyncify_start_rewind(null) -> "memory access out of bounds" (the context-menu
-        # pick while the main loop is Asyncify-parked). Append at EOF — Asyncify is defined
-        # by then and the shim wraps handleSleep at load, before any runtime sleep.
-        echo "" >> "$JS_FILE"
-        cat "$SHIM_DIR/handlesleep.js" >> "$JS_FILE"
-        echo "Injected handleSleep fix at EOF (no fiber glue)"
-    else
-        head -n "$HS_MARKER" "$JS_FILE" > "${JS_FILE}.tmp"
-        echo "" >> "${JS_FILE}.tmp"
-        cat "$SHIM_DIR/handlesleep.js" >> "${JS_FILE}.tmp"
-        tail -n +$((HS_MARKER + 1)) "$JS_FILE" >> "${JS_FILE}.tmp"
-        mv "${JS_FILE}.tmp" "$JS_FILE"
-        echo "Injected handleSleep fix after line $HS_MARKER"
-    fi
-fi
-
-# --- 3e. Mailbox/scheduler (WX_SCHEDULER=1 dual-glue variant) ------------------
-# docs/features/async/17-mailbox-scheduler-plan.md, step S0. Appended AFTER the
-# handleSleep shim: the legacy shim stays authoritative until S2, when the
-# scheduler takes ownership of currData and this ordering flips. Idempotent via
-# the __wxSchedulerInstalled marker. Default OFF — the legacy build is the
-# shippable fallback until S5.
-if [ "${WX_SCHEDULER:-0}" = "1" ]; then
-    # NOTE: must be the shim-source sentinel, not __wxSchedulerInstalled — that
-    # string also appears in evtloop.cpp's EM_JS probe inside every glue.
-    if grep -q '__WX_SCHEDULER_SHIM_SOURCE__' "$JS_FILE"; then
-        echo "asyncify-scheduler already present - skipping"
-    else
-        echo "" >> "$JS_FILE"
-        cat "$SHIM_DIR/asyncify-scheduler.js" >> "$JS_FILE"
-        echo "Injected asyncify-scheduler (WX_SCHEDULER=1 dual-glue variant)"
-    fi
-else
-    echo "scheduler disabled (set WX_SCHEDULER=1 for the dual-glue variant)"
+    inject_shim_at_marker handlesleep.js "handleSleep fix"
 fi
 
 # --- 3b. embind dynCall fallback (dynCallLegacy -> wasmExports) ----------------
