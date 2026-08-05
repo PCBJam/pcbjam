@@ -63,8 +63,11 @@ if (typeof Asyncify !== "undefined" && !globalThis.__wxSchedulerInstalled) {
         } catch (e) {
           self._tickArmed = false;
           if (Module["_wx_dispatch_abandon"]) Module["_wx_dispatch_abandon"]();
-          var exits = Module["_wxNestedLoopExit"];
-          if (exits && exits.length) (exits.pop())();
+          // Same containment as the top-level tick's error path (evtloop.cpp):
+          // a throwing handler must not leave a parked quasi-modal unresolved.
+          // No-ops when no such wait is open (5101 = wxID_CANCEL).
+          self.resolveTopWait('nested', 0);
+          self.resolveTopWait('modal', 5101);
           throw e;
         }
         if (self.mailbox.length > 0) {
@@ -158,7 +161,7 @@ if (typeof Asyncify !== "undefined" && !globalThis.__wxSchedulerInstalled) {
     // pre-resolves the promise — yieldUntil then returns immediately. Per-kind
     // LIFO stacks give wx modal/nested semantics ("innermost first") without
     // the legacy per-wait resolver stacks (_wxModalResolvers /
-    // _wxNestedLoopExit), which die on scheduler builds. Resolution flows
+    // _wxNestedLoopExit — deleted at doc 20 D-1). Resolution flows
     // through the S2 deferred-wake law automatically: resolving a wait wakes
     // its parked sleep via the wrapped handleSleep path.
     waits: new Map(),      // token → {kind, promise, resolve, resolved}

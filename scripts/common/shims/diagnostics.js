@@ -87,27 +87,24 @@
     };
   }
 
-  // 5. Modal lifecycle (startModal sets Module._endModal; detect appear/disappear).
+  // 5. Modal lifecycle: poll the scheduler wait registry ("modal" waits).
+  //    (The legacy Module._endModal hook was deleted at doc 20 D-1.)
   if (typeof Module !== "undefined") {
-    var seen = false;
+    var lastModalWaits = 0;
     setInterval(function() {
-      if (Module._endModal && !seen) {
-        seen = true; modalActive = true;
-        console.log("[DIAG_MODAL] modal started, state=" + asyncState());
-        var __origEnd = Module._endModal;
-        Module._endModal = function(code) {
-          console.log("[DIAG_MODAL] EndModal code=" + code + " state=" + asyncState());
-          modalActive = false;
-          return __origEnd(code);
-        };
-      } else if (!Module._endModal && seen) {
-        seen = false;
-        console.log("[DIAG_MODAL] modal cleanup, state=" + asyncState());
+      var S = globalThis.__wxScheduler;
+      if (!S || typeof S.pendingWaits !== "function") return;
+      var n = S.pendingWaits("modal");
+      if (n !== lastModalWaits) {
+        console.log("[DIAG_MODAL] modal waits " + lastModalWaits + " -> " + n +
+                    ", state=" + asyncState());
+        modalActive = n > 0;
+        lastModalWaits = n;
       }
     }, 100);
   }
 
-  // 6. EM_ASYNC_JS sleeps (startModal, js_enumerateFonts, clipboard, etc.) — log
+  // 6. EM_ASYNC_JS sleeps (wxWasmYieldUntilJs, js_enumerateFonts, clipboard, etc.) — log
   //    enter/wake so we can see whether an async sleep is NESTED with a fiber swap
   //    at the crash (the #9153 collision). Logging only; delegates unchanged.
   if (typeof Asyncify !== "undefined" && typeof Asyncify.handleSleep === "function") {
