@@ -61,14 +61,13 @@ CXXFLAGS += $(EH_FLAGS)
 # Base Emscripten flags (for all apps)
 # ASYNCIFY enables blocking modal dialogs (ShowModal waits for user)
 # ASYNCIFY_IMPORTS tells Emscripten which imported JS functions can unwind the stack
-# - startModal: for modal dialogs
 # - js_writeTextToClipboard, js_readTextFromClipboard, js_clipboardHasText, js_clearClipboard: for clipboard
 # - js_enumerateFonts: for font enumeration via Local Font Access API
 BASE_LDFLAGS = $(EH_FLAGS) -sALLOW_MEMORY_GROWTH -sERROR_ON_UNDEFINED_SYMBOLS=0 \
                -s "EXPORTED_RUNTIME_METHODS=['HEAPU8','HEAP8','HEAP32','ccall']" \
                -sASYNCIFY=1 \
                -sASYNCIFY_STACK_SIZE=65536 \
-               -sASYNCIFY_IMPORTS=['startModal','js_writeTextToClipboard','js_readTextFromClipboard','js_clipboardHasText','js_clearClipboard','js_enumerateFonts']
+               -sASYNCIFY_IMPORTS=['js_writeTextToClipboard','js_readTextFromClipboard','js_clipboardHasText','js_clearClipboard','js_enumerateFonts']
 
 # LDFLAGS for non-GL apps (standalone tests)
 LDFLAGS_NOGL = $(DEBUG_LDFLAGS) $(BASE_LDFLAGS) $(WX_LDFLAGS_NOGL)
@@ -103,7 +102,7 @@ COROUTINE_BASE_LDFLAGS = $(EH_FLAGS) -sALLOW_MEMORY_GROWTH -sERROR_ON_UNDEFINED_
                -s "EXPORTED_RUNTIME_METHODS=['HEAPU8','HEAP8','HEAP32','ccall']" \
                -sASYNCIFY=1 \
                -sASYNCIFY_STACK_SIZE=65536 \
-               -sASYNCIFY_IMPORTS=['startModal','js_writeTextToClipboard','js_readTextFromClipboard','js_clipboardHasText','js_clearClipboard','js_enumerateFonts','emscripten_fiber_swap']
+               -sASYNCIFY_IMPORTS=['js_writeTextToClipboard','js_readTextFromClipboard','js_clipboardHasText','js_clearClipboard','js_enumerateFonts','emscripten_fiber_swap']
 LDFLAGS_COROUTINE = $(DEBUG_LDFLAGS) $(COROUTINE_BASE_LDFLAGS) $(WX_LDFLAGS_NOGL)
 
 # The asyncify-races harness must match PRODUCTION asyncify semantics: the KiCad

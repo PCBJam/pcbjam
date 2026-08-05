@@ -90,10 +90,12 @@ test.describe('Asyncify races — green targets (full shims)', () => {
     page,
     testLogger,
   }) => {
-    // RED today: wx dialog.cpp keeps the modal resolver in a single slot
-    // (Module._endModal = fn; delete after use), so with three nested modals
-    // the middle EndModal resolves nothing and its ShowModal parks forever.
-    // GREEN after the Stage-3 wx fix (LIFO resolver stack).
+    // Historical red: the pre-scheduler wx dialog.cpp kept the modal resolver
+    // in a single slot (Module._endModal), so with three nested modals the
+    // middle EndModal resolved nothing and its ShowModal parked forever.
+    // Green since the LIFO resolver semantics, now the scheduler wait
+    // registry's per-kind stacks (doc 17 S4; legacy machinery deleted at
+    // doc 20 D-1).
     await page.goto('/standalone/asyncify-races/races_test.html#only=modal_in_modal_in_modal');
     await tryLoadApp(page, 30000);
 

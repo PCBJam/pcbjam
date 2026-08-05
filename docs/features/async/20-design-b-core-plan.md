@@ -1,9 +1,10 @@
 # 20 — Design B core: parkable activities as scheduler contexts
 
-> **Status: PLAN (2026-08-05), not started.** The remaining core of Design B
-> ([`06`](06-design-b-fiber-first-runtime.md) B1+B2), scoped against what S0–S6 actually
-> built ([`17`](17-mailbox-scheduler-plan.md)) and motivated by the stranded-fiber hang
-> ([`19`](19-quasimodal-fiber-strand.md)). Supersedes doc 12's phases 2–3 for this layer.
+> **Status: IN PROGRESS — D-1 DONE (2026-08-05, work log §10).** The remaining core of
+> Design B ([`06`](06-design-b-fiber-first-runtime.md) B1+B2), scoped against what S0–S6
+> actually built ([`17`](17-mailbox-scheduler-plan.md)) and motivated by the
+> stranded-fiber hang ([`19`](19-quasimodal-fiber-strand.md)). Supersedes doc 12's
+> phases 2–3 for this layer.
 
 ## 1. The one-sentence goal
 
@@ -185,3 +186,36 @@ mailbox migration.
   the ambiguity — the 68/1 class is currently held closed by v0.1.28's scheduling trick,
   and D5 replaces a working mitigation with a structural one. Re-evaluate with D4's
   telemetry in hand rather than committing now.
+
+## 10. Work log
+
+### D-1 — legacy runtime deleted (2026-08-05) ✅
+
+Baseline tag `d-1-pre-delete` on root/pcbjam/kicad/wxwidgets/binaryen before the first
+deletion. Four commits, one per deletion group:
+
+- **D-1a** (pcbjam `e87d7f7`): `races_test_noheal`/`races_test_nosleepfix` link+inject
+  variants out of `tests/apps/Makefile.wasm`; the shim-redundancy pin specs out of
+  `asyncify-races.spec.ts`; `tests/README.md` open task resolved.
+- **D-1b** (pcbjam `0a143ab`): injector injects asyncify-scheduler.js unconditionally —
+  `WX_SCHEDULER=0`, `SHIM_DISABLE_HANDLESLEEP`, `SHIM_DISABLE_TRAMPOLINE_HEAL` deleted;
+  `shims/handlesleep.js` deleted (423 lines); `.ci-cache-epoch` → 11.
+- **D-1c** (wx `c44c684f7d`): every `wxWasmMailboxEnabled()` branch collapsed to the
+  scheduler lane (timer enqueue, wheel replay, modal wait, nested wait, unconditional
+  top-level tick, ungated deliver); probe deleted from mailbox.h; replaced by a
+  fail-fast `wxWasmSchedulerAssertInstalled()` abort at DoRun entry.
+- **D-1d** (wx `24843897e8` + pcbjam `1831668`): `startModal`, `wxWasmRunNestedLoop`,
+  the wx-dom popup pump, `_wxModalResolvers`/`_endModal`/`_pendingModalResult`/
+  `_wxNestedLoopExit`, and the bare `emscripten_async_call` timer entries deleted
+  (timer parked-retry re-arms via the mailbox, kept as a tripwire); the scheduler
+  shim's delivery-tick error path and diagnostics.js moved to wait-registry
+  containment/observation.
+
+**Gate (all scheduler-only, single battery):** wx app battery + asyncify (races +
+scheduler core) + coroutine trio = 363 passed / 3 skipped / 0 failed; full kicad suite
+= 138 passed / 30 skipped / 1 failed — the failure is the pre-existing local
+occ-probe `glb` case (known-unrelated, predates D-1). Vestigial `startModal` scrubbed
+from `ASYNCIFY_IMPORTS` (Makefile.wasm) and `asyncify-imports.txt` post-gate.
+
+Consequence: every later phase is single-path — one code path per park site, one glue
+per build, one battery per gate. Next: **D0** (park-site audit + the doc-19 red spec).
