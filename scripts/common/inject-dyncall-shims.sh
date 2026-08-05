@@ -5,6 +5,8 @@
 # The actual JavaScript that gets injected lives in readable, standalone files in
 # scripts/common/shims/ (not inline heredocs):
 #   - handlesleep.js           nested-Asyncify handleSleep currData save/restore (#9153)
+#   - asyncify-scheduler.js    WX_SCHEDULER=1 builds only: the mailbox/scheduler
+#                              (docs/features/async/17; S0 = observation-only skeleton)
 #   - diagnostics.js           optional logging-only instrumentation (see SHIM_DIAGNOSTICS)
 #
 # Native wasm-EH is the only build mode, so the .js has no invoke_* wrappers / dynCall_<sig> call
@@ -17,6 +19,7 @@
 # Usage:
 #   inject-dyncall-shims.sh <pcbnew.js>
 #   SHIM_DIAGNOSTICS=1 inject-dyncall-shims.sh <pcbnew.js>   # also inject diagnostics.js
+#   WX_SCHEDULER=1 inject-dyncall-shims.sh <pcbnew.js>       # also inject the scheduler (dual-glue variant)
 
 set -e
 
@@ -32,7 +35,7 @@ if [ -z "$JS_FILE" ] || [ ! -f "$JS_FILE" ]; then
     echo "Usage: $0 <path/to/pcbnew.js>"
     exit 1
 fi
-for f in handlesleep.js diagnostics.js; do
+for f in handlesleep.js asyncify-scheduler.js diagnostics.js; do
     if [ ! -f "$SHIM_DIR/$f" ]; then
         echo "Error: missing shim source $SHIM_DIR/$f"
         exit 1
@@ -97,6 +100,24 @@ else
         mv "${JS_FILE}.tmp" "$JS_FILE"
         echo "Injected handleSleep fix after line $HS_MARKER"
     fi
+fi
+
+# --- 3e. Mailbox/scheduler (WX_SCHEDULER=1 dual-glue variant) ------------------
+# docs/features/async/17-mailbox-scheduler-plan.md, step S0. Appended AFTER the
+# handleSleep shim: the legacy shim stays authoritative until S2, when the
+# scheduler takes ownership of currData and this ordering flips. Idempotent via
+# the __wxSchedulerInstalled marker. Default OFF — the legacy build is the
+# shippable fallback until S5.
+if [ "${WX_SCHEDULER:-0}" = "1" ]; then
+    if grep -q '__wxSchedulerInstalled' "$JS_FILE"; then
+        echo "asyncify-scheduler already present - skipping"
+    else
+        echo "" >> "$JS_FILE"
+        cat "$SHIM_DIR/asyncify-scheduler.js" >> "$JS_FILE"
+        echo "Injected asyncify-scheduler (WX_SCHEDULER=1 dual-glue variant)"
+    fi
+else
+    echo "scheduler disabled (set WX_SCHEDULER=1 for the dual-glue variant)"
 fi
 
 # --- 3b. embind dynCall fallback (dynCallLegacy -> wasmExports) ----------------

@@ -127,6 +127,17 @@ rollback = the `WX_SCHEDULER=0` build + a per-step tag.
 - **S0 · Baseline + scaffolding (2–3 d).** Tag current mains. CI matrix runs both EH models.
   Add beacon-count extraction to the fuzz/e2e harness (guard-firing counters per run). Stand up
   the `WX_SCHEDULER` dual-glue build. Write N2 (red), N8.
+  > **Work log 2026-08-05 — S0 mostly landed** on `feature/async-mailbox`:
+  > local `mailbox-s0-baseline` tags in all 6 repos; `WX_SCHEDULER=1` injector path +
+  > `scripts/common/shims/asyncify-scheduler.js` (observation-only skeleton, build marker
+  > `[wx-scheduler] scaffolding installed`; legacy shim stays authoritative until S2;
+  > remember the `.ci-cache-epoch` bump when shim behavior changes);
+  > `tests/kicad/utils/guard-beacons.ts` (per-family counts, occurrence-recovery for
+  > rate-limited beacons, `expectGuardsSilent`, `parseAsyncifyCounters`);
+  > `REPRO_ASSERT=1` in `apps/tests/tools/repro-board-load.ts` (N8: fails on unsettled load,
+  > missing recorder, `rootHotTotal>0`, trap signatures);
+  > `tests/kicad/mailbox-ordering.spec.ts` (N2, `test.fixme` red — add-then-move ordering
+  > probe; un-fixme at S1). **Still open in S0:** the CI workflow matrix for both EH models.
 - **S1 · Mailbox front-end (≈1 wk).** One queue, drained by `wxWasmTopLevelTick`. Route into it:
   timer `Notify` (replacing the direct callback body; the 17 ms retry stays as tripwire), DOM
   input (formalizing today's `wxPostEvent`/`CallAfter` deferrals), and a JS-side wrapper for
