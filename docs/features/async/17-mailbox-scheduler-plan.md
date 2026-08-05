@@ -39,6 +39,15 @@ Also carried forward: **the root/scheduler context must never itself await JS** 
 **`ProcessEvents` must be driven wasm-side**, not via `await ccall(...,{async:true})`
 (Emscripten #13302; 12 §prior-art). v0.1.28's fresh-task tick is the first brick of exactly that.
 
+> **S1 lesson (2026-08-05, learned red-first):** the #13302 boundary constrains the MAILBOX
+> too — delivering messages from inside pump-driven `ProcessEvents` puts a fiber-swapping
+> handler inside the modal pump's awaited ccall and traps `unreachable`
+> (`coroutine-nested` / `fiber_create_run_destroy_inside_modal`). Deliveries must enter via
+> a dedicated plain export (`wxWasmMailboxTick`, self-armed from the shim, 17 ms retry while
+> the interlock is held) — the mailbox changes *when* a message runs, never the kind of
+> stack it runs on. This constraint binds every future lane (DOM input, embind) until S3
+> removes the awaited-ccall pumps entirely.
+
 ## 2. Cutover mechanics
 
 - **Build flag `WX_SCHEDULER=1`** producing parallel glue variants, same pattern as
@@ -139,6 +148,18 @@ rollback = the `WX_SCHEDULER=0` build + a per-step tag.
   > `tests/kicad/mailbox-ordering.spec.ts` (N2, `test.fixme` red — add-then-move ordering
   > probe; un-fixme at S1). **Still open in S0:** the CI workflow matrix for both EH models.
 - **S1 · Mailbox front-end (≈1 wk).** One queue, drained by `wxWasmTopLevelTick`. Route into it:
+  > **Work log 2026-08-05 — timers routed, dual battery green.** JS FIFO in the shim;
+  > `wx/wasm/private/mailbox.h` + drain in `evtloop.cpp`; `timer.cpp` enqueues on scheduler
+  > builds (runtime-gated on the shim marker; legacy path untouched; 17 ms retry kept as
+  > tripwire). Delivery enters via the dedicated plain export `wxWasmMailboxTick` (see the
+  > S1 lesson above — the first pump-embedded delivery design trapped in `coroutine-nested`
+  > and was fixed red→green). Battery on BOTH variants: wx-chromium 28/28 (timer, dialog,
+  > dialogs, contextmenu, popup) + coroutine-firefox 39/39 (incl. raytrace multicore) +
+  > asyncify-firefox 7/7. App-side `WasmMailbox` wrapper (web/standalone/src/wasm/mailbox.ts,
+  > 7 vitest green) keys on the proxy-safe `kicadOpenFileBusy` probe — PROXY_TO_PTHREAD makes
+  > the window blind to the worker-side interlock; precision moves worker-side at S4.
+  > **Still open in S1:** DOM-input lane, wiring the wrapper into the 14 production mutators
+  > (needs the kicad wasm build + e2e), N2 un-fixme, beacon-silence assertions in fuzz runs.
   timer `Notify` (replacing the direct callback body; the 17 ms retry stays as tripwire), DOM
   input (formalizing today's `wxPostEvent`/`CallAfter` deferrals), and a JS-side wrapper for
   **mutating** embind entries (enqueue + returned promise). Deliverable alongside: the **sync
@@ -193,6 +214,10 @@ first step with user-visible semantic changes.
 - **Sync embind policy** (S1 audit): pure reads that never dispatch/park stay synchronous;
   everything else becomes a promise-returning message. The audit's deliverable is the exact
   allowlist, checked by a lint or a dev-build assert.
+  > **DONE 2026-08-05 → [`18-embind-audit.md`](18-embind-audit.md):** 79 exports — 47 mutators
+  > (14 production + 3 saves to wrap; 33 test-only stay direct), 20 pure-reads (the allowlist,
+  > with the model-walk caveat), 9 park-capable. Asymmetries to fix listed there (ungated
+  > pure-reads, pl_editor bare-stack applies, ungated `kicadLibsReload`).
 - **`kicadOpenFileBusy` compatibility**: `open-flow.ts` feature-detects it and legacy wasm
   builds rely on the fallback — keep the export, backed by scheduler state, until the web app
   drops support for pre-scheduler wasm.

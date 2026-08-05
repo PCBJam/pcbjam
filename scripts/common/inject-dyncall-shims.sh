@@ -109,7 +109,9 @@ fi
 # the __wxSchedulerInstalled marker. Default OFF — the legacy build is the
 # shippable fallback until S5.
 if [ "${WX_SCHEDULER:-0}" = "1" ]; then
-    if grep -q '__wxSchedulerInstalled' "$JS_FILE"; then
+    # NOTE: must be the shim-source sentinel, not __wxSchedulerInstalled — that
+    # string also appears in evtloop.cpp's EM_JS probe inside every glue.
+    if grep -q '__WX_SCHEDULER_SHIM_SOURCE__' "$JS_FILE"; then
         echo "asyncify-scheduler already present - skipping"
     else
         echo "" >> "$JS_FILE"
