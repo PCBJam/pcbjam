@@ -235,6 +235,24 @@ rollback = the `WX_SCHEDULER=0` build + a per-step tag.
   3. modal dialog (`startModal` + `_wxModalResolvers` die),
   4. clipboard + font enum,
   5. **open** last — the biggest semantic flip (gates → ordering; N2/N3/N6 are the gate).
+  > **Work log 2026-08-05 — S4 LANDED and gated (waits 1–3; 4–5 resolved by scoping).**
+  > The doc-13 §2 API exists as `wx/wasm/private/yieldwait.h` (`wxWasmBeginWait` /
+  > `wxWasmYieldUntil` / `wxWasmResolveWait`/`ResolveTopWait`) backed by the shim's wait
+  > registry (per-kind LIFO stacks, resolve-before-yield safe). On scheduler builds:
+  > **nested loops, popups, and modals are registered WAITS with NO pumps** — the top-level
+  > tick is the sole dispatcher at any DoRun depth (the s_wxRunDepth gate is scheduler-
+  > bypassed; the June §6e double-driver hazard needed two awaited pumps, which no longer
+  > exist). Dead on scheduler builds: `startModal`, `wxWasmRunNestedLoop`, the wx-dom popup
+  > pump, `_wxModalResolvers`, `_wxNestedLoopExit`, `_pendingModalResult` (waits begin
+  > before Show(), so a racing EndModal pre-resolves). Tick error containment now releases
+  > the innermost nested wait AND cancels the top modal (the dead pumps' catch role).
+  > Waits 4–5 by scoping: clipboard/font enum keep their EM_ASYNC_JS promise-waits — they
+  > have no pumps and are already S2-managed sleeps (migrating them to tokens buys
+  > uniformity, not behavior; revisit at S5 if the token registry should own ALL waits);
+  > open keeps the C++ gate as second line under the JS embind lane's queueing (N2-gated
+  > since S1). **Gates:** asyncify 9/9 (triple-modal LIFO now on wait stacks), coroutine
+  > 39/39 (quasi-modal with zero pumps), wx modal-heavy 45/45, kicad 6/6 incl.
+  > modal-stack + contextmenu-scrollbar on a fresh warm-cache build.
 - **S5 · Guard demolition (few d).** Delete: dispatch interlock + save/zero/restore sites,
   timer retry, `ProcessEvents` Paint-only gate, `s_wxRunDepth` gate, open-settle/fiber-busy/
   enumerate gates. Downgrade libcontext refusals to dev-build assertions; keep counters-only

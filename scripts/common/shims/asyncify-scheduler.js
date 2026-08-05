@@ -148,6 +148,64 @@ if (typeof Asyncify !== "undefined" && !globalThis.__wxSchedulerInstalled) {
       }, 16);
     },
 
+    // --- S4 wait registry ---------------------------------------------------
+    // Token-based waits (doc 13 §2: wasm_begin_async_wait / wasm_yield_until /
+    // wasm_resolve_wait). A wait is begun BEFORE the C++ side parks, so a
+    // resolve that races ahead of the park (EndModal during Show()) simply
+    // pre-resolves the promise — yieldUntil then returns immediately. Per-kind
+    // LIFO stacks give wx modal/nested semantics ("innermost first") without
+    // the legacy per-wait resolver stacks (_wxModalResolvers /
+    // _wxNestedLoopExit), which die on scheduler builds. Resolution flows
+    // through the S2 deferred-wake law automatically: resolving a wait wakes
+    // its parked sleep via the wrapped handleSleep path.
+    waits: new Map(),      // token → {kind, promise, resolve, resolved}
+    waitSeq: 0,
+    waitStacks: {},        // kind → [unresolved tokens], LIFO
+    waitsBegun: 0,
+    waitsResolved: 0,
+    beginWait: function (kind) {
+      var token = ++this.waitSeq;
+      var entry = { kind: kind, resolved: false, resolve: null, promise: null };
+      var self = this;
+      entry.promise = new Promise(function (resolve) { entry.resolve = resolve; });
+      this.waits.set(token, entry);
+      (this.waitStacks[kind] = this.waitStacks[kind] || []).push(token);
+      this.waitsBegun++;
+      return token;
+    },
+    waitPromise: function (token) {
+      var entry = this.waits.get(token);
+      if (!entry) {
+        console.warn("[wx-scheduler] waitPromise(" + token + "): unknown token");
+        return Promise.resolve(0);
+      }
+      return entry.promise;
+    },
+    resolveWait: function (token, result) {
+      var entry = this.waits.get(token);
+      if (!entry || entry.resolved) return false;
+      entry.resolved = true;
+      this.waitsResolved++;
+      var stack = this.waitStacks[entry.kind];
+      if (stack) {
+        var idx = stack.indexOf(token);
+        if (idx !== -1) stack.splice(idx, 1);
+      }
+      this.waits.delete(token);
+      entry.resolve(result | 0);
+      return true;
+    },
+    // Resolve the INNERMOST unresolved wait of a kind (wx LIFO semantics).
+    resolveTopWait: function (kind, result) {
+      var stack = this.waitStacks[kind];
+      if (!stack || stack.length === 0) return false;
+      return this.resolveWait(stack[stack.length - 1], result);
+    },
+    pendingWaits: function (kind) {
+      var stack = this.waitStacks[kind];
+      return stack ? stack.length : 0;
+    },
+
     // --- S2 scheduler core state -------------------------------------------
     // Deferred sleep wakes: {deliver, result} queued because a transition was
     // in flight when the wake arrived. Delivered FIFO from a clean macrotask.
@@ -175,7 +233,10 @@ if (typeof Asyncify !== "undefined" && !globalThis.__wxSchedulerInstalled) {
         + " readyWakes=" + this.readyWakes.length
         + " deferredWakes=" + this.deferredWakes
         + " drainedWakes=" + this.drainedWakes
-        + " strayWrites=" + this.strayWrites;
+        + " strayWrites=" + this.strayWrites
+        + " waits=" + this.waits.size
+        + " waitsBegun=" + this.waitsBegun
+        + " waitsResolved=" + this.waitsResolved;
     },
   };
 
