@@ -38,6 +38,7 @@ if (typeof Asyncify !== "undefined" && !globalThis.__wxSchedulerInstalled) {
     enqueueAfter: function (fn, arg, ms) {
       var self = this;
       setTimeout(function () {
+        if (self.dead) return; // S6: never deliver into a torn-down app
         self.mailbox.push({ fn: fn, arg: arg });
         self.enqueued++;
         self._armDeliveryTick();
@@ -56,6 +57,7 @@ if (typeof Asyncify !== "undefined" && !globalThis.__wxSchedulerInstalled) {
       this._tickArmed = true;
       var self = this;
       setTimeout(function tick() {
+        if (self.dead) { self._tickArmed = false; return; }
         try {
           if (Module["_wxWasmMailboxTick"]) Module["_wxWasmMailboxTick"]();
         } catch (e) {
@@ -123,6 +125,7 @@ if (typeof Asyncify !== "undefined" && !globalThis.__wxSchedulerInstalled) {
         ? function () { return performance.now(); }
         : function () { return Date.now(); };
       setTimeout(function pump() {
+        if (self.dead) { self._mutatorPumpArmed = false; return; }
         // Unkillable: an exception escaping this body would end the setTimeout
         // chain and wedge the queue forever (observed: 559 frozen messages).
         try {
@@ -222,8 +225,42 @@ if (typeof Asyncify !== "undefined" && !globalThis.__wxSchedulerInstalled) {
       try { return fn(); } finally { this._authorizedWrite--; }
     },
 
+    // --- S6 lifetime --------------------------------------------------------
+    // Called when the wx main loop exits (DoRun's top-level return path). The
+    // app object is about to be destroyed: delivering anything after this
+    // point runs callbacks into freed C++ state. Queued mutators reject,
+    // queued messages and wakes drop — loudly, so a teardown that strands
+    // work is visible in the console instead of surfacing as a later UAF.
+    dead: false,
+    shutdown: function (reason) {
+      if (this.dead) return;
+      this.dead = true;
+      var stranded = {
+        mailbox: this.mailbox.length,
+        mutators: this.mutatorQueue.length,
+        wakes: this.readyWakes.length,
+        waits: this.waits.size,
+      };
+      this.mailbox.length = 0;
+      for (var i = 0; i < this.mutatorQueue.length; i++) {
+        try { this.mutatorQueue[i].reject(new Error("[wx-scheduler] shutdown: " + reason)); } catch (e) {}
+      }
+      this.mutatorQueue.length = 0;
+      this.readyWakes.length = 0;
+      if (stranded.mailbox || stranded.mutators || stranded.wakes || stranded.waits) {
+        console.warn("[wx-scheduler] shutdown (" + reason + ") stranded:"
+          + " mailbox=" + stranded.mailbox
+          + " mutators=" + stranded.mutators
+          + " wakes=" + stranded.wakes
+          + " pendingWaits=" + stranded.waits);
+      } else {
+        console.log("[wx-scheduler] shutdown (" + reason + ") clean");
+      }
+    },
+
     state: function () {
       return "[wx-scheduler] build=1 impl=S2-core"
+        + (this.dead ? " DEAD" : "")
         + " mailbox=" + this.mailbox.length
         + " enqueued=" + this.enqueued
         + " delivered=" + this.delivered
@@ -355,6 +392,7 @@ if (typeof Asyncify !== "undefined" && !globalThis.__wxSchedulerInstalled) {
       var self = this;
       setTimeout(function () {
         self._wakeDrainArmed = false;
+        if (self.dead) return; // S6: parked stacks are gone with the app
         // Deliver from a CLEAN macrotask (export stack empty by construction).
         while (self.readyWakes.length > 0 && __transitionFree()) {
           var w = self.readyWakes.shift();

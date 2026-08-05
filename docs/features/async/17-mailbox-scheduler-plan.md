@@ -290,6 +290,18 @@ rollback = the `WX_SCHEDULER=0` build + a per-step tag.
   >    consume-once layer is the backstop, not a replacement.
 - **S6 · Lifetime (few d).** Cleanup ordering vs the scheduler; teardown deferred to
   unload/explicit exit; `ScheduleExit` → scheduler wake (12 §phase-4).
+  > **Work log 2026-08-05 — S6 LANDED.** The scheduler latches DEAD when the main loop
+  > exits (DoRun's top-level return → `shutdown("main loop exited")`): queued mutators
+  > reject, queued messages/wakes drop, pumps stop — stranded work beacons
+  > (`shutdown ... stranded:`) instead of surfacing as a post-teardown UAF.
+  > `wxWasmMailboxDeliver` gained ProcessEvents' `!wxTheApp` teardown parity. Unit-gated
+  > (scheduler-shim.test.ts 4/4 incl. shutdown; 11/11 with WasmMailbox) + full battery
+  > (asyncify 9/9, coroutine 39/39, wx modal-heavy 45/45) + kicad 6/6 — all on
+  > DEFAULT-injected glue: the docker postprocess → setup:kicad pipeline now produces
+  > scheduler builds with no manual conversion. Deferred with the ledger: OnExit/
+  > wxEntryCleanupReal-to-unload reshaping (12 §phase-4's fuller lifetime) — the current
+  > quit flow (wxAppTopWindowClosed → loop exit → cleanup) plus the DEAD latch covers the
+  > teardown-delivery hazard the step exists for.
 
 **Effort: ≈ 5–7 weeks** (doc 12 said 4–6 for the runtime alone; the added week is §3's test
 work, which is where the safety comes from). S1 and S2 each end in a shippable state; S4 is the

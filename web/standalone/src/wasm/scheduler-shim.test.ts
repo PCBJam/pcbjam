@@ -19,12 +19,16 @@ const SHIM_PATH = path.resolve(
 );
 
 type SchedulerShape = {
+  mailbox: unknown[];
   mutatorQueue: unknown[];
   mutatorsDelivered: number;
   readyWakes: { deliver: (r: unknown) => void; result: unknown }[];
   deferredWakes: number;
   drainedWakes: number;
   strayWrites: number;
+  dead: boolean;
+  shutdown(reason: string): void;
+  enqueueAfter(fn: number, arg: number, ms: number): void;
   _openBusy(): boolean;
   _armMutatorPump(): void;
   _scheduleWakeDrain(): void;
@@ -131,6 +135,43 @@ describe("N5: scheduler shim under flood", () => {
         await vi.advanceTimersByTimeAsync(16);
       }
       expect(S.mutatorQueue.length).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("S6 shutdown: queued mutators reject, messages and wakes drop, pumps stop", async () => {
+    vi.useFakeTimers();
+    try {
+      let busy = true;
+      const S = loadShim({ busy: () => busy });
+      const M = (globalThis as Record<string, unknown>).Module as {
+        kicadCollabApplyItems: (x: number) => Promise<string> | string;
+      };
+      const p = Promise.resolve(M.kicadCollabApplyItems(1));
+      const exP = expect(p).rejects.toThrow("shutdown");
+      S.enqueueAfter(1234, 0, 5);
+      await vi.advanceTimersByTimeAsync(6); // message lands in the mailbox
+      S.readyWakes.push({ deliver: () => undefined, result: 0 });
+      expect(S.mailbox.length).toBe(1);
+      expect(S.mutatorQueue.length).toBe(1);
+
+      S.shutdown("test teardown");
+      await exP;
+      expect(S.mailbox.length).toBe(0);
+      expect(S.mutatorQueue.length).toBe(0);
+      expect(S.readyWakes.length).toBe(0);
+      expect(S.dead).toBe(true);
+      expect(S.state()).toContain("DEAD");
+
+      // Post-shutdown enqueues are dropped, and idempotent shutdown is safe.
+      S.enqueueAfter(1234, 0, 1);
+      await vi.advanceTimersByTimeAsync(5);
+      expect(S.mailbox.length).toBe(0);
+      S.shutdown("again");
+      busy = false;
+      await vi.advanceTimersByTimeAsync(100); // pumps must stay stopped
+      expect(S.mutatorsDelivered).toBe(0);
     } finally {
       vi.useRealTimers();
     }
