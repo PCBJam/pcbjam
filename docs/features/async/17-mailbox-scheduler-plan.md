@@ -275,7 +275,8 @@ rollback = the `WX_SCHEDULER=0` build + a per-step tag.
   > legacy → pre-existing local occ_service issue, tracked outside this plan.
   >
   > **Demolition ledger — each deletion with its unlock condition:**
-  > 1. Legacy opt-out + `handlesleep.js` + C++ legacy paths (`startModal`,
+  > 1. **[RESCHEDULED 2026-08-05 → [`20`](20-design-b-core-plan.md) D-1: delete FIRST, on
+  >    the branch, not after CI]** Legacy opt-out + `handlesleep.js` + C++ legacy paths (`startModal`,
   >    `wxWasmRunNestedLoop`, popup pump, `_wxModalResolvers`/`_wxNestedLoopExit`,
   >    `emscripten_async_call` timer entry, timer 17 ms retry branch, `s_wxRunDepth` tick
   >    gate): delete TOGETHER, after CI runs scheduler-only across the full matrix

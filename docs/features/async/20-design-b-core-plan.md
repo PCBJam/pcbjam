@@ -87,6 +87,27 @@ Two consequences worth stating plainly:
 
 ## 6. Phases (each gated; rollback = the previous tag)
 
+- **D-1 · Drop the legacy runtime FIRST (3–4 d).** Decided 2026-08-05: we are on
+  `feature/async-mailbox` with a green net and per-step tags, so the fallback's only real
+  job — being rollback-able — is already served by git. Carrying it through D0–D6 would
+  make every later phase dual-path work (two code paths per park site, dual-glue builds,
+  two batteries per gate) for a runtime we intend to delete anyway. Delete, in one step:
+  - `WX_SCHEDULER=0` branch in `inject-dyncall-shims.sh` + `shims/handlesleep.js`;
+  - the `wxWasmMailboxEnabled()` runtime gating (every lane becomes unconditional);
+  - wx legacy twins: `startModal`, `wxWasmRunNestedLoop` + `wxWasmExitNestedLoop`'s stack
+    branch, the wx-dom popup pump, `_wxModalResolvers`, `_wxNestedLoopExit`,
+    `_pendingModalResult`, the `emscripten_async_call` timer entry + its 17 ms retry
+    branch, the wheel-drop branch, the `s_wxRunDepth <= 1` tick gate;
+  - the ablation builds that pin the legacy shim (`races_test_noheal`,
+    `races_test_nosleepfix`) and their "shim-redundancy pins" — doc 17 §3c always had
+    these retiring with the shim; this is where it happens.
+
+  This executes item 1 of doc 17's S5 demolition ledger early. It does **not** touch the
+  interlock or the busy gates (ledger items 2–3) — those stay until D2/D6 as planned.
+  **Gate:** full kicad suite + wx battery + coroutine + races (minus the retired ablation
+  pins) green, scheduler-only, plus a tag before the deletion commit.
+  **Cost accepted:** we lose the legacy comparison oracle for doc 19 — already a declined
+  option (the legacy differential was explicitly dropped), so nothing is actually forgone.
 - **D0 · Park-site audit + red spec (3–4 d).** Classify every site from §4 into
   on-fiber / on-entry-stack / main-loop, with the routing decision per site (doc 18's
   method). Land the doc-19 hang as a deterministic **red** e2e spec (Symbol Properties →
@@ -111,12 +132,14 @@ Two consequences worth stating plainly:
   *by construction* rather than by the v0.1.28 scheduling trick. Gate: N8 warm-load
   pressure + `rootHotTotal == 0`.
 - **D6 · Deletions (few d).** Per the S5 ledger, now unlocked: quarantine/consume-once,
-  libcontext refusals → dev asserts, dispatch interlock + zero/restore sites, timer retry,
-  open/fiber-busy/enumerate gates, and the legacy `WX_SCHEDULER=0` path with its C++ twins.
+  libcontext refusals → dev asserts, dispatch interlock + zero/restore sites,
+  open/fiber-busy/enumerate gates. (The legacy runtime is already gone — D-1.)
   Gate: full net, scheduler-only, zero references to deleted diagnostics.
 
-**Effort: 6–10 weeks.** Doc 12's 4–6 week estimate predates what S1–S6 taught us; D2 and
-D4 are each larger than any single step of the mailbox migration.
+**Effort: 6–10 weeks**, and D-1's 3–4 days pay for themselves: every phase after it is
+single-path work with one battery per gate instead of two. Doc 12's 4–6 week estimate
+predates what S1–S6 taught us; D2 and D4 are each larger than any single step of the
+mailbox migration.
 
 ## 7. Risks specific to this layer
 
@@ -143,6 +166,9 @@ D4 are each larger than any single step of the mailbox migration.
 
 - **Keep**: the whole outcome net (kicad ~60 specs, wx app battery, coroutine trio, races
   semantics, N2/N5/N8).
+- **Retire at D-1**: the legacy-shim ablation builds and their redundancy pins
+  (`races_test_noheal`, `races_test_nosleepfix`) — they pin a runtime that no longer exists.
+  Also ends the dual-variant battery discipline: one run per gate from here on.
 - **Rewrite at D6**: anything asserting quarantine/refusal beacons
   (`fiber-resume-park.spec.ts` flips from "refused" to "resumed after its park resolves"),
   interlock diagnostics.
@@ -150,9 +176,12 @@ D4 are each larger than any single step of the mailbox migration.
   (D2); context-count/memory ceiling (D1); "no handleSleep on a fiber stack" assertion
   test (D4).
 
-## 9. Decision this plan does not make
+## 9. Decisions taken
 
-Whether to keep the legacy runtime alive through D0–D5. Carrying it doubles the surface at
-exactly the moment the core changes; dropping it early removes the fallback that made
-S1–S6 safe. Recommendation: **keep it until D3's red goes green, then drop it in D4** —
-that is the first point where the new core is proven on the failure that motivated it.
+- **Legacy runtime: deleted first (D-1), not carried.** Git on a feature branch already
+  provides rollback; carrying a second runtime through the core rewrite buys nothing and
+  doubles every phase. Superseded the earlier "keep until D3" recommendation.
+- **Still open:** whether D5 (main as a context) is worth its risk once D3+D4 have removed
+  the ambiguity — the 68/1 class is currently held closed by v0.1.28's scheduling trick,
+  and D5 replaces a working mitigation with a structural one. Re-evaluate with D4's
+  telemetry in hand rather than committing now.
