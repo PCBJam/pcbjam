@@ -1,5 +1,6 @@
 import type { Page } from "@playwright/test";
 import { test, expect } from "./fixtures";
+import { expectGuardsSilent } from "./utils/guard-beacons";
 
 /**
  * Timer-park concurrent-Asyncify repro (gal-refresh-timer investigation).
@@ -310,6 +311,22 @@ test.describe("timer Notify() Asyncify-park during main-loop yield (concurrent c
       TRAP_SIGNATURE.test(l),
     );
     expect(trapLines, "no wasm trap signature anywhere in the run").toEqual([]);
+
+    // Doc 17 S1 tripwire (arms itself when the wasm ships the C mailbox lane,
+    // detected via the wxWasmMailboxTick export): timers are then delivered
+    // from the mailbox only when the interlock is free, so the legacy 17 ms
+    // parked-retry path must be SILENT. On legacy wasm this is skipped — the
+    // retry storm there is expected and covered by the assertions above.
+    // Both halves must be present: the wasm export (C lane compiled in) AND
+    // the shim (variant injected) — a C-lane wasm on legacy glue keeps legacy
+    // timer semantics, and its retry storms are expected.
+    const cLane = await page.evaluate(
+      () =>
+        typeof (window.Module as unknown as { _wxWasmMailboxTick?: unknown })
+          ._wxWasmMailboxTick === "function" &&
+        !!(globalThis as unknown as { __wxScheduler?: unknown }).__wxScheduler,
+    );
+    if (cLane) expectGuardsSilent(testLogger.consoleLogs, ["timerRetry"]);
 
     // Window-engagement proof, independent of survival: the handlesleep shim
     // must have SEEN the concurrent parks (its reporting is new — silence here

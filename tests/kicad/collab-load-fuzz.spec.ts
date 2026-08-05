@@ -25,6 +25,12 @@ import { test, expect } from "./fixtures";
  *   - mid-load applies are DROPPED (the probe segment must not move);
  *   - after settle the entries work normally (guard released).
  *
+ * VARIANT CONTRACT (docs/features/async/17 §3b): on WX_SCHEDULER=1 glue the
+ * shim's embind lane queues busy-window mutators and delivers them after
+ * settle, so the "applies are DROPPED" assertions flip to "applies are
+ * DELIVERED in order" — assertSettledContract branches on the lane's
+ * presence. The busy-window and release assertions hold for both variants.
+ *
  * The second test is the scheduler-dependent stress fuzz (spinning-worker CPU
  * starvation to force real futex-wait parks, hammering throughout the load).
  * It is skipped unless PCBJAM_FUZZ_STRESS=1: engagement of the window is not
@@ -229,12 +235,28 @@ async function openAndHammer(
     let iterations = 0;
     let maxBusySnapshotItems = 0;
     const errors: string[] = [];
+    // Scheduler glue QUEUES busy-window entries for post-settle delivery
+    // (doc 17 §3b) — an unbounded hammer would replay hundreds of heavy
+    // applies/snapshots afterwards (each Push walks connectivity across the
+    // fixture's 800 vias; on a debug build every via prints an assert — a
+    // 170k-line console flood that drowns the drain). The deterministic
+    // contract needs delivery + order, not volume: cap the queued calls and
+    // keep observing the busy window. Legacy glue keeps the full hammer
+    // (drop semantics make it free). Volume lives in the STRESS test.
+    const lane =
+      ((globalThis as unknown as { __wxScheduler?: { mutatorsWrapped: number } }).__wxScheduler
+        ?.mutatorsWrapped ?? 0) > 0;
+    const maxEntryIters = lane ? 6 : Infinity;
     // Every Asyncify park of the open chain hands the event loop to this
     // timer — exactly how the prod shell's collab attach interleaved.
     while (performance.now() - t0 < 120000) {
       if (!w.Module.kicadOpenFileBusy()) break;
       busySamples++;
       iterations++;
+      if (iterations > maxEntryIters) {
+        await new Promise((r) => setTimeout(r, 10));
+        continue;
+      }
       for (const [name, fn] of [
         ["snapshotItems", () => w.Module.kicadCollabSnapshotItems()],
         ["snapshot", () => w.Module.kicadCollabSnapshot()],
@@ -271,18 +293,46 @@ async function openAndHammer(
 async function assertSettledContract(page: Page, stats: FuzzStats): Promise<void> {
   expect(stats.settled, "kicadOpenFileBusy cleared after the load").toBe(true);
   expect(stats.errors, "no traps while hammering entries mid-load").toEqual([]);
-  // Guard held: no mid-load snapshot ever saw the model.
+  // Guard held: no mid-load snapshot ever saw the model. On scheduler glue a
+  // busy-window snapshot returns a Promise (typeof !== "string" — the hammer
+  // skips it), so this assertion holds for both variants.
   expect(stats.maxBusySnapshotItems, "mid-load snapshots returned the empty delta").toBe(0);
   await expect.poll(() => page.title(), { timeout: 30000 }).toMatch(/fuzz/i);
 
-  // Guard dropped the mid-load applies: the probe segment never moved.
+  // Variant contract (docs/features/async/17 §3b). Legacy glue: the gate
+  // DROPPED the mid-load applies — the probe never moved. Scheduler glue
+  // (WX_SCHEDULER=1 shim embind lane, doc 18): the same applies were QUEUED
+  // and DELIVERED after settle, in order — the probe sits where the hammer's
+  // deltas moved it. Same stimulus, the drop→deliver flip is the assertion.
+  const schedulerLane = await page.evaluate(
+    () =>
+      ((globalThis as unknown as { __wxScheduler?: { mutatorsWrapped: number } }).__wxScheduler
+        ?.mutatorsWrapped ?? 0) > 0,
+  );
+  if (schedulerLane) {
+    // The hammer queued hundreds of calls (each mid-load snapshot delivers as
+    // a FULL board walk now, not the gate's empty delta) — wait for the
+    // time-boxed pump to drain the backlog before asserting final state.
+    await expect
+      .poll(
+        () =>
+          page.evaluate(
+            () =>
+              (globalThis as unknown as { __wxScheduler: { mutatorQueue: unknown[] } })
+                .__wxScheduler.mutatorQueue.length,
+          ),
+        { timeout: 240000, intervals: [1000] },
+      )
+      .toBe(0);
+  }
+  const HAMMER_TARGET = "55000000,55000000"; // both hammer deltas move the probe here
   await expect
     .poll(
       () =>
         page.evaluate((id) => (window.Module as unknown as Mod).kicadCollabGetPos(id), SEG_TARGET),
       { timeout: 10000, intervals: [200] },
     )
-    .toBe(PROBE_HOME);
+    .toBe(schedulerLane ? HAMMER_TARGET : PROBE_HOME);
 
   // Guard released: the snapshot now walks the real, fully-loaded board…
   const itemCount = await page.evaluate(
@@ -326,7 +376,9 @@ test.describe("collab entries during a parked board load (open_gate)", () => {
     page,
     testLogger,
   }) => {
-    test.setTimeout(180000);
+    // Scheduler-glue runs replay the whole hammer backlog after settle (the
+    // drain-wait in assertSettledContract) — budget for it on top of the load.
+    test.setTimeout(420000);
     await bootHarness(page);
 
     const hooks = await page.evaluate(() => {

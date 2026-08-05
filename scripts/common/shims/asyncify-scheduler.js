@@ -68,6 +68,96 @@ if (typeof Asyncify !== "undefined" && !globalThis.__wxSchedulerInstalled) {
       }, 0);
     },
 
+    // --- S1 embind lane ---------------------------------------------------
+    // Wraps the audited production mutators (docs/features/async/18) at the
+    // Module boundary: a call made while `kicadOpenFileBusy()` reads true is
+    // QUEUED and DELIVERED after the open settles, in FIFO order, resolving a
+    // returned promise — the doc-17 §3b drop→deliver flip, applied at the one
+    // choke point every caller shares (standalone app, kicad e2e harness).
+    // The not-busy path is byte-compatible: same synchronous call, same
+    // return value. Busy-path callers historically got a gate no-op (empty
+    // delta / dropped apply), so the promise is strictly more information.
+    // Under PROXY_TO_PTHREAD this wraps in the window context where app code
+    // calls; in worker contexts the names are absent and nothing wraps.
+    MUTATOR_NAMES: [
+      "kicadSetChrome", "kicadSetReadOnly",
+      "kicadCollabApply", "kicadCollabApplyItems",
+      "kicadCollabSnapshot", "kicadCollabSnapshotItems",
+      "kicadCollabPresenceStart", "kicadCollabSetRemote",
+      "kicadCollabSetPins", "kicadCollabSetStyle",
+      "kicadCollabSetViewport", "kicadCollabFitViewport",
+      "kicadCollabReleaseSelection", "kicadSetColorTheme",
+      "kicadSaveBoard", "kicadSaveSchematic", "kicadSaveDrawingSheet",
+    ],
+    mutatorQueue: [],
+    mutatorsWrapped: 0,
+    mutatorsDelivered: 0,
+    _mutatorPumpArmed: false,
+    _openBusy: function () {
+      var probe = Module["kicadOpenFileBusy"];
+      if (typeof probe !== "function") return false;
+      try { return !!probe(); } catch (e) { return true; }
+    },
+    _wrapMutators: function () {
+      var self = this;
+      this.MUTATOR_NAMES.forEach(function (name) {
+        var orig = Module[name];
+        if (typeof orig !== "function") return;
+        self.mutatorsWrapped++;
+        Module[name] = function () {
+          var args = arguments;
+          var call = function () { return orig.apply(Module, args); };
+          if (self.mutatorQueue.length === 0 && !self._openBusy()) {
+            self.mutatorsDelivered++;
+            return call();
+          }
+          return new Promise(function (resolve, reject) {
+            self.mutatorQueue.push({ name: name, call: call, resolve: resolve, reject: reject });
+            self._armMutatorPump();
+          });
+        };
+      });
+      if (this.mutatorsWrapped > 0)
+        console.log("[wx-scheduler] embind lane: wrapped " + this.mutatorsWrapped + " mutator(s)");
+    },
+    _armMutatorPump: function () {
+      if (this._mutatorPumpArmed) return;
+      this._mutatorPumpArmed = true;
+      var self = this;
+      var now = (typeof performance !== "undefined" && performance.now)
+        ? function () { return performance.now(); }
+        : function () { return Date.now(); };
+      setTimeout(function pump() {
+        // The pump must be unkillable: any exception escaping this body would
+        // end the setTimeout chain and wedge the queue forever (observed: 559
+        // messages frozen through a 240 s drain-wait). Per-delivery errors
+        // reject that caller's promise; anything else is beaconed and the
+        // chain re-arms regardless.
+        try {
+          if (!self._openBusy()) {
+            // Time-boxed drain: a long queue (a hammer of snapshots against a
+            // big board) must not monopolize the main thread in one burst —
+            // paint, the title update, and input all starve. ~8 ms of work per
+            // 16 ms tick keeps the page live while the backlog drains in order.
+            var t0 = now();
+            while (self.mutatorQueue.length > 0 && now() - t0 < 8) {
+              if (self._openBusy()) break; // a delivered call re-opened the window
+              var m = self.mutatorQueue.shift();
+              self.mutatorsDelivered++;
+              try { m.resolve(m.call()); } catch (e) { m.reject(e); }
+            }
+          }
+        } catch (e) {
+          self._pumpErrors = (self._pumpErrors || 0) + 1;
+          if (self._pumpErrors <= 5)
+            console.warn("[wx-scheduler] mutator pump error (occurrence "
+              + self._pumpErrors + "): " + e);
+        }
+        if (self.mutatorQueue.length > 0) setTimeout(pump, 16);
+        else self._mutatorPumpArmed = false;
+      }, 16);
+    },
+
     // --- S2 scheduler core (not yet live) ---------------------------------
     // ctx = { id, kind: 'main'|'modal'|'nested'|'coroutine'|'sleep',
     //         buffer, status: 'running'|'parked'|'ready', wakeReason, result }
@@ -88,6 +178,9 @@ if (typeof Asyncify !== "undefined" && !globalThis.__wxSchedulerInstalled) {
         + " mailbox=" + this.mailbox.length
         + " enqueued=" + this.enqueued
         + " delivered=" + this.delivered
+        + " mutQ=" + this.mutatorQueue.length
+        + " mutWrapped=" + this.mutatorsWrapped
+        + " mutDelivered=" + this.mutatorsDelivered
         + " contexts=" + this.contexts.size
         + " ready=" + this.readyQueue.length
         + " transition=" + this.transitionRunning;
@@ -95,6 +188,23 @@ if (typeof Asyncify !== "undefined" && !globalThis.__wxSchedulerInstalled) {
   };
 
   globalThis.__wxScheduler = AsyncifyScheduler;
+
+  // Wrap the embind mutators once the runtime has registered them. The shim
+  // executes at glue load (before instantiation), so chaining
+  // onRuntimeInitialized is normally enough; the calledRun branch covers a
+  // shim injected into an already-running Module (defensive).
+  if (typeof Module !== "undefined") {
+    if (Module["calledRun"]) {
+      AsyncifyScheduler._wrapMutators();
+    } else {
+      var __wxSchedPrevInit = Module["onRuntimeInitialized"];
+      Module["onRuntimeInitialized"] = function () {
+        if (typeof __wxSchedPrevInit === "function") __wxSchedPrevInit();
+        AsyncifyScheduler._wrapMutators();
+      };
+    }
+  }
+
   console.log("[wx-scheduler] scaffolding installed (S1, mailbox live)");
 }
 // === End AsyncifyScheduler ===

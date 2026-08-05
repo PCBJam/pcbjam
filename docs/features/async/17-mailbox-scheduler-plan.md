@@ -160,6 +160,23 @@ rollback = the `WX_SCHEDULER=0` build + a per-step tag.
   > the window blind to the worker-side interlock; precision moves worker-side at S4.
   > **Still open in S1:** DOM-input lane, wiring the wrapper into the 14 production mutators
   > (needs the kicad wasm build + e2e), N2 un-fixme, beacon-silence assertions in fuzz runs.
+  >
+  > **Work log 2026-08-05 (later) — S1 COMPLETE except the CI matrix (deferred to the end
+  > by request).** Wheel lane: parked wheel ticks enqueue a replay instead of dropping
+  > (`app.cpp`; keys/mouse were already queue-shaped via `wxPostEvent`). Embind lane: the
+  > shim wraps the doc-18 production mutators at the Module boundary — busy-window calls
+  > queue and deliver post-settle via a time-boxed (8 ms/16 ms), unkillable pump; not-busy
+  > calls stay byte-compatible sync. Fresh warm-cache docker `kicad_editor` build carries
+  > the C lanes; staged into the harness. Verified: wx dual battery 30+39+7 on BOTH glue
+  > variants; kicad trio dual-contract — legacy (drop semantics + expected retry storms) and
+  > scheduler (N2 delivery/order green, fuzz deliver-flip green, `timerRetry` silence
+  > tripwire ARMED and green = zero retry storms on the C-lane build). Fuzz's deterministic
+  > gate caps queued hammer calls on the scheduler lane (6 iters) — the unbounded replay is
+  > a debug-build assert-flood benchmark (`PCB_VIA::GetWidth` × 800 vias × 170k console
+  > lines), not an ordering test; volume stays in the stress test. Two more recorded traps:
+  > the injector idempotence marker collided with evtloop's EM_JS probe text (sentinel now
+  > `__WX_SCHEDULER_SHIM_SOURCE__`), and a pump whose setTimeout chain can die wedges the
+  > queue forever — the pump body is now exception-proof with a `[wx-scheduler]` beacon.
   timer `Notify` (replacing the direct callback body; the 17 ms retry stays as tripwire), DOM
   input (formalizing today's `wxPostEvent`/`CallAfter` deferrals), and a JS-side wrapper for
   **mutating** embind entries (enqueue + returned promise). Deliverable alongside: the **sync

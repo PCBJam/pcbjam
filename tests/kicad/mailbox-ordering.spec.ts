@@ -2,21 +2,19 @@ import type { Page } from "@playwright/test";
 import { test, expect } from "./fixtures";
 
 /**
- * N2 — message ordering under a parked open (RED, target semantics).
+ * N2 — message ordering under a parked open (scheduler-build target semantics).
  * docs/features/async/17-mailbox-scheduler-plan.md §3d N2, §3b.
  *
- * Today (open_gate, doc 14): collab entries issued while `kicadOpenFile` is
- * asyncify-parked are DROPPED — collab-load-fuzz.spec.ts asserts exactly that
- * contract, and it is correct for the guard architecture.
+ * Legacy glue (open_gate, doc 14): collab entries issued while `kicadOpenFile`
+ * is asyncify-parked are DROPPED — collab-load-fuzz.spec.ts asserts that drop
+ * contract on legacy builds, and it is correct for the guard architecture.
  *
  * The mailbox flips drop→deliver: a mutating entry issued during the open
- * becomes a queued message, applied IN ORDER after the open completes. This
- * spec asserts those target semantics, so it is RED by design until:
- *   - S1 (JS wrapper enqueues mutating embind entries) makes basic delivery
- *     work, and
- *   - S4 (open runs on a scheduler fiber) removes the gate entirely.
- * Un-fixme at S1; collab-load-fuzz's "entries no-op" assertions retire at S4
- * (they flip per doc 17 §3b).
+ * becomes a queued message, applied IN ORDER after the open completes. GREEN
+ * since S1's embind lane — the WX_SCHEDULER=1 shim wraps the audited mutators
+ * (doc 18) at the Module boundary, queueing busy-window calls and delivering
+ * after settle with promise-returned results. S4 moves queueing worker-side.
+ * Self-skips on legacy glue (the lane is a build variant until S5).
  *
  * Ordering probe: apply A ADDS a segment, apply B MOVES that same segment.
  * B can only land if A landed first — the single final-position check proves
@@ -81,14 +79,22 @@ async function bootHarness(page: Page): Promise<void> {
 }
 
 test.describe("mailbox N2: entries during a parked open are delivered in order", () => {
-  // RED until doc 17 S1 — the open gate currently DROPS both applies.
-  test.fixme("apply A (add) then apply B (move) mid-park land in order after settle", async ({
+  test("apply A (add) then apply B (move) mid-park land in order after settle", async ({
     page,
     testLogger,
   }) => {
     test.setTimeout(180000);
     void testLogger;
     await bootHarness(page);
+
+    // The delivery contract under test is the scheduler build's embind lane;
+    // on legacy glue the open gate drops both applies by design.
+    const lane = await page.evaluate(() => {
+      const s = (globalThis as unknown as { __wxScheduler?: { mutatorsWrapped: number } })
+        .__wxScheduler;
+      return s ? s.mutatorsWrapped : 0;
+    });
+    test.skip(lane === 0, "legacy glue — embind lane absent (drop contract in collab-load-fuzz)");
 
     const issued = await page.evaluate(async ({ newSeg, board }) => {
       const w = window as unknown as { FS: FS; Module: Mod };
@@ -146,9 +152,9 @@ test.describe("mailbox N2: entries during a parked open are delivered in order",
     expect(issued.inWindow, "the busy window was observed").toBe(true);
     expect(issued.settled, "the open settled").toBe(true);
 
-    // TARGET SEMANTICS (mailbox): both queued applies were delivered, in order —
-    // A's segment exists and sits where B moved it. Under the open gate both
-    // are dropped and GetPos finds nothing: deterministic red.
+    // Both queued applies were delivered, in order — A's segment exists and
+    // sits where B moved it. (Drop-A-deliver-B leaves B targetless; drop-both
+    // leaves GetPos empty — either failure mode misses B_TARGET.)
     await expect
       .poll(
         () =>
