@@ -165,6 +165,38 @@ in it is **wrong** and must not come back — one dispatch context suffices once
 > **B + C + D land as ONE commit.** Each alone regresses. Build them on a sub-branch,
 > keep every guard as a tripwire, flip once, gate hard.
 
+**Sub-branch `feature/async-star-flip` (2026-08-06): the core mechanism is built and
+proven, the wiring is not.** Landed there: `fiber_transfer(from, to, value)` —
+libcontext's symmetric swap expressed as a star transition (park the source, make the
+target runnable, the scheduler performs every entry) — plus `fiber_start` (the lane's
+entry point, since a transfer needs a running context to park) and `drain_all` (the
+top-level pump, because a star transition only makes work *runnable*).
+
+The question that decided whether B is possible at all is answered YES and pinned by
+`star_transfer_call_is_synchronous`: **parking the caller and resuming it when the
+callee yields is indistinguishable, in the caller's own C++ frame, from a synchronous
+return.** So `TOOL_MANAGER`'s `Call(); if( !Running() )` contract survives the flip
+untouched — which is what makes a KiCad-minimal Phase B realistic.
+
+**The constraint that fixes the order of the remaining wiring — ONE root, not two.**
+`ensure_scheduler_context()` adopts whatever stack first calls `drain()`, and
+libcontext's `ensure_main_context()` adopts whatever stack first calls
+`jump_fcontext`. In production both are the main stack, so the scheduler fiber and the
+libcontext root would be two `emscripten_fiber_t`s describing the SAME stack — mutual
+corruption the moment either is entered. In Phase A this was harmless (nothing in
+KiCad ever called `drain()`); at the flip it is fatal. Therefore:
+
+1. **D first, inside the flip:** dispatch moves onto its own context, so the main
+   stack is only ever the scheduler and nothing else runs there.
+2. libcontext's root then adopts **the running context** (the dispatch context), never
+   the main stack.
+3. Only then may `jump_fcontext` become `fiber_transfer`, because every caller is now
+   provably on a context and can park.
+4. C follows naturally: `wxWasmYieldUntil` yields the owning context, `resolveWait`
+   marks it ready, and the doc-19 mainstack bounce comes out.
+
+The tick becomes `fiber_start(dispatch, …)` + `drain_all()` from a fresh JS task.
+
 ### Phase E — bridges on contexts (1 wk)
 
 Doc 21 §1's K1–K7 and W4/W5 through one `wasm_await_promise`-style helper. After this **no
