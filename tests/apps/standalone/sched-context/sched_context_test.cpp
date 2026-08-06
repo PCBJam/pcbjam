@@ -524,6 +524,176 @@ void Scenario_ForeignStackRefused()
 }
 
 // ---------------------------------------------------------------------------
+// FIBER LANE scenarios (doc 22 Phase A) — the symmetric semantics libcontext's
+// wasm backend adapts onto. These pin what the adapter relies on: a fresh
+// fiber enters at its entry, a swap suspends the swapper, enterability is
+// registry truth, releasing a suspended fiber is legal, a stale id refuses
+// instead of use-after-free, and the star lane is undisturbed throughout.
+// ---------------------------------------------------------------------------
+ContextId g_fiber_root = 0;
+
+ContextId fiber_root()
+{
+    // Adopted once for the whole battery, like libcontext's main context.
+    if( !g_fiber_root )
+        g_fiber_root = fiber_adopt_current( 64 * 1024, "test-root" );
+
+    return g_fiber_root;
+}
+
+alignas( 16 ) char g_fiber_a_stack[64 * 1024];
+ContextId g_fiber_a = 0;
+int g_fiber_a_runs = 0;
+int g_fiber_a_saw_current = -1;
+int g_fiber_a_saw_root_enterable = -1;
+int g_fiber_a_saw_self_enterable = -1;
+
+void fiber_a_entry( void* )
+{
+    // Never returns, like libcontext's trampoline: run, swap back, repeat.
+    for( ;; )
+    {
+        ++g_fiber_a_runs;
+        g_fiber_a_saw_current = ( fiber_current() == g_fiber_a ) ? 1 : 0;
+        g_fiber_a_saw_root_enterable = fiber_enterable( g_fiber_root ) ? 1 : 0;
+        g_fiber_a_saw_self_enterable = fiber_enterable( g_fiber_a ) ? 1 : 0;
+        fiber_swap( g_fiber_a, g_fiber_root );
+    }
+}
+
+void Scenario_FiberRoundtrip()
+{
+    if( !fiber_root() )
+        return report( "fiber_roundtrip", false, "could not adopt the root" );
+
+    g_fiber_a_runs = 0;
+    g_fiber_a = fiber_create( fiber_a_entry, nullptr, g_fiber_a_stack,
+                              sizeof( g_fiber_a_stack ), 32 * 1024, "fiber-a" );
+
+    if( !g_fiber_a )
+        return report( "fiber_roundtrip", false, "fiber_create failed" );
+
+    if( status_of( g_fiber_a ) != Status::Fresh || !fiber_enterable( g_fiber_a ) )
+        return report( "fiber_roundtrip", false, "a fresh fiber should be enterable" );
+
+    if( g_fiber_a_runs != 0 )
+        return report( "fiber_roundtrip", false, "body ran before the first swap" );
+
+    if( !fiber_swap( g_fiber_root, g_fiber_a ) )
+        return report( "fiber_roundtrip", false, "first swap refused" );
+
+    // Back here: the fiber ran once and swapped back to the root.
+    if( g_fiber_a_runs != 1 )
+        return report( "fiber_roundtrip", false,
+                       "runs=" + std::to_string( g_fiber_a_runs ) + " after first swap" );
+
+    if( fiber_current() != g_fiber_root )
+        return report( "fiber_roundtrip", false, "root is not fiber_current() again" );
+
+    if( status_of( g_fiber_a ) != Status::Suspended || !fiber_enterable( g_fiber_a ) )
+        return report( "fiber_roundtrip", false,
+                       std::string( "suspended fiber status: " )
+                       + status_name( status_of( g_fiber_a ) ) );
+
+    // What the fiber observed mid-run: it was current, the suspended root was
+    // enterable, and it itself (Running) was not — registry truth, no guessing.
+    if( g_fiber_a_saw_current != 1 )
+        return report( "fiber_roundtrip", false, "fiber did not see itself as current" );
+
+    if( g_fiber_a_saw_root_enterable != 1 )
+        return report( "fiber_roundtrip", false, "suspended root was not enterable" );
+
+    if( g_fiber_a_saw_self_enterable != 0 )
+        return report( "fiber_roundtrip", false, "a RUNNING fiber claimed to be enterable" );
+
+    // Re-entry takes the loop again — the second swap resumes, not restarts.
+    if( !fiber_swap( g_fiber_root, g_fiber_a ) || g_fiber_a_runs != 2 )
+        return report( "fiber_roundtrip", false, "second swap did not re-run the body" );
+
+    report( "fiber_roundtrip", true );
+}
+
+void Scenario_FiberReleaseSuspended()
+{
+    // Fiber A is Suspended after the roundtrip. Releasing it mid-suspend is
+    // LEGAL — libcontext refcounts drop never-finished coroutines — and the
+    // stale id must then refuse instead of resuming freed state.
+    if( !g_fiber_a || status_of( g_fiber_a ) != Status::Suspended )
+        return report( "fiber_release_suspended", false, "precondition: fiber A suspended" );
+
+    if( !fiber_release( g_fiber_a ) )
+        return report( "fiber_release_suspended", false, "release refused" );
+
+    if( fiber_enterable( g_fiber_a ) )
+        return report( "fiber_release_suspended", false, "released fiber still enterable" );
+
+    if( fiber_swap( g_fiber_root, g_fiber_a ) )
+        return report( "fiber_release_suspended", false,
+                       "swap into a released fiber was allowed (use-after-free)" );
+
+    report( "fiber_release_suspended", true );
+}
+
+alignas( 16 ) char g_fiber_b_stack[64 * 1024];
+ContextId g_fiber_b = 0;
+int g_fiber_b_runs = 0;
+int g_coexist_stage = 0;
+int g_coexist_result = 0;
+
+void fiber_b_entry( void* )
+{
+    for( ;; )
+    {
+        ++g_fiber_b_runs;
+        fiber_swap( g_fiber_b, g_fiber_root );
+    }
+}
+
+void body_coexist_park( void* )
+{
+    g_coexist_stage = 1;
+    g_coexist_result = yield_park( "coexist-park" );
+    g_coexist_stage = 2;
+}
+
+void Scenario_FiberAndStarCoexist()
+{
+    // One registry, two lanes: a PARKED star context must sit undisturbed
+    // while symmetric fiber swaps happen, and resume cleanly afterwards —
+    // production Phase A runs tool fibers while D1's star layer idles.
+    g_coexist_stage = 0;
+    g_fiber_b_runs = 0;
+
+    const ContextId star = create( body_coexist_park, nullptr, "coexist-star" );
+    drain();   // parks
+
+    if( g_coexist_stage != 1 || status_of( star ) != Status::Parked )
+        return report( "fiber_and_star_coexist", false, "star context did not park" );
+
+    g_fiber_b = fiber_create( fiber_b_entry, nullptr, g_fiber_b_stack,
+                              sizeof( g_fiber_b_stack ), 32 * 1024, "fiber-b" );
+
+    if( !g_fiber_b || !fiber_swap( g_fiber_root, g_fiber_b ) || g_fiber_b_runs != 1 )
+        return report( "fiber_and_star_coexist", false, "fiber roundtrip failed" );
+
+    if( status_of( star ) != Status::Parked )
+        return report( "fiber_and_star_coexist", false,
+                       "fiber swaps disturbed the parked star context" );
+
+    if( !mark_ready( star, 7 ) )
+        return report( "fiber_and_star_coexist", false, "mark_ready failed" );
+
+    drain();
+
+    if( g_coexist_stage != 2 || g_coexist_result != 7 )
+        return report( "fiber_and_star_coexist", false, "star context did not resume" );
+
+    destroy( star );
+    fiber_release( g_fiber_b );
+    report( "fiber_and_star_coexist", true );
+}
+
+// ---------------------------------------------------------------------------
 // scenario 10: a REAL async wake — JS timeout resolves the park
 //   The park's wake crosses a JS turn, which is the shape every production
 //   bridge has (doc 21 D4): the context must resume from a fresh task, and
@@ -609,6 +779,9 @@ int main()
     Scenario_DeepPark();
     Scenario_FiberNestsInContext();
     Scenario_ForeignStackRefused();
+    Scenario_FiberRoundtrip();
+    Scenario_FiberReleaseSuspended();
+    Scenario_FiberAndStarCoexist();
 
     // Async last: it emits STATS + SUMMARY when its wake lands.
     Scenario_AsyncWake();

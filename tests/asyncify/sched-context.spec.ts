@@ -24,6 +24,9 @@ const SCENARIOS = [
   'deep_park_sizing',
   'fiber_nests_in_context',
   'foreign_stack_refused',
+  'fiber_roundtrip',
+  'fiber_release_suspended',
+  'fiber_and_star_coexist',
   'async_wake',
 ];
 
@@ -55,6 +58,21 @@ type Stats = {
   cStackBytes: number;
   asyncifyBytes: number;
   asyncifyHighWater: number;
+  // Fiber lane (doc 22 Phase A) — libcontext's clients, separate counters so
+  // this battery's star assertions keep meaning what they meant.
+  fiberLive: number;
+  fiberPeakLive: number;
+  fiberCreated: number;
+  fiberReleased: number;
+  fiberSwaps: number;
+  fiberRefusals: number;
+  fiberReleasedSuspended: number;
+  fiberReleasedRunning: number;
+  fiberNonEnterableSwaps: number;
+  fiberRunning: number;
+  fiberBytes: number;
+  fiberPeakBytes: number;
+  fiberAsyncifyHighWater: number;
 };
 
 function findLine(logs: string[], marker: string): string | undefined {
@@ -195,5 +213,28 @@ test.describe('Design B D1 — scheduler contexts', () => {
     // No buffer-pressure beacon should have fired (>75% use).
     const pressure = testLogger.consoleLogs.filter((l) => l.includes('BUFFER-PRESSURE'));
     expect(pressure, `buffer pressure: ${pressure.join(' || ')}`).toHaveLength(0);
+
+    // --- fiber lane (doc 22 Phase A): libcontext semantics over the registry --
+    // The adopted root is the only fiber that outlives the battery (libcontext's
+    // main context never dies); everything else was released.
+    expect(stats.fiberLive, 'only the adopted root fiber remains').toBe(1);
+    expect(stats.fiberRunning, 'the root is the fiber lane current').not.toBe(0);
+    expect(stats.fiberCreated, 'root + fiber A + fiber B').toBe(3);
+    expect(stats.fiberReleased, 'fibers A and B were released').toBe(2);
+    expect(stats.fiberSwaps, 'symmetric swaps happened').toBeGreaterThanOrEqual(6);
+    // Both releases happened mid-suspend — libcontext's refcount-drop shape.
+    expect(stats.fiberReleasedSuspended, 'suspended releases are legal and counted').toBe(2);
+    // One deliberate stale-id swap was refused (use-after-free made loud).
+    expect(stats.fiberRefusals, 'a stale fiber id was refused').toBeGreaterThanOrEqual(1);
+    // THE Phase A tripwires: no swap ever entered a non-enterable fiber, and
+    // no release ever hit a fiber the registry believed was running.
+    expect(stats.fiberNonEnterableSwaps, 'zero swaps into stale rewind state').toBe(0);
+    expect(stats.fiberReleasedRunning, 'zero releases of a running fiber').toBe(0);
+    // The sizing input Phase E reads: a suspended fiber's capture was measured
+    // (sampled before the resume consumes it, when the buffer is non-empty).
+    expect(
+      stats.fiberAsyncifyHighWater,
+      'fiber-lane asyncify use was measured while suspended',
+    ).toBeGreaterThan(0);
   });
 });

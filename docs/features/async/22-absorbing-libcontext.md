@@ -212,7 +212,112 @@ a wx-only change ~20 min. Budget phases accordingly; batch experiments per build
 Branch: `feature/async-mailbox`, unpushed across 6 repos. Baseline tags:
 `mailbox-s0-baseline`, `d-1-pre-delete`. Tag before each phase's flip.
 
-## 10. Open questions
+## 10. Work log
+
+### Phase A — DONE, gate met (2026-08-06) ✅
+
+Final gate: full kicad suite **139 passed / 1 failed** — the failure is the known
+pre-existing `occ-probe` `glb` format matrix, i.e. the baseline exactly. wx battery
+346 passed / 1 failed (pre-existing `e2e/modal.spec.ts:125`) / 3 skipped; coroutine
+trio + nested + races + asyncify 48/48; sched-context 2/2 including three new
+fiber-lane scenarios. **Tripwire sweep over every suite log: zero
+`sched-divergence-*`, zero `swap-lost`, zero `fiber_swap()` refusals, zero
+`FIBER-SWAP-NONENTERABLE`, zero `FIBER-RELEASE-RUNNING`, zero
+`jump-into-reclaimed`, zero `grace-ring-evict`.** The registry's view agreed with
+libcontext's protocol on every swap in the suite — which is the whole claim Phase A
+had to earn before Phase B moves the decision.
+
+**Landed (working tree, uncommitted):**
+
+- `sched_context.h` grew the **fiber lane**: `fiber_adopt_current` / `fiber_create`
+  (caller-owned C stack adopted, registry-owned asyncify buffer) / `fiber_swap` /
+  `fiber_enterable` / `fiber_release`, with its own counters so the D1 star memory
+  gate keeps meaning what it meant. Suspended-capture high-water is sampled
+  **before** the resume consumes it (afterwards it always reads 0) — that number is
+  Phase E's sizing input.
+- `libcontext.cpp`'s wasm backend became the adapter: `wasm_fcontext` keeps only
+  protocol state (return_to, transfer_value, epochs, refcounts); the
+  `emscripten_fiber_t` + buffer live in the registry; every swap (jump and
+  trampoline return) goes through `pcbjam_sched::fiber_swap`. `swap_suspended`
+  stays AUTHORITATIVE for the parked-jump refusal and the registry only observes,
+  beaconing `sched-divergence-*` on disagreement (see bug 3).
+- `thirdparty/libcontext/CMakeLists.txt` gained the wx include path under
+  EMSCRIPTEN. Harness + spec: 3 fiber-lane scenarios, fiber stats assertions.
+
+**Four real bugs, every one caught by a tripwire rather than by guessing.** Each is
+worth reading before Phase B, because three of them are the same mistake:
+
+1. **Never infer the swap's `from` side.** The first cut derived it from the
+   lane's "current", which goes stale across a handleSleep park exactly like
+   `g_current_context` does — the wrong context got marked Suspended, the real
+   swapper stayed "Running" forever, and every later jump into it was wrongly
+   refused (a dispatch the legacy guard would have allowed). libcontext KNOWS who
+   is swapping out; `fiber_swap(from, to)` now mirrors its answer, keeping the
+   two layers in lockstep by construction.
+2. **A release must always release.** libcontext's refcount drop deletes the
+   struct unconditionally; the registry refusing a "Running" release while the
+   caller frees anyway left a permanent ghost (plus a dangling
+   `g_current_context` — the garbage-id beacon) that poisoned every later
+   enterability answer. Now: release always, `FIBER-RELEASE-RUNNING` beacon.
+
+3. **The registry must not OVERRULE the protocol, only record it.** Keying the
+   parked-jump refusal on `fiber_enterable()` refused a dispatch the legacy
+   backend permitted: Symbol Properties stopped opening (`quasimodal-strand`,
+   a fiber the registry still called Running while `swap_suspended` said validly
+   suspended). Phase A moves the BOOKKEEPING, not the decision. `swap_suspended`
+   is authoritative again; every disagreement is now a recorded fact instead of a
+   behaviour change, and those recordings are the evidence Phase B's flip gets
+   designed on.
+4. **Absorbing the buffer un-hid a KiCad use-after-free.** `TOOL_MANAGER` keeps raw
+   `fcontext_t`s that outlive the `COROUTINE` owning them and jumps into them after
+   the last refcount is gone. This "worked" for years for a reason worth writing
+   down: the freed block was ~512 K (the asyncify buffer lived INSIDE the struct),
+   and malloc parks that size in a large bin, so freed stayed readable essentially
+   forever. Moving the buffer into the registry left a ~64-byte struct — recycled
+   on the next call — so `sched_id` read back as a freelist pointer (`0x16554B0`),
+   the swap was refused, and EVERY canvas tool wedged ("click never landed a
+   selection", "box-select never selected anything", 19 suite failures). The change
+   did not introduce the bug; it removed the size accident that concealed it.
+
+**The rule all four share, and the one to carry into B–E: the registry may only
+record what the protocol actually did — it may not guess it, and it may not refuse
+anything the legacy code permitted.** Phase A is behaviour-preserving or it is
+nothing.
+
+**The grace ring (bug 4's containment, and a Phase B input).** Released contexts are
+kept, not freed: the struct is never deleted (protocol state only now — tens of
+bytes, cheaper than the accident it replaces, and it makes a stale jump land on a
+real `sched_id`), and the FIBER (512 K + registry entry) is bounded by a 32-entry
+ring. Eviction takes only coroutines that actually FINISHED — evicting by age alone
+dropped long-lived tool coroutine #1 that `TOOL_MANAGER` re-enters, and `m`-move
+plus lock-resist failed. An evicted context keeps its struct with `sched_id` zeroed
+so a later jump takes the ghost contract callers already handle.
+
+**Measured, and it is the number Phase B needs:** `grace-ring-over-capacity: 33`
+fired in 4 specs — i.e. 33 released coroutines were live with NONE evictable,
+because none had finished. So KiCad really does hold 30+ never-finished coroutines
+whose owners are gone, and the ring cannot reclaim them: worst case that is ~16 MB
+of retained asyncify buffers, and it grows with the working set rather than being
+capped by the ring. This is not a leak Phase A may fix (that would change
+behaviour); it is exactly what Phase B removes by giving coroutines
+scheduler-owned lifetimes, and it should be re-measured after that flip.
+
+**Process traps paid for in this run:**
+
+- Build against the **libs volume** (`COMPOSE_PROJECT_NAME=kicad-wasm-libs`). A bare
+  `docker/build.sh` creates a cold per-branch volume whose sysroot lacks glm and
+  dies at the gl1 shim.
+- `npx playwright test` does NOT sync `output/*.wasm` into `tests/apps/kicad/`; only
+  `npm run test:kicad` (which runs `setup:kicad` first) does. A retest after a
+  rebuild that shows byte-identical beacons is testing the OLD binary — this cost a
+  full diagnosis cycle.
+- A Docker VM at 100% disk fails builds with exit 137 and simultaneously crash-loops
+  the user's unrelated postgres containers (`could not write lock file`). Diagnose
+  and report; never prune or delete Docker state to clear it.
+
+Baseline tags `phase-a-pre` on root/pcbjam/kicad/wxwidgets.
+
+## 11. Open questions
 
 1. **pthreads.** Doc 21 §2 settled that every Asyncify park is main-thread and the lib
    bridge's worker path is a blocking proxy. Phase A must re-check that libcontext is never
