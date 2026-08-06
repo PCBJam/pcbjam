@@ -197,6 +197,39 @@ KiCad ever called `drain()`); at the flip it is fatal. Therefore:
 
 The tick becomes `fiber_start(dispatch, …)` + `drain_all()` from a fresh JS task.
 
+**MEASURED PLAN CORRECTION (2026-08-06): D forces D5, and E cannot wait.** The wiring
+above is implemented on the sub-branch (dispatch context + `wxWasmYieldUntil` yielding
+its owner + the shim routing `resolveWait` to `mark_ready` + libcontext's root adopting
+the running context + `jump_fcontext` becoming `fiber_transfer`). wx compiles, the
+sched-context battery and 41 of 48 wx/asyncify tests stay green — but the coroutine and
+coroutine-nested harnesses now fail with
+`overlapped-wake: restoring currData=… over null`, the exact class this work exists to
+remove, and the trace names the cause:
+
+```
+fcs old=…    new=…     w=0 rf=wxWasmTopLevelTick
+fcs old=…    new=…     ROOT w=0 rf=dynCall_vi
+[wx-asyncify] overlapped-wake: restoring currData=… over null
+```
+
+`wxGUIEventLoop::DoRun`'s top-level loop parks the MAIN stack every frame in
+`wxWasmYieldToBrowser` (doc 21's W2, classified "safe by construction … unless D5 is
+taken"). That classification held only while dispatch also ran on the main stack. Once
+the scheduler swaps contexts from the tick, the main stack's per-frame Asyncify park and
+the scheduler's transitions interleave over one `currData`.
+
+So the one-root constraint is stronger than first written: **the main stack must be the
+scheduler and nothing else — which means the main loop itself has to become a context
+(D5), not merely dispatch (D).** D5 is therefore no longer optional and no longer
+"decide with Phase E telemetry"; it is part of the same flip. By the same argument, any
+remaining in-place Asyncify park under a context (doc 21's K1–K7 bridges and the T1–T3
+levers) can reproduce this, so **E belongs in the flip too**, or each bridge must be
+proven never to run beneath a context first.
+
+Revised flip contents: **D5 + D + C + B + E**, landed together. That is a bigger single
+commit than doc 22 §5 planned, and it is the honest consequence of the measurement —
+the alternative (landing D without D5) is the partial migration this document forbids.
+
 ### Phase E — bridges on contexts (1 wk)
 
 Doc 21 §1's K1–K7 and W4/W5 through one `wasm_await_promise`-style helper. After this **no

@@ -52,6 +52,24 @@ if (typeof Asyncify !== "undefined" && !globalThis.__wxSchedulerInstalled) {
     // Deliver via a dedicated PLAIN export call (wxWasmMailboxTick), never
     // from inside a pump's awaited ProcessEvents ccall — a fiber swap there
     // sits on the JS-awaits-a-suspending-export boundary (#13302) and traps.
+    // Resume ready contexts from a FRESH task. Separate from the mailbox tick
+    // because it must run even when the mailbox is empty: a context wake is
+    // work the pump owns, not a queued message.
+    _armSchedPump: function () {
+      if (this._pumpArmed) return;
+      this._pumpArmed = true;
+      var self = this;
+      setTimeout(function () {
+        self._pumpArmed = false;
+        if (self.dead) return;
+        try {
+          if (Module["_wxWasmSchedPump"]) Module["_wxWasmSchedPump"]();
+        } catch (e) {
+          if (Module["_wx_dispatch_abandon"]) Module["_wx_dispatch_abandon"]();
+          throw e;
+        }
+      }, 0);
+    },
     _armDeliveryTick: function () {
       if (this._tickArmed) return;
       this._tickArmed = true;
@@ -187,6 +205,14 @@ if (typeof Asyncify !== "undefined" && !globalThis.__wxSchedulerInstalled) {
       }
       return entry.promise;
     },
+    // doc 22 Phase C: this token's waiter parked a SCHEDULER CONTEXT instead of
+    // suspending its stack in place, so there is no promise anyone awaits —
+    // resolving one would strand the context forever. Marked from C++ at park
+    // time; resolveWait routes such tokens to the registry instead.
+    noteContextWait: function (token) {
+      var entry = this.waits.get(token);
+      if (entry) entry.contextParked = true;
+    },
     resolveWait: function (token, result) {
       var entry = this.waits.get(token);
       if (!entry || entry.resolved) return false;
@@ -198,6 +224,19 @@ if (typeof Asyncify !== "undefined" && !globalThis.__wxSchedulerInstalled) {
         if (idx !== -1) stack.splice(idx, 1);
       }
       this.waits.delete(token);
+      if (entry.contextParked) {
+        // Mark ready only — never resume inline. The pump picks it up from a
+        // fresh task, which is doc 13 §1.4's deferred-wake law applied to
+        // contexts (a rewind inside this resolver's own turn is the whole
+        // class of bug the scheduler exists to remove).
+        try {
+          Module["_wxWasmSchedResolveContextWait"](token, result | 0);
+        } catch (e) {
+          console.warn("[wx-scheduler] context wait " + token + " resolve failed: " + e);
+        }
+        this._armSchedPump();
+        return true;
+      }
       entry.resolve(result | 0);
       return true;
     },
