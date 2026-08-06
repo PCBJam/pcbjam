@@ -757,17 +757,16 @@ $(S)/coroutine-nested/nested_test.html: $(S)/coroutine-nested/nested_test.o $(S)
 	../../scripts/common/inject-dyncall-shims.sh $(basename $@).js
 
 # Asyncify race-condition red-green harness (tests/asyncify/). Three variants of
-# Scheduler-context harness (docs/features/async/20 D1, 21). Pure fibers +
-# Asyncify, no wx: the contexts layer under test is wx-independent.
-SCHED_CTX_DIR = ../../wasm/sched
+# Scheduler-context harness (docs/features/async/20 D1/D2, 21). The layer is
+# header-only in wx's wasm port (wx/wasm/private/sched_context.h — D2 puts wx's
+# own dispatch on it), so this app needs no wx LIBRARY, just the include path:
+# a failure here can still only be the contexts layer.
+SCHED_CTX_INC = ../../wxwidgets/include
 
-$(S)/sched-context/sched_context_test.o: $(S)/sched-context/sched_context_test.cpp $(SCHED_CTX_DIR)/context.h
-	$(CXX) -c $(CXXFLAGS) -I$(SCHED_CTX_DIR) $< -o $@
+$(S)/sched-context/sched_context_test.o: $(S)/sched-context/sched_context_test.cpp $(SCHED_CTX_INC)/wx/wasm/private/sched_context.h
+	$(CXX) -c $(CXXFLAGS) -I$(SCHED_CTX_INC) $< -o $@
 
-$(S)/sched-context/context.o: $(SCHED_CTX_DIR)/context.cpp $(SCHED_CTX_DIR)/context.h
-	$(CXX) -c $(CXXFLAGS) -I$(SCHED_CTX_DIR) $< -o $@
-
-$(S)/sched-context/sched_context_test.html: $(S)/sched-context/sched_context_test.o $(S)/sched-context/context.o
+$(S)/sched-context/sched_context_test.html: $(S)/sched-context/sched_context_test.o
 	$(CXX) $^ $(LDFLAGS_SCHED_CTX) --shell-file $(HTML) -o $@
 	../../scripts/common/inject-dyncall-shims.sh $(basename $@).js
 

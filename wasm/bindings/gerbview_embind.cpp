@@ -24,6 +24,7 @@
 #include <vector>
 #include <wx/app.h>
 #include <wx/string.h>
+#include "main_stack_runner.h"
 #include "open_gate.h"
 
 using namespace emscripten;

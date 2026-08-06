@@ -310,15 +310,16 @@ test.describe("quasi-modal strand (doc 19)", () => {
     ).toBeGreaterThan(0);
   });
 
-  test("doc-19 red: OK resolves the quasi-modal wait and the dialog closes", async ({
+  test("doc-19: OK resolves the quasi-modal wait and the dialog closes", async ({
     page,
     testLogger,
   }) => {
-    // RED today by the doc-19 strand (aliased wake → quarantined fiber →
-    // refused resume → dialog never closes). Goes GREEN at D3 (waits become
-    // scheduler-context yields); Playwright then reports "expected to fail
-    // but passed" and this marker comes off.
-    test.fail();
+    // WAS RED (aliased wake → quarantined fiber → refused resume → the dialog
+    // could never be closed by a click). GREEN since the quasi-modal's nested
+    // event loop stopped running on the tool coroutine's stack: it is bounced
+    // onto the main stack, so the coroutine is suspended the legitimate way —
+    // a recorded fiber swap — instead of parking its body where the fiber
+    // layer cannot see it. This test is now the regression pin for that.
     test.setTimeout(240000);
     await bootAndOpen(page);
     const { timer } = await openDialogAndEngageWindow(page);
