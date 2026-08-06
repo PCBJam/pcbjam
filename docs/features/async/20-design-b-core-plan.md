@@ -1,8 +1,9 @@
 # 20 — Design B core: parkable activities as scheduler contexts
 
-> **Status: IN PROGRESS — D-1, D0, D1 DONE; D2 attempted and resequenced; D3 started and
-> found to be larger than written (work log §10). Remaining order: **[tool contexts + D3
-> waits + D2 dispatch] as ONE atomic change** → D4 → D5? → D6.** The remaining core of
+> **Status: THE MOTIVATING BUG IS FIXED (2026-08-06). D-1, D0, D1 done; D2 attempted and
+> reverted; D3 achieved its goal — the doc-19 hang — WITHOUT contexts, by keeping
+> quasi-modal parks off coroutine stacks (work log §10). The remaining phases (D2, D4, D5,
+> D6) no longer have a bug forcing them and need re-justifying before any is resumed.** The remaining core of
 > Design B ([`06`](06-design-b-fiber-first-runtime.md) B1+B2), scoped against what S0–S6
 > actually built ([`17`](17-mailbox-scheduler-plan.md)) and motivated by the
 > stranded-fiber hang ([`19`](19-quasimodal-fiber-strand.md)). Supersedes doc 12's
@@ -357,6 +358,47 @@ Landed (wx `fc762bed`, pcbjam `0d40938`):
 alone regresses, as D2's attempt already showed. Doc 12's "partial migration is worse than
 none" is now measured twice, from two directions.
 
-Next: the atomic D3+D2 landing, starting with tool coroutines as contexts — i.e. teaching
-the scheduler about `COROUTINE`/libcontext rather than adding a second fiber system beside
-it.
+### D3 — the doc-19 hang is FIXED, without contexts (2026-08-06) ✅
+
+Starting the "tool coroutines as contexts" work turned up a much smaller cure, and it
+holds: **the quasi-modal's nested loop simply must not park on a coroutine's stack.**
+`wxGUIEventLoop::DoRun` now detects that its nested park would land on a non-main stack and
+bounces it onto the main stack; the coroutine is then suspended through a recorded fiber
+swap, so the stale-fiber guard has nothing to quarantine and no resume to refuse.
+
+`tests/kicad/quasimodal-strand.spec.ts` flipped from `test.fail()` to a plain green pin —
+3/3 `closed=true dialogs=0 refused-resumes=0`, previously 3/3 the exact inverse. Full kicad
+suite: 139 passed, 1 failed (the pre-existing occ-probe `glb`).
+
+Layering, chosen so this is not WASM ifdefs scattered through KiCad:
+
+| layer | holds |
+|---|---|
+| wx wasm port (`3d37db3bf1`) | the policy + the hook (`wx/wasm/private/mainstack.h`). wx must not know what a coroutine is. |
+| `wasm/bindings/main_stack_runner.h` | the only place allowed to know both sides: frame → `TOOL_MANAGER` → `RunMainStack`. Header-only, self-installing, so no build-script change. |
+| KiCad (`2c777efede`) | **one ifdef-free method**, `RunOnMainStackIfActiveTool`, needed only because `TOOL_STATE` is opaque outside `TOOL_MANAGER`. `libcontext` and `dialog_shim` untouched (an earlier draft edited both; reverted). |
+
+**Trap worth keeping:** detection captures the main stack's bounds at top-level `DoRun`
+instead of querying them live. `emscripten_fiber_swap`'s `finishContextSwitch` calls
+`emscripten_stack_set_limits` with the *incoming* fiber's bounds, so
+`emscripten_stack_get_base()/end()` always describe whatever stack is current — the live
+query reports "on the main stack" from everywhere. That version silently did nothing and
+looked like a regression until the glue was read.
+
+**What this changes about the plan.** The bug that motivated the whole core rewrite is
+closed without contexts, so the remaining phases are no longer urgency-driven and should be
+re-justified on their own merits:
+
+- The **doc-19 class** (a parked activity holding the interlock) is closed for quasi-modals.
+  Other in-place parks (bridges, D4's list in doc 21) can still hold it — but none of them
+  park on a coroutine stack, which was the fatal ingredient.
+- **D2 (dispatch contexts)** remains blocked exactly as measured, and now has no bug forcing
+  it. Re-justify before retrying.
+- **D1's context layer** stays as built and tested; nothing production runs on it. Keep it
+  only if D4/D5 still want it — otherwise it is a candidate for deletion rather than a
+  half-migrated runtime.
+
+Next: decide whether the remaining core is still worth its risk now that its motivating bug
+is gone. The honest options are (a) stop here and harden, (b) continue to D4 bridges for the
+remaining in-place parks, (c) delete the unused context layer. That is a judgement call for
+the human, not a mechanical next phase.

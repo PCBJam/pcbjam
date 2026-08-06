@@ -1,6 +1,20 @@
 # 19 — Symbol Properties dialog hangs: a stranded tool fiber (live investigation)
 
-> **Status: DIAGNOSED + PINNED RED, NOT FIXED (2026-08-05).** Reproduced end-to-end in a
+> **Status: FIXED (2026-08-06).** The nested (quasi-modal) event loop no longer parks on
+> the tool coroutine's stack: `wxGUIEventLoop::DoRun` detects that its park would land on a
+> non-main stack and bounces it onto the main stack via the host runner
+> (`wx/wasm/private/mainstack.h` + `wasm/bindings/main_stack_runner.h` →
+> `TOOL_MANAGER::RunOnMainStackIfActiveTool`). The coroutine is then suspended the
+> legitimate way — a fiber swap the layer records — so §4's quarantine never applies and
+> its resume is never refused. `tests/kicad/quasimodal-strand.spec.ts` is a plain green
+> regression pin: 3/3 `closed=true dialogs=0 refused-resumes=0`.
+>
+> Note what this does NOT do: waits still park in place (§6 direction 3 — handler contexts —
+> is untaken). The cure was to stop parking on a *coroutine* stack, not to stop parking.
+>
+> Original diagnosis follows.
+>
+> ~~**Status: DIAGNOSED + PINNED RED, NOT FIXED (2026-08-05).**~~ Reproduced end-to-end in a
 > real browser against the dev platform on the scheduler build, and since D0 also
 > **deterministically in e2e**: `tests/kicad/quasimodal-strand.spec.ts` (6/6 identical —
 > `closed=false dialogs=1 refused-resumes=1`). The fix lands at doc 20 **D3**, where that
