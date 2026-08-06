@@ -1,13 +1,29 @@
 # 20 — Design B core: parkable activities as scheduler contexts
 
-> **Status: THE MOTIVATING BUG IS FIXED (2026-08-06). D-1, D0, D1 done; D2 attempted and
-> reverted; D3 achieved its goal — the doc-19 hang — WITHOUT contexts, by keeping
-> quasi-modal parks off coroutine stacks (work log §10). The remaining phases (D2, D4, D5,
-> D6) no longer have a bug forcing them and need re-justifying before any is resumed.** The remaining core of
-> Design B ([`06`](06-design-b-fiber-first-runtime.md) B1+B2), scoped against what S0–S6
-> actually built ([`17`](17-mailbox-scheduler-plan.md)) and motivated by the
-> stranded-fiber hang ([`19`](19-quasimodal-fiber-strand.md)). Supersedes doc 12's
-> phases 2–3 for this layer.
+> **Status (2026-08-06): PARTIALLY DELIVERED — the direction is confirmed and CONTINUES in
+> [`22`](22-absorbing-libcontext.md).**
+>
+> | phase | state |
+> |---|---|
+> | D-1 legacy runtime deleted | ✅ done |
+> | D0 park-site audit ([`21`](21-park-site-audit.md)) + doc-19 red spec | ✅ done |
+> | D1 context primitives + memory gate | ✅ done — **built, tested, and NOT used by anything in production** |
+> | D2 dispatch contexts | ❌ attempted, **reverted** (regressed the nested battery) |
+> | D3 waits on contexts | ⚠️ **goal met, means skipped** — the doc-19 hang is fixed, but by keeping quasi-modal parks off coroutine stacks, NOT by making waits context yields |
+> | D4 bridges · D5 main-as-context · D6 deletions | ⛔ not started |
+>
+> **What this plan got right:** contexts with a registry as truth, and "partial migration is
+> worse than none" (measured twice, from two directions).
+> **What it got wrong:** the phase ORDER. D2 before D3 is unlandable, and D3-as-written is
+> unlandable without tool coroutines being contexts first. The dependency is not a chain,
+> it is a knot — see [`22`](22-absorbing-libcontext.md) §3.
+> **What remains unfixed:** the blue-screen crash family (double/cross-fiber context
+> recovery, "index out of bounds" in `doRewind`). Doc 19's hang was one symptom; fixing it
+> did not touch the cause. That is the whole subject of doc 22.
+>
+> The remaining core of Design B ([`06`](06-design-b-fiber-first-runtime.md) B1+B2), scoped
+> against what S0–S6 actually built ([`17`](17-mailbox-scheduler-plan.md)). Supersedes doc
+> 12's phases 2–3 for this layer. **Superseded in turn, for the remaining work, by doc 22.**
 
 ## 1. The one-sentence goal
 
@@ -398,7 +414,28 @@ re-justified on their own merits:
   only if D4/D5 still want it — otherwise it is a candidate for deletion rather than a
   half-migrated runtime.
 
-Next: decide whether the remaining core is still worth its risk now that its motivating bug
-is gone. The honest options are (a) stop here and harden, (b) continue to D4 bridges for the
-remaining in-place parks, (c) delete the unused context layer. That is a judgement call for
-the human, not a mechanical next phase.
+### Decision on the remainder (2026-08-06)
+
+Posed as: stop and harden / continue to D4 / delete the unused context layer.
+**Decided: continue, and centralise properly.** The reason the question was even close is
+that this doc measures itself against doc 19's hang, which is now fixed. Measured against
+the **blue screen** — an "index out of bounds" when a context is recovered twice, or by the
+wrong fiber — nothing here has landed a cure, and the patch-per-symptom approach is what
+produced the guard thicket in the first place.
+
+The remaining work is therefore NOT "resume D2/D4/D5/D6 as written". It is: absorb
+libcontext's wasm backend into the scheduler so there is ONE js↔asyncify↔fibers handler
+that owns every context switch, then migrate the participants onto it in a single flip.
+**That plan lives in [`22`](22-absorbing-libcontext.md); start there, not here.**
+
+### What was skipped, and is still owed
+
+- **D2's dispatch contexts** — reverted; re-attempt only as part of doc 22's flip.
+- **D3's actual means** — waits still park in place; only the *stack they park on* changed.
+- **D4 bridges, D5 main-as-context, D6 deletions** — never started. Doc 21 §1's site table
+  is still the migration surface and is still accurate.
+- **Buffer sizing from real park sites** — D1 measured synthetic frames only (a floor). Doc
+  21 §2b's instruction to size from each bridge's own deep-park beacon is unfulfilled.
+- **CI: both-EH matrix + scheduler-only CI** — deferred since the S-phases, still deferred.
+- **The legacy differential for doc 19** — explicitly declined by the user; now moot.
+- **The unused context layer** — kept deliberately as doc 22's foundation, not orphaned.

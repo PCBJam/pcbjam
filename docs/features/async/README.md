@@ -44,17 +44,29 @@ or **hang** (a swap unwinds but is never rewound).
 | [`09-dom-window-lifetime-hypothesis.md`](09-dom-window-lifetime-hypothesis.md) | Concrete failure story and first fix experiment for the DOM-port stale `wxWindow` hypothesis: destructor ordering, DOM event reentry, and validation plan. |
 | [`10-resolution-menubar-uaf.md`](10-resolution-menubar-uaf.md) | **RESOLVED:** the regression was a freed `wxMenuBar` left in a live frame's child list by `wxMenuBarBase::Detach()` (DOM-port only — the bar is a real child there). One-line fix in `wxMenuBar::Detach()`; full kicad suite green, zero corruption signatures. |
 | [`11-asyncify-nesting-raytracer.md`](11-asyncify-nesting-raytracer.md) | **Finding + decision:** the WASM 3D raytracer is single-core because `emscripten_sleep` can't nest on an already-unwinding Asyncify context — yielding to join worker threads aborts with `invalid state: 1` since the viewer renders inside a suspended wx modal pump. Multi-core pool (~6–7×) built + parked; unpark needs a *nestable* yield (fiber/JSPI). |
-| [`19-quasimodal-fiber-strand.md`](19-quasimodal-fiber-strand.md) | **DIAGNOSED 2026-08:** the Symbol Properties dialog hang — a tool fiber parks mid-body, the stale-fiber guard refuses (and drops) its resume, the dispatch interlock is never released, every click is deferred forever. Live-captured frozen state; ranked fixes; regression-vs-pre-existing still open. |
-| [`20-design-b-core-plan.md`](20-design-b-core-plan.md) | **PLAN (2026-08):** the remaining Design B core — every parkable activity becomes a scheduler context that yields instead of parking in place, which deletes the guessing layer (quarantine/consume-once/interlock) rather than tuning it. Phases D0–D6, 6–10 wk, with the memory and partial-migration risks called out. |
+| [`19-quasimodal-fiber-strand.md`](19-quasimodal-fiber-strand.md) | **FIXED 2026-08-06:** the Symbol Properties dialog hang — a tool fiber parked mid-body, the stale-fiber guard refused (and dropped) its resume, the dispatch interlock was never released. Cure: a quasi-modal's nested loop no longer parks on a coroutine stack. Regression pin: `tests/kicad/quasimodal-strand.spec.ts`. Note this removed one INGREDIENT, not the blue-screen cause. |
+| [`20-design-b-core-plan.md`](20-design-b-core-plan.md) | **PARTIALLY DELIVERED 2026-08:** Design B core. D-1 (legacy runtime deleted), D0 (park-site audit + red spec) and D1 (context primitives + memory gate) landed; D2 (dispatch contexts) was reverted; D3 met its goal by other means. Read §10's work log for what each phase actually cost. **Superseded for the remaining work by 22.** |
+| [`21-park-site-audit.md`](21-park-site-audit.md) | **AUDIT 2026-08:** every Asyncify park site classified by whose stack it suspends (tool fiber / entry stack / main loop) with its routing phase — 14 production sites + 3 test levers. Settles the pthread question: all parks are main-thread; the lib bridge's worker path is a blocking proxy, not a park. |
+| [`22-absorbing-libcontext.md`](22-absorbing-libcontext.md) | **PLAN (2026-08-06), the current one:** absorb libcontext's wasm backend into the scheduler so ONE handler owns every js↔asyncify↔fiber switch — the cure for the blue screen (a context recovered twice or by the wrong fiber). Diagnosis of why three guard layers cannot fix it, why the D2/D3 phases knotted, phases A–F with estimates (~4–6 wk), gates, and the traps this implementation run paid for. **Start here.** |
 | [`17-mailbox-scheduler-plan.md`](17-mailbox-scheduler-plan.md) | **PLAN (2026-08):** the mailbox/scheduler implementation plan — Design B's phasing revised with the July–August guard record (dispatch interlock, open-settle gate, v0.1.28 schedule-don't-dispatch). Test inventory with per-test fate (keep / rewrite / retire / new), 7 steps S0–S6 with gates and rollback, ≈5–7 wk. Supersedes 12/13's phasing; overturns 13 §6f's "no scheduler needed". |
 
-## The single decisive next step
+## Where to start (2026-08-06)
+
+**Read [`22-absorbing-libcontext.md`](22-absorbing-libcontext.md).** It carries the current
+plan, the diagnosis behind it, and the traps the last implementation run paid for.
+Prerequisites: [`20`](20-design-b-core-plan.md) §10 (what each phase actually cost) and
+[`21`](21-park-site-audit.md) (the migration surface).
+
+<details>
+<summary>The original "single decisive next step" (2026-06, answered)</summary>
 
 Before designing anything, **measure whether `Asyncify.currData` is clean (null) at the moment
 `wxGUIEventLoop::DoRun()` throws `"unwind"`** (and at the first rAF tick, and at the first
 post-startup `emscripten_fiber_swap`). That one fact determines whether the universal fix must
 also reshape the main loop ("de-parking") or whether a per-context `currData` authority alone
 suffices. Details in [`04-decisions-tests-open-questions.md`](04-decisions-tests-open-questions.md).
+
+</details>
 
 ---
 
