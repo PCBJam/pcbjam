@@ -112,6 +112,43 @@ mark-ready-and-drain; a coroutine yields to the scheduler rather than to its res
 - `RunMainStack` must keep working — it is now "run on the scheduler's caller context".
 - Expect this to be most of the risk and most of the calendar time.
 
+**Seam read in full after Phase A landed (2026-08-06) — the crux, stated precisely.**
+`TOOL_MANAGER`'s contract is SYNCHRONOUS and the star's is not, and that single
+mismatch is the phase:
+
+- `dispatchInternal` does `st->cofunc->Call( st->initialEvent )` and then, on the very
+  next line, `if( !st->cofunc->Running() ) finishTool( st )`
+  (`common/tool/tool_manager.cpp:870-874`). So `Call` must run the coroutine to its
+  first yield *before returning*. Same shape at `ShutdownTool` (`:592`) and the
+  pending-wait resume (`:808`).
+- The star says a resume happens from a clean stack via `drain()`, and `drain()`
+  deliberately refuses re-entry — a context calling it would turn the star into a
+  cycle. But dispatch RUNS on a stack the scheduler may own (that is Phase D), so
+  "Call → drain" is re-entrant by construction unless dispatch is already a context.
+  This is the same knot doc 20 §3 measured from the other side, and it is why B, C
+  and D cannot be separated.
+- `CALL_CONTEXT::Continue`'s `CONTINUE_AFTER_ROOT` loop
+  (`coroutine.h:175-183`) is a second, hand-rolled scheduler: the coroutine jumps to
+  the ROOT stack, the root runs `m_mainStackFunction`, then resumes the coroutine.
+  Under the star this is just "park with a reason, let the scheduler run the functor,
+  mark ready" — the loop should disappear rather than be ported.
+
+**A Phase A measurement that changes B's shape:** `grace-ring-over-capacity: 33` —
+KiCad holds 30+ coroutines that never finished and whose owners are gone, and still
+jumps into them. Under the star every one needs a live context (128 KB + buffer each,
+vs libcontext's 512 K), so **B must fix the lifetime, not just the topology**: give
+`COROUTINE` an owning handle and destroy the context when the tool state is popped.
+The grace ring is the measurement of exactly how much that is worth, and it should
+fall out of the tree at the end of B, not survive into C.
+
+**Divergence policy (§10 q4), now answerable:** Phase A touched KiCad only inside
+`thirdparty/libcontext` — vendored code, no upstream conflict. B is the first phase to
+restructure `coroutine.h` + `tool_manager.cpp`, which CLAUDE.md's "keep the fork close
+to upstream" rule makes a real cost. Decide before starting: either accept the
+divergence, or keep the star adapter entirely inside libcontext + `sched_context.h` and
+leave both KiCad files untouched, which is likely possible because the whole seam is
+`jump_fcontext` calls.
+
 ### Phase C — waits yield the owning context (3–5 d)
 
 `wxWasmYieldUntil` becomes a context yield: look up the owner of the current stack (the
