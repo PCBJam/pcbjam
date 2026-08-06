@@ -2,8 +2,8 @@
  * Scheduler-context harness — Design B D1 gate
  * (pcbjam docs/features/async/20-design-b-core-plan.md §6 D1).
  *
- * Exercises wasm/sched/context.{h,cpp} — create / yield_park / mark_ready /
- * drain — against the invariants that make a resume something the registry
+ * Exercises wx/wasm/private/sched_context.h — create / yield_park /
+ * mark_ready / drain — against the invariants that make a resume something the registry
  * KNOWS rather than something a guard guesses (doc 19's disease):
  *
  *   1. a context runs only when the scheduler drains it;
@@ -25,7 +25,7 @@
  *   [SCHED_CTX] SUMMARY total=N passed=N failed=N
  */
 
-#include "context.h"
+#include "wx/wasm/private/sched_context.h"
 
 #include <emscripten/emscripten.h>
 
@@ -407,7 +407,124 @@ void Scenario_DeepPark()
 }
 
 // ---------------------------------------------------------------------------
-// scenario 9: a REAL async wake — JS timeout resolves the park
+// scenario 9: a foreign stack may NOT yield someone else's context
+//
+//   The D3 blocker, pinned. A KiCad tool coroutine is a libcontext fiber
+//   swapped in ON TOP of whatever dispatched it. If that fiber calls a wait,
+//   the registry still says "the dispatch context is running" while the live
+//   stack belongs to the tool fiber — so a naive yield would save the TOOL
+//   fiber's stack into the DISPATCH context's fiber struct and hand it to the
+//   next resume. Silent, total, and undetectable after the fact.
+//
+//   Here a raw emscripten fiber (the same thing libcontext builds on) is
+//   swapped in above a context and calls yield_park. It must be REFUSED, and
+//   the context must remain usable afterwards.
+// ---------------------------------------------------------------------------
+emscripten_fiber_t g_foreign_fiber;
+emscripten_fiber_t g_host_return;
+alignas( 16 ) char g_foreign_stack[64 * 1024];
+alignas( 16 ) char g_foreign_asyncify[16 * 1024];
+// The host side of the swap needs its OWN asyncify buffer: emscripten_fiber_swap
+// unwinds the outgoing fiber into it. A zero-initialised emscripten_fiber_t has
+// a null asyncify stack and traps on the first swap.
+alignas( 16 ) char g_host_asyncify[16 * 1024];
+
+int g_foreign_yield_rc = -99;
+int g_foreign_ran = 0;
+ContextId g_host_ctx = 0;
+
+// PROBE_YIELD=0 isolates plain fiber-on-context nesting (no yield at all), so
+// "does nesting itself work?" is answerable separately from "is the yield
+// refused?". Both answers matter to D3 and they are different questions.
+int g_probe_yield = 1;
+
+void foreign_fiber_entry( void* )
+{
+    g_foreign_ran = 1;
+
+    // We are on the foreign fiber's stack, but the registry still says the
+    // host context is running. This must NOT be allowed to yield it.
+    if( g_probe_yield )
+        g_foreign_yield_rc = yield_park( "from-a-foreign-stack" );
+
+    emscripten_fiber_swap( &g_foreign_fiber, &g_host_return );
+}
+
+void body_hosts_foreign_fiber( void* )
+{
+    // Exactly libcontext's shape: the current stack (this context's) becomes a
+    // fiber we can be swapped back into, and the tool-like fiber is entered
+    // from it.
+    emscripten_fiber_init_from_current_context( &g_host_return, g_host_asyncify,
+                                                sizeof( g_host_asyncify ) );
+    emscripten_fiber_init( &g_foreign_fiber, foreign_fiber_entry, nullptr,
+                           g_foreign_stack, sizeof( g_foreign_stack ),
+                           g_foreign_asyncify, sizeof( g_foreign_asyncify ) );
+    emscripten_fiber_swap( &g_host_return, &g_foreign_fiber );
+}
+
+// Step 1: can a fiber nest inside a context AT ALL? (No yield involved.)
+void Scenario_FiberNestsInContext()
+{
+    g_foreign_yield_rc = -99;
+    g_foreign_ran = 0;
+    g_probe_yield = 0;
+
+    const ContextId host = create( body_hosts_foreign_fiber, nullptr, "nest-probe" );
+    drain();
+
+    if( !g_foreign_ran )
+        return report( "fiber_nests_in_context", false, "the nested fiber never ran" );
+
+    if( status_of( host ) != Status::Finished )
+        return report( "fiber_nests_in_context", false,
+                       std::string( "host status: " ) + status_name( status_of( host ) ) );
+
+    destroy( host );
+    report( "fiber_nests_in_context", true );
+}
+
+// Step 2: and does a yield FROM that nested fiber get refused?
+void Scenario_ForeignStackRefused()
+{
+    g_foreign_yield_rc = -99;
+    g_foreign_ran = 0;
+    g_probe_yield = 1;
+
+    g_host_ctx = create( body_hosts_foreign_fiber, nullptr, "foreign-host" );
+    drain();
+
+    if( !g_foreign_ran )
+        return report( "foreign_stack_refused", false, "the foreign fiber never ran" );
+
+    if( g_foreign_yield_rc != -1 )
+        return report( "foreign_stack_refused", false,
+                       "yield_park did not refuse (rc=" + std::to_string( g_foreign_yield_rc )
+                       + ") - it would have saved the wrong stack" );
+
+    // The host context must be intact: it ran to completion after the foreign
+    // fiber returned, rather than being left in a half-yielded state.
+    if( status_of( g_host_ctx ) != Status::Finished )
+        return report( "foreign_stack_refused", false,
+                       std::string( "host context status: " )
+                       + status_name( status_of( g_host_ctx ) ) );
+
+    // And the scheduler is still healthy enough to run something else.
+    g_ran = 0;
+    const ContextId after = create( body_sets_flag, nullptr, "after-foreign" );
+    drain();
+
+    if( g_ran != 1 )
+        return report( "foreign_stack_refused", false,
+                       "the scheduler was left unusable after the refusal" );
+
+    destroy( after );
+    destroy( g_host_ctx );
+    report( "foreign_stack_refused", true );
+}
+
+// ---------------------------------------------------------------------------
+// scenario 10: a REAL async wake — JS timeout resolves the park
 //   The park's wake crosses a JS turn, which is the shape every production
 //   bridge has (doc 21 D4): the context must resume from a fresh task, and
 //   the wake must never rewind inline.
@@ -490,6 +607,8 @@ int main()
     Scenario_OneTransitionInFlight();
     Scenario_RegistryRefusals();
     Scenario_DeepPark();
+    Scenario_FiberNestsInContext();
+    Scenario_ForeignStackRefused();
 
     // Async last: it emits STATS + SUMMARY when its wake lands.
     Scenario_AsyncWake();

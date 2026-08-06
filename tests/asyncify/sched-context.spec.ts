@@ -22,6 +22,8 @@ const SCENARIOS = [
   'one_transition_in_flight',
   'registry_refusals',
   'deep_park_sizing',
+  'fiber_nests_in_context',
+  'foreign_stack_refused',
   'async_wake',
 ];
 
@@ -43,6 +45,7 @@ type Stats = {
   finished: number;
   transitions: number;
   refusals: number;
+  foreignStackRefusals: number;
   running: number;
   transitionInFlight: boolean;
   readyQueued: number;
@@ -140,6 +143,16 @@ test.describe('Design B D1 — scheduler contexts', () => {
     // (yield_park off a context, destroy while parked, mark_ready twice /
     // unknown id). Zero would mean those scenarios stopped provoking.
     expect(stats.refusals, 'illegal operations were refused and counted').toBeGreaterThan(0);
+
+    // --- the D3 blocker, pinned -------------------------------------------
+    // A wait called from a fiber running ON TOP of a context (a KiCad tool
+    // coroutine opening a dialog) must be refused, not allowed to yield
+    // someone else's context — that would save the tool fiber's stack into the
+    // host context's fiber struct. Exactly one scenario provokes it.
+    expect(
+      stats.foreignStackRefusals,
+      'a yield from a foreign stack was refused rather than corrupting the host context',
+    ).toBe(1);
 
     // --- sizing evidence (doc 20 risk 1: derive, don't inherit) ------------
     // The high-water mark is what a future buffer size must be justified by.
