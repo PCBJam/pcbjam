@@ -27,6 +27,8 @@ const SCENARIOS = [
   'fiber_roundtrip',
   'fiber_release_suspended',
   'fiber_and_star_coexist',
+  'star_transfer_call_is_synchronous',
+  'star_transfer_chain',
   'async_wake',
 ];
 
@@ -218,10 +220,17 @@ test.describe('Design B D1 — scheduler contexts', () => {
     // The adopted root is the only fiber that outlives the battery (libcontext's
     // main context never dies); everything else was released.
     expect(stats.fiberLive, 'only the adopted root fiber remains').toBe(1);
-    expect(stats.fiberRunning, 'the root is the fiber lane current').not.toBe(0);
-    expect(stats.fiberCreated, 'root + fiber A + fiber B').toBe(3);
-    expect(stats.fiberReleased, 'fibers A and B were released').toBe(2);
-    expect(stats.fiberSwaps, 'symmetric swaps happened').toBeGreaterThanOrEqual(6);
+    // Phase B invariant, stronger than the Phase A one it replaces: once the
+    // pump is quiescent NO fiber is on the CPU — the scheduler is. Under the
+    // star that is what "between transitions" means.
+    expect(stats.fiberRunning, 'no fiber is current when the pump is quiescent').toBe(0);
+    expect(stats.fiberCreated, 'every fiber the battery made').toBeGreaterThanOrEqual(8);
+    expect(stats.fiberReleased, 'all but the adopted root were released').toBe(
+      stats.fiberCreated - 1,
+    );
+    expect(stats.fiberSwaps, 'symmetric swaps and star transfers happened').toBeGreaterThanOrEqual(
+      12,
+    );
     // Both releases happened mid-suspend — libcontext's refcount-drop shape.
     expect(stats.fiberReleasedSuspended, 'suspended releases are legal and counted').toBe(2);
     // One deliberate stale-id swap was refused (use-after-free made loud).

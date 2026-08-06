@@ -694,6 +694,228 @@ void Scenario_FiberAndStarCoexist()
 }
 
 // ---------------------------------------------------------------------------
+// STAR-MODE TRANSFERS (doc 22 Phase B) — libcontext's symmetric contract kept,
+// but every entry performed by the scheduler.
+//
+// The load-bearing claim: KiCad's TOOL_MANAGER calls cofunc->Call(evt) and
+// reads Running() on the NEXT LINE, so a "call" must return only after the
+// coroutine has yielded or finished. Under the star the caller parks and the
+// scheduler resumes it — from the caller's C++ frame that is indistinguishable
+// from a synchronous return, which is what makes the flip possible at all.
+// ---------------------------------------------------------------------------
+// A fiber entry must NEVER return — "if entry_func returns, the entire program
+// will end" (emscripten fiber.h). libcontext's trampoline loops forever for
+// exactly this reason; these harness bodies do the same by parking for good
+// once their script is finished. (Getting this wrong wedges the battery with
+// no output at all, which is how it was found.)
+[[noreturn]] void park_forever()
+{
+    for( ;; )
+        yield_park( "fiber-finished" );
+}
+
+alignas( 16 ) char g_tool_stack[64 * 1024];
+alignas( 16 ) char g_caller_stack[64 * 1024];
+
+ContextId g_star_caller = 0;
+ContextId g_star_tool = 0;
+
+int g_tool_entries = 0;
+int g_tool_yields = 0;
+intptr_t g_tool_saw_value = 0;
+int g_caller_stage = 0;
+intptr_t g_call_returned = 0;
+int g_tool_running_after_call = -1;
+int g_call_order_violation = 0;
+
+// The "coroutine": runs, yields once, then finishes — libcontext's shape.
+void star_tool_entry( void* )
+{
+    for( ;; )
+    {
+        ++g_tool_entries;
+        g_tool_saw_value = 0;
+
+        // KiYield(): hand control back to whoever called us.
+        ++g_tool_yields;
+        fiber_transfer( g_star_tool, g_star_caller, 0xB1 );
+
+        // Resumed: finish and go back for good.
+        fiber_transfer( g_star_tool, g_star_caller, 0xF1 );
+    }
+}
+
+// The "TOOL_MANAGER": Call(), then read state on the next line.
+void star_caller_entry( void* )
+{
+    g_caller_stage = 1;
+
+    // Call(): the tool must have run and yielded by the time this returns.
+    g_call_returned = fiber_transfer( g_star_caller, g_star_tool, 0xA1 );
+
+    // THE assertion that decides whether Phase B is possible.
+    g_tool_running_after_call = ( g_tool_entries == 1 && g_tool_yields == 1 ) ? 1 : 0;
+
+    if( g_tool_entries != 1 )
+        g_call_order_violation = 1;
+
+    g_caller_stage = 2;
+
+    // Resume(): drive it to completion.
+    fiber_transfer( g_star_caller, g_star_tool, 0xA2 );
+    g_caller_stage = 3;
+    park_forever();
+}
+
+void Scenario_StarTransferKeepsCallSynchronous()
+{
+    g_tool_entries = 0;
+    g_tool_yields = 0;
+    g_caller_stage = 0;
+    g_call_returned = 0;
+    g_tool_running_after_call = -1;
+    g_call_order_violation = 0;
+
+    g_star_caller = fiber_create( star_caller_entry, nullptr, g_caller_stack,
+                                  sizeof( g_caller_stack ), 32 * 1024, "star-caller" );
+    g_star_tool = fiber_create( star_tool_entry, nullptr, g_tool_stack,
+                                sizeof( g_tool_stack ), 32 * 1024, "star-tool" );
+
+    if( !g_star_caller || !g_star_tool )
+        return report( "star_transfer_call_is_synchronous", false, "fiber_create failed" );
+
+    // The scheduler kicks the caller, then pumps until quiescent — exactly the
+    // shape the production tick will have.
+    if( !fiber_start( g_star_caller, 0 ) )
+        return report( "star_transfer_call_is_synchronous", false, "fiber_start refused" );
+
+    const size_t ran = drain_all();
+
+    if( g_caller_stage != 3 )
+        return report( "star_transfer_call_is_synchronous", false,
+                       "caller did not run to completion (stage="
+                       + std::to_string( g_caller_stage ) + ")" );
+
+    if( g_call_order_violation )
+        return report( "star_transfer_call_is_synchronous", false,
+                       "the tool had not run when Call() returned - the synchronous "
+                       "contract TOOL_MANAGER depends on is broken" );
+
+    if( g_tool_running_after_call != 1 )
+        return report( "star_transfer_call_is_synchronous", false,
+                       "tool state wrong right after Call(): entries="
+                       + std::to_string( g_tool_entries ) + " yields="
+                       + std::to_string( g_tool_yields ) );
+
+    if( g_call_returned != 0xB1 )
+        return report( "star_transfer_call_is_synchronous", false,
+                       "Call() returned the wrong transfer value: "
+                       + std::to_string( g_call_returned ) );
+
+    if( ran < 4 )
+        return report( "star_transfer_call_is_synchronous", false,
+                       "too few transitions (" + std::to_string( ran ) + ")" );
+
+    fiber_release( g_star_tool );
+    fiber_release( g_star_caller );
+    report( "star_transfer_call_is_synchronous", true );
+}
+
+// A transfer chain three deep (root → A → B), the nested-Call shape, plus the
+// proof that a parked star context in the OTHER lane is untouched throughout.
+alignas( 16 ) char g_chain_a_stack[64 * 1024];
+alignas( 16 ) char g_chain_b_stack[64 * 1024];
+
+ContextId g_chain_root = 0;
+ContextId g_chain_a = 0;
+ContextId g_chain_b = 0;
+int g_chain_trace[8];
+int g_chain_len = 0;
+
+void chain_note( int aMark )
+{
+    if( g_chain_len < 8 )
+        g_chain_trace[g_chain_len++] = aMark;
+}
+
+void chain_b_entry( void* )
+{
+    for( ;; )
+    {
+        chain_note( 3 );
+        fiber_transfer( g_chain_b, g_chain_a, 0 );
+    }
+}
+
+void chain_a_entry( void* )
+{
+    for( ;; )
+    {
+        chain_note( 2 );
+        fiber_transfer( g_chain_a, g_chain_b, 0 );   // nested "Call"
+        chain_note( 4 );
+        fiber_transfer( g_chain_a, g_chain_root, 0 );
+    }
+}
+
+void chain_root_entry( void* )
+{
+    chain_note( 1 );
+    fiber_transfer( g_chain_root, g_chain_a, 0 );
+    chain_note( 5 );
+    park_forever();
+}
+
+void Scenario_StarTransferChain()
+{
+    g_chain_len = 0;
+
+    const ContextId parked_star = create( body_parks_once, nullptr, "coexist-during-chain" );
+    drain();   // it parks and must stay parked across every transfer below
+
+    g_chain_root = fiber_create( chain_root_entry, nullptr, g_caller_stack,
+                                 sizeof( g_caller_stack ), 32 * 1024, "chain-root" );
+    g_chain_a = fiber_create( chain_a_entry, nullptr, g_chain_a_stack,
+                              sizeof( g_chain_a_stack ), 32 * 1024, "chain-a" );
+    g_chain_b = fiber_create( chain_b_entry, nullptr, g_chain_b_stack,
+                              sizeof( g_chain_b_stack ), 32 * 1024, "chain-b" );
+
+    if( !g_chain_root || !g_chain_a || !g_chain_b )
+        return report( "star_transfer_chain", false, "fiber_create failed" );
+
+    fiber_start( g_chain_root, 0 );
+    drain_all();
+
+    // Strict order: root, A, B, back to A, back to root.
+    const int expected[5] = { 1, 2, 3, 4, 5 };
+
+    if( g_chain_len != 5 )
+        return report( "star_transfer_chain", false,
+                       "trace length " + std::to_string( g_chain_len ) + ", expected 5" );
+
+    for( int i = 0; i < 5; ++i )
+    {
+        if( g_chain_trace[i] != expected[i] )
+            return report( "star_transfer_chain", false,
+                           "wrong order at " + std::to_string( i ) + ": "
+                           + std::to_string( g_chain_trace[i] ) );
+    }
+
+    if( status_of( parked_star ) != Status::Parked )
+        return report( "star_transfer_chain", false,
+                       "the parked star context was disturbed by the transfers" );
+
+    mark_ready( parked_star, 1 );
+    drain();
+    destroy( parked_star );
+
+    fiber_release( g_chain_b );
+    fiber_release( g_chain_a );
+    fiber_release( g_chain_root );
+    report( "star_transfer_chain", true );
+}
+
+// ---------------------------------------------------------------------------
 // scenario 10: a REAL async wake — JS timeout resolves the park
 //   The park's wake crosses a JS turn, which is the shape every production
 //   bridge has (doc 21 D4): the context must resume from a fresh task, and
@@ -782,6 +1004,8 @@ int main()
     Scenario_FiberRoundtrip();
     Scenario_FiberReleaseSuspended();
     Scenario_FiberAndStarCoexist();
+    Scenario_StarTransferKeepsCallSynchronous();
+    Scenario_StarTransferChain();
 
     // Async last: it emits STATS + SUMMARY when its wake lands.
     Scenario_AsyncWake();
