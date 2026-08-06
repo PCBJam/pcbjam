@@ -1,6 +1,7 @@
 # 20 — Design B core: parkable activities as scheduler contexts
 
-> **Status: IN PROGRESS — D-1, D0, D1 DONE (2026-08-05, work log §10).** The remaining core of
+> **Status: IN PROGRESS — D-1, D0, D1 DONE; D2 attempted and resequenced behind D3
+> (work log §10). Phase order is now D3 → D2 → D4 → D5? → D6.** The remaining core of
 > Design B ([`06`](06-design-b-fiber-first-runtime.md) B1+B2), scoped against what S0–S6
 > actually built ([`17`](17-mailbox-scheduler-plan.md)) and motivated by the
 > stranded-fiber hang ([`19`](19-quasimodal-fiber-strand.md)). Supersedes doc 12's
@@ -117,13 +118,25 @@ Two consequences worth stating plainly:
   libcontext: create context, swap-out to the scheduler, resume by swap-in, registry as
   truth, one transition in flight. Exercised only by a dedicated test app — **no
   production path switched yet**. Gate: new unit/app tests + full battery unchanged.
-- **D2 · Dispatch contexts (1–2 wk).** The tick resumes a dispatch context instead of
-  running handlers on the entry stack; scheduler policy enforces one runnable dispatch
-  context. The interlock stays, demoted to a **tripwire** asserting it never disagrees with
-  the scheduler. Gate: full net + zero tripwire divergence across the fuzz suites.
-- **D3 · Waits on contexts (1 wk).** `wxWasmYieldUntil` becomes a context yield. **The
-  doc-19 red spec goes green here** — modal/nested/popup no longer park a tool fiber's body.
+- **D3 · Waits on contexts (1 wk) — NOW BEFORE D2, see §10's D2 attempt.**
+  `wxWasmYieldUntil` becomes a context yield. **The doc-19 red spec goes green here** —
+  modal/nested/popup no longer park a tool fiber's body.
   Gate: red→green + battery + kicad suite.
+- **D2 · Dispatch contexts (1–2 wk) — resequenced AFTER D3.** The tick resumes a dispatch
+  context instead of running handlers on the entry stack; scheduler policy enforces one
+  runnable dispatch context. The interlock stays, demoted to a **tripwire** asserting it
+  never disagrees with the scheduler. Gate: full net + zero tripwire divergence across the
+  fuzz suites.
+
+  **Why the swap (measured 2026-08-06):** dispatch-on-a-context is only safe once waits
+  yield instead of parking in place. While `wxWasmYieldUntil` is still an in-place park, a
+  quasi-modal opened from a tick handler suspends the dispatch context *inside* the wait,
+  which adds an Asyncify layer under every libcontext fiber — and the coroutine-nested
+  battery dies on it (`aliased-wake-live` → `fiber-resume-refused` in
+  `fiber_create_run_destroy_inside_modal`). That is risk 2 ("partial migration is worse
+  than none") arriving on schedule. After D3 the wait releases the context at its tick
+  boundary, so the dispatch context is never suspended in place and the extra layer never
+  exists.
 - **D4 · Bridges on contexts (1–2 wk).** One helper (`wasm_await_promise`-style) routes
   lib/3D/clipboard/font/nanosleep/stub parks through the same yield. After this **no
   `handleSleep` park happens inside a fiber at all** — the quarantine guard is demoted to a
@@ -274,6 +287,36 @@ the apparatus works and what its units are; the sizing DECISION needs deep-park 
 from real bridges, so it belongs to D3/D4, not here. A >75% buffer use beacons
 `BUFFER-PRESSURE`, because that overflow corrupts silently rather than crashing.
 
-Next: **D2** — the tick resumes a dispatch context instead of running handlers on the entry
-stack; scheduler policy enforces one runnable dispatch context; the interlock stays but is
-demoted to a tripwire asserting it never disagrees with the scheduler.
+### D2 — attempted, REVERTED, and resequenced behind D3 (2026-08-06)
+
+Landed from the attempt: **D2a** (wx `d220aae5`) moved the layer into wx's port as a
+header (`wx/wasm/private/sched_context.h`) so evtloop.cpp can see it — adding a `.cpp` to
+wx means bakefile regeneration. And a real **D1 bug fix** (wx `5ee60a81`): context stacks
+must be 16-byte aligned or every `EM_ASM` on a context traps in `readEmAsmArgs`
+(`assert(buf % 16 == 0)` — the arg buffer lives on the running stack).
+`std::vector<char>::data()` only has malloc's 8-byte alignment, so contexts were
+misaligned about half the time. D1's harness passed by allocation luck; wx's dispatch
+found it instantly with 107 failures.
+
+**Reverted: the dispatch switch itself.** With the tick's `ProcessEvents` on a context the
+battery went 363 → 388/7. Six of the seven were the coroutine-nested battery wedging at
+`fiber_create_run_destroy_inside_modal`, preceded by `aliased-wake-live` and killed by
+`fiber-resume-refused` — doc 19's exact mechanism. Cause: a quasi-modal opened from a tick
+handler suspends the dispatch context *inside* the still-in-place wait, so every
+libcontext fiber below now sits under one more Asyncify layer.
+
+Two designs were tried and both are dead ends while waits park in place:
+1. *Grow a pool* (one context per suspended one) — the nested harness burned all 8 in
+   30 ms, because a context suspended in a modal is consumed for that modal's lifetime.
+   Nesting depth would size the pool: a leak wearing a cap.
+2. *Fall back to entry-stack dispatch while suspended* — restores pre-D2 semantics for the
+   modal case and did fix the races `nested_quasi_modal_pump_error`, but the extra layer
+   is already there by the time the fallback is reached, so the nested battery still died.
+
+**Conclusion (plan correction):** D2 is not landable before D3. Sequence is now
+D3 → D2 → D4 → D5? → D6. Do not retry dispatch contexts until `wxWasmYieldUntil` yields
+its context; then the dispatch context is released at its tick boundary rather than
+suspended, and this whole failure class is structurally absent.
+
+Next: **D3** — `wxWasmYieldUntil` becomes a context yield; the doc-19 red spec
+(`tests/kicad/quasimodal-strand.spec.ts`) goes green and its `test.fail()` comes off.
