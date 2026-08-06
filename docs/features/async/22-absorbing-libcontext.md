@@ -230,6 +230,44 @@ Revised flip contents: **D5 + D + C + B + E**, landed together. That is a bigger
 commit than doc 22 §5 planned, and it is the honest consequence of the measurement —
 the alternative (landing D without D5) is the partial migration this document forbids.
 
+### What D5 actually costs (analysed 2026-08-07, before writing any of it)
+
+`wxGUIEventLoop::DoRun`'s top-level body is:
+
+```
+while( !m_shouldExit ) { wxWasmScheduleProcessEvents(); wxWasmYieldToBrowser(); }
+```
+
+The park is not incidental — it is how a *synchronous C++ frame* waits for the next
+frame. A frame that must not park has only one other way to wait: **return**. So D5 is
+not "run the loop on a context" bolted onto the current shape; it is:
+
+1. the loop body moves to a main-loop context whose per-frame wait is `yield_park`;
+2. `DoRun` **returns** to `main()`, and the app is thereafter driven by JS ticks calling
+   the pump (a rAF loop marking the main-loop context ready, then `drain_all()`);
+3. therefore `main()` must return without tearing wx down — the runtime stays alive
+   (`EXIT_RUNTIME=0`, no wx cleanup on that path).
+
+Step 3 is the real cost: it changes application lifetime, and the existing comments
+record that this area was deliberately built to avoid exactly that
+(`simulate_infinite_loop=1`'s unwind throw is fatal under native wasm-EH —
+docs/features/wasm-exceptions/08+09). Returning normally is NOT that throw and should be
+safe, but it needs its own gate: teardown paths, `~wxTopLevelWindowWasm`, the shutdown
+latch in S6, and the "quit notify only from IsMainFrame" fix from v0.1.28 all live on
+the assumption that DoRun returning means the app is ending.
+
+**No smaller fix exists, and this was checked rather than assumed:** the scheduler
+stack IS the main stack, so while the main stack is Asyncify-parked in the rAF yield,
+any pump entry re-enters wasm on a stack that is logically suspended — which is the
+`overlapped-wake` above. Since the loop parks every frame, there is no window in which
+pumping is safe. Hence the park has to go, and hence the return.
+
+**Recommended next move:** do D5 first and ALONE on the sub-branch, gated by the wx
+battery + coroutine trio (no KiCad build needed — it is wx-only), because it is the
+step most likely to be wrong and the cheapest to iterate on. Only once the main stack is
+provably scheduler-only should D/C/B/E be re-enabled on top; they are already written
+and committed here (`WIP star-flip`), currently sitting behind this blocker.
+
 ### Phase E — bridges on contexts (1 wk)
 
 Doc 21 §1's K1–K7 and W4/W5 through one `wasm_await_promise`-style helper. After this **no
