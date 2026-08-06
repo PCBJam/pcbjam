@@ -1,7 +1,8 @@
 # 20 — Design B core: parkable activities as scheduler contexts
 
-> **Status: IN PROGRESS — D-1, D0, D1 DONE; D2 attempted and resequenced behind D3
-> (work log §10). Phase order is now D3 → D2 → D4 → D5? → D6.** The remaining core of
+> **Status: IN PROGRESS — D-1, D0, D1 DONE; D2 attempted and resequenced; D3 started and
+> found to be larger than written (work log §10). Remaining order: **[tool contexts + D3
+> waits + D2 dispatch] as ONE atomic change** → D4 → D5? → D6.** The remaining core of
 > Design B ([`06`](06-design-b-fiber-first-runtime.md) B1+B2), scoped against what S0–S6
 > actually built ([`17`](17-mailbox-scheduler-plan.md)) and motivated by the
 > stranded-fiber hang ([`19`](19-quasimodal-fiber-strand.md)). Supersedes doc 12's
@@ -118,10 +119,21 @@ Two consequences worth stating plainly:
   libcontext: create context, swap-out to the scheduler, resume by swap-in, registry as
   truth, one transition in flight. Exercised only by a dedicated test app — **no
   production path switched yet**. Gate: new unit/app tests + full battery unchanged.
-- **D3 · Waits on contexts (1 wk) — NOW BEFORE D2, see §10's D2 attempt.**
+- **D3 · Waits on contexts — NOW BEFORE D2, and BIGGER THAN WRITTEN (see §10).**
   `wxWasmYieldUntil` becomes a context yield. **The doc-19 red spec goes green here** —
   modal/nested/popup no longer park a tool fiber's body.
   Gate: red→green + battery + kicad suite.
+
+  **Scope correction (measured 2026-08-06):** "the wait yields its context" requires the
+  wait's caller to be ON that context. The doc-19 call path is a KiCad **tool coroutine**
+  (a libcontext fiber) opening a dialog, so the live stack belongs to the tool fiber while
+  the registry's running context is whatever dispatched it. A yield there would save the
+  tool fiber's stack into the host context's fiber struct — silent corruption, now refused
+  by `yield_park`'s stack-ownership check (`foreignStackRefusals`). **So D3 must also make
+  the tool coroutine itself a scheduler context** (§5's architecture already lists "tool
+  contexts" as one of the three kinds the scheduler drains; the phase text did not).
+  Nesting a fiber inside a context is fine — that is pinned green by
+  `fiber_nests_in_context` — the constraint is only about *whose* context a wait yields.
 - **D2 · Dispatch contexts (1–2 wk) — resequenced AFTER D3.** The tick resumes a dispatch
   context instead of running handlers on the entry stack; scheduler policy enforces one
   runnable dispatch context. The interlock stays, demoted to a **tripwire** asserting it
@@ -318,5 +330,33 @@ D3 → D2 → D4 → D5? → D6. Do not retry dispatch contexts until `wxWasmYie
 its context; then the dispatch context is released at its tick boundary rather than
 suspended, and this whole failure class is structurally absent.
 
-Next: **D3** — `wxWasmYieldUntil` becomes a context yield; the doc-19 red spec
-(`tests/kicad/quasimodal-strand.spec.ts`) goes green and its `test.fail()` comes off.
+### D3 — started: the ownership rule found and guarded (2026-08-06)
+
+Implementing D3 immediately surfaced a hole in its own phase description. "The wait yields
+its context" presumes the caller runs on that context, and the doc-19 path does not: the
+dialog is opened from a KiCad **tool coroutine**, a libcontext fiber swapped in above
+whatever dispatched it. `pcbjam_sched::current()` would name the host context while the
+live stack belongs to the tool fiber, so the yield would `emscripten_fiber_swap` through
+the *host's* fiber struct and save the *tool's* stack into it — corruption that is
+undetectable once written.
+
+Landed (wx `fc762bed`, pcbjam `0d40938`):
+- `yield_park` now verifies the caller's frame lies inside the running context's C stack
+  and refuses otherwise, counted as `foreignStackRefusals`. **The rule: a wait must yield
+  the context that OWNS its stack.**
+- Two harness scenarios. `fiber_nests_in_context` pins that a libcontext-style fiber nests
+  inside a context perfectly well — worth stating because an earlier, buggy version of the
+  scenario trapped `unreachable` and briefly looked like proof that nesting was impossible
+  (the real cause was the test's own zero-initialised `emscripten_fiber_t`, whose swap
+  unwound into a null asyncify buffer). `foreign_stack_refused` pins the refusal and that
+  the scheduler survives it.
+
+**Consequence for the remaining work:** D3 is not "swap one park primitive". It is
+(a) tool coroutines become scheduler contexts, (b) waits yield the owning context,
+(c) dispatch moves onto a context (the old D2). Those three are one atomic change — each
+alone regresses, as D2's attempt already showed. Doc 12's "partial migration is worse than
+none" is now measured twice, from two directions.
+
+Next: the atomic D3+D2 landing, starting with tool coroutines as contexts — i.e. teaching
+the scheduler about `COROUTINE`/libcontext rather than adding a second fiber system beside
+it.
