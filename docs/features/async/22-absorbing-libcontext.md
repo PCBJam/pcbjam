@@ -232,6 +232,10 @@ the alternative (landing D without D5) is the partial migration this document fo
 
 ### What D5 actually costs (analysed 2026-08-07, before writing any of it)
 
+> **DONE 2026-08-07 — see §10's D5 entry.** Options (1)+(2) below were both needed;
+> delta-zero on the batteries; three non-D5 findings recorded there, including a real
+> regression in the WIP libcontext change that must be fixed before the flip.
+
 `wxGUIEventLoop::DoRun`'s top-level body is:
 
 ```
@@ -482,7 +486,77 @@ scheduler-owned lifetimes, and it should be re-measured after that flip.
 
 Baseline tags `phase-a-pre` on root/pcbjam/kicad/wxwidgets.
 
-## 11. Open questions
+### D5 — built, measured, delta-zero (2026-08-07) ✅ with findings
+
+Baseline tags `d5-pre` on root/pcbjam/kicad/wxwidgets. Option (1)+(2) from the analysis
+above: the wasm `OnRun` override alone is NOT enough — verified: `wxEntryReal` runs
+`OnExit()` (the `CallOnExit` destructor) and the `wxInitializer` destructor's
+`wxEntryCleanup` right after `OnRun` returns — so a minimal `__WXWASM__`-gated change
+in `init.cpp` accompanies it.
+
+**Landed (wxwidgets, on the sub-branch):**
+
+- `wxApp::OnRun()` (wasm port) calls `wxWasmDetachMainLoop(this)`: the whole stock main
+  loop (`wxAppBase::OnRun` → `MainLoop` → `Run` → `DoRun`) moves onto a `wx-main-loop`
+  fiber-lane context (1 MB stack / 512 K asyncify, same sizing as the dispatch context),
+  so the loop object, its activator and `m_shouldExit` all live on the context stack and
+  `ScheduleExit`/`IsInsideRun` keep working. On detach failure it falls back to the
+  inline loop (pre-D5 shape) — nothing depends on the context existing.
+- `DoRun`'s per-frame wait: `can_yield_here()` → arm a rAF wake → `yield_park("frame")`;
+  else the old in-place `wxWasmYieldToBrowser`. The rAF callback and the first kick are
+  both fresh JS tasks calling `wxWasmMainLoopPump` (Fresh → `fiber_start`, parked at
+  "frame" → `mark_ready`, then `drain_all`) — mirroring `wxWasmDispatchOnContext`.
+- **First entry MUST come from a clean task AFTER `main()` returns** (a `setTimeout` kick
+  armed in the detach): entering from `OnRun`'s own frame would capture `main()`/`wxEntry`
+  frames into the scheduler fiber's buffer and `main` would "return" inside a later
+  pump's rewind.
+- **Main-stack bounds are captured in the detach**, the last moment we provably stand on
+  the main stack — `DoRun` now runs on the context, where the live-query trap (§7.2)
+  would record the context's bounds and silently break `wxWasmOnCoroutineStack`.
+- Teardown moved to the loop context's exit path: after the loop exits (S6 latch fires as
+  before), the context entry runs `OnExit()` + `wxUninitialize()`, then parks forever.
+  `init.cpp` (`__WXWASM__`-gated): `CallOnExit` skips `OnExit` when detached, and a
+  `wxAtomicInc(gs_initData.nInitCount)` after `OnRun` pins `wxEntryCleanup` off — the
+  loop context's own `wxUninitialize` balances it. `EXIT_RUNTIME` is unset (default 0)
+  everywhere, so `main()` returning keeps the runtime alive.
+- Doc 22 flip staging switches in evtloop.cpp: `wxWASM_STAR_DISPATCH` (Phase D tick
+  dispatch, currently 0 — re-enable for the flip) and `wxWASM_D5_DETACH` (1).
+
+**Gate: 387 passed / 3 skipped across wx battery + asyncify + coroutine projects with
+D5 ON, and — the load-bearing number — the failure set is IDENTICAL with D5 OFF (same
+tree, toggle flipped): D5 is delta-zero.** The per-frame scheduler↔loop-context swap
+pairs are visible and clean in the flight recorder (`rf=wxWasmMainLoopPump`). The
+failures themselves predate D5, and a working-tree bisection (revert one file at a time,
+rebuild apps, rerun) decomposed them into three ingredients — none of them D5:
+
+1. **The WIP `jump_fcontext`→`fiber_transfer` libcontext change is NOT
+   behavior-preserving even when dormant.** With it, coroutine-nested dies at
+   `baseline_fiber_alone` (`hot-main-swap-out` → `Aborted` inside the swap); with the
+   file reverted to Phase A — everything else identical — that case passes. The
+   fallback path (`current()==0` → Phase A direct swap) is NOT the no-op it claims to
+   be; find the delta before the flip re-enables it. This also corrects this doc's
+   earlier attribution: the WIP-tip nested failure was blamed on the D wiring, but it
+   reproduces with the D tick gated off.
+2. **The Phase A scoreboard is stale for coroutine-nested TODAY:** at the exact Phase A
+   state (wx `719fd98798`, Phase A shim + libcontext, freshly rebuilt), nested dies
+   deterministically at `fiber_yield_across_modal_close` — `hot-main-swap-out`
+   occurrence 3 → abort — on both engines. Nothing on the branch causes it; the 8/6
+   green is not reproducible in today's environment. Re-baseline before attributing
+   nested reds to a change.
+3. **`asyncify-races` `wakeup_during_transition` sits on the same cliff:** green at
+   Phase A wx, red with the WIP+D5-dark wx library on the same shim/libcontext — it
+   flips with wx binary layout/timing, not with any active code path.
+
+All three are the `hot-main-swap-out` wake-window class (doc 21's W/K sites): a
+libcontext jump inside a root sleep-wake continuation writes a ~1 KB unrewindable
+capture (`rem=` telemetry confirms), and whether the eventual rewind survives is
+environment- and layout-sensitive. That fragility is not fixable at D5 — it is exactly
+what C+B+E remove structurally (no in-place parks → no wake windows → no hot jumps), so
+expect these harnesses to go green AT the flip, not before it.
+
+**Still open from the teardown gate:** the detached exit path (loop exits → `OnExit` +
+`wxUninitialize` on the context) compiles and is reachable but no battery spec drives a
+real app quit through it; add one before the flip relies on it.
 
 1. **pthreads.** Doc 21 §2 settled that every Asyncify park is main-thread and the lib
    bridge's worker path is a blocking proxy. Phase A must re-check that libcontext is never
