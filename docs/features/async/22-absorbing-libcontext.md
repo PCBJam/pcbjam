@@ -745,6 +745,55 @@ sleeping-in-place. Notes for whoever takes it:
   never the harness battery — the harness has no `RunSynchronousAction` and will stay
   green either way. That is this session's most transferable lesson.
 
+### The sleep moved to a context — and the REAL blocker surfaced (2026-08-07)
+
+**Built and measured.** `wasm/shims/context_sleep.cpp`: a main-thread `nanosleep`
+whose frame stands on a scheduler context that OWNS the stack arms a mailbox wake and
+`yield_park`s that context instead of suspending the stack in place; anything else
+falls back to the Asyncify yield. It lives in the sleep primitive rather than in
+`tool_manager.cpp` deliberately — KiCad and the wx core stay untouched (CLAUDE.md's
+fork rule), and the whole K7 class moves at once instead of the one measured caller.
+
+**One correction paid for on the way, worth keeping in mind for every future park
+site: a context may have only ONE wake owner.** The first cut parked whatever context
+was current, including the MAIN-LOOP context — whose wake already belongs to the rAF
+pump. The frame wake then resumed a capture the sleep wake had consumed:
+`doRewind` trap arriving through `wxWasmArmFrameWake`, and the eeschema simulator spec
+went red at D-off. `wxWasmContextWakeIsPumpOwned()` now excludes the main-loop and
+dispatch contexts (their parks are the pumps' contract); tool coroutines, which have
+no other wake source, are exactly the ones that park. **D-off re-verified at 139/1
+with the shim in — it is correct-or-inert exactly as required.**
+
+**At D-on the four canvas-tool specs still fail, and the trace names a DIFFERENT
+cause — the one that actually blocks Phase D.** The fatal swap is
+`fcs old=<libcontext ROOT> new=<tool coroutine> rf=dynCall_iiii`, and the JS stack
+above it is `mouseEventHandlerFunc` → `registerMouseEventCallback`: **a DOM mouse
+handler entering wasm DIRECTLY on the main stack**, not through the tick.
+
+So the same tool coroutine is entered by two different mechanisms:
+
+| entry | path | how the coroutine is resumed |
+|---|---|---|
+| the tick (`wxWasmTopLevelTick`) | dispatch context → `fiber_transfer` | STAR: parked by the scheduler, capture owned by the scheduler swap |
+| a DOM mouse/key handler | main stack, `current() == 0` → direct-swap fallback | SYMMETRIC: entered by `emscripten_fiber_swap` from the root |
+
+A coroutine suspended by a star transfer and later resumed by a direct symmetric swap
+rewinds through an entry path its capture was not written for — `index out of bounds`
+in `doRewind`. This is doc 22 §7 rule 5 (partial migration is worse than none) in its
+purest measured form, and it explains why the harness stays green: its coroutines are
+only ever entered from one place.
+
+**Therefore the next Phase B/D increment is not another park site — it is the DOM
+event entries.** Every `registerMouseEventCallback` / key / wheel / resize handler that
+today runs wx dispatch inline on the main stack must instead hand its event to the
+dispatch context (enqueue + pump), exactly as the tick already does. Only when EVERY
+entry into a tool coroutine goes through the scheduler does the mixed-mode rewind
+class disappear. Note this also subsumes the "one root" work: with no dispatch on the
+main stack, `resolve_root_identity()` always answers "the running context".
+
+**Landing state: `wxWASM_STAR_DISPATCH` back to 0**, context-sleep and its
+pump-ownership guard kept (inert at D-off, verified 139/1).
+
 1. **pthreads.** Doc 21 §2 settled that every Asyncify park is main-thread and the lib
    bridge's worker path is a blocking proxy. Phase A must re-check that libcontext is never
    driven from a worker before assuming the scheduler is main-thread-only.

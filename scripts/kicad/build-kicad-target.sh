@@ -506,7 +506,14 @@ if [ "${APP_NAME}" = "kicad_tools" ] || [ "${APP_NAME}" = "occ_service" ]; then
     NANOSLEEP_YIELD_LINK=""
 else
     emcc -c -pthread "${PROJECT_ROOT}/wasm/shims/nanosleep_yield.c" -o "${STUBS_BUILD}/nanosleep_yield.o"
-    NANOSLEEP_YIELD_LINK="${STUBS_BUILD}/nanosleep_yield.o"
+    # Its scheduler-aware half (docs/features/async/22 Phase B): a main-thread
+    # sleep on a scheduler context parks THAT CONTEXT instead of suspending the
+    # stack in place. C++ because the registry is a header-only C++ layer in
+    # wx's port, hence WX_CXXFLAGS for the include path (the same reason
+    # thirdparty/libcontext needed it at Phase A).
+    em++ -c -std=c++17 -pthread ${WX_CXXFLAGS} \
+        "${PROJECT_ROOT}/wasm/shims/context_sleep.cpp" -o "${STUBS_BUILD}/context_sleep.o"
+    NANOSLEEP_YIELD_LINK="${STUBS_BUILD}/nanosleep_yield.o ${STUBS_BUILD}/context_sleep.o"
 fi
 
 # mallinfo() stub for the mimalloc build: -sMALLOC=mimalloc doesn't export the

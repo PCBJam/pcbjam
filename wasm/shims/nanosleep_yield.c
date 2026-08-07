@@ -33,13 +33,28 @@ EM_ASYNC_JS( void, __wasm_main_thread_yield_ms, ( double ms ), {
     await new Promise( function( resolve ) { setTimeout( resolve, ms ); } );
 } );
 
+/*
+ * Scheduler-aware sleep (context_sleep.cpp, docs/features/async/22 Phase B):
+ * when this frame stands on a scheduler context that owns the stack, the wait
+ * PARKS THAT CONTEXT instead of suspending the stack in place. Returns 0 when
+ * no context owns the stack, and then the Asyncify yield below is still right.
+ *
+ * This is what makes TOOL_MANAGER::RunSynchronousAction's spin loop safe under
+ * Phase D: an in-place park inside a tool body leaves a capture in flight for a
+ * star transfer to land on (doRewind -> "index out of bounds").
+ */
+extern int pcbjam_context_sleep_ms( double ms );
+
 int nanosleep( const struct timespec* req, struct timespec* rem )
 {
     if( req )
     {
         double ms = (double) req->tv_sec * 1000.0 + (double) req->tv_nsec / 1.0e6;
         if( emscripten_is_main_runtime_thread() )
-            __wasm_main_thread_yield_ms( ms ); /* yield -> event loop runs -> Worker boots */
+        {
+            if( !pcbjam_context_sleep_ms( ms ) )
+                __wasm_main_thread_yield_ms( ms ); /* yield -> event loop runs -> Worker boots */
+        }
         else
             emscripten_thread_sleep( ms );     /* worker: real blocking sleep */
     }
