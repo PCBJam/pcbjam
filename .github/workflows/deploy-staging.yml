@@ -100,10 +100,10 @@ jobs:
         env:
           STAGING_TAG: staging-${{ github.sha }}
         run: |
-          curl --fail --retry 12 --retry-delay 5 "$CDN_ORIGIN/wasm/manifest-$STAGING_TAG.json" >/dev/null
-          curl --fail --retry 12 --retry-delay 5 "$EDITOR_ORIGIN/" >/dev/null
-          curl --fail --retry 12 --retry-delay 5 -I "$CDN_ORIGIN/wasm/manifest-$STAGING_TAG.json" | grep -qi '^access-control-allow-origin: \*'
-          headers=$(curl --fail --retry 12 --retry-delay 5 -I "$EDITOR_ORIGIN/")
+          curl --fail --retry 12 --retry-delay 5 --retry-all-errors "$CDN_ORIGIN/wasm/manifest-$STAGING_TAG.json" >/dev/null
+          curl --fail --retry 12 --retry-delay 5 --retry-all-errors "$EDITOR_ORIGIN/" >/dev/null
+          curl --fail --retry 12 --retry-delay 5 --retry-all-errors -I "$CDN_ORIGIN/wasm/manifest-$STAGING_TAG.json" | grep -qi '^access-control-allow-origin: \*'
+          headers=$(curl --fail --retry 12 --retry-delay 5 --retry-all-errors -I "$EDITOR_ORIGIN/")
           echo "$headers" | grep -qi '^cross-origin-opener-policy: same-origin'
           echo "$headers" | grep -qi '^cross-origin-embedder-policy: require-corp'
           echo "$headers" | grep -qi '^x-robots-tag:.*noindex'
