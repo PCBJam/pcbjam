@@ -694,10 +694,56 @@ flip — this measurement just proves the ordering is not negotiable and that D-
 without it is precisely the partial migration §7.5 forbids.
 
 **Landing state: `wxWASM_STAR_DISPATCH` back to 0**, with everything above kept —
-all of it is correct-or-inert at D-off, and gaps 1+2 stay closed for the flip. The
-next Phase B increment is the tool-side park inventory (doc 21 §1's KiCad rows) moved
-onto contexts, after which D-on gets re-measured against the KiCad suite, not the
-harness.
+all of it is correct-or-inert at D-off, and gaps 1+2 stay closed for the flip.
+
+### The tool-body park site, NAMED (2026-08-07) — `RunSynchronousAction`'s spin loop
+
+Traced rather than inferred, and it is ONE site, not the open-ended set doc 21's K7 row
+feared:
+
+```
+TOOL_MANAGER::RunSynchronousAction        kicad/include/tool/tool_manager.h:197
+  -> processEvent( event )                kicad/common/tool/tool_manager.cpp:366
+  -> while( synchronousControl == STS_RUNNING ) {   :368
+         wxYield();                                  :370   nested dispatch
+         wxMilliSleep( 1 );                          :371   -> nanosleep
+     }
+        nanosleep (main thread)           wasm/shims/nanosleep_yield.c:41
+          -> __wasm_main_thread_yield_ms                    :32  EM_ASYNC_JS
+             = AN ASYNCIFY PARK OF THE STACK IT STANDS ON, in a loop, inside a tool body
+```
+
+**This is doc 21's K7 row, and its caller set is not "anything that sleeps" — for the
+canvas tools it is exactly this one loop.** The evidence closing the case is that
+`RunSynchronousAction`'s callers are precisely the tools whose specs died at D-on:
+`pcbnew/tools/edit_tool_move_fct.cpp` (move-with-m, presence-locks move),
+`eeschema/tools/sch_drawing_tools.cpp` (draw wires), the drawing/edit tools behind
+draw-lines. The spec comments already described the symptom from the outside —
+"KiCad's GAL updates the active tool's world-space cursor from the **asyncified**
+pointer-move handler" — without naming the park; this is that park.
+
+Why it is fatal under D-on specifically: the loop parks the stack it stands on and then
+`wxYield()`s, so a nested dispatch runs tool work ON TOP of a stack that is mid-park.
+Pre-D that stack was the entry stack and the fiber layer never tried to move it; with
+dispatch on a context, a star transfer targets a context whose capture is mid-flight —
+`doRewind` → `index out of bounds`.
+
+**The fix shape (next increment): the wait must yield the owning context.** Replace the
+spin with a context park — `synchronousControl` transitioning out of `STS_RUNNING`
+marks the parked context ready — so the frame waits by yielding rather than by
+sleeping-in-place. Notes for whoever takes it:
+
+- This is a `tool_manager.cpp` change, i.e. the first Phase B edit to KiCad proper, so
+  §5's divergence question comes due (accept it, or hide the park behind a wx-side
+  helper the wasm port supplies and KiCad calls unconditionally — the latter keeps the
+  fork close to upstream and is likely possible, since the loop only needs "wait until
+  this atomic changes").
+- `wxYield()` inside the loop must keep working: under the star it becomes "let the
+  scheduler run other contexts", which is what a context park already does — so the
+  yield call can likely go away with the sleep rather than be ported.
+- Gate on the **KiCad suite** (the four canvas-tool specs are the red-to-green pins),
+  never the harness battery — the harness has no `RunSynchronousAction` and will stay
+  green either way. That is this session's most transferable lesson.
 
 1. **pthreads.** Doc 21 §2 settled that every Asyncify park is main-thread and the lib
    bridge's worker path is a blocking proxy. Phase A must re-check that libcontext is never
