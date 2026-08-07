@@ -529,13 +529,16 @@ pairs are visible and clean in the flight recorder (`rf=wxWasmMainLoopPump`). Th
 failures themselves predate D5, and a working-tree bisection (revert one file at a time,
 rebuild apps, rerun) decomposed them into three ingredients — none of them D5:
 
-1. **The WIP `jump_fcontext`→`fiber_transfer` libcontext change is NOT
-   behavior-preserving even when dormant.** With it, coroutine-nested dies at
-   `baseline_fiber_alone` (`hot-main-swap-out` → `Aborted` inside the swap); with the
-   file reverted to Phase A — everything else identical — that case passes. The
-   fallback path (`current()==0` → Phase A direct swap) is NOT the no-op it claims to
-   be; find the delta before the flip re-enables it. This also corrects this doc's
-   earlier attribution: the WIP-tip nested failure was blamed on the D wiring, but it
+1. **The WIP `jump_fcontext`→`fiber_transfer` libcontext change moves the nested
+   death from case 5 to case 2** (`baseline_fiber_alone`, `hot-main-swap-out` →
+   `Aborted` inside the swap); reverting the one file moves it back — but does NOT
+   make the suite green (see 2). Whether that is a semantic delta in the dormant
+   fallback (`current()==0` → Phase A direct swap — a line-by-line audit found none:
+   the `transfer_value` assignments are idempotent and the transfer branch is
+   unreachable) or merely binary layout shifting the same cliff (finding 3 proves
+   layout alone can) is UNDETERMINED. Treat it as a cliff datapoint, not a proven
+   regression — do not burn a build cycle hunting a delta that may not exist. What
+   IS corrected: the WIP-tip nested failure was blamed on the D wiring, but it
    reproduces with the D tick gated off.
 2. **The Phase A scoreboard is stale for coroutine-nested TODAY:** at the exact Phase A
    state (wx `719fd98798`, Phase A shim + libcontext, freshly rebuilt), nested dies
@@ -557,6 +560,88 @@ expect these harnesses to go green AT the flip, not before it.
 **Still open from the teardown gate:** the detached exit path (loop exits → `OnExit` +
 `wxUninitialize` on the context) compiles and is reachable but no battery spec drives a
 real app quit through it; add one before the flip relies on it.
+*(Closed the same day: `tests/e2e/app-quit.spec.ts` + a `wx_test_quit` hook in
+`minimal_test.cpp` drive a real File→Quit-shaped exit and assert the S6 latch fires
+"clean" with no traps — green in the D-on probe below.)*
+
+### D-on probe (2026-08-07) — flip staging measured; the cliff solved; two Phase B gaps named
+
+`wxWASM_STAR_DISPATCH=1` on top of D5 engages D (dispatch context) + C (waits park it)
++ B's transfer mechanism (libcontext root adopts the running context, jumps become
+transfers) in one flip. Three build-measure cycles, each fixing what the previous named:
+
+**1. THE "ENVIRONMENTAL CLIFF" WAS ADOPTED-STACK ALIGNMENT — §7 trap 1, live all week.**
+The first D-on run killed the plain coroutine suite at its FIRST case with
+`Aborted(Assertion failed)`; the JS stack named `readEmAsmArgs`'s `buf % 16 == 0`
+assert. The coroutine harness allocates fiber stacks with `std::make_unique<char[]>` —
+plain `new`, 8-byte aligned — and `fiber_create` adopted the range raw, so whether a
+given stack landed 16-aligned was HEAP-HISTORY LUCK. Phase A moved the 512 K asyncify
+buffers into registry-malloc'd blocks, shifting the heap layout for everything after —
+which is why the deaths appeared this week, moved with any binary change, were
+deterministic per build, and read as "environmental". **This retires the D5 entry's
+findings 2 and 3 with a mechanism**: nested's case-5 death and the races layout flips
+were alignment luck, not a mystery. Fix: `fiber_create` adopts the largest 16-aligned
+sub-range (bottom up, size down, ≤30 bytes lost) and refuses stacks too small to align.
+KiCad's real `COROUTINE` maps whole pages (aligned), which is why production never saw
+it — only `new char[]` clients (the harness) sat on the cliff.
+
+**2. With alignment fixed, D5+D reached 388 passed** — plain coroutine, coroutine-
+pthread, `wakeup_during_transition` AND the new app-quit teardown spec all green.
+Remaining: nested `fiber_create_run_destroy_inside_modal`
+(`[sched-ctx] REFUSED mark_ready() on a running context` — the modal's wake was lost)
+and races `nested_quasi_modal_pump_error` (watchdog, suspension never completed).
+
+**3. THE ONE-ROOT BINDING WAS WRONG — the root's identity is a PER-JUMP question.**
+The D wiring bound libcontext's root ONCE to `current()` at first jump (the dispatch
+context). But mailbox timers and DOM handlers still enter on the MAIN stack until
+Phase E completes, and a timer jumping a fiber from the main stack then used the
+DISPATCH context's fiber struct as its from-side while that context sat PARKED in a
+modal — overwriting the parked capture, marking it Running, and losing the modal's
+resolve (`mark_ready() on a running context`). Landed in libcontext:
+`resolve_root_identity()` (the running scheduler context, else a lazily-adopted
+main-stack fiber) stamps the root at EVERY jump out, replacing the bind-once.
+
+A second half was attempted and REVERTED the same day: routing a jump INTO the root
+at "whoever entered me" (`entered_from_sched`), to cover a delayed yield-back after
+other stacks re-stamped the root. It is wrong for `CONTINUE_AFTER_ROOT` — that
+invocation jumps into the root struct meaning THE ACTUAL ROOT of the moment (to run
+a main-stack functor), not the enterer, and misrouting it threw an uncaught C++
+exception out of a rewind (`nested_coroutine_call_and_resume`). Correct routing is
+invocation-aware — libcontext only sees the type inside `INVOCATION_ARGS` — which is
+Phase B's redesign, not an adapter patch. The delayed-yield-back stale stamp is
+therefore gap 3 below (it only bites with D on).
+
+**4. That fix un-hid the last gap: FINISHED-COROUTINE TRANSFER LIVELOCK.** With the
+routing correct, nested's case-3 mechanism is closed but the plain coroutine suite
+livelocked: the recorder shows two finished coroutines' trampoline "bounce" loops
+(`while(true)` re-entry ghost contract) expressed as star transfers, each bounce
+marking the other Ready — a mutual re-queue that ping-pongs across ticks forever. One
+symptom of the same incompleteness: `sched-divergence-enterable` storms on every
+transfer jump, because `fiber_enterable()` predates the star statuses (a
+transfer-parked context reads Parked, not Suspended). This is exactly the Phase B §5
+scope ("give COROUTINE an owning handle", "the CONTINUE_AFTER_ROOT loop should
+disappear rather than be ported") — not patchable at the adapter.
+
+**Decision: `wxWASM_STAR_DISPATCH` back to 0.** D5 + the alignment fix + the
+root-identity fix land as proven groundwork (all are correct or inert at D-off); the
+flip re-enables the switch when Phase B owns coroutine lifetimes. The two gaps it must
+close, each with a deterministic repro suite:
+
+1. **Wake ordering**: a resolve arriving while the target context is Running must
+   QUEUE (the S2 deferred-wake law applied to the registry), not refuse —
+   `mark_ready() on a running context` is a lost wake today. Repro: nested case 3
+   at D-on (pre-root-fix shape).
+2. **Finished-coroutine lifetime**: transfers into/out of trampoline re-entry loops
+   livelock; Phase B's owning handles + scheduler-owned lifetimes replace the ghost
+   bounce. Repro: plain coroutine suite at D-on with the root-identity fix. Include
+   the `fiber_enterable()` status mapping (Parked/Ready are valid suspensions for
+   the cross-check) in the same change.
+3. **Invocation-aware root routing**: a jump into the root struct must resolve to
+   the actual-root-of-the-moment for `CONTINUE_AFTER_ROOT` but to the enterer's
+   identity for a delayed yield-back (a coroutine resumed across JS turns after
+   other stacks re-stamped the root). The adapter cannot tell them apart; the star
+   topology (every party a context, `return_to` a registry id) makes the question
+   disappear.
 
 1. **pthreads.** Doc 21 §2 settled that every Asyncify park is main-thread and the lib
    bridge's worker path is a blocking proxy. Phase A must re-check that libcontext is never

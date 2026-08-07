@@ -20,7 +20,18 @@
 #include "wx/spinctrl.h"
 #include "wx/srchctrl.h"
 
+#include <emscripten.h>
+
 #include <vector>
+
+// Quit hook for the app-quit teardown spec (docs/features/async/22 D5): close
+// the main frame exactly as File->Quit would, so the spec can drive a real
+// app exit through the detached main-loop teardown path from JS.
+extern "C" void EMSCRIPTEN_KEEPALIVE wx_test_quit()
+{
+    if (wxTheApp && wxTheApp->GetTopWindow())
+        wxTheApp->GetTopWindow()->Close(true);
+}
 
 // Control IDs
 enum {
