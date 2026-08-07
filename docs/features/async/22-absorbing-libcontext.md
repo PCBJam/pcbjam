@@ -268,6 +268,31 @@ step most likely to be wrong and the cheapest to iterate on. Only once the main 
 provably scheduler-only should D/C/B/E be re-enabled on top; they are already written
 and committed here (`WIP star-flip`), currently sitting behind this blocker.
 
+**Where the D5 change must go — traced, and it is not in the wasm layer.** The call
+chain is `main()` → `wxEntry` → `wxApp::OnRun()` → `MainLoop()` → `wxEventLoop::Run()`
+→ `wxGUIEventLoop::DoRun()`, and `wx/app.h:102` states the contract plainly: *"When
+OnRun() returns, the program starts shutting down."* So `DoRun` returning is not a local
+wasm-port decision — it propagates up into wx's own teardown.
+
+That collides with CLAUDE.md's standing rule ("don't change the wxwidgets core unless
+absolutely necessary; fix things in the wasm layer"). This is the case that rule's
+escape hatch exists for, but it must be taken deliberately, not discovered mid-flip.
+Three options, in the order they should be evaluated:
+
+1. **A wasm-port `OnRun` override** that starts the main-loop context, returns to JS,
+   and never lets wx's shutdown path run — keeps the change inside `src/wasm/`, which
+   is where the rule wants it. Verify what `wxEntry` does after `OnRun` returns before
+   assuming this is enough.
+2. **A core `wxEntry`/`OnRun` change** gated behind `__WXWASM__`, if (1) cannot keep
+   teardown from running.
+3. **Keep `DoRun` from returning at all** by parking its frame on a context — rejected
+   above, because the frame that waits for the next browser frame must either park the
+   stack it stands on (the thing D5 removes) or return.
+
+Whichever is chosen, the gate must cover teardown explicitly: `~wxTopLevelWindowWasm`,
+S6's shutdown latch, and v0.1.28's "quit notify only from IsMainFrame" fix all encode
+the current assumption that a returning `DoRun` means the app is ending.
+
 ### Phase E — bridges on contexts (1 wk)
 
 Doc 21 §1's K1–K7 and W4/W5 through one `wasm_await_promise`-style helper. After this **no
