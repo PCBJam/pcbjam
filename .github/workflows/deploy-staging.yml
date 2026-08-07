@@ -85,10 +85,13 @@ jobs:
       - name: Build staging editor
         env:
           STAGING_TAG: staging-${{ github.sha }}
-        run: >
-          node scripts/deploy/build-editor.mjs --tag "$STAGING_TAG"
-          --cdn "$CDN_ORIGIN" --api-base "$API_ORIGIN"
-          --app-base "$APP_ORIGIN" --errors-env staging
+        run: |
+          node scripts/deploy/build-editor.mjs --tag "$STAGING_TAG" \
+            --cdn "$CDN_ORIGIN" --api-base "$API_ORIGIN" \
+            --app-base "$APP_ORIGIN" --errors-env staging
+          # Worker Static Assets uses not_found_handling=single-page-application.
+          # The generated _redirects file is for Pages and duplicates that fallback.
+          rm -f web/standalone/dist/_redirects
 
       - name: Deploy staging editor Worker
         run: npx --yes wrangler@4.99.0 deploy --config web/standalone/wrangler.staging.jsonc
