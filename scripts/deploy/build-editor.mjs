@@ -86,7 +86,10 @@ function main() {
   const standalone = join(repoRoot, "web/standalone");
   const dist = join(standalone, "dist");
   const publicWasm = join(standalone, "public/wasm");
-  const stash = join(standalone, "public/.wasm.editor-stashed");
+  // Keep the temporary symlink OUTSIDE public/. Vite copies every public entry,
+  // including dot-directories; stashing it under public previously smuggled the
+  // full local WASM tree into dist under `.wasm.editor-stashed/`.
+  const stash = join(standalone, ".wasm.editor-stashed");
 
   const env = {
     ...process.env,
@@ -152,6 +155,7 @@ function main() {
 
   // Belt-and-suspenders: never ship local wasm even if a copy slipped through.
   rmSync(join(dist, "wasm"), { recursive: true, force: true });
+  rmSync(join(dist, ".wasm.editor-stashed"), { recursive: true, force: true });
 
   // Same Pages headers as the demo: COOP/COEP for WASM threads (the API's CORS
   // satisfies COEP for credentialed cross-origin fetches) + SPA fallback.

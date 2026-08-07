@@ -1,0 +1,12 @@
+{
+  "$schema": "../../../node_modules/wrangler/config-schema.json",
+  "name": "pcbjam-cdn-staging",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-27",
+  "workers_dev": true,
+  "preview_urls": false,
+  "observability": { "enabled": true },
+  "r2_buckets": [
+    { "binding": "BUCKET", "bucket_name": "pcbjam-cdn-staging" }
+  ]
+}

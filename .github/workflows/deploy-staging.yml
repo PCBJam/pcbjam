@@ -1,0 +1,106 @@
+name: deploy staging (GPL stack)
+
+on:
+  push:
+    branches: [staging]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-staging-gpl
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "22"
+  CDN_ORIGIN: https://pcbjam-cdn-staging.pcbjam-staging.workers.dev
+  API_ORIGIN: https://pcbjam-server-staging.pcbjam-staging.workers.dev
+  APP_ORIGIN: https://pcbjam-app-staging.pcbjam-staging.workers.dev
+  EDITOR_ORIGIN: https://pcbjam-editor-staging.pcbjam-staging.workers.dev
+  BUCKET: pcbjam-cdn-staging
+  WRANGLER_CMD: npx --yes wrangler@4.99.0
+
+jobs:
+  build:
+    uses: ./.github/workflows/wasm-build.yml
+    with:
+      opt_level: "-O1"
+      build_3d_viewer: "ON"
+      run_tests: true
+      upload_output: true
+
+  publish-and-deploy:
+    needs: build
+    runs-on: ubicloud-standard-8
+    timeout-minutes: 90
+    environment: staging
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Validate staging deployment credentials
+        run: |
+          test -n "$CLOUDFLARE_API_TOKEN" || { echo "staging CLOUDFLARE_API_TOKEN is missing"; exit 1; }
+          test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo "staging CLOUDFLARE_ACCOUNT_ID variable is missing"; exit 1; }
+          test "$CLOUDFLARE_ACCOUNT_ID" = "5be62ba000cabfaad4d11a6ef28f8395" || { echo "refusing to deploy outside the staging Cloudflare account"; exit 1; }
+
+      - name: Init pcbjam-shared submodule
+        run: git submodule update --init --depth 1 web/pcbjam-shared
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Install standalone workspace
+        run: pnpm --dir web install --frozen-lockfile
+
+      - name: Download WASM output
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-output
+          path: output
+
+      - name: Publish WASM to staging R2
+        env:
+          STAGING_TAG: staging-${{ github.sha }}
+        run: >
+          node scripts/deploy/publish-wasm.mjs --tag "$STAGING_TAG"
+          --src output --driver r2 --bucket "$BUCKET" --remote
+          --compress br --quality 11
+
+      - name: Deploy staging CDN Worker
+        run: npx --yes wrangler@4.99.0 deploy --config workers/cdn/wrangler.staging.jsonc
+
+      - name: Build staging editor
+        env:
+          STAGING_TAG: staging-${{ github.sha }}
+        run: >
+          node scripts/deploy/build-editor.mjs --tag "$STAGING_TAG"
+          --cdn "$CDN_ORIGIN" --api-base "$API_ORIGIN"
+          --app-base "$APP_ORIGIN" --errors-env staging
+
+      - name: Deploy staging editor Worker
+        run: npx --yes wrangler@4.99.0 deploy --config web/standalone/wrangler.staging.jsonc
+
+      - name: Smoke-check staging GPL surfaces
+        env:
+          STAGING_TAG: staging-${{ github.sha }}
+        run: |
+          curl --fail --retry 12 --retry-delay 5 "$CDN_ORIGIN/wasm/manifest-$STAGING_TAG.json" >/dev/null
+          curl --fail --retry 12 --retry-delay 5 "$EDITOR_ORIGIN/" >/dev/null
+          curl --fail --retry 12 --retry-delay 5 -I "$CDN_ORIGIN/wasm/manifest-$STAGING_TAG.json" | grep -qi '^access-control-allow-origin: \*'
+          headers=$(curl --fail --retry 12 --retry-delay 5 -I "$EDITOR_ORIGIN/")
+          echo "$headers" | grep -qi '^cross-origin-opener-policy: same-origin'
+          echo "$headers" | grep -qi '^cross-origin-embedder-policy: require-corp'
+          echo "$headers" | grep -qi '^x-robots-tag:.*noindex'

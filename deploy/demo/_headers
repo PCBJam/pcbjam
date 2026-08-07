@@ -5,3 +5,8 @@
 /*
   Cross-Origin-Opener-Policy: same-origin
   Cross-Origin-Embedder-Policy: require-corp
+
+# Never index the free staging hostname. This absolute rule is inert on the
+# production Pages/custom-domain deployments that reuse this file.
+https://pcbjam-editor-staging.pcbjam-staging.workers.dev/*
+  X-Robots-Tag: noindex, nofollow
