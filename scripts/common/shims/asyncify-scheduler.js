@@ -66,6 +66,11 @@ if (typeof Asyncify !== "undefined" && !globalThis.__wxSchedulerInstalled) {
           if (Module["_wxWasmSchedPump"]) Module["_wxWasmSchedPump"]();
         } catch (e) {
           if (Module["_wx_dispatch_abandon"]) Module["_wx_dispatch_abandon"]();
+          // The exception escaped a context through drain()'s fiber swap, so
+          // the transition it started never completed: without this every
+          // later pump refuses ("transition in flight") and all outstanding
+          // waits stall forever (doc 22 Phase B).
+          if (Module["_wxWasmSchedAbandon"]) Module["_wxWasmSchedAbandon"]();
           throw e;
         }
       }, 0);

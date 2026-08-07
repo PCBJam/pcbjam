@@ -643,6 +643,62 @@ close, each with a deterministic repro suite:
    topology (every party a context, `return_to` a registry id) makes the question
    disappear.
 
+### Phase B at D-on (2026-08-07) — gaps 1+2 CLOSED, and the boundary found
+
+Gaps 1 and 2 are fixed and the wx battery is **green at D-on: 395 passed, 1 failed
+(the pre-existing `modal.spec.ts:125`)** — the first clean battery with dispatch
+contexts, context waits and star transfers all live. What landed:
+
+- **Terminal finish (gap 2).** `fiber_finish_transfer` marks a finished coroutine
+  Finished — never re-queued, never re-entered — and `fiber_transfer` refuses into a
+  Finished context, dropping the caller into libcontext's existing ghost contract.
+  This replaces the trampoline's `while(true)` ghost re-entry, which as transfers had
+  two finished coroutines marking each other Ready forever. `fiber_enterable` now
+  accepts the star statuses (a transfer-parked context holds a capture as valid as a
+  symmetric Suspended one), which also silenced the `sched-divergence-enterable`
+  storm.
+- **Dispatch is an IDLE-REUSE SET, not one context — doc 22's "one context suffices"
+  was wrong.** A nested quasi-modal loop is a wait that only a LATER dispatch can
+  resolve, so a single dispatcher parked in that loop can never be released:
+  `nested_quasi_modal_pump_error` wedged exactly there. A tick now reuses any context
+  parked at `dispatch-idle` and allocates only when all are parked deeper. This is
+  NOT D2's pool (which took a fresh context per tick and grew with the tick rate);
+  the live count is bounded by real modal-nesting depth — 1 in steady state.
+- **`abandon_transition` (a new containment).** With a second dispatcher the race's
+  bomb finally fired and revealed the next layer: an exception escaping a handler
+  propagates out THROUGH `drain()`'s fiber swap, so its post-swap bookkeeping never
+  runs, the registry stays "transition in flight", and every later pump refuses —
+  a permanently dead pump and every outstanding wait stalled. The JS error paths now
+  abandon the transition and POISON the half-unwound context (Finished; the dispatch
+  set prunes it), mirroring `wx_dispatch_abandon`. `.ci-cache-epoch` → 12.
+
+**THE BOUNDARY, measured on the full KiCad suite (135 passed / 5 failed vs the 139/1
+baseline).** Four canvas-tool specs — eeschema draw-wires, pcbnew draw-lines,
+pcbnew move-with-m, presence-locks move — die with `index out of bounds` in
+`doRewind` ← `finishContextSwitch` ← `Fibers.trampoline` ← `maybeStopUnwind`: the
+BLUE SCREEN itself, reproduced by the migration's own transitional state.
+
+The reason the harness cannot see this, and the reason it is a boundary rather than a
+bug: **real KiCad tool coroutines park IN PLACE inside their bodies** (a tool waiting
+for the next event asyncify-parks on its own stack — doc 21's tool-side sites). A star
+transfer turns one symmetric swap into a park-and-drain round trip, and doing that
+over a stack that is already asyncify-parked mid-body rewinds state the fiber layer
+cannot see. The harness's coroutines yield cleanly, so the transfer lane looks correct
+there while KiCad's real tools break — the same "the harness models the shape, not the
+parks" lesson as doc 19.
+
+**Consequence for the plan: D cannot carry KiCad until the tool-body park sites are
+contexts too.** That is C+E completion (every wait yields its owning context; no
+`handleSleep` park on any fiber stack), which doc 22 §5 already requires before the
+flip — this measurement just proves the ordering is not negotiable and that D-on
+without it is precisely the partial migration §7.5 forbids.
+
+**Landing state: `wxWASM_STAR_DISPATCH` back to 0**, with everything above kept —
+all of it is correct-or-inert at D-off, and gaps 1+2 stay closed for the flip. The
+next Phase B increment is the tool-side park inventory (doc 21 §1's KiCad rows) moved
+onto contexts, after which D-on gets re-measured against the KiCad suite, not the
+harness.
+
 1. **pthreads.** Doc 21 §2 settled that every Asyncify park is main-thread and the lib
    bridge's worker path is a blocking proxy. Phase A must re-check that libcontext is never
    driven from a worker before assuming the scheduler is main-thread-only.
