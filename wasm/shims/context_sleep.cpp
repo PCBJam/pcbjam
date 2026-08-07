@@ -39,6 +39,8 @@
 
 #include <wx/wasm/private/sched_context.h>
 
+#include <emscripten/emscripten.h>
+
 #include <cstdint>
 
 // The scheduler mailbox (wx/wasm/private/mailbox.h). A timer message is the
@@ -62,10 +64,28 @@ void wake_sleeper( void* aArg )
     const pcbjam_sched::ContextId id =
             static_cast<pcbjam_sched::ContextId>( reinterpret_cast<uintptr_t>( aArg ) );
 
-    // mark_ready never resumes inline (doc 13 §1.4); drain_all performs the
-    // entry from this clean mailbox-tick stack.
-    if( pcbjam_sched::mark_ready( id, 0 ) )
+    // mark_ready never resumes inline (doc 13 §1.4). WHO performs the entry
+    // depends on where this delivery landed:
+    if( !pcbjam_sched::mark_ready( id, 0 ) )
+        return;
+
+    if( pcbjam_sched::current() == 0 )
+    {
+        // On the scheduler stack: drain here.
         pcbjam_sched::drain_all();
+        return;
+    }
+
+    // Delivered ON a context — the mailbox tick itself now runs on a dispatch
+    // context (doc 22 §10). drain() would refuse re-entry, and it should: the
+    // outer drain_all that entered this context keeps pumping once it parks,
+    // and picks up the context we just marked ready. Arm a pump anyway so a
+    // delivery that reached here by some other route cannot strand it.
+    EM_ASM( {
+        setTimeout( function() {
+            if( Module["_wxWasmSchedPump"] ) Module["_wxWasmSchedPump"]();
+        }, 0 );
+    } );
 }
 
 }  // namespace

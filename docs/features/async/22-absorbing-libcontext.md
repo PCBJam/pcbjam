@@ -794,6 +794,60 @@ main stack, `resolve_root_identity()` always answers "the running context".
 **Landing state: `wxWASM_STAR_DISPATCH` back to 0**, context-sleep and its
 pump-ownership guard kept (inert at D-off, verified 139/1).
 
+### DOM entries on the dispatch context — THE CANVAS TOOLS GO GREEN (2026-08-07)
+
+The increment the section above ordered, built and measured: **every entry that can
+reach a tool coroutine now goes through the scheduler.**
+
+- `wxWasmRunOnDispatchContext(fn, arg)` (evtloop.cpp) hands work to a dispatch context
+  and pumps. It is SYNCHRONOUS in the common case — `drain_all` returns once the
+  context parks at idle, i.e. after the job completed — so callers that need an answer
+  still get one. It falls back to running inline when already on a dispatch context
+  (same-stack recursion, as `wxYield` does) or when the registry says another context
+  is running, which is the in-place-parked-bridge window Phase E closes.
+- All four DOM callbacks (`MouseCallback`, `WheelCallback`, `TouchCallback`,
+  `KeyCallback`) and the **mailbox tick** now route through it. Jobs are heap-owned
+  with ownership going to *whoever finishes last*, because a job may park for a
+  dialog's lifetime: the job deletes itself if the caller has given up, else the caller
+  deletes it and reads its result. Keys keep their synchronous `preventDefault` (the
+  job writes it before it can park; a job that parks anyway leaves the default — the
+  browser cannot wait for a modal).
+- The context-sleep wake had to learn the same lesson in reverse: now that the mailbox
+  runs ON a context, `wake_sleeper` must not call `drain_all` from there (drain refuses
+  re-entry, correctly). It marks ready and lets the outer `drain_all` — still pumping
+  on the scheduler stack — perform the entry, with an armed pump as a backstop.
+
+**Result at D-on: KiCad 136 passed / 3, and all four canvas-tool specs are GREEN**
+(eeschema draw-wires, pcbnew draw-lines, pcbnew move-with-m, presence-locks move).
+The mixed-mode rewind class — a coroutine entered by a star transfer from the tick and
+by a direct symmetric swap from a DOM handler — is gone, which was Phase D's blocker.
+
+**The 3 remaining, and 2 of them are pins measuring a world D5 deleted.** Besides the
+pre-existing `occ-probe`, `timer-park-repro` and `quasimodal-strand`'s *staging* test
+fail on ONE assertion: "scheduler shim observed the concurrent-park window", expected
+`> 0`, got `0`. Everything else in those specs passes — `fired=true done=true
+parked=true errors=0`, i.e. the parking timer handler parks, rewinds and survives.
+
+That counter fires when `handleSleep` is entered while `currData` is non-null: **two
+concurrent in-place Asyncify parks.** The lever stages "timer park × MAIN-LOOP YIELD
+PARK" (its own header says so), and D5 removed the main loop's Asyncify park — so the
+overlap cannot occur any more. The spec's comment even anticipates the shape of this:
+"that assert fails only if the lever itself never created the overlap (a broken repro,
+not a passing one)" — here the repro is not broken, its ingredient was deliberately
+eliminated.
+
+**Do NOT paper over this by relaxing the assert.** It is a Phase F decision, alongside
+`fiber-resume-park.spec.ts`'s red→green flip: each lever gets re-pinned to the
+post-migration invariant (the runtime survives AND no concurrent-park window is
+observable) with the evidence recorded, or a replacement lever is built that stages a
+still-possible overlap. Until then the honest statement is: at D-on those two specs
+cannot stage their scenario, and the runtime behaviour they guard is green.
+
+**Landing state: `wxWASM_STAR_DISPATCH` back to 0** (all of the above is inert there),
+everything kept. **Next: Phase E** — the K1–K7 bridges are now the only in-place parks
+left under a context, and they are what the `current() != 0` fallback above still
+tolerates.
+
 1. **pthreads.** Doc 21 §2 settled that every Asyncify park is main-thread and the lib
    bridge's worker path is a blocking proxy. Phase A must re-check that libcontext is never
    driven from a worker before assuming the scheduler is main-thread-only.
