@@ -848,6 +848,70 @@ everything kept. **Next: Phase E** — the K1–K7 bridges are now the only in-p
 left under a context, and they are what the `current() != 0` fallback above still
 tolerates.
 
+### Phase E, first attempt: K1 as a context wait — REVERTED, and what it cost
+
+The bridge pattern doc 22 §5 calls for, tried on K1 (`sch_io_pcbjam_lib.cpp`, the
+symbol-library request — chosen first because doc 21 makes it the doc-19 exposure: a
+chooser's lazy load parks the TOOL COROUTINE that owns the chooser):
+
+```
+  before:  char* r = pcbjam_libs_request_js(op, lib, arg, kind);   // EM_ASYNC_JS, parks in place
+  after:   int t = wxWasmBeginWait("lib");
+           pcbjam_libs_request_start(t, op, lib, arg, kind);       // EM_JS, resolves the wait
+           wxWasmYieldUntil(t);                                    // context park, or in-place fallback
+           char* r = pcbjam_libs_take_result(t);
+```
+
+**Result: the KiCad suite went from 7 minutes to 1.2 HOURS — 111 passed, the rest
+timing out, and the app going SILENT right after a library request.** A parked context
+that nobody resumes. Reverted; the tree keeps the working `EM_ASYNC_JS`.
+
+**A PRECONDITION the attempt discovered — re-add it WITH the next conversion, it is
+not in the tree.** `wxWasmYieldUntil` must not park a context whose wait is already
+resolved: `resolveWait` DELETES the entry, so a bridge whose promise settles before the
+caller reaches the park leaves that context waiting for a wake nobody sends. The
+in-place form had no such window (the same expression created and awaited the promise);
+every bridge converted to this pattern re-opens it. The guard is four lines —
+
+```cpp
+EM_JS(int, wxWasmWaitPendingJs, (int token), {          // resolveWait deletes the entry
+    return globalThis.__wxScheduler.waits.has(token) ? 1 : 0;
+});
+...
+    if (self && pcbjam_sched::can_yield_here())
+    {
+        if (!wxWasmWaitPendingJs(token))    // already resolved: do NOT park
+            return 0;
+```
+
+— and it was NOT the hang (the hang reproduced with it in place). It is deliberately
+NOT landed: it sits in the wait path of every modal and nested loop, and the only build
+that ever contained it was the broken one, so it has never been measured at D-off. It
+belongs in the same commit as the bridge conversion it protects, gated together.
+
+**Where the next attempt should start — hypotheses, in the order the evidence supports
+them.** Not yet distinguished; do this with a focused repro (open a schematic with the
+chooser, one lib request), not the full suite:
+
+1. **The resolve never reaches the registry.** `resolveWait` routes a context-parked
+   token to `Module["_wxWasmSchedResolveContextWait"]` + `_armSchedPump`; if either
+   export is missing from the KiCad link (they are `EMSCRIPTEN_KEEPALIVE` in wx, but
+   this is the first KiCad-side caller of the wait registry) the mark-ready silently
+   never happens. Check `Module["_wxWasmSchedResolveContextWait"]` in the console
+   first — it is one line and would explain the symptom exactly.
+2. **The lib path runs where `can_yield_here()` is true but the resumer cannot reach
+   it** — e.g. inside the chooser's modal, where the dispatch context is already
+   parked at a "nested" wait and the lib wait parks it a second time (a context can
+   hold only ONE park; the second yield would strand the first).
+3. **Asyncify instrumentation closure.** Removing the `EM_ASYNC_JS` from this
+   translation unit changes which functions binaryen instruments; the KiCad lib path
+   now reaches an unwind only through `wxWasmYieldUntilJs`. If the closure no longer
+   covers a frame in that path, the fallback park corrupts instead of suspending.
+
+**Process note for the next attempt:** gate a bridge conversion on a SINGLE spec first
+(`eeschema.spec.ts` or a chooser spec), not `npm run test:kicad` — this attempt cost a
+1.2-hour suite run to learn one bit. The full suite is the confirmation, not the probe.
+
 1. **pthreads.** Doc 21 §2 settled that every Asyncify park is main-thread and the lib
    bridge's worker path is a blocking proxy. Phase A must re-check that libcontext is never
    driven from a worker before assuming the scheduler is main-thread-only.
