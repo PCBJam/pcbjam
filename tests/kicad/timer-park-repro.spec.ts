@@ -28,9 +28,12 @@ import { expectGuardsSilent } from "./utils/guard-beacons";
  *
  * The spec asserts the runtime SURVIVES every cycle — on a build where the
  * hypothesis holds this is deterministically RED, and after the real fix it
- * is the regression gate. The `[wx-asyncify]` shim diagnostics must report
- * the concurrent-park window engaging; that assert fails only if the lever
- * itself never created the overlap (a broken repro, not a passing one).
+ * is the regression gate.
+ *
+ * RE-PINNED AT THE FLIP (docs/features/async/22 §10, 2026-08-08): the staged
+ * overlap needed the main loop's per-frame in-place park, which D5 removed.
+ * The final assert now pins ZERO observable concurrent-park windows — the
+ * post-migration invariant — instead of demanding the overlap engage.
  */
 
 const SEG_TARGET = "fa220000-0000-0000-0000-00000000cafe";
@@ -328,15 +331,21 @@ test.describe("timer Notify() Asyncify-park during main-loop yield (concurrent c
     );
     if (cLane) expectGuardsSilent(testLogger.consoleLogs, ["timerRetry"]);
 
-    // Window-engagement proof, independent of survival: the scheduler shim
-    // must have SEEN the concurrent parks (its reporting is new — silence here
-    // means the lever never created the overlap and the repro is vacuous).
-    const shimLines = testLogger.consoleLogs.filter((l) => l.includes("[wx-asyncify]"));
-    console.log(`[TEST] shim diagnostics: ${shimLines.length} line(s)`);
-    for (const l of shimLines.slice(0, 10)) console.log(`[TEST]   ${l}`);
+    // RE-PINNED AT THE FLIP (docs/features/async/22 §10, 2026-08-08). This
+    // lever staged "timer park × MAIN-LOOP YIELD PARK", and D5 removed the
+    // main loop's per-frame in-place park — the overlap is structurally
+    // impossible now, so "the shim observed the window" (>0) can never pass
+    // again. The pin flips to the invariant the migration exists to
+    // establish: the lever runs, the park survives (asserted above), and NO
+    // concurrent-park window is observable at all.
+    const overlapLines = testLogger.consoleLogs.filter((l) =>
+      /\[wx-asyncify\] (concurrent-park|aliased-wake-live|overlapped-wake)/.test(l),
+    );
+    console.log(`[TEST] overlap beacons: ${overlapLines.length} line(s)`);
+    for (const l of overlapLines.slice(0, 10)) console.log(`[TEST]   ${l}`);
     expect(
-      shimLines.length,
-      "scheduler shim observed the concurrent-park window",
-    ).toBeGreaterThan(0);
+      overlapLines.length,
+      "no concurrent-park window is observable post-flip",
+    ).toBe(0);
   });
 });

@@ -1067,6 +1067,63 @@ exactly as its layout-sensitivity predicts; KiCad 139/1):
   data at D-on (and from queued-event flows); that is by design — it is flip
   telemetry.
 
+### THE FLIP — LANDED (2026-08-08) ✅
+
+`wxWASM_STAR_DISPATCH=1` permanently: dispatch contexts, context waits and star
+transfers are the only runtime. Contents of the flip commit: the switch, the two
+lever re-pins (below), and nothing else — every mechanism was already landed and
+individually gated in the preceding increments.
+
+**Gate 1 — KiCad suite: 138 / 2 / 30, effectively the 139/1 baseline.** The 2:
+pre-existing occ-probe, plus an `ngspice-probe` bg-run streaming test that passed
+4/4 on a solo rerun (parallel-load flake, the known class). **Both re-pinned lever
+specs are GREEN**, including `quasimodal-strand`'s doc-19 test.
+
+**Gate 2 — wx battery: 395 / 1 / 3 — the single red is pre-existing
+`modal.spec.ts:125`.** §10's prediction ("these harnesses go green AT the flip")
+held exactly: `coroutine-nested` case 3 on both engines and
+`wakeup_during_transition` are green — the hot-main wake-window class is
+structurally gone.
+
+**Gate 3 — the blue screen's own repro (§6's only-proof-that-matters): 5/5 PASS.**
+Freshly seeded V1d ballast project (123 MB, `e2e-mskn52sh-1/v1d-flip-mskn5akd-2`),
+`REPRO_PROFILE` persistent context, 1 cold + 4 warm loads, `REPRO_ASSERT=1`:
+every run settled (29–38 s), **`rootHotTotal=0` on all five, zero trap
+signatures, zero aliased-wake-live, zero refusals.** Pre-v0.1.28 this recipe
+killed warm loads 2–4 with 100% reproduction.
+
+**The Phase E assertion HOLDS: `fiberStackParks=0` on every repro run** — across
+five full board loads at the flip, no in-place Asyncify park ever began on a
+fiber stack. `earlyWaitResolves=0` there too (the retention path is armed but a
+prod-shaped load never needs it). No `[wx-wait]` high-water beacons during loads:
+board-load lib requests run on the main stack (entry fallback) or on workers, so
+no context ever parks under a wait during an open — consistent with the counter.
+
+**Lever re-pins (the Phase F decision, taken at the flip as doc §10 planned):**
+`timer-park-repro` and `quasimodal-strand` staging flip their overlap asserts
+from "the shim observed the concurrent-park window" (>0) to **"no concurrent-park
+window is observable" (==0)** — the staged overlap required the main loop's
+in-place park, which D5 removed; the specs now pin the invariant the migration
+exists to establish. Evidence recorded in both spec headers.
+
+**Bounce decision (deviation from §5 Phase C's text, deliberate):** the doc-19
+mainstack bounce STAYS for now. It is empirically green at the flip (strand
+doc-19 passes through it), and its removal drags `mainstack.h`,
+`main_stack_runner.h` and KiCad's `RunOnMainStackIfActiveTool` with it — a
+separate increment with its own gate, queued for Phase F alongside the guard
+deletions. Removing it inside the flip commit would have violated the
+one-variable rule that every measurement in this doc is built on.
+
+**Known-residual (named at the D-on probe, unchanged):** the awaited
+`kicadOpenFile` embind entry still parks the MAIN stack in place during opens;
+its overlap warnings are confined to the two specs that stage entries mid-load,
+both green, and the repro proves the guards hold under real load. Candidate for
+the same treatment as the bridges, or for retirement when Phase F deletes the
+guards it leans on. Also noted during the repro: a cosmetic
+`CanvasRenderingContext2D.arcTo: Negative radius` pageerror from the DOM
+chrome's `drawRoundedRect` on warm loads — unrelated to the scheduler, worth its
+own small fix.
+
 ### Prod-provider smoke (2026-08-08) — done, with one pre-existing red bisected
 
 Against the live web stack (playwright-web config, reference backend :3060):

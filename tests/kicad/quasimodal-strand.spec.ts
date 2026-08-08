@@ -21,9 +21,10 @@ import { test, expect } from "./fixtures";
  *
  * Two tests, deliberately split so the red pin cannot rot into vacuity:
  *  - "staging" is a plain GREEN test: the dialog opens, the timer window
- *    engages (fired + parked + done), the shim observed the overlap. If this
- *    breaks, the harness is broken — loudly, not silently inside a
- *    test.fail() wrapper.
+ *    engages (fired + parked + done). RE-PINNED AT THE FLIP (doc 22 §10,
+ *    2026-08-08): the overlap the shim used to observe is structurally
+ *    impossible post-D5, so the assert now pins ZERO observable
+ *    concurrent-park windows instead.
  *  - "OK closes" is the RED pin, marked test.fail(): its assertions are the
  *    desired end state (dialog closes, no refused-resume beacon, wait books
  *    balanced). It goes green at D3 (waits become context yields), at which
@@ -297,17 +298,22 @@ test.describe("quasi-modal strand (doc 19)", () => {
     expect(await dialogCount(page)).toBeGreaterThan(0);
     await okButtonCenter(page);
 
-    // The overlap actually reached the asyncify layer: the shim must have
-    // beaconed at least one concurrent-context event. Silence here means the
-    // two parks never coexisted and the red pin below proves nothing.
+    // RE-PINNED AT THE FLIP (docs/features/async/22 §10, 2026-08-08). The
+    // overlap this staging proved (a timer park on top of an open-ended park)
+    // required an in-place park for the timer to land on; post-flip every
+    // party is a scheduler context and D5 removed the main loop's in-place
+    // park, so the window is structurally impossible. The staging now pins
+    // the post-migration invariant: the dialog opens, the timer fires and its
+    // park survives (asserted above), and NO concurrent-park window is
+    // observable.
     const overlapBeacons = testLogger.consoleLogs.filter((l) =>
       /\[wx-asyncify\] (concurrent-park|aliased-wake-live|overlapped-wake)/.test(l),
     );
     console.log(`[STRAND] staging overlap beacons: ${overlapBeacons.length}`);
     expect(
       overlapBeacons.length,
-      "the shim observed concurrent asyncify contexts (the doc-19 window)",
-    ).toBeGreaterThan(0);
+      "no concurrent-park window is observable post-flip",
+    ).toBe(0);
   });
 
   test("doc-19: OK resolves the quasi-modal wait and the dialog closes", async ({
