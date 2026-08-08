@@ -1023,6 +1023,70 @@ with the production provider is still owed. The natural next measurement is a D-
 probe: with every bridge a token wait, the `current() != 0` inline fallback window
 that D-on tolerated should now be structurally empty.
 
+### D-on probe after the bridge set (2026-08-08) — no regressions, and the residual named
+
+One variable (`wxWASM_STAR_DISPATCH` 0→1 on the committed tree): **KiCad 136 / 3 /
+30 (+1 did-not-run, serial after the strand staging failure) — IDENTICAL to the
+pre-conversion D-on state.** The 3: pre-existing occ-probe, and the two lever pins
+(`timer-park-repro`, `quasimodal-strand` staging) whose staged overlap D5 removed —
+the Phase F re-pin set. All four canvas-tool specs stay green; K2–K6 as token waits
+cost D-on nothing.
+
+**Beacon sweep: zero `[wx-wait]` beacons across the whole D-on suite** — no
+unregistered-token resolves, no refused mark_readys. The only surviving warning
+class is `overlapped-wake`/`hot-main-swap-out` (≤10 occurrences), ALL in the two
+specs that deliberately stage collab entries DURING a parked board load
+(`collab-load-fuzz`, `mailbox-ordering`) — and both specs PASS. That names the one
+in-place park class left at D-on: **the awaited `kicadOpenFile` embind entry
+parking the MAIN stack** (doc 21's entry-stack row, busy-gated). It is not a bridge
+and not Phase E's scope — it is the flip's residual work (route opens through the
+scheduler like everything else, or prove the guards hold under the blue-screen
+repro).
+
+Landing state: `wxWASM_STAR_DISPATCH` back to 0.
+
+### Phase E telemetry (2026-08-08): fiber-stack park counter + per-kind high-water
+
+Both landed inert-at-D-off, gates re-verified (battery 389/7 — a strict subset of
+the documented pre-existing set, `wakeup_during_transition` happening to land green
+exactly as its layout-sensitivity predicts; KiCad 139/1):
+
+- **`inplaceParksOnFiberStack`** (shim counter + `fiberStackParks=` in the STATE
+  dump, recorder line per occurrence): a FRESH in-place park that begins on a
+  non-main stack, probed leaf-wise via `wxWasmProbeOnFiberStack()` (captured-bounds
+  check — immune to §7 trap 2). **The flip's Phase E assertion is this counter == 0;**
+  at D-off it simply measures the remaining doc-19-class exposure.
+- **Per-wait-kind deep-park high-water** (`[wx-wait] high-water <kind>=<N>B` beacon
+  on each new max): `wxWasmYieldUntil` copies the wait kind out pre-park (the
+  resolve deletes the entry) and folds the registry's per-park live-capture sample
+  (`Context::last_park_use`, set only on live samples) into a per-kind max. This is
+  doc 21 §2b's buffer-sizing input, readable from any suite log.
+- Measured immediately: at D-off the KiCad suite produces NO context parks from
+  wxWasmYieldUntil's context path in dialog flows — spec dialogs open from DOM
+  clicks dispatched inline on the main stack. The high-water instrument yields its
+  data at D-on (and from queued-event flows); that is by design — it is flip
+  telemetry.
+
+### Prod-provider smoke (2026-08-08) — done, with one pre-existing red bisected
+
+Against the live web stack (playwright-web config, reference backend :3060):
+
+- **`symedit-from-eeschema` PASSED** — the symbol-editor-from-eeschema flow drives
+  converted K1 (`list`/`get`) through the REAL provider end-to-end, resolve-after-
+  park included. Together with the kicad suite's `3d-viewer-models` +
+  `occ-export-models` (real providers over converted K3/K4/K5, 17 live async
+  requests during an export), the async-provider half of the bridge set is
+  exercised.
+- `eeschema-fp-selector` self-skips; `symbol-write-remote` / `footprint-browse-
+  remote` are `test.fixme` (documented editor lib-bridge rot, pre-dating this
+  work).
+- **`eeschema-assign-footprints` fails — and a BISECT proves it pre-existing:** the
+  fp `list bodies` call is issued but never settles, and the same failure
+  reproduces byte-for-byte with kicad checked out at the K1-only commit (K2/K3
+  still `EM_ASYNC_JS`). Provider/backend-side non-settlement in the CvPcb flow,
+  adjacent to the documented lib-bridge rot — NOT a Phase E regression. Left red;
+  belongs to the web-e2e-rot pile, not this migration.
+
 1. **pthreads.** Doc 21 §2 settled that every Asyncify park is main-thread and the lib
    bridge's worker path is a blocking proxy. Phase A must re-check that libcontext is never
    driven from a worker before assuming the scheduler is main-thread-only.

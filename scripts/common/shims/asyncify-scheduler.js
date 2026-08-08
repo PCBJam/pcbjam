@@ -299,6 +299,9 @@ if (typeof Asyncify !== "undefined" && !globalThis.__wxSchedulerInstalled) {
     _wakeDrainArmed: false,
     // N1: pure-JS currData writes seen without scheduler authorization.
     strayWrites: 0,
+    // Phase E: fresh in-place Asyncify parks that began on a NON-main stack
+    // (tool coroutine / scheduler context). Must be ZERO at the flip.
+    inplaceParksOnFiberStack: 0,
     strictStrays: false,   // tests set true → stray throws instead of beaconing
     _authorizedWrite: 0,
     authorize: function (fn) {
@@ -354,7 +357,9 @@ if (typeof Asyncify !== "undefined" && !globalThis.__wxSchedulerInstalled) {
         + " strayWrites=" + this.strayWrites
         + " waits=" + this.waits.size
         + " waitsBegun=" + this.waitsBegun
-        + " waitsResolved=" + this.waitsResolved;
+        + " waitsResolved=" + this.waitsResolved
+        + " earlyWaitResolves=" + this.earlyWaitResolves
+        + " fiberStackParks=" + this.inplaceParksOnFiberStack;
     },
   };
 
@@ -516,6 +521,17 @@ if (typeof Asyncify !== "undefined" && !globalThis.__wxSchedulerInstalled) {
       if (Asyncify.state !== 0) {
         return __originalHandleSleep(startAsync);
       }
+      // Phase E telemetry (doc 22 §5): count fresh in-place parks that begin
+      // on a NON-main stack (tool coroutine / scheduler context). Must reach
+      // ZERO at the flip — until then it measures the remaining doc-19-class
+      // exposure. Leaf probe into wasm; state is 0 here so no unwind is in
+      // flight yet.
+      try {
+        if (Module["_wxWasmProbeOnFiberStack"] && Module["_wxWasmProbeOnFiberStack"]()) {
+          AsyncifyScheduler.inplaceParksOnFiberStack++;
+          __rec("inplace-park-on-fiber-stack n=" + AsyncifyScheduler.inplaceParksOnFiberStack);
+        }
+      } catch (e) { /* probe must never break a park */ }
       var sleepCtx = {
         capturedData: null,
         cleanedUp: false,
