@@ -56,68 +56,87 @@ using nlohmann::json;
 
 // Generic request: JSON in, JSON out (malloc'd; caller frees). Vector data
 // never travels this path — see js_ngspice_get_vec.
+//
+// Phase E shape (docs/features/async/22 §5, K6): token wait instead of an
+// in-place Asyncify park; resolution ALWAYS deferred to at least a microtask
+// (the early-resolve contract, doc 22 §10 Phase E retry entry).
 // clang-format off
-EM_ASYNC_JS( char*, js_ngspice_request, ( const char* aReqJson ), {
-    let res;
+EM_JS( void, js_ngspice_request_start, ( int aToken, const char* aReqJson ), {
+    const finish = ( res ) => {
+        const s = JSON.stringify( res ?? {} );
+        const n = lengthBytesUTF8( s ) + 1;
+        const p = _malloc( n );
+        stringToUTF8( s, p, n );
+        globalThis.__wxScheduler.resolveWait( aToken, p );
+    };
+    let req;
     try {
         const svc = globalThis.ngspiceService;
         if( !svc )
-            res = { error: 'ngspiceService provider not installed' };
+            req = Promise.resolve( { error: 'ngspiceService provider not installed' } );
         else
-            res = await svc.request( JSON.parse( UTF8ToString( aReqJson ) ) );
+            req = Promise.resolve( svc.request( JSON.parse( UTF8ToString( aReqJson ) ) ) );
     } catch( e ) {
-        res = { error: String( e ) };
+        req = Promise.resolve( { error: String( e ) } );
     }
-    const s = JSON.stringify( res ?? {} );
-    const n = lengthBytesUTF8( s ) + 1;
-    const p = _malloc( n );
-    stringToUTF8( s, p, n );
-    return p;
+    req.then( finish ).catch( ( e ) => finish( { error: String( e ) } ) );
 } );
 
 // Vector fetch: fills editor-heap buffers directly (no JSON for MB arrays).
 // aMeta: int[4] = { found, vtype, flags, length }; aReal/aComp receive
 // malloc'd double buffers (comp interleaved re,im — the ngcomplex_t layout);
-// aVName receives a malloc'd name string. Returns non-zero on transport error.
-EM_ASYNC_JS( int, js_ngspice_get_vec,
-             ( const char* aName, int* aMeta, double** aReal, double** aComp, char** aVName ), {
-    let res;
+// aVName receives a malloc'd name string. The wait result is non-zero on
+// transport error. All output writes happen in the resolve callback, BEFORE
+// resolveWait — the parked caller reads them only after it resumes, the same
+// ordering the in-place park had. Phase E shape, resolution always deferred.
+EM_JS( void, js_ngspice_get_vec_start,
+       ( int aToken, const char* aName, int* aMeta, double** aReal, double** aComp,
+         char** aVName ), {
+    const finish = ( status ) => globalThis.__wxScheduler.resolveWait( aToken, status );
+    let req;
     try {
         const svc = globalThis.ngspiceService;
-        res = svc ? await svc.request( { kind: 'get_vec_info', name: UTF8ToString( aName ) } )
-                  : { error: 'ngspiceService provider not installed' };
+        req = svc ? Promise.resolve( svc.request( { kind: 'get_vec_info',
+                                                    name: UTF8ToString( aName ) } ) )
+                  : Promise.resolve( { error: 'ngspiceService provider not installed' } );
     } catch( e ) {
-        res = { error: String( e ) };
+        req = Promise.resolve( { error: String( e ) } );
     }
-    HEAP32[aMeta >> 2] = 0;
-    HEAPU32[aReal >> 2] = 0;
-    HEAPU32[aComp >> 2] = 0;
-    HEAPU32[aVName >> 2] = 0;
-    if( !res || res.error )
-        return 1;
-    if( !res.found )
-        return 0;
-    HEAP32[( aMeta >> 2 ) + 1] = res.vtype | 0;
-    HEAP32[( aMeta >> 2 ) + 2] = res.flags | 0;
-    HEAP32[( aMeta >> 2 ) + 3] = res.length | 0;
-    if( res.real && res.real.length ) {
-        const p = _malloc( res.real.length * 8 );
-        HEAPF64.set( res.real, p >> 3 );
-        HEAPU32[aReal >> 2] = p;
-    }
-    if( res.comp && res.comp.length ) {
-        const p = _malloc( res.comp.length * 8 );
-        HEAPF64.set( res.comp, p >> 3 );
-        HEAPU32[aComp >> 2] = p;
-    }
-    const s = res.vname || '';
-    const n = lengthBytesUTF8( s ) + 1;
-    const vp = _malloc( n );
-    stringToUTF8( s, vp, n );
-    HEAPU32[aVName >> 2] = vp;
-    HEAP32[aMeta >> 2] = 1;
-    return 0;
+    req.catch( ( e ) => ( { error: String( e ) } ) ).then( ( res ) => {
+        HEAP32[aMeta >> 2] = 0;
+        HEAPU32[aReal >> 2] = 0;
+        HEAPU32[aComp >> 2] = 0;
+        HEAPU32[aVName >> 2] = 0;
+        if( !res || res.error )
+            return finish( 1 );
+        if( !res.found )
+            return finish( 0 );
+        HEAP32[( aMeta >> 2 ) + 1] = res.vtype | 0;
+        HEAP32[( aMeta >> 2 ) + 2] = res.flags | 0;
+        HEAP32[( aMeta >> 2 ) + 3] = res.length | 0;
+        if( res.real && res.real.length ) {
+            const p = _malloc( res.real.length * 8 );
+            HEAPF64.set( res.real, p >> 3 );
+            HEAPU32[aReal >> 2] = p;
+        }
+        if( res.comp && res.comp.length ) {
+            const p = _malloc( res.comp.length * 8 );
+            HEAPF64.set( res.comp, p >> 3 );
+            HEAPU32[aComp >> 2] = p;
+        }
+        const s = res.vname || '';
+        const n = lengthBytesUTF8( s ) + 1;
+        const vp = _malloc( n );
+        stringToUTF8( s, vp, n );
+        HEAPU32[aVName >> 2] = vp;
+        HEAP32[aMeta >> 2] = 1;
+        finish( 0 );
+    } );
 } );
+
+// Token waits live in the wx wasm port (evtloop.cpp).
+extern "C" int wxWasmBeginWait( const char* aKind );
+extern "C" int wxWasmYieldUntil( int aToken );
 
 // Event dispatcher: provider `{ evt }` frames -> KiCad's registered callbacks
 // via the exported pcbjam_ngspice_event (fresh wasm entries; see header
@@ -166,7 +185,11 @@ std::atomic<bool> s_bgRunning{ false };
 
 json rpc( const json& aReq )
 {
-    char* raw = js_ngspice_request( aReq.dump().c_str() );
+    const int token = wxWasmBeginWait( "ngspice" );
+    js_ngspice_request_start( token, aReq.dump().c_str() );
+
+    // The malloc'd JSON pointer rides the wait as an int32.
+    char* raw = (char*) (uintptr_t) (uint32_t) wxWasmYieldUntil( token );
     json  res = json::parse( raw ? raw : "{}", nullptr, /* allow_exceptions */ false );
     std::free( raw );
 
@@ -408,7 +431,10 @@ pvector_info pcbjam_ngGet_Vec_Info( char* aVecName )
     double* comp = nullptr;
     char*   vname = nullptr;
 
-    if( js_ngspice_get_vec( aVecName ? aVecName : "", meta, &real, &comp, &vname ) != 0 )
+    const int token = wxWasmBeginWait( "ngspice" );
+    js_ngspice_get_vec_start( token, aVecName ? aVecName : "", meta, &real, &comp, &vname );
+
+    if( wxWasmYieldUntil( token ) != 0 )
         return nullptr;
 
     if( !meta[0] )

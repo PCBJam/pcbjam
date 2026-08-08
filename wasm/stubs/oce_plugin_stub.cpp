@@ -58,13 +58,23 @@ bool acceptAnyCacheTag( const char*, void* )
 
 } // namespace
 
-// Suspends pcbnew while the worker parses + tessellates the model. JS returns
-// a malloc'd path string: the scenegraph-cache file it wrote into this
-// module's MEMFS ("" on failure).
-EM_ASYNC_JS( char*, js_occLoadModelRequest, ( const char* aModelPath ),
+// Phase E shape (docs/features/async/22 §5, K5): waits for the worker
+// parse+tessellate via a token wait instead of Asyncify-parking in place. The
+// wait result is a malloc'd path string: the scenegraph-cache file written
+// into this module's MEMFS ("" on failure). Every resolution defers to at
+// least a microtask (the early-resolve contract, doc 22 §10 Phase E retry).
+EM_JS( void, js_occLoadModelStart, ( int aToken, const char* aModelPath ),
 {
     const modelPath = UTF8ToString( aModelPath );
-    let cachePath = '';
+
+    const finish = ( cachePath ) => {
+        const n = lengthBytesUTF8( cachePath ) + 1;
+        const p = _malloc( n );
+        stringToUTF8( cachePath, p, n );
+        globalThis.__wxScheduler.resolveWait( aToken, p );
+    };
+
+    let req;
 
     try
     {
@@ -73,36 +83,45 @@ EM_ASYNC_JS( char*, js_occLoadModelRequest, ( const char* aModelPath ),
         if( !hook || typeof hook.request !== 'function' )
         {
             console.error( '[pcbjam-occ] loadModel: occ_service provider not installed' );
+            req = Promise.resolve( null );
         }
         else
         {
             const bytes = FS.readFile( modelPath ); // Uint8Array copy — transferable
             const dot = modelPath.lastIndexOf( '.' );
             const ext = dot >= 0 ? modelPath.slice( dot + 1 ) : 'step';
-            const res = await hook.request( { kind: 'loadModel', bytes, ext } );
-
-            if( res && res.ok && res.bytes && res.bytes.length )
-            {
-                cachePath = '/tmp/pcbjam_occ_model_cache.3dc';
-                FS.writeFile( cachePath, res.bytes );
-            }
-            else if( res && res.report )
-            {
-                console.error( '[pcbjam-occ] loadModel failed:', res.report );
-            }
+            req = Promise.resolve( hook.request( { kind: 'loadModel', bytes, ext } ) );
         }
     }
     catch( e )
     {
         console.error( '[pcbjam-occ] loadModel request failed:', e );
-        cachePath = '';
+        req = Promise.resolve( null );
     }
 
-    const n = lengthBytesUTF8( cachePath ) + 1;
-    const p = _malloc( n );
-    stringToUTF8( cachePath, p, n );
-    return p;
+    req.then( ( res ) => {
+        let cachePath = '';
+
+        if( res && res.ok && res.bytes && res.bytes.length )
+        {
+            cachePath = '/tmp/pcbjam_occ_model_cache.3dc';
+            FS.writeFile( cachePath, res.bytes );
+        }
+        else if( res && res.report )
+        {
+            console.error( '[pcbjam-occ] loadModel failed:', res.report );
+        }
+
+        finish( cachePath );
+    } ).catch( ( e ) => {
+        console.error( '[pcbjam-occ] loadModel request failed:', e );
+        finish( '' );
+    } );
 } )
+
+// Token waits live in the wx wasm port (evtloop.cpp).
+extern "C" int wxWasmBeginWait( const char* aKind );
+extern "C" int wxWasmYieldUntil( int aToken );
 
 
 extern "C"
@@ -205,7 +224,11 @@ SCENEGRAPH* oce3d_Load( char const* aFileName )
     if( !aFileName )
         return nullptr;
 
-    char* cachePath = js_occLoadModelRequest( aFileName );
+    const int token = wxWasmBeginWait( "occ" );
+    js_occLoadModelStart( token, aFileName );
+
+    // The malloc'd path pointer rides the wait as an int32.
+    char* cachePath = (char*) (uintptr_t) (uint32_t) wxWasmYieldUntil( token );
 
     if( !cachePath || !*cachePath )
     {

@@ -53,16 +53,28 @@ extern "C" void Pcbjam_SetExportJobJson( const char* aJson )
     s_nextJobJson = aJson ? aJson : "";
 }
 
-// Suspends pcbnew (Asyncify; the __asyncjs__* import is auto-covered by
-// scripts/common/asyncify-imports.txt) while the worker exports. JS returns a
-// malloc'd JSON string: { ok, report } — the download already happened there.
-EM_ASYNC_JS( char*, js_occExportRequest,
-             ( const char* aBoardPath, const char* aJobJson, const char* aFileName ),
+// Phase E shape (docs/features/async/22 §5, K4): waits for the worker export
+// via a token wait (context park when the frame stands on a scheduler context)
+// instead of Asyncify-parking the stack in place. The wait result is a
+// malloc'd JSON string: { ok, report } — the download already happened in JS.
+// Every resolution defers to at least a microtask (the early-resolve
+// contract, doc 22 §10 Phase E retry entry).
+EM_JS( void, js_occExportStart,
+       ( int aToken, const char* aBoardPath, const char* aJobJson, const char* aFileName ),
 {
     const boardPath = UTF8ToString( aBoardPath );
     const jobJson = UTF8ToString( aJobJson );
     const fileName = UTF8ToString( aFileName );
-    let res;
+
+    const finish = ( res ) => {
+        const s = JSON.stringify( res || { ok: false, report: 'occ_service: no response' } );
+        const n = lengthBytesUTF8( s ) + 1;
+        const p = _malloc( n );
+        stringToUTF8( s, p, n );
+        globalThis.__wxScheduler.resolveWait( aToken, p );
+    };
+
+    let req;
 
     try
     {
@@ -70,26 +82,29 @@ EM_ASYNC_JS( char*, js_occExportRequest,
 
         if( !hook || typeof hook.request !== 'function' )
         {
-            res = { ok: false, report: 'occ_service provider not installed' };
+            req = Promise.resolve( { ok: false, report: 'occ_service provider not installed' } );
         }
         else
         {
             const board = FS.readFile( boardPath ); // Uint8Array copy — transferable
-            res = await hook.request( { kind: 'export', board, jobJson, fileName } );
+            req = Promise.resolve( hook.request( { kind: 'export', board, jobJson, fileName } ) );
         }
     }
     catch( e )
     {
         console.error( '[pcbjam-occ] export request failed:', e );
-        res = { ok: false, report: 'occ_service request failed: ' + e };
+        req = Promise.resolve( { ok: false, report: 'occ_service request failed: ' + e } );
     }
 
-    const s = JSON.stringify( res || { ok: false, report: 'occ_service: no response' } );
-    const n = lengthBytesUTF8( s ) + 1;
-    const p = _malloc( n );
-    stringToUTF8( s, p, n );
-    return p;
+    req.then( finish ).catch( ( e ) => {
+        console.error( '[pcbjam-occ] export request failed:', e );
+        finish( { ok: false, report: 'occ_service request failed: ' + e } );
+    } );
 } )
+
+// Token waits live in the wx wasm port (evtloop.cpp).
+extern "C" int wxWasmBeginWait( const char* aKind );
+extern "C" int wxWasmYieldUntil( int aToken );
 
 
 EXPORTER_STEP::EXPORTER_STEP( BOARD* aBoard, const EXPORTER_STEP_PARAMS& aParams,
@@ -152,8 +167,11 @@ bool EXPORTER_STEP::Export()
 
     const wxString downloadName = wxFileName( m_outputFile ).GetFullName();
 
-    char* response = js_occExportRequest( TMP_BOARD, jobJson.c_str(),
-                                          downloadName.utf8_string().c_str() );
+    const int token = wxWasmBeginWait( "occ" );
+    js_occExportStart( token, TMP_BOARD, jobJson.c_str(), downloadName.utf8_string().c_str() );
+
+    // The malloc'd JSON pointer rides the wait as an int32.
+    char* response = (char*) (uintptr_t) (uint32_t) wxWasmYieldUntil( token );
 
     bool ok = false;
 

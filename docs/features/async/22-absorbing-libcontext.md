@@ -986,6 +986,43 @@ engines, `wakeup_during_transition` layout-sensitive, `modal.spec.ts:125`), with
 pthread-ondemand green on both engines. The shim's resolveWait retention change is
 regression-free against every modal/nested/popup wait the battery stages.
 
+### Phase E: K2–K6 converted — the bridge set is COMPLETE (2026-08-08)
+
+Same pattern as K1, one build, gated per-bridge then confirmed:
+
+| bridge | file | wait kind |
+|---|---|---|
+| K2 footprint libs | `kicad/pcbnew/pcb_io/pcbjam_fp/pcb_io_pcbjam_fp.cpp` | `fp-lib` |
+| K3 3D model fetch | `kicad/3d-viewer/3d_cache/pcbjam_model_fetch.cpp` | `3d` |
+| K4 STEP export | `wasm/stubs/exporter_step_stub.cpp` | `occ` |
+| K5 OCE model load | `wasm/stubs/oce_plugin_stub.cpp` | `occ` |
+| K6 ngspice ×2 | `wasm/stubs/sharedspice_client.cpp` | `ngspice` |
+
+Every bridge: `beginWait` → start `EM_JS` (ALL resolutions deferred ≥ a microtask,
+result marshalling moved into the resolve callback) → `wxWasmYieldUntil` → result as
+the wait's int32 (pointers recovered via `(uint32_t)`). Worker/proxy paths untouched.
+
+**Gates:** `pcbnew` + `3d-viewer-models` + `occ-export-models` + `eeschema-sim`
+**8/8 in 1.8 min** — and the occ-export spec drove **17 real async provider requests
+through converted K3 during a live K4 export**, which is the resolve-AFTER-park
+coverage the K1 retry noted as thin (test pages resolve early; these two specs
+install real providers). Full suite: **139 / 1 (pre-existing occ-probe glb) / 30 —
+baseline held.** Battery not rerun: no wx or shim code changed; the stubs link only
+into the KiCad apps.
+
+**Converter-diet hardening (K1+K2):** `sym_convert` keeps `sch_io/` and
+`pcb_convert` keeps `pcb_io/`, so those TUs can land in links WITHOUT the wx wasm
+port. `wxWasmBeginWait`/`wxWasmYieldUntil` are declared WEAK there with a null guard
+returning "request unavailable" — correct, since a converter diet can never have a
+`/mnt/pcbjam` provider either. (Same class as the nanosleep lesson above.)
+
+**Phase E remaining before it is DONE done:** the §5 assertion ("no `handleSleep`
+park happens on any fiber stack — assert it") is not built, per-bridge deep-park
+high-water beacons for buffer sizing are not collected, and the standalone/web smoke
+with the production provider is still owed. The natural next measurement is a D-on
+probe: with every bridge a token wait, the `current() != 0` inline fallback window
+that D-on tolerated should now be structurally empty.
+
 1. **pthreads.** Doc 21 §2 settled that every Asyncify park is main-thread and the lib
    bridge's worker path is a blocking proxy. Phase A must re-check that libcontext is never
    driven from a worker before assuming the scheduler is main-thread-only.
