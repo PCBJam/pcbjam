@@ -187,11 +187,12 @@ if (typeof Asyncify !== "undefined" && !globalThis.__wxSchedulerInstalled) {
     // _wxNestedLoopExit — deleted at doc 20 D-1). Resolution flows
     // through the S2 deferred-wake law automatically: resolving a wait wakes
     // its parked sleep via the wrapped handleSleep path.
-    waits: new Map(),      // token → {kind, promise, resolve, resolved}
+    waits: new Map(),      // token → {kind, promise, resolve, resolved, result, awaited, contextParked}
     waitSeq: 0,
     waitStacks: {},        // kind → [unresolved tokens], LIFO
     waitsBegun: 0,
     waitsResolved: 0,
+    earlyWaitResolves: 0,  // resolves that landed before their waiter parked (Phase E)
     beginWait: function (kind) {
       var token = ++this.waitSeq;
       var entry = { kind: kind, resolved: false, resolve: null, promise: null };
@@ -208,7 +209,29 @@ if (typeof Asyncify !== "undefined" && !globalThis.__wxSchedulerInstalled) {
         console.warn("[wx-scheduler] waitPromise(" + token + "): unknown token");
         return Promise.resolve(0);
       }
+      if (entry.resolved) {
+        // Resolved before the waiter parked (Phase E early-resolve window).
+        // Consume the retained entry and hand the real result over — the old
+        // path warned "unknown token" and returned 0, dropping it.
+        this.waits.delete(token);
+        return Promise.resolve(entry.result | 0);
+      }
+      entry.awaited = true;
       return entry.promise;
+    },
+    // Phase E: a wait resolved before its C++ waiter reached the park keeps its
+    // entry (see resolveWait) so the result is not lost. wxWasmYieldUntil peeks
+    // before parking a context and consumes the result instead of parking a
+    // context nobody will ever resume.
+    waitEarlyResolved: function (token) {
+      var entry = this.waits.get(token);
+      return entry && entry.resolved ? 1 : 0;
+    },
+    takeWaitResult: function (token) {
+      var entry = this.waits.get(token);
+      if (!entry || !entry.resolved) return 0;
+      this.waits.delete(token);
+      return entry.result | 0;
     },
     // doc 22 Phase C: this token's waiter parked a SCHEDULER CONTEXT instead of
     // suspending its stack in place, so there is no promise anyone awaits —
@@ -228,12 +251,12 @@ if (typeof Asyncify !== "undefined" && !globalThis.__wxSchedulerInstalled) {
         var idx = stack.indexOf(token);
         if (idx !== -1) stack.splice(idx, 1);
       }
-      this.waits.delete(token);
       if (entry.contextParked) {
         // Mark ready only — never resume inline. The pump picks it up from a
         // fresh task, which is doc 13 §1.4's deferred-wake law applied to
         // contexts (a rewind inside this resolver's own turn is the whole
         // class of bug the scheduler exists to remove).
+        this.waits.delete(token);
         try {
           Module["_wxWasmSchedResolveContextWait"](token, result | 0);
         } catch (e) {
@@ -242,7 +265,18 @@ if (typeof Asyncify !== "undefined" && !globalThis.__wxSchedulerInstalled) {
         this._armSchedPump();
         return true;
       }
+      entry.result = result | 0;
       entry.resolve(result | 0);
+      if (entry.awaited) {
+        this.waits.delete(token);
+      } else {
+        // Nobody has parked on this token yet (Phase E early-resolve window:
+        // a bridge whose request settled before the C++ frame reached the
+        // park). Keep the entry, result attached — wxWasmYieldUntil or a late
+        // waitPromise consumes it. Deleting here is what stranded the first
+        // Phase E attempt: the later park waited on a wake nobody could send.
+        this.earlyWaitResolves++;
+      }
       return true;
     },
     // Resolve the INNERMOST unresolved wait of a kind (wx LIFO semantics).

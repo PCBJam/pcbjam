@@ -42,8 +42,18 @@ EM_ASYNC_JS( void, __wasm_main_thread_yield_ms, ( double ms ), {
  * This is what makes TOOL_MANAGER::RunSynchronousAction's spin loop safe under
  * Phase D: an in-place park inside a tool body leaves a capture in flight for a
  * star transfer to land on (doRewind -> "index out of bounds").
+ *
+ * extern "C" + WEAK, both load-bearing: some app builds compile this file as
+ * C++ (em++ keys language off the DRIVER, not the .c extension — a bare extern
+ * here mangles and the app aborts at "missing function" on first sleep), and
+ * the standalone wx test apps do not link context_sleep.cpp at all. A weak
+ * null resolves to "no context lane here — always yield in place", which is
+ * exactly the pre-context behaviour those apps pin.
  */
-extern int pcbjam_context_sleep_ms( double ms );
+#ifdef __cplusplus
+extern "C"
+#endif
+int pcbjam_context_sleep_ms( double ms ) __attribute__(( weak ));
 
 int nanosleep( const struct timespec* req, struct timespec* rem )
 {
@@ -52,7 +62,7 @@ int nanosleep( const struct timespec* req, struct timespec* rem )
         double ms = (double) req->tv_sec * 1000.0 + (double) req->tv_nsec / 1.0e6;
         if( emscripten_is_main_runtime_thread() )
         {
-            if( !pcbjam_context_sleep_ms( ms ) )
+            if( !pcbjam_context_sleep_ms || !pcbjam_context_sleep_ms( ms ) )
                 __wasm_main_thread_yield_ms( ms ); /* yield -> event loop runs -> Worker boots */
         }
         else

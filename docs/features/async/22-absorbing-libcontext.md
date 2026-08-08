@@ -912,6 +912,80 @@ chooser, one lib request), not the full suite:
 (`eeschema.spec.ts` or a chooser spec), not `npm run test:kicad` — this attempt cost a
 1.2-hour suite run to learn one bit. The full suite is the confirmation, not the probe.
 
+### Phase E retry: K1 LANDED — the strand was a certainty, not a race (2026-08-08)
+
+**Gate: full KiCad suite 139 passed / 1 failed (pre-existing occ-probe glb) / 30
+skipped in 7.2 min — the Phase A baseline exactly**, with the K1 conversion IN. The
+casualty class went first: `eeschema-ui` 3/3 in 17.7 s (attempt 1 hung it at boot for
+3 min per test), then strand + sim + modal-stack 6/6. Zero `[wx-wait]` beacons fired.
+
+**The diagnosis, from evidence attempt 1 left behind rather than a rebuild.** The
+broken run's playwright report survived (`tests/playwright-report`, 111 expected / 26
+unexpected) and all 26 failures are the same shape: `#canvas` never appeared — BOOT
+hangs, not chooser hangs. A live probe of the bare test page then supplied the missing
+fact: **test pages install no `kicadLibs` provider at all.** So on every spec page the
+converted bridge resolved its wait synchronously (no-hook → `resolveWait(token, 0)`
+inside the same wasm turn), `resolveWait` DELETED the entry, and the C++ then parked a
+context whose wake had already been spent. Not a race — a certainty on every
+provider-less page, which is why 26 specs died broadly instead of one chooser flow.
+(Hypothesis 1 was falsified first: both exports are real export assignments in the
+surviving glue, and they come from the wx side of the link, identical in both builds.)
+
+**The §"first attempt" guard is LOSSY and was NOT landed — this landed instead.** The
+4-line `waits.has` guard returns 0 for an already-resolved wait, dropping the result
+(a malloc'd payload pointer for lib requests, a return code for modals). The
+result-preserving shape, all three pieces required together:
+
+1. **Retention (shim):** `resolveWait` keeps a resolved-but-unawaited non-context
+   entry in the map with `result` attached (counter `earlyWaitResolves`), instead of
+   deleting it. Context-parked and promise-awaited resolves behave exactly as before.
+2. **Peek-and-consume (wx):** `wxWasmYieldUntil` checks `waitEarlyResolved(token)`
+   before parking a context and returns `takeWaitResult(token)` instead of parking;
+   `waitPromise` consumes a retained entry too — which also fixes a PRE-EXISTING data
+   loss (a synchronous C++ resolve before `wxWasmYieldUntilJs` used to return 0 with
+   an "unknown token" warning).
+3. **Deferred resolution (bridge contract):** a converted bridge must never call
+   `resolveWait` synchronously from its start function — every path defers to at
+   least a microtask. `pcbjam_libs_request_start` wraps the provider in
+   `Promise.resolve(...)` so even a synchronous provider resolves on a microtask.
+
+Beacons on the two previously-silent links stay in: a resolve for an unregistered
+context-wait token, and a refused `mark_ready`, both warn with the token identity.
+
+**Why attempt 1 "reproduced with the guard in place" could not be reproduced:** not
+resolvable from surviving evidence; the equivalent-but-stronger mechanism gates green
+today. The stale-sync trap (a retest against unsynced binaries) remains the likeliest
+explanation. The retention design is landed regardless — it is strictly stronger.
+
+**Honest coverage note:** the bare-page probe shows `waitsBegun == 0` at boot — K1's
+main-thread path is THIN on test pages (the chooser path proxies from pthread
+workers, untouched). The park-then-resolve half of the mechanism is exercised by
+every modal at D-off (same `wxWasmYieldUntil` path); the async-provider half needs
+the standalone/web smoke before Phase E is called done. For K2–K7: the retention and
+peek live in shared code — only the defer-the-resolve contract must be repeated per
+bridge.
+
+**A latent break the battery rerun un-hid (NOT this retry's doing):**
+`coroutine-pthread-ondemand` aborted at `missing function:
+_Z23pcbjam_context_sleep_msd` on both engines. The 8/7 context-sleep commit added a
+bare `extern int pcbjam_context_sleep_ms(double)` to `wasm/shims/nanosleep_yield.c`;
+the test-app Makefile compiles that file with `$(CXX)` and its comment ("em++ keys
+language off the .c extension") is wrong — em++ compiles it as C++, so the
+declaration MANGLES, and the standalone apps do not link `context_sleep.cpp` at all.
+Broken since 8/7; unnoticed because the wx battery was never rerun after that commit
+(the KiCad gate was). Fix in `nanosleep_yield.c`: the declaration is now
+`extern "C"`-guarded AND `__attribute__((weak))` with a null check — an app without
+the scheduler shim falls back to the in-place Asyncify yield, which is exactly the
+behaviour those apps pin. Lesson for the phase log: **a wx-shim commit gated only on
+the KiCad suite can silently break the standalone battery — run both nets when
+`wasm/shims/` changes.**
+
+**Battery after the fix: 388 passed / 8 failed / 3 skipped — the failure set is
+EXACTLY the documented pre-existing D-off landing set** (nested case-3 ×3 tests ×2
+engines, `wakeup_during_transition` layout-sensitive, `modal.spec.ts:125`), with
+pthread-ondemand green on both engines. The shim's resolveWait retention change is
+regression-free against every modal/nested/popup wait the battery stages.
+
 1. **pthreads.** Doc 21 §2 settled that every Asyncify park is main-thread and the lib
    bridge's worker path is a blocking proxy. Phase A must re-check that libcontext is never
    driven from a worker before assuming the scheduler is main-thread-only.
