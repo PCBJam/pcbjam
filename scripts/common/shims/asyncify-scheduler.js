@@ -521,20 +521,28 @@ if (typeof Asyncify !== "undefined" && !globalThis.__wxSchedulerInstalled) {
       if (Asyncify.state !== 0) {
         return __originalHandleSleep(startAsync);
       }
-      // Phase E telemetry (doc 22 §5): count fresh in-place parks that begin
-      // on a NON-main stack (tool coroutine / scheduler context). Must reach
-      // ZERO at the flip — until then it measures the remaining doc-19-class
-      // exposure. Leaf probe into wasm; state is 0 here so no unwind is in
+      // Phase F (doc 22 §10 F2/F3): report every fresh in-place park to the
+      // REGISTRY. Begin() returns the owning context id (0 = main stack);
+      // while recorded, fiber_enterable()/fiber_transfer refuse entering that
+      // context — the registry-owned replacement for the deleted quarantine.
+      // Also the Phase E telemetry: fiberStackParks must be 0 at the flip's
+      // repro gate. Leaf probe into wasm; state is 0 here so no unwind is in
       // flight yet.
+      var parkOwnerCtx = 0;
       try {
-        if (Module["_wxWasmProbeOnFiberStack"] && Module["_wxWasmProbeOnFiberStack"]()) {
-          AsyncifyScheduler.inplaceParksOnFiberStack++;
-          __rec("inplace-park-on-fiber-stack n=" + AsyncifyScheduler.inplaceParksOnFiberStack);
+        if (Module["_wxWasmSchedInplaceParkBegin"]) {
+          parkOwnerCtx = Module["_wxWasmSchedInplaceParkBegin"]() | 0;
+          if (parkOwnerCtx) {
+            AsyncifyScheduler.inplaceParksOnFiberStack++;
+            __rec("inplace-park-on-fiber-stack ctx=" + parkOwnerCtx
+                  + " n=" + AsyncifyScheduler.inplaceParksOnFiberStack);
+          }
         }
       } catch (e) { /* probe must never break a park */ }
       var sleepCtx = {
         capturedData: null,
         cleanedUp: false,
+        parkOwnerCtx: parkOwnerCtx,
         rootOwned: (typeof Fibers === "undefined")
           || (!Fibers.__inFiberEntry
               && !(Asyncify.__wakingOwnerFiber || false)),
@@ -544,6 +552,14 @@ if (typeof Asyncify !== "undefined" && !globalThis.__wxSchedulerInstalled) {
       var cleanup = function () {
         if (sleepCtx.cleanedUp) return;
         sleepCtx.cleanedUp = true;
+        if (sleepCtx.parkOwnerCtx) {
+          try {
+            if (Module["_wxWasmSchedInplaceParkEnd"]) {
+              Module["_wxWasmSchedInplaceParkEnd"](sleepCtx.parkOwnerCtx);
+            }
+          } catch (e) { /* never break a wake */ }
+          sleepCtx.parkOwnerCtx = 0;
+        }
         var idx = Asyncify.__pendingSleepContexts.indexOf(sleepCtx);
         if (idx !== -1) Asyncify.__pendingSleepContexts.splice(idx, 1);
       };
@@ -625,6 +641,13 @@ if (typeof Asyncify !== "undefined" && !globalThis.__wxSchedulerInstalled) {
   // --- stale-fiber-rewind guard (ported from handlesleep.js; semantics
   // unchanged — these encode the consume-once/quarantine contracts of
   // docs/features/async/16) + trampoline heal ownership -------------------
+  // Phase F F2/F3 (doc 22 §10, 2026-08-09): deletion was built, measured and
+  // REVERTED. The registry now carries the in-place-park fact
+  // (wxWasmSchedInplaceParkBegin/End) and refuses on the transfer lane, but
+  // the quarantine's DROP is still the only correct recovery for a misrouted
+  // yield-back under attribution rot (a C++-level refusal ghost-resumes the
+  // yielding coroutine — measured as the lever's phase2 overshoot). This
+  // block stays until attribution is registry-authoritative (gap 3).
   if (typeof Fibers !== "undefined"
       && typeof Fibers.finishContextSwitch === "function"
       && !Fibers.__staleRewindGuardInstalled) {

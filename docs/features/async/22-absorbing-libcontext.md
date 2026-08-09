@@ -1186,6 +1186,40 @@ Flake watch: `ngspice-probe` "bg_run streams events live" has now failed twice
 under full-suite parallel load and passed 4/4 solo both times — a de-flake
 candidate, not a regression.
 
+### F2/F3 — the quarantine is NOT deletable, and the lever proved exactly why (2026-08-09)
+
+The deletion was BUILT and MEASURED, not assumed. What was tried: the registry
+learned the shim's one private fact — "this fiber's body holds an in-flight
+in-place handleSleep park" (`Context::inplace_parks`, fed through
+`wxWasmSchedInplaceParkBegin/End` from the handleSleep wrap at park start/end) —
+`fiber_enterable()` narrowed on it, a registry-informed refusal was added in
+`jump_fcontext` (`jump-refused-inplace`), and the shim's
+consume-once/quarantine block was deleted with the lever spec flipped to
+assert the new refusal.
+
+**Measured verdict: scenario 1 (direct mid-park poke) works — refused at C++,
+body completes. Scenario 2 (the laundered poke) FAILS on a mechanism the
+quarantine was silently covering:** under staged attribution rot the SECOND
+coroutine's `return_to` is poisoned toward the parked fiber, so its
+YIELD-BACK jumps into it. A C++-level refusal answers with the ghost contract
+— which GHOST-RESUMES the yielding coroutine, and it runs to completion
+(`phase2` overshoots 1→2). The quarantine's drop-at-finishContextSwitch
+leaves the yielding side properly suspended — for a misrouted yield-back,
+drop is the only correct recovery a non-invocation-aware layer can make.
+
+**Deleted the deletion; kept the knowledge.** Landed and kept: the registry's
+in-place-park fact + Begin/End plumbing (the fiberStackParks counter now
+attributes parks to contexts), the `fiber_transfer` refusal for inplace-parked
+targets (the star's real lane, where attribution cannot rot), the
+`fiber_enterable` narrowing, and the divergence beacons that now light up the
+laundering (`sched-divergence-current/enterable`, `FIBER-SWAP-NONENTERABLE`).
+The quarantine block is restored verbatim with a header naming its remaining
+duty. **Prerequisite for the real deletion, now precisely named:
+registry-authoritative jump attribution** (the gap-3 redesign — libcontext
+needs a sched-id→context reverse map so a divergent `old` side is corrected at
+the jump instead of poisoning `return_to`). Until then, `fiber-resume-park`
+scenario 2 stays pinned on the quarantine beacon — deliberately.
+
 ### Prod-provider smoke (2026-08-08) — done, with one pre-existing red bisected
 
 Against the live web stack (playwright-web config, reference backend :3060):
