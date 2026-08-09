@@ -153,7 +153,12 @@ if (typeof Asyncify !== "undefined" && !globalThis.__wxSchedulerInstalled) {
       var start = Module["kicadOpenFileStart"];
       if (typeof start !== "function" || typeof Module["kicadOpenFile"] !== "function") return;
       Module["kicadOpenFile"] = function (path) {
-        var token = start(path);
+        // Mint the token HERE, in pure JS — the starter runs the load on a
+        // dispatch context and Asyncify-suspends its own frame, so a token
+        // RETURNED from it would arrive as a placeholder (0). We own the token
+        // and await its promise; the job resolves it when the load finishes.
+        var token = self.beginWait("open");
+        start(token, path);
         // waitPromise consumes early-resolved entries (the fast-error path),
         // so a job that finished before this await still resolves correctly.
         return self.waitPromise(token).then(function (r) { return !!r; });

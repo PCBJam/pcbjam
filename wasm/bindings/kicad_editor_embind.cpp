@@ -170,12 +170,15 @@ static bool kicadOpenFile( std::string path )
 // Run there, every wait inside the load parks the context through the
 // registry — the main stack never parks in place, which is the last
 // production member of the overlapped-wake class the D-on beacon sweep named.
-// The shim wraps Module.kicadOpenFile over this starter when it exists: the
-// wrapper returns the wait token's promise, so the shell's `await` semantics
-// (and the busy gate) are unchanged. Early failures resolve before the
-// wrapper awaits — covered by the wait registry's early-resolve retention.
+//
+// THE TOKEN IS PASSED IN, NOT RETURNED. Running the job on a dispatch context
+// Asyncify-suspends THIS embind frame while the load parks, so any return
+// value is delivered as an unwind PLACEHOLDER (0) into a rewind JS discards —
+// the same gotcha the fiber-park levers document. So the shim wrapper mints
+// the wait token in pure JS (no swap), hands it in here, and awaits its
+// promise; this starter returns void and its own placeholder return is
+// harmless. The job resolves the token when the load completes.
 extern "C" void wxWasmRunOnDispatchContext( void ( *fn )( void* ), void* arg );
-extern "C" int  wxWasmBeginWait( const char* aKind );
 extern "C" void wxWasmResolveWait( int aToken, int aResult );
 
 namespace
@@ -194,11 +197,9 @@ void kicadOpenFileJob( void* aArg )
 }
 }  // namespace
 
-static int kicadOpenFileStart( std::string path )
+static void kicadOpenFileStart( int token, std::string path )
 {
-    const int token = wxWasmBeginWait( "open" );
     wxWasmRunOnDispatchContext( &kicadOpenFileJob, new OPEN_JOB{ std::move( path ), token } );
-    return token;
 }
 
 // JS-pollable open-in-flight probe (open_gate.h): the web shell defers the

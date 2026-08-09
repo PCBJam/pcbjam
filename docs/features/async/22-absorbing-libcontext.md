@@ -1267,6 +1267,33 @@ starter pattern) and the wx TEST HARNESS pages' direct `ccall` buttons
 (harness-only; the interlock and shim capture/restore stay until those are
 routed or retired).
 
+### Open-lane REGRESSION found in live use + fixed (2026-08-09)
+
+The user hit it immediately on the live editor: pcbnew dialogs froze / blue-
+screened (3D viewer, footprint browser X-close, Add-Footprint OK/Cancel) while
+eeschema was fine. Every existing board-load spec drives **File → Open**
+(`OpenProjectFiles` directly); the web shell drives **`Module.kicadOpenFile`**,
+the wrapped path — so no gate exercised it. New repro `shell-open-dialogs.spec.ts`
+loads via `Module.kicadOpenFile` and caught it: **`kicadOpenFile` resolved
+`false` and the shim logged `waitPromise(0): unknown token`.**
+
+**Root cause: the token was RETURNED across a fiber swap.** `kicadOpenFileStart`
+returned its `int` wait token, but `wxWasmRunOnDispatchContext` Asyncify-suspends
+that embind frame while the load parks on the dispatch context — so the return
+arrived as an unwind PLACEHOLDER (0), the documented embind-across-swap gotcha.
+The shell then awaited token 0, resolved `false`, and proceeded (collab attach,
+etc.) while the real load was still running on the dispatch context. pcbnew's
+heavier load (inline fp-lib preload + 3D plugin registration) keeps that context
+busy/parked far longer, so a following dialog collides with it → freeze; eeschema's
+lighter open often completes within the synchronous drain and dodges the window —
+exactly the reported asymmetry.
+
+**Fix:** mint the wait token in pure JS (`beginWait` — no swap) and pass it INTO
+a now-`void` `kicadOpenFileStart`; the wrapper awaits the token's promise, the job
+resolves it on completion. The starter's own placeholder return is void and
+harmless. Lesson pinned: **a value that must survive a dispatch-context run cannot
+be a return value — pass it in.**
+
 ### Prod-provider smoke (2026-08-08) — done, with one pre-existing red bisected
 
 Against the live web stack (playwright-web config, reference backend :3060):
