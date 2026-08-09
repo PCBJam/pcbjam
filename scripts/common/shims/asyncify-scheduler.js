@@ -143,6 +143,23 @@ if (typeof Asyncify !== "undefined" && !globalThis.__wxSchedulerInstalled) {
       if (this.mutatorsWrapped > 0)
         console.log("[wx-scheduler] embind lane: wrapped " + this.mutatorsWrapped + " mutator(s)");
     },
+    // Phase F (doc 22 §10, the awaited-ccall entry class): when the binary
+    // carries kicadOpenFileStart, the open body runs on a DISPATCH CONTEXT
+    // and the await surface becomes a plain JS promise over the wait token —
+    // the main stack never parks in place during a load. Conditional: older
+    // binaries without the starter keep the legacy suspending export.
+    _wrapOpenFile: function () {
+      var self = this;
+      var start = Module["kicadOpenFileStart"];
+      if (typeof start !== "function" || typeof Module["kicadOpenFile"] !== "function") return;
+      Module["kicadOpenFile"] = function (path) {
+        var token = start(path);
+        // waitPromise consumes early-resolved entries (the fast-error path),
+        // so a job that finished before this await still resolves correctly.
+        return self.waitPromise(token).then(function (r) { return !!r; });
+      };
+      console.log("[wx-scheduler] open lane: kicadOpenFile routed through the dispatch context");
+    },
     _armMutatorPump: function () {
       if (this._mutatorPumpArmed) return;
       this._mutatorPumpArmed = true;
@@ -763,11 +780,13 @@ if (typeof Asyncify !== "undefined" && !globalThis.__wxSchedulerInstalled) {
   if (typeof Module !== "undefined") {
     if (Module["calledRun"]) {
       AsyncifyScheduler._wrapMutators();
+      AsyncifyScheduler._wrapOpenFile();
     } else {
       var __wxSchedPrevInit = Module["onRuntimeInitialized"];
       Module["onRuntimeInitialized"] = function () {
         if (typeof __wxSchedPrevInit === "function") __wxSchedPrevInit();
         AsyncifyScheduler._wrapMutators();
+        AsyncifyScheduler._wrapOpenFile();
       };
     }
   }

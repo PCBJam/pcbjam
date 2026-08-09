@@ -1241,6 +1241,32 @@ upstream-divergence decision) remove the population. Until then the ring is
 the correct containment: bounded at 32, over-capacity silent at the flip, and
 the eager path stands ready for any flow that does complete-and-release.
 
+### The awaited-ccall entry class RETIRED for the open path (2026-08-09)
+
+`kicadOpenFile` — the last production member of the overlapped-wake class the
+D-on beacon sweep named — no longer parks the main stack. The body is
+unchanged; `kicadOpenFileStart` runs it on a DISPATCH CONTEXT (every wait
+inside the load becomes a context park through the registry) and resolves an
+"open" wait token on completion; the shim conditionally rewraps
+`Module.kicadOpenFile` to return the token's plain JS promise, so the shell's
+`await` and the busy gate are byte-compatible (older per-app binaries without
+the starter keep the legacy suspending export). The F0 early-resolve retention
+covers the fast-error path by construction.
+
+**Gates: collab-load-fuzz + mailbox-ordering (the staged parked-open levers)
+green — with ZERO `overlapped-wake`/`hot-main-swap-out` beacons where they
+always fired; suite 139/1; battery 395/1; repro oracle 3/3 warm loads PASS
+with `rootHotTotal=0`, `fiberStackParks=0` — and `fcsTotal` COLLAPSED from
+~1800–5000 per load to 97–235.** The load no longer round-trips fiber swaps
+through main-stack in-place parks; that order-of-magnitude drop is the
+measured shape of "the main stack is the scheduler and nothing else".
+
+Remaining members of the class: the standalone per-app binaries (eeschema.js
+etc., rebuilt rarely — conversion rides their next rebuild via the same
+starter pattern) and the wx TEST HARNESS pages' direct `ccall` buttons
+(harness-only; the interlock and shim capture/restore stay until those are
+routed or retired).
+
 ### Prod-provider smoke (2026-08-08) — done, with one pre-existing red bisected
 
 Against the live web stack (playwright-web config, reference backend :3060):

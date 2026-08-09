@@ -25,6 +25,7 @@
 #include <emscripten.h>
 #include <emscripten/bind.h>
 #include <algorithm>
+#include <memory>
 #include <string>
 #include <vector>
 #include <wx/app.h>
@@ -162,6 +163,42 @@ static bool kicadOpenFile( std::string path )
         emscripten_sleep( pcbjam_open::testParkMs() );
 
     return ok;
+}
+
+// Phase F (docs/features/async/22 §10, the awaited-ccall entry class): the
+// open body above, driven from a DISPATCH CONTEXT instead of the main stack.
+// Run there, every wait inside the load parks the context through the
+// registry — the main stack never parks in place, which is the last
+// production member of the overlapped-wake class the D-on beacon sweep named.
+// The shim wraps Module.kicadOpenFile over this starter when it exists: the
+// wrapper returns the wait token's promise, so the shell's `await` semantics
+// (and the busy gate) are unchanged. Early failures resolve before the
+// wrapper awaits — covered by the wait registry's early-resolve retention.
+extern "C" void wxWasmRunOnDispatchContext( void ( *fn )( void* ), void* arg );
+extern "C" int  wxWasmBeginWait( const char* aKind );
+extern "C" void wxWasmResolveWait( int aToken, int aResult );
+
+namespace
+{
+struct OPEN_JOB
+{
+    std::string path;
+    int         token;
+};
+
+void kicadOpenFileJob( void* aArg )
+{
+    std::unique_ptr<OPEN_JOB> job( static_cast<OPEN_JOB*>( aArg ) );
+    const bool ok = kicadOpenFile( job->path );
+    wxWasmResolveWait( job->token, ok ? 1 : 0 );
+}
+}  // namespace
+
+static int kicadOpenFileStart( std::string path )
+{
+    const int token = wxWasmBeginWait( "open" );
+    wxWasmRunOnDispatchContext( &kicadOpenFileJob, new OPEN_JOB{ std::move( path ), token } );
+    return token;
 }
 
 // JS-pollable open-in-flight probe (open_gate.h): the web shell defers the
@@ -573,6 +610,7 @@ EMSCRIPTEN_BINDINGS(kicad_editor) {
     function("kicadCollabFiberBusy", &kicadCollabFiberBusyProbe);
     // Programmatic file open (preferred over UI automation from the web app).
     function("kicadOpenFile", &kicadOpenFile);
+    function("kicadOpenFileStart", &kicadOpenFileStart);
     function("kicadOpenFileBusy", &kicadOpenFileBusy);
     function("kicadTestSetOpenPark", &kicadTestSetOpenPark);
     function("kicadTestArmTimerPark", &kicadTestArmTimerPark);
