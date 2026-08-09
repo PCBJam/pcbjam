@@ -1220,6 +1220,27 @@ needs a sched-id→context reverse map so a divergent `old` side is corrected at
 the jump instead of poisoning `return_to`). Until then, `fiber-resume-park`
 scenario 2 stays pinned on the quarantine beacon — deliberately.
 
+### Lifetime increment (2026-08-09): eager reclaim landed, and the ring's real
+### population measured
+
+`release_context` now reclaims a FINISHED coroutine's fiber (the 512K asyncify
+buffer + registry entry) at release time (`release-reclaimed` beacon) instead
+of retaining it in the grace ring until overflow — safe because the flip's
+terminal finish refuses transfers into Finished and `sched_id == 0` takes the
+recorded ghost contract. Gates: battery 395/1, kicad suite 139/1.
+
+**The measurement that matters: the eager path fired ZERO times across the
+whole suite.** Combined with the historic `grace-ring-evict: 0` and Phase A's
+`over-capacity: 33, none evictable`, the picture is now precise: **the ring's
+population is entirely released-but-NEVER-FINISHED tool coroutines** — canvas
+tools are persistent event loops whose COROUTINE objects are released while
+their bodies still hold re-enterable state. No eviction policy can touch them;
+only scheduler-owned coroutine lifetimes (owning handles in
+`TOOL_MANAGER`/`coroutine.h` — the §5 Phase B remainder, gated on the
+upstream-divergence decision) remove the population. Until then the ring is
+the correct containment: bounded at 32, over-capacity silent at the flip, and
+the eager path stands ready for any flow that does complete-and-release.
+
 ### Prod-provider smoke (2026-08-08) — done, with one pre-existing red bisected
 
 Against the live web stack (playwright-web config, reference backend :3060):
