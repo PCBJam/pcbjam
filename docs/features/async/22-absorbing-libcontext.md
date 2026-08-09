@@ -1294,6 +1294,35 @@ resolves it on completion. The starter's own placeholder return is void and
 harmless. Lesson pinned: **a value that must survive a dispatch-context run cannot
 be a return value — pass it in.**
 
+### gap 1 SURVIVED into a second live break — the footprint chooser (2026-08-09)
+
+After the open-lane fix the user hit a DIFFERENT dead-app: the Add-Footprint
+chooser closed, then nothing responded, with
+`[sched-ctx] REFUSED id=28 mark_ready() on a running context` +
+`[wx-wait] mark_ready refused for token 213 ctx 28`. This is doc §10's **gap 1**
+(a resolve arriving while the target context is Running), claimed closed at the
+D-on probe but never actually implemented as a QUEUE — `mark_ready` just
+*refused* on a non-Parked context and DROPPED the wake, so the modal's resolve
+was lost and the wait hung.
+
+It is the CONTEXT-path analogue of the promise-path early-resolve race that F0
+already fixed: `ShowModal` begins wait 213, then `Show(true)` / a synchronous
+close resolves it *before* ctx 28 reaches `yield_park` — the resolve lands on a
+still-Running context. The promise path returns immediately via early-resolve
+retention; the context path had no equivalent and dropped it.
+
+**Fix (registry, the S2 deferred-wake law):** `mark_ready` on a Running context
+now QUEUES the wake (`Context::has_pending_wake` + `deferred_wakes` counter)
+instead of refusing; `yield_park` delivers it the instant the context parks, so
+the wait resumes on the next turn. Safe against wrong-resume because the
+token→context map is erased when `yield_park` returns — a stale resolve for a
+left park never reaches `mark_ready`. Gates: kicad 141/1, battery 395/1.
+
+**Coverage gap named:** no kicad spec drives the footprint chooser with a
+provider (the web-e2e-rot specs that would are `fixme`), so this raced-resolve
+shape had no automated stager — a synthetic "resolve races a context-wait park"
+lever is owed as its regression pin.
+
 ### Prod-provider smoke (2026-08-08) — done, with one pre-existing red bisected
 
 Against the live web stack (playwright-web config, reference backend :3060):
