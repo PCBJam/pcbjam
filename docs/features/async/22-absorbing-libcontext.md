@@ -1161,6 +1161,31 @@ each deletion must flip its spec in the same commit (the
 `fiber-resume-park` red→green flip is the template). That is the next Phase F
 increment after the bounce removal.
 
+### F4 — the doc-19 mainstack bounce is GONE (2026-08-09)
+
+Deleted in one increment: the `DoRun` bounce, `s_mainStackRunner` /
+`wxWasmSetMainStackRunner` / `wxWasmRunOnMainStack`, `wx/wasm/private/
+mainstack.h`, `wasm/bindings/main_stack_runner.h` (+ its five embind includes),
+and KiCad's `TOOL_MANAGER::RunOnMainStackIfActiveTool` — the fork moves CLOSER
+to upstream. `wxWasmOnCoroutineStack()` and the captured main-stack bounds stay
+(the `fiberStackParks` probe uses them).
+
+Post-flip a nested loop opened from a tool parks the TOOL'S OWN context through
+`wxWasmYieldUntil` (context_sleep set the precedent for symmetric-lane parks) —
+which is what the bounce approximated from outside, minus the detour through
+the root. **Gates: battery 395/1 (nested green through the removal), strand 2/2
+(`closed=true refused-resumes=0` — the doc-19 pin holds with the mitigation
+deleted), kicad suite 139/1-equivalent.**
+
+Build-system note that cost two cycles: deleting a header leaves stale
+recorded deps in BOTH wx build trees (host `build-wasm/wxwidgets/.deps` and the
+docker volume `kicad-wasm-libs_kicad-build-cache:/cache/wxwidgets/.deps`) —
+remove the `.o` + `.o.d` pair in each before rebuilding.
+
+Flake watch: `ngspice-probe` "bg_run streams events live" has now failed twice
+under full-suite parallel load and passed 4/4 solo both times — a de-flake
+candidate, not a regression.
+
 ### Prod-provider smoke (2026-08-08) — done, with one pre-existing red bisected
 
 Against the live web stack (playwright-web config, reference backend :3060):

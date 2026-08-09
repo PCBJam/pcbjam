@@ -40,7 +40,6 @@
 #include <project.h>
 
 #include "pcbjam_libs_reload.h"
-#include "main_stack_runner.h"
 #include "open_gate.h"
 #include "timer_park.h"
 #include "fiber_park.h"

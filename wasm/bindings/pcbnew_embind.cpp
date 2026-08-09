@@ -52,7 +52,6 @@
 #include <nlohmann/json.hpp>
 #include "collab_common.h"
 #include "collab_presence_core.h"
-#include "main_stack_runner.h"
 #include "open_gate.h"
 #include "timer_park.h"
 #include "fiber_park.h"

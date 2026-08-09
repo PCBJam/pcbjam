@@ -17,7 +17,6 @@
 #include <wx/string.h>
 #include <wx/window.h>
 #include <nlohmann/json.hpp>
-#include "main_stack_runner.h"
 #include "open_gate.h"
 #include <eda_draw_frame.h>
 #include <kiid.h>
