@@ -1124,6 +1124,43 @@ guards it leans on. Also noted during the repro: a cosmetic
 chrome's `drawRoundedRect` on warm loads — unrelated to the scheduler, worth its
 own small fix.
 
+### Phase F opens (2026-08-09): tripwire audit + the W4/W5 hole it found
+
+**F1 — tripwire-silence audit across the flip-state logs (kicad suite, battery,
+repro consoles).** SILENT at the flip: every libcontext refusal
+(`jump-refused-*`, `swap-lost`, `jump-into-reclaimed`, `jump-ghost`),
+`sched-divergence-*`, `hot-main-swap-out`/`jump-hot-into-main`,
+`reentrant-state`, stray currData writes, `DRAIN-CAP`, `FIBER-RELEASE-RUNNING`,
+`FIBER-SWAP-NONENTERABLE`, `grace-ring-evict`/`over-capacity`. FIRING, all
+attributable: the races/lever harnesses (which STAGE the conditions and assert
+the guards answer — spec coverage, not production paths), sched-context's own
+refusal-path tests, `release-deferred` (grace-ring bookkeeping, not a guard),
+one `TRANSITION-ABANDONED` (the races pump-error spec, staged) — and
+`concurrent-park` in ordinary clipboard/dialogs/filedialog/print specs.
+
+**That last class exposed a Phase E hole: W4 (clipboard quartet) + W5 (font
+enumeration) were in §5 Phase E's scope ("K1–K7 and W4/W5") and were missed by
+the K-table sweep. CONVERTED (F0)**: all five bridges are token waits (kinds
+`clipboard`/`font`), same deferred-resolution contract, output writes in the
+resolve callback. Gates: battery 395/1 (unchanged), kicad suite 139/1.
+
+**Post-conversion attribution of the surviving `concurrent-park` firings:** the
+stacks show the wx TEST HARNESS's own shell buttons doing `ccall` into
+suspending exports from DOM handlers while a previous op's park is live — the
+awaited-ccall ENTRY class (the `kicadOpenFile` family), not the bridges. A
+bridge conversion cannot remove what an app-JS `ccall` entry does; that class
+retires when the entry paths are routed through the scheduler or when the
+harness pages stop calling suspending exports directly.
+
+**Phase F consequence for the deletion list:** the interlock and the shim's
+capture/restore machinery are NOT deletable yet — the ccall-entry class still
+exercises them (and the specs prove they hold). Deletable-on-evidence:
+libcontext's refusal thicket and the epochs/quarantine whose beacons are silent
+— BUT several are load-bearing for the races/lever specs that assert them, so
+each deletion must flip its spec in the same commit (the
+`fiber-resume-park` red→green flip is the template). That is the next Phase F
+increment after the bounce removal.
+
 ### Prod-provider smoke (2026-08-08) — done, with one pre-existing red bisected
 
 Against the live web stack (playwright-web config, reference backend :3060):
