@@ -60,6 +60,7 @@
 #include <pcbjam_remote_lock.h>
 #include "collab_common.h"
 #include "open_gate.h"
+#include "main_stack_runner.h"
 #include "collab_presence_core.h"
 #include "collab_presence_style.h"
 #include "pcbjam_theme.h"

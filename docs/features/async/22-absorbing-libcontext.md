@@ -1323,6 +1323,46 @@ provider (the web-e2e-rot specs that would are `fixme`), so this raced-resolve
 shape had no automated stager — a synthetic "resolve races a context-wait park"
 lever is owed as its regression pin.
 
+### F4 was WRONG — the doc-19 bounce is restored (2026-08-10)
+
+The gap-1 deferred-wake fix above did NOT fix the footprint chooser; the user
+retested and it still froze. Reproduced live (the public `demo` board, real
+fp-lib-table) and read the recorder — the mechanism is NOT gap 1:
+
+```
+inplace-park-on-fiber-stack ctx=21 n=175
+fcs … rf=dynCall_iiii
+[wx-asyncify] fiber-resume-refused: fiber=2649686808 is asyncify-parked mid-body
+```
+
+The footprint chooser is a **quasi-modal with a NESTED event loop, opened from
+the place-footprint TOOL COROUTINE**. Its nested wait runs on the tool
+coroutine's fiber stack, where `can_yield_here()` is false (the running star
+context is dispatch, not the fiber) — so `wxWasmYieldUntil` falls back to an
+**in-place Asyncify park on the fiber**, the doc-19 disease. On Cancel the
+resume into that parked-in-place fiber is refused by the quarantine and
+dropped → the loop never resumes → dead app.
+
+**This is exactly what the doc-19 mainstack bounce prevented, and F4 removed
+it.** F4's reasoning ("post-flip the context-park replaces the bounce") was
+wrong for the tool-fiber case: the context-park only works once the frame is
+already on the dispatch context, and the bounce is what moves a nested loop
+opened from a tool fiber ONTO the dispatch context's stack (via `RunMainStack`
+→ libcontext root, which post-flip IS the running dispatch context — so
+`can_yield_here()` then holds and the wait context-parks correctly). F4's gate
+missed it because the footprint chooser has no automated coverage.
+
+**F4 reverted** (kicad `452eb5260d`, wx `a8d9ece31f`, pcbjam `6a0a20f`): the
+bounce, `s_mainStackRunner`/`wxWasmRunOnMainStack`, `mainstack.h`,
+`main_stack_runner.h` + its 5 embind includes, and
+`RunOnMainStackIfActiveTool` are all back. Verified: footprint chooser
+Cancel/close green live (frames 2→1, loop keeps ticking) AND headless — the
+new `tests/kicad/footprint-chooser-close.spec.ts` opens the chooser over a
+board and cancels it, the regression pin F4 lacked. Gates: kicad 142/1,
+battery unchanged. The gap-1 deferred-wake queue stays (it is correct and
+inert here). **Lesson: never delete a doc-19 mitigation without a spec that
+drives a tool-opened quasi-modal.**
+
 ### Prod-provider smoke (2026-08-08) — done, with one pre-existing red bisected
 
 Against the live web stack (playwright-web config, reference backend :3060):

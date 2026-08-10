@@ -53,6 +53,7 @@
 #include "collab_common.h"
 #include "collab_presence_core.h"
 #include "open_gate.h"
+#include "main_stack_runner.h"
 #include "timer_park.h"
 #include "fiber_park.h"
 #include "collab_presence_style.h"

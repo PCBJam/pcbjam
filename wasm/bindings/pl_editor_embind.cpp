@@ -18,6 +18,7 @@
 #include <wx/window.h>
 #include <nlohmann/json.hpp>
 #include "open_gate.h"
+#include "main_stack_runner.h"
 #include <eda_draw_frame.h>
 #include <kiid.h>
 #include <pcbjam_read_only.h>

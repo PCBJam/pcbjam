@@ -25,6 +25,7 @@
 #include <wx/app.h>
 #include <wx/string.h>
 #include "open_gate.h"
+#include "main_stack_runner.h"
 
 using namespace emscripten;
 using json = nlohmann::json;
