@@ -1,0 +1,9 @@
+# Generated/machine-local artifacts — only the README, scripts, and project
+# files are tracked. Everything below is rebuilt by the steps in README.md.
+*.srctrldb
+*.srctrldb_tmp
+*.srctrlbm
+compile_commands.json
+sample_compile_commands.json
+libcxx-11/
+libcxx-11.src.tar.xz

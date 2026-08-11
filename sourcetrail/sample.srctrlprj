@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<config>
+    <source_groups>
+        <source_group_9a1b2c3d-0000-4000-8000-kicadwasm0001>
+            <build_file_path>
+                <compilation_db_path>./sample_compile_commands.json</compilation_db_path>
+            </build_file_path>
+            <indexed_header_paths>
+                <indexed_header_path>/Users/V/IdeaProjects/pcbjam-private/pcbjam/kicad</indexed_header_path>
+                <indexed_header_path>/Users/V/IdeaProjects/pcbjam-private/pcbjam/wasm</indexed_header_path>
+                <indexed_header_path>/Users/V/IdeaProjects/pcbjam-private/pcbjam/wxwidgets/include</indexed_header_path>
+                <indexed_header_path>/Users/V/IdeaProjects/pcbjam-private/pcbjam/build-wasm/kicad-kicad_editor</indexed_header_path>
+                <indexed_header_path>/Users/V/IdeaProjects/pcbjam-private/pcbjam/build-wasm/wxwidgets/lib/wx/include</indexed_header_path>
+            </indexed_header_paths>
+            <name>KiCad WASM sample</name>
+            <status>enabled</status>
+            <type>C/C++ from Compilation Database</type>
+        </source_group_9a1b2c3d-0000-4000-8000-kicadwasm0001>
+    </source_groups>
+    <version>8</version>
+</config>
