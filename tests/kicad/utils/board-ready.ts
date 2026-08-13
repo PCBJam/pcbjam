@@ -1,71 +1,222 @@
 import type { Page } from '@playwright/test';
+import { waitForCanvasStable } from '../../e2e/utils/element-tracker';
+
+export type RuntimeLogger = { consoleLogs: string[]; errors: string[] };
+
+/** Registry identities which existed before the File -> Open command. */
+export type FileDialogCheckpoint = Readonly<{ existingIds: readonly string[] }>;
+
+/** Exact wxFileDialog created causally after one File -> Open command. */
+export type FileDialogReceipt = Readonly<{ id: string }>;
+
+type BarrierOutcome = { state: 'pending' | 'fulfilled' | 'rejected'; error?: string };
+
+function assertExpectedBoard(expectedBoard: string): void {
+    if (!expectedBoard.trim()) {
+        throw new Error('Expected board identity must not be empty');
+    }
+}
+
+function assertNoNativeFailure(logger: RuntimeLogger | undefined, phase: string): void {
+    if (!logger) return;
+    const failure = [...logger.consoleLogs, ...logger.errors].find((line) =>
+        line.includes('Aborted(')
+        || line.includes('RuntimeError: unreachable')
+        || line.includes('memory access out of bounds')
+    );
+    if (failure) throw new Error(`WASM failed during ${phase}:\n${failure}`);
+}
 
 /**
- * Wait for pcbnew to finish opening a board.
+ * Take the causal checkpoint immediately before clicking File -> Open.
  *
- * Indicators we can rely on with the current wxwidgets-wasm registry:
- *   1. The wxFileDialog ("filedlg") that we used to pick the file disappears.
- *   2. The wxProgressDialog that KiCad pops up during LoadBoard appears and
- *      then disappears — this is the most reliable "load complete" signal
- *      because pcbnew's frame title is set via wxFrame::SetTitle, which the
- *      WASM registry currently does not capture.
- *
- * We accept two terminal states:
- *   - "loaded": progress dialog was seen and then went away while PcbFrame
- *     stays visible (the happy path).
- *   - "no-dialogs": no dialogs are visible after the open command — covers
- *     tiny boards where LoadBoard finishes before the progress dialog paints.
- *
- * Returns a string describing which path completed, for the test log.
+ * A later wait accepts only a wxFileDialog identity which was not present at
+ * this checkpoint. It cannot accidentally attach to an old or unrelated file
+ * dialog that happened to be visible already.
  */
-export async function waitForBoardLoaded(
+export async function checkpointFileDialogs(page: Page): Promise<FileDialogCheckpoint> {
+    const existingIds = await page.evaluate(() =>
+        (window.wxElementRegistry?.findAll({}) ?? [])
+            .filter((element) => element.typeName === 'wxFileDialog')
+            .map((element) => element.id)
+    );
+    return Object.freeze({ existingIds: Object.freeze(existingIds) });
+}
+
+/** Wait for and return the exact new wxFileDialog created after a checkpoint. */
+export async function waitForNewFileDialog(
     page: Page,
-    logger: { consoleLogs: string[]; errors: string[] },
+    checkpoint: FileDialogCheckpoint,
+    timeoutMs = 15000,
+): Promise<FileDialogReceipt> {
+    const previous = [...checkpoint.existingIds];
+    await page.waitForFunction(
+        (oldIds: string[]) => {
+            const old = new Set(oldIds);
+            return (window.wxElementRegistry?.findAll({ visible: true }) ?? [])
+                .some((element) => element.typeName === 'wxFileDialog' && !old.has(element.id));
+        },
+        previous,
+        { timeout: timeoutMs },
+    );
+    const id = await page.evaluate((oldIds: string[]) => {
+        const old = new Set(oldIds);
+        return (window.wxElementRegistry?.findAll({ visible: true }) ?? [])
+            .find((element) => element.typeName === 'wxFileDialog' && !old.has(element.id))?.id ?? null;
+    }, previous);
+    if (!id) throw new Error('The new wxFileDialog vanished before its identity was captured');
+    return Object.freeze({ id });
+}
+
+async function startExecutionBarrier(page: Page, label: string): Promise<number> {
+    return page.evaluate((barrierLabel) => {
+        type Scheduler = { executionBarrier(label?: string): Promise<void> };
+        type Runtime = typeof globalThis & {
+            __wxScheduler?: Scheduler;
+            __pcbjamBoardBarrierSeq?: number;
+            __pcbjamBoardBarriers?: Map<number, BarrierOutcome>;
+        };
+        const runtime = globalThis as Runtime;
+        const scheduler = runtime.__wxScheduler;
+        if (!scheduler || typeof scheduler.executionBarrier !== 'function') {
+            throw new Error('The public wx executionBarrier is not installed');
+        }
+
+        const id = (runtime.__pcbjamBoardBarrierSeq ?? 0) + 1;
+        runtime.__pcbjamBoardBarrierSeq = id;
+        const barriers = (runtime.__pcbjamBoardBarriers ??= new Map());
+        const outcome: BarrierOutcome = { state: 'pending' };
+        barriers.set(id, outcome);
+        scheduler.executionBarrier(barrierLabel).then(
+            () => { outcome.state = 'fulfilled'; },
+            (error: unknown) => {
+                outcome.state = 'rejected';
+                outcome.error = error instanceof Error
+                    ? `${error.name}: ${error.message}`
+                    : String(error);
+            },
+        );
+        return id;
+    }, label);
+}
+
+async function awaitExecutionBarrier(page: Page, id: number, timeoutMs: number): Promise<void> {
+    try {
+        await page.waitForFunction(
+            (barrierId: number) => {
+                const runtime = globalThis as typeof globalThis & {
+                    __pcbjamBoardBarriers?: Map<number, BarrierOutcome>;
+                };
+                const outcome = runtime.__pcbjamBoardBarriers?.get(barrierId);
+                return !!outcome && outcome.state !== 'pending';
+            },
+            id,
+            { timeout: timeoutMs },
+        );
+        const outcome = await page.evaluate((barrierId: number) => {
+            const runtime = globalThis as typeof globalThis & {
+                __pcbjamBoardBarriers?: Map<number, BarrierOutcome>;
+            };
+            return runtime.__pcbjamBoardBarriers?.get(barrierId) ?? null;
+        }, id);
+        if (!outcome) throw new Error(`Execution barrier ${id} lost its exact receipt`);
+        if (outcome.state === 'rejected') {
+            throw new Error(`Execution barrier ${id} rejected: ${outcome.error ?? 'unknown error'}`);
+        }
+    } finally {
+        await page.evaluate((barrierId: number) => {
+            const runtime = globalThis as typeof globalThis & {
+                __pcbjamBoardBarriers?: Map<number, BarrierOutcome>;
+            };
+            runtime.__pcbjamBoardBarriers?.delete(barrierId);
+        }, id).catch(() => undefined);
+    }
+}
+
+async function waitForBoardIdentityAndPaint(
+    page: Page,
+    expectedBoard: string,
+    timeoutMs: number,
+): Promise<void> {
+    assertExpectedBoard(expectedBoard);
+    await page.waitForFunction(
+        (expected: string) => {
+            const titleMatches = document.title.toLocaleLowerCase()
+                .includes(expected.toLocaleLowerCase());
+            const hasPcbFrame = (window.wxElementRegistry?.findAll({ visible: true }) ?? [])
+                .some((element) => element.name === 'PcbFrame');
+            return titleMatches && hasPcbFrame;
+        },
+        expectedBoard,
+        { timeout: timeoutMs },
+    );
+    await waitForCanvasStable(page, '#canvas', { timeout: timeoutMs });
+}
+
+/**
+ * Complete a UI File -> Open transaction from exact causal evidence.
+ *
+ * The barrier is submitted only after the captured file dialog identity is
+ * gone. It enters the bounded Ordinary owner lane behind the still-live open
+ * transaction. If that transaction opens a progress or warning dialog, the
+ * barrier remains queued until the dialog work and the exact open owner have
+ * retired; merely hiding the first dialog cannot satisfy this helper.
+ */
+export async function waitForUiBoardReady(
+    page: Page,
+    fileDialog: FileDialogReceipt,
+    expectedBoard: string,
+    logger?: RuntimeLogger,
     timeoutMs = 60000,
 ): Promise<string> {
-    const deadline = Date.now() + timeoutMs;
-    let progressSeen = false;
+    assertExpectedBoard(expectedBoard);
+    if (!fileDialog.id) throw new Error('File dialog receipt has no exact identity');
 
-    while (Date.now() < deadline) {
-        // Surface a WASM abort fast — otherwise the progress dialog never
-        // goes away and we'd burn the full timeout. KiCad logs the abort
-        // line through Module.printErr, which our test logger captures as
-        // a console error. We re-read the live arrays each tick.
-        const allLines = [...logger.consoleLogs, ...logger.errors];
-        const abort = allLines.find((l) =>
-            l.includes('Aborted(') || l.includes('RuntimeError: unreachable')
-        );
-        if (abort) {
-            throw new Error(`WASM aborted during LoadBoard:\n${abort}`);
-        }
-
-        const state = await page.evaluate(() => {
+    await page.waitForFunction(
+        (dialogId: string) => {
             const registry = window.wxElementRegistry;
-            if (!registry) return { ready: false, dialogs: [] as string[], hasProgress: false, hasFileDlg: false };
-            const dialogs = registry.findAll({ visible: true })
-                .filter((el) => /Dialog/.test(el.typeName))
-                .map((el) => el.typeName);
-            const hasFileDlg = dialogs.includes('wxFileDialog');
-            const hasProgress = dialogs.some((t) => /Progress/.test(t));
-            const hasPcbFrame = registry.findAll({ visible: true })
-                .some((el) => el.name === 'PcbFrame');
-            return {
-                ready: hasPcbFrame && !hasFileDlg && !hasProgress,
-                dialogs,
-                hasProgress,
-                hasFileDlg,
-            };
-        });
+            return !!registry && registry.getElement(dialogId) === null;
+        },
+        fileDialog.id,
+        { timeout: timeoutMs },
+    );
+    assertNoNativeFailure(logger, `closing file dialog ${fileDialog.id}`);
 
-        if (state.hasProgress) {
-            progressSeen = true;
-        }
-        if (state.ready) {
-            return progressSeen ? 'loaded (progress dialog observed)' : 'loaded (no progress dialog seen)';
-        }
+    const barrier = await startExecutionBarrier(page, `File -> Open: ${expectedBoard}`);
+    await awaitExecutionBarrier(page, barrier, timeoutMs);
+    assertNoNativeFailure(logger, `retiring the ${expectedBoard} open owner`);
 
-        await page.waitForTimeout(200);
+    await waitForBoardIdentityAndPaint(page, expectedBoard, timeoutMs);
+    assertNoNativeFailure(logger, `painting ${expectedBoard}`);
+    return `loaded ${expectedBoard} after dialog ${fileDialog.id} and owner barrier ${barrier}`;
+}
+
+/**
+ * Use the shell's exact owned-open Promise, then prove document identity and
+ * paint. No PcbFrame/no-dialog heuristic is involved.
+ */
+export async function openBoardProgrammatically(
+    page: Page,
+    path: string,
+    expectedBoard: string,
+    logger?: RuntimeLogger,
+    timeoutMs = 60000,
+): Promise<string> {
+    assertExpectedBoard(expectedBoard);
+    const opened = await page.evaluate(async (boardPath: string) => {
+        const runtime = window as unknown as {
+            Module?: { kicadOpenFile?(path: string): Promise<boolean> | boolean };
+        };
+        if (typeof runtime.Module?.kicadOpenFile !== 'function') {
+            throw new Error('Module.kicadOpenFile is not installed');
+        }
+        return await runtime.Module.kicadOpenFile(boardPath);
+    }, path);
+    if (opened !== true) {
+        throw new Error(`Module.kicadOpenFile did not open ${path}: ${String(opened)}`);
     }
-
-    throw new Error(`Timed out waiting for board to load after ${timeoutMs}ms`);
+    assertNoNativeFailure(logger, `opening ${expectedBoard}`);
+    await waitForBoardIdentityAndPaint(page, expectedBoard, timeoutMs);
+    assertNoNativeFailure(logger, `painting ${expectedBoard}`);
+    return `opened and painted ${expectedBoard} from exact kicadOpenFile Promise`;
 }

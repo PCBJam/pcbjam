@@ -327,7 +327,7 @@ struct CORE
 
     // ── remote render ─────────────────────────────────────────────────────
 
-    // Repaint the remote-peers overlay. Runs in CallAfter + COROUTINE: the
+    // Repaint the remote-peers overlay. Runs through the owner queue + COROUTINE: the
     // first MakeOverlay() view->Add and the items' virtual ViewBBox() need the
     // fiber stack (asyncify virtual dispatch — same constraint as the apply).
     void redrawOverlay()
@@ -607,7 +607,7 @@ struct CORE
 
         wxString holder = wxString::FromUTF8( aHolder.c_str() );
 
-        fr->CallAfter( [this, fr, ids, holder]() {
+        pcbjam_collab::runOnFiber( fr, [this, fr, ids, holder]() {
             if( !fr->ToolStackIsEmpty() )
                 fr->GetToolManager()->RunAction( ACTIONS::cancelInteractive );
 
@@ -647,14 +647,19 @@ struct CORE
     {
         EDA_DRAW_FRAME* fr = frame();
 
-        if( !fr )
+        if( !fr || !aItem )
             return;
 
-        fr->CallAfter( [this, fr, aItem]() {
-            if( SELECTION_TOOL* st = selectionTool( fr ) )
+        const KIID id = aItem->m_Uuid;
+
+        pcbjam_collab::runOnFiber( fr, [this, fr, id]() {
+            if( EDA_ITEM* live = resolveItem( fr, id ) )
             {
-                st->AddItemToSel( aItem );
-                scheduleSelCheck();
+                if( SELECTION_TOOL* st = selectionTool( fr ) )
+                {
+                    st->AddItemToSel( live );
+                    scheduleSelCheck();
+                }
             }
         } );
     }

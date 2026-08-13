@@ -1,12 +1,10 @@
 import { defineConfig, devices } from '@playwright/test';
 import { execSync } from 'child_process';
-import * as fs from 'fs';
-import * as path from 'path';
 
 // THE merged Playwright config for every suite that runs against the static
 // `apps` server: the wx widget suite (e2e/), the KiCad editor suite (kicad/),
 // the asyncify race harness (asyncify/) and the coroutine harness
-// (e2e/coroutine*). One config = one invocation = one webServer, one port file
+// (e2e/coroutine*). One config = one invocation = one webServer and one port
 // and ONE start-of-run outputDir wipe — which is what retired the old
 // per-suite pw-artifacts/{wx,asyncify,kicad} redirect dance (each sequential
 // CI invocation used to wipe the previous suite's artifacts).
@@ -15,41 +13,26 @@ import * as path from 'path';
 // the React editor + backend stack (`pnpm --dir ../web dev`), not this server.
 //
 // CI runs: npm run test:e2e  (wx-chromium, kicad-firefox, kicad-chromium,
-//          asyncify-firefox, coroutine-firefox)
+//          asyncify-firefox, asyncify-chromium, coroutine-firefox)
 //          npm run test:perf (perf project, non-gating, separate invocation)
 // Local-only projects (system Chrome / WebKit) are listed at the bottom.
 
-const PORT_FILE = path.join(__dirname, '.test-port');
+const PORT_ENV = 'PCBJAM_PLAYWRIGHT_PORT';
 
 // Resolve the static-server port for this run.
 //
-// This config file is re-imported by EVERY Playwright process: the main runner
-// (which launches the webServer) and each worker process (which calls
-// page.goto(baseURL)). They must all agree on one port. Playwright also
-// *recreates* a worker mid-run after a test times out or crashes — and that new
-// worker re-imports this config.
-//
-// The main runner is the only process whose argv carries the `test` command
-// (workers are forked with an empty argv); it always picks a fresh port and
-// writes the file before any worker spawns, and workers always reuse it — no
-// freshness window, so a recreated worker can never rotate to a dead port
-// (the old ERR_CONNECTION_REFUSED cascade).
+// This config is re-imported by the main runner and every worker. Store the
+// selected port in the runner's environment: workers inherit it, while two
+// independent Playwright invocations have separate environments and therefore
+// cannot overwrite one shared port file. Recreated workers inherit it too.
 function resolvePort(): number {
-  const isMainRunner = process.argv.slice(2).includes('test');
-  if (!isMainRunner) {
-    try {
-      const existing = parseInt(fs.readFileSync(PORT_FILE, 'utf-8').trim(), 10);
-      if (existing > 0 && existing < 65536) {
-        return existing;
-      }
-    } catch {
-      // No readable port file — fall through. Shouldn't happen in a worker,
-      // since the main runner writes the file before spawning workers.
-    }
+  const inherited = parseInt(process.env[PORT_ENV] ?? '', 10);
+  if (inherited > 0 && inherited < 65536) {
+    return inherited;
   }
 
   const port = findFreePort();
-  fs.writeFileSync(PORT_FILE, port.toString());
+  process.env[PORT_ENV] = port.toString();
   return port;
 }
 
@@ -200,11 +183,29 @@ export default defineConfig({
       },
     },
     {
+      // The Asyncify arbiter is browser-JS as well as wasm. Run its complete
+      // harness set on bundled Chromium in CI too: the wx project exercises
+      // coroutine consumers, but it does not select any file in ./asyncify.
+      name: 'asyncify-chromium',
+      testDir: './asyncify',
+      testMatch: /\.spec\.ts$/,
+      fullyParallel: false,
+      timeout: 120000,
+      use: {
+        ...devices['Desktop Chrome'],
+        viewport: { width: 1280, height: 720 },
+        ...CHROMIUM_CI_ARGS,
+      },
+    },
+    {
       // Coroutine harness on real Firefox — the wx-chromium project already
       // covers these specs on bundled Chromium; this is the cross-engine leg.
+      // pending-event-owner is the owner-aware wx event reducer and belongs in
+      // the same two-engine architectural gate even though its filename is not
+      // coroutine-prefixed.
       name: 'coroutine-firefox',
       testDir: './e2e',
-      testMatch: /coroutine.*\.spec\.ts$/,
+      testMatch: /(?:coroutine.*|pending-event-owner)\.spec\.ts$/,
       fullyParallel: false,
       timeout: 120000,
       use: {
@@ -245,7 +246,9 @@ export default defineConfig({
     {
       name: 'asyncify-chrome',
       testDir: './asyncify',
-      testMatch: /asyncify-races.*\.spec\.ts$/,
+      // Keep the scheduler-context contract in the same cross-engine policy as
+      // the races battery. A narrower pattern used to omit sched-context.spec.
+      testMatch: /\.spec\.ts$/,
       fullyParallel: false,
       timeout: 120000,
       use: {
@@ -259,7 +262,7 @@ export default defineConfig({
       // green in all three engines. Run via npm run test:asyncify:safari.
       name: 'asyncify-webkit',
       testDir: './asyncify',
-      testMatch: /asyncify-races.*\.spec\.ts$/,
+      testMatch: /\.spec\.ts$/,
       fullyParallel: false,
       timeout: 120000,
       use: {

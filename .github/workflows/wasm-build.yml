@@ -372,20 +372,29 @@ jobs:
         working-directory: tests
         run: npm ci
 
-      # Cheap hygiene gates (no build needed): the determinism lint keeps the
+      # Cheap hygiene and execution-owner contract gates: the determinism lint keeps the
       # banned flake patterns out of the specs, the manifest check keeps
       # screenshot-manifest.json in lockstep with the committed baselines
       # (a stale manifest silently disables removed-screenshot detection), and
       # the CI-coverage lint proves every spec file on disk is reachable from
       # the npm scripts THIS workflow invokes (a spec/project that CI never
-      # runs is how the web suite once rotted unnoticed).
-      - name: Lint test determinism + screenshot manifest + CI coverage
+      # runs is how the web suite once rotted unnoticed). The source contracts
+      # pin allocator-failure, model-provider, GAL, and ngspice completion
+      # boundaries that are otherwise easy to regress without a deterministic
+      # browser failure.
+      - name: Lint tests + execution-owner contracts
         if: inputs.run_tests
         working-directory: tests
         run: |
           npm run lint:determinism
           npm run screenshots:manifest -- --check
           npm run lint:ci-coverage
+          npm run allocator-zero:contract
+          npm run gal:contract
+          npm run model-wait:contract
+          npm run ngspice:contract
+          npm run ngspice:harness-unit
+          npm run ngspice:worker-batch-unit
 
       - name: Install web workspace deps (collab bundle)
         if: inputs.run_tests

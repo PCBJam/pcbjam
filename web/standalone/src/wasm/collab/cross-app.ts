@@ -9,6 +9,22 @@ import { connectProvider, type ProviderConfig, type YjsProvider } from "./provid
 import { claimedPresenceColor } from "./presence";
 import { clog } from "./debug";
 
+function cleanupCrossApp(label: string, cleanup: () => void): void {
+  try {
+    cleanup();
+  } catch (err) {
+    // Teardown is terminal and best-effort, but every acquired resource must
+    // still get its own cleanup attempt when an earlier library destructor
+    // throws.
+    clog(`cross-app: ${label} cleanup failed —`, String(err));
+  }
+}
+
+function destroyProviderAndDoc(provider: YjsProvider, doc: Y.Doc): void {
+  cleanupCrossApp("provider", () => provider.destroy());
+  cleanupCrossApp("document", () => doc.destroy());
+}
+
 /**
  * Project-wide presence room (collab-presence 0006): one awareness-only room
  * per PROJECT, joined by every collab-capable editor alongside its per-file
@@ -56,6 +72,8 @@ export async function startCrossAppPresence(opts: {
   provider: ProviderConfig;
   user: PresenceUser;
   tool: string;
+  /** Owning editor lifetime for a lazy provider import/constructor. */
+  signal?: AbortSignal;
   /** Initial doc this tab edits (see CrossAppHandle.setDocPath). */
   docPath?: string;
 }): Promise<CrossAppHandle | undefined> {
@@ -65,17 +83,19 @@ export async function startCrossAppPresence(opts: {
   const doc = new Y.Doc();
   let provider: YjsProvider;
   try {
-    provider = await connectProvider(doc, opts.provider, { room });
+    provider = await connectProvider(doc, opts.provider, {
+      room,
+      signal: opts.signal,
+    });
   } catch (err) {
     clog("cross-app: provider connect failed —", String(err));
-    doc.destroy();
+    cleanupCrossApp("unconnected document", () => doc.destroy());
     return undefined;
   }
 
   const awareness = provider.awareness;
   if (!awareness) {
-    provider.destroy();
-    doc.destroy();
+    destroyProviderAndDoc(provider, doc);
     return undefined;
   }
 
@@ -100,34 +120,56 @@ export async function startCrossAppPresence(opts: {
     awareness.setLocalState(state);
   };
 
-  publish();
-  clog("cross-app: joined project presence room", room, "as", opts.tool);
-
   const subscribers = new Set<() => void>();
   const onChange = () => {
     for (const cb of subscribers) cb();
   };
-  awareness.on("change", onChange);
 
   // Fast removal on tab close (same rationale as presence.ts).
   const onPageHide = () => awareness.setLocalState(null);
-  if (typeof window !== "undefined") {
-    window.addEventListener("pagehide", onPageHide);
+  let awarenessListenerAttached = false;
+  let pageHideAttached = false;
+  try {
+    publish();
+    awareness.on("change", onChange);
+    awarenessListenerAttached = true;
+    if (typeof window !== "undefined") {
+      window.addEventListener("pagehide", onPageHide);
+      pageHideAttached = true;
+    }
+  } catch (err) {
+    if (pageHideAttached) {
+      cleanupCrossApp("pagehide listener", () =>
+        window.removeEventListener("pagehide", onPageHide),
+      );
+    }
+    if (awarenessListenerAttached) {
+      cleanupCrossApp("awareness listener", () =>
+        awareness.off("change", onChange),
+      );
+    }
+    cleanupCrossApp("local awareness", () => awareness.setLocalState(null));
+    destroyProviderAndDoc(provider, doc);
+    throw err;
   }
+  clog("cross-app: joined project presence room", room, "as", opts.tool);
 
   let destroyed = false;
   return {
     setSelection(uuids, paths) {
+      if (destroyed) return;
       selection = uuids;
       selectionPaths = paths;
       publish();
     },
     setDocPath(path) {
+      if (destroyed) return;
       if (path === docPath) return;
       docPath = path;
       publish();
     },
     peers() {
+      if (destroyed) return [];
       const out: CrossAppPeer[] = [];
       for (const [clientId, raw] of awareness.getStates()) {
         if (clientId === awareness.clientID) continue;
@@ -141,20 +183,28 @@ export async function startCrossAppPresence(opts: {
       return out.sort((a, b) => a.clientId - b.clientId);
     },
     subscribe(cb) {
+      if (destroyed) return () => {};
       subscribers.add(cb);
       return () => subscribers.delete(cb);
     },
     destroy() {
       if (destroyed) return;
       destroyed = true;
-      if (typeof window !== "undefined") {
-        window.removeEventListener("pagehide", onPageHide);
+      if (pageHideAttached && typeof window !== "undefined") {
+        pageHideAttached = false;
+        cleanupCrossApp("pagehide listener", () =>
+          window.removeEventListener("pagehide", onPageHide),
+        );
       }
-      awareness.off("change", onChange);
+      if (awarenessListenerAttached) {
+        awarenessListenerAttached = false;
+        cleanupCrossApp("awareness listener", () =>
+          awareness.off("change", onChange),
+        );
+      }
       subscribers.clear();
-      awareness.setLocalState(null);
-      provider.destroy();
-      doc.destroy();
+      cleanupCrossApp("local awareness", () => awareness.setLocalState(null));
+      destroyProviderAndDoc(provider, doc);
     },
   };
 }

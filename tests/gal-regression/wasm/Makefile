@@ -70,9 +70,13 @@ CXXFLAGS = $(OPT_FLAGS) $(DEPS_EH_FLAGS) $(WX_CXXFLAGS) $(KICAD_INCLUDES) -std=c
 
 # Emscripten flags
 BASE_LDFLAGS = $(DEPS_EH_FLAGS) \
+               -sDYNCALLS=1 \
+               -sASYNCIFY=1 \
+               -sASYNCIFY_STACK_SIZE=65536 \
+               -sASYNCIFY_IMPORTS=['emscripten_fiber_swap'] \
                -sALLOW_MEMORY_GROWTH=1 \
-               -sERROR_ON_UNDEFINED_SYMBOLS=0 \
-               -sEXPORTED_FUNCTIONS=['_main','_runScenario','_getTotalScenarios','_getCurrentScenario','_getCanvasWidth','_getCanvasHeight'] \
+               -sERROR_ON_UNDEFINED_SYMBOLS=1 \
+               -sEXPORTED_FUNCTIONS=['_main','_runScenario','_isGalReady','_getTotalScenarios','_getCurrentScenario','_getCanvasWidth','_getCanvasHeight'] \
                -sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','HEAPU8'] \
                -sMODULARIZE=1 \
                -sEXPORT_NAME='createGALTest' \

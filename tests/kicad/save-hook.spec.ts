@@ -24,7 +24,9 @@ interface ToolCfg {
   fixture: string;
 }
 
-type Mod = Record<string, (...a: (string | number)[]) => unknown>;
+type Mod = Record<string, (...a: (string | number)[]) => unknown> & {
+  kicadOpenFile(path: string): Promise<unknown>;
+};
 type FS = {
   mkdirTree(p: string): void;
   writeFile(p: string, d: string): void;
@@ -68,7 +70,7 @@ async function bootOpen(page: Page, cfg: ToolCfg): Promise<string> {
   );
   const abs = `/home/kicad/documents/${NAME}.${cfg.ext}`;
   await page.evaluate(
-    ({ content, abs }) => {
+    async ({ content, abs }) => {
       const w = window as unknown as HookWindow;
       try {
         w.FS.mkdirTree("/home/kicad/documents");
@@ -76,7 +78,7 @@ async function bootOpen(page: Page, cfg: ToolCfg): Promise<string> {
         /* exists */
       }
       w.FS.writeFile(abs, content);
-      w.Module.kicadOpenFile(abs);
+      await w.Module.kicadOpenFile(abs);
     },
     { content: cfg.fixture, abs },
   );

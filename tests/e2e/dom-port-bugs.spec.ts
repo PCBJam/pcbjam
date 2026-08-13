@@ -16,8 +16,9 @@ test.describe('wx DOM-port bug reproductions', () => {
   // resets it — but the reset is skipped if a handler throws, wedging the flag and
   // silently dropping every later programmatic value push. Driven through the real
   // path: typing fires a genuine DOM 'input' event whose wxEVT_TEXT handler throws
-  // (caught at wx-dom.js's dispatch() boundary); a button then does a programmatic
-  // ChangeValue() that must still reach the element.
+  // (caught by wxEvtHandler::SafelyProcessEvent; the reducer app elects to keep
+  // its main loop running); a button then does a programmatic ChangeValue() that
+  // must still reach the element.
   test('wxTextCtrl: a throwing wxEVT_TEXT handler must not wedge DOM sync', async ({
     page,
     testLogger,
@@ -48,6 +49,54 @@ test.describe('wx DOM-port bug reproductions', () => {
       .toBe('PROGRAMMATIC_OK');
   });
 
+  test('wxTextCtrl: queued input events keep their receipt-time values while the owner is parked', async ({
+    page,
+    testLogger,
+  }) => {
+    await page.goto('/standalone/textctrl-reentry/textctrl-reentry_test.html');
+    expect(await tryLoadApp(page, 30000), 'repro app should load').toBe(true);
+
+    await expect
+      .poll(() => testLogger.consoleLogs.some((l) => l.includes('[REPRO] textctrl ready')), {
+        timeout: 30000,
+        message: 'repro app should finish setup',
+      })
+      .toBe(true);
+
+    await page.getByRole('button', { name: 'Block Owner' }).click();
+    await expect
+      .poll(() => testLogger.consoleLogs.some((l) => l.includes('[DOM_INGRESS] block-start')), {
+        timeout: 10000,
+        message: 'the dispatch owner should park before browser input arrives',
+      })
+      .toBe(true);
+
+    // Dispatch both events in one browser task. The live DOM value is already
+    // "second" by the time native admission resumes, so a bridge that queues
+    // only the DOM id/kind reports "second" twice. Each event envelope must
+    // instead retain the immutable value observed at its own receipt.
+    await page.locator('input').first().evaluate((node) => {
+      const input = node as HTMLInputElement;
+      input.value = 'first';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.value = 'second';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    await expect
+      .poll(
+        () =>
+          testLogger.consoleLogs
+            .filter((l) => l.includes('[DOM_INGRESS] value='))
+            .map((l) => l.slice(l.indexOf('[DOM_INGRESS] value=') + '[DOM_INGRESS] value='.length)),
+        {
+          timeout: 10000,
+          message: 'both queued input envelopes should dispatch in receipt order',
+        },
+      )
+      .toEqual(['first', 'second']);
+  });
+
   // tooltip.cpp keeps gs_hoverWindow as a raw pointer dereferenced 600ms later by
   // the tooltip timer; nothing clears it when the window is destroyed, so a window
   // freed within the delay leaves a dangling pointer (UAF). The app arms the hover,
@@ -69,6 +118,175 @@ test.describe('wx DOM-port bug reproductions', () => {
 
     const line = reproLine(testLogger.consoleLogs, name)!;
     expect(line, `repro line was: ${line}`).toContain(`[REPRO] ${name}: PASS`);
+  });
+
+  // The WASM timer bridge treats an unowned timer as Ordinary work. Ordinary
+  // work correctly waits behind a parked root owner, so the old tooltip timer
+  // (a derived wxTimer whose default owner was itself) could never fire while
+  // ShowModal() held that owner. The tooltip layer must bind each arm to the
+  // exact hovered wxWindow; only that modal scope and lease generation may run
+  // the delivery. Other unowned timers remain Ordinary.
+  test('wxToolTip: a window-owned tooltip timer fires inside its exact modal lease', async ({
+    page,
+    testLogger,
+  }) => {
+    await page.goto('/standalone/tooltip-lifetime/tooltip-lifetime_test.html');
+    expect(await tryLoadApp(page, 30000), 'repro app should load').toBe(true);
+
+    await page.getByRole('button', { name: 'Open Modal Tooltip', exact: true }).click();
+    await expect(
+      page.locator('#window-container .window-titlebar-text').filter({
+        hasText: /^Tooltip Modal$/,
+      }),
+      'the reducer modal should remain open while its opener is parked',
+    ).toBeVisible({ timeout: 10000 });
+
+    // The C++ reducer queued the same wxWasmTooltipOnHoverChange() hook used by
+    // wxApp::HandleMouseEvent before entering ShowModal(). Wait until the modal
+    // pump admits that call. Using the focused hook avoids an unrelated DOM
+    // coordinate/scroll mismatch in this secondary-window standalone harness.
+    const armName = 'tooltip_modal_timer_armed';
+    await expect.poll(
+      () => reproLine(testLogger.consoleLogs, armName) ?? '',
+      { timeout: 10000 },
+    ).toContain(`[REPRO] ${armName}: PASS`);
+
+    const visibleTooltipText = () =>
+      page.evaluate(() => {
+        const tooltip = document.getElementById('wx-tooltip');
+        if (!tooltip) return '';
+        const visible = tooltip.style.display !== 'none'
+          && getComputedStyle(tooltip).display !== 'none';
+        return visible ? tooltip.textContent || '' : '';
+      });
+
+    await expect.poll(visibleTooltipText, {
+      timeout: 4000,
+      intervals: [25, 50, 100],
+      message: 'the arm-time modal owner should admit its tooltip delivery',
+    }).toBe('MODAL_TOOLTIP');
+
+    await page
+      .locator('#window-container button.wx-dom-control', { hasText: /^Close$/ })
+      .click();
+    await expect(
+      page.locator('#window-container .window-titlebar-text').filter({
+        hasText: /^Tooltip Modal$/,
+      }),
+      'closing the modal should destroy the exact tooltip target',
+    ).toBeHidden({ timeout: 10000 });
+    await expect.poll(visibleTooltipText, {
+      timeout: 2000,
+      message: 'destroying the target should hide and cancel its tooltip',
+    }).toBe('');
+  });
+
+  // DOM controls in a secondary wx top-level are children of
+  // #window-container, which a host is allowed to place independently from
+  // #canvas. The generated standalone shell puts it after a viewport-height
+  // canvas in document flow. Scrolling the real button into view therefore
+  // gives it a different browser client origin from the canvas. Mouse
+  // forwarding must reconstruct the control's wx screen point; subtracting
+  // the canvas rect drops the event at modal-scope validation before dispatch.
+  test('DOM mouse forwarding preserves wx screen coordinates after secondary-window scroll', async ({
+    page,
+    testLogger,
+  }) => {
+    const readyName = 'dom_pointer_scroll_ready';
+    const targetName = 'dom_pointer_scroll_target';
+
+    await page.goto('/standalone/tooltip-lifetime/tooltip-lifetime_test.html');
+    expect(await tryLoadApp(page, 30000), 'repro app should load').toBe(true);
+
+    await page.getByRole('button', {
+      name: 'Open Pointer Scroll Modal',
+      exact: true,
+    }).click();
+    await expect(
+      page.locator('#window-container .window-titlebar-text').filter({
+        hasText: /^Pointer Scroll Modal$/,
+      }),
+      'the pointer reducer modal should be open',
+    ).toBeVisible({ timeout: 10000 });
+
+    await expect.poll(
+      () => reproLine(testLogger.consoleLogs, readyName) ?? '',
+      {
+        timeout: 10000,
+        message: 'the reducer should publish the native target rectangle',
+      },
+    ).toContain(`[REPRO] ${readyName}: PASS`);
+
+    const ready = reproLine(testLogger.consoleLogs, readyName)!;
+    const nativeMatch = ready.match(/target=(-?\d+),(-?\d+),(\d+),(\d+)/);
+    expect(nativeMatch, `native target geometry was: ${ready}`).not.toBeNull();
+    const nativeRect = {
+      x: Number(nativeMatch![1]),
+      y: Number(nativeMatch![2]),
+      width: Number(nativeMatch![3]),
+      height: Number(nativeMatch![4]),
+    };
+
+    const target = page.getByRole('button', {
+      name: 'Pointer Scroll Target',
+      exact: true,
+    });
+    await target.evaluate((node) => {
+      node.scrollIntoView({ block: 'center', inline: 'center' });
+    });
+
+    const geometry = await target.evaluate((node, wxRect) => {
+      const targetRect = node.getBoundingClientRect();
+      const canvasRect = document.getElementById('canvas')!.getBoundingClientRect();
+      const clientX = targetRect.left + targetRect.width / 2;
+      const clientY = targetRect.top + targetRect.height / 2;
+      const legacyX = Math.round(clientX - canvasRect.left);
+      const legacyY = Math.round(clientY - canvasRect.top);
+      return {
+        scrollY: window.scrollY,
+        clientX,
+        clientY,
+        legacyX,
+        legacyY,
+        legacyHitsNative:
+          legacyX >= wxRect.x
+          && legacyX < wxRect.x + wxRect.width
+          && legacyY >= wxRect.y
+          && legacyY < wxRect.y + wxRect.height,
+        canvasTop: canvasRect.top,
+        targetTop: targetRect.top,
+      };
+    }, nativeRect);
+
+    expect(geometry.scrollY,
+      `secondary control should require document scroll: ${JSON.stringify(geometry)}`)
+      .toBeGreaterThan(0);
+    expect(geometry.legacyHitsNative,
+      `legacy canvas-relative point should miss: ${JSON.stringify(geometry)}`)
+      .toBe(false);
+
+    // This is a trusted Playwright pointer move through the browser event
+    // pipeline. No diagnostic hook synthesizes the wx event.
+    await page.mouse.move(geometry.clientX, geometry.clientY);
+
+    await expect.poll(
+      () => reproLine(testLogger.consoleLogs, targetName) ?? '',
+      {
+        timeout: 10000,
+        message: 'the real pointer should reach the exact native modal target',
+      },
+    ).toContain(`[REPRO] ${targetName}: PASS`);
+
+    await page.getByRole('button', {
+      name: 'Close Pointer Modal',
+      exact: true,
+    }).click();
+    await expect(
+      page.locator('#window-container .window-titlebar-text').filter({
+        hasText: /^Pointer Scroll Modal$/,
+      }),
+      'the pointer reducer modal should close cleanly',
+    ).toBeHidden({ timeout: 10000 });
   });
 
   // stattext.cpp ellipsized the label only inside SetLabel(), at the control's

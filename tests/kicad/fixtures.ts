@@ -19,7 +19,17 @@ export const test = base.extend<{
     // standalone installs it for every kicad_editor boot); the worker is only
     // fetched on the first simulator request.
     await installNgspiceServiceStub(page);
-    await use(page);
+    try {
+      await use(page);
+    } finally {
+      if (!page.isClosed()) {
+        await page.evaluate(() => {
+          (globalThis as any).__ngspiceServiceTestHooks?.dispose?.();
+        }).catch(() => {
+          // A navigation or page close can destroy the execution context first.
+        });
+      }
+    }
   },
 
   testLogger: async ({ page }, use, testInfo) => {

@@ -34,14 +34,14 @@ const SAMPLE_SCH = `(kicad_sch
 
 type FS = { mkdirTree(p: string): void; writeFile(p: string, d: string): void };
 type Mod = {
-  kicadOpenFile(p: string): unknown;
-  kicadCollabPresenceStart(): void;
-  kicadCollabSetRemote(j: string): void;
-  kicadCollabGetViewport(): string;
-  kicadCollabGetSelection(): string;
-  kicadCollabTestGetCrossMapped(): string;
-  kicadCollabTestSelectFirst(): string;
-  kicadCollabTestClearSelection(): boolean;
+  kicadOpenFile(p: string): Promise<unknown>;
+  kicadCollabPresenceStart(): Promise<void>;
+  kicadCollabSetRemote(j: string): Promise<void>;
+  kicadCollabGetViewport(): Promise<string>;
+  kicadCollabGetSelection(): Promise<string>;
+  kicadCollabTestGetCrossMapped(): Promise<string>;
+  kicadCollabTestSelectFirst(): Promise<string>;
+  kicadCollabTestClearSelection(): Promise<boolean>;
 };
 type PresenceWindow = {
   FS: FS;
@@ -104,7 +104,7 @@ async function bootAndOpen(page: Page): Promise<void> {
   );
 
   await page.evaluate(
-    ({ content }) => {
+    async ({ content }) => {
       const w = window as unknown as PresenceWindow;
       const dir = "/home/kicad/documents";
       try {
@@ -114,7 +114,7 @@ async function bootAndOpen(page: Page): Promise<void> {
       }
       const p = `${dir}/presence.kicad_sch`;
       w.FS.writeFile(p, content);
-      w.Module.kicadOpenFile(p);
+      await w.Module.kicadOpenFile(p);
     },
     { content: SAMPLE_SCH },
   );
@@ -123,7 +123,7 @@ async function bootAndOpen(page: Page): Promise<void> {
     .poll(() => page.title(), { timeout: 60000, intervals: [500] })
     .toMatch(/presence/i);
 
-  await page.evaluate(() => {
+  await page.evaluate(async () => {
     const w = window as unknown as PresenceWindow;
     w.__selEmits = [];
     w.__cursorEmits = [];
@@ -133,7 +133,7 @@ async function bootAndOpen(page: Page): Promise<void> {
       onCursor: (x: number, y: number, active: number) =>
         w.__cursorEmits!.push({ x, y, active }),
     };
-    w.Module.kicadCollabPresenceStart();
+    await w.Module.kicadCollabPresenceStart();
   });
 }
 
@@ -203,9 +203,9 @@ test("selection emit: a real canvas box-select drives the wx-layer trigger", asy
   await expect
     .poll(
       () =>
-        page.evaluate(() =>
+        page.evaluate(async () =>
           JSON.parse(
-            (window as unknown as PresenceWindow).Module.kicadCollabGetSelection(),
+            await (window as unknown as PresenceWindow).Module.kicadCollabGetSelection(),
           ).length,
         ),
       { timeout: 10000, message: "box-select never selected anything" },
@@ -273,9 +273,9 @@ test("remote render paints the overlay without touching local selection", async 
   const before = await settledShot(canvas);
 
   await page.evaluate(
-    ({ wire }) => {
+    async ({ wire }) => {
       const w = window as unknown as PresenceWindow;
-      w.Module.kicadCollabSetRemote(
+      await w.Module.kicadCollabSetRemote(
         JSON.stringify({
           peers: [
             {
@@ -303,9 +303,9 @@ test("remote render paints the overlay without touching local selection", async 
     )
     .toBe(true);
 
-  const localSel = await page.evaluate(() =>
+  const localSel = await page.evaluate(async () =>
     JSON.parse(
-      (window as unknown as PresenceWindow).Module.kicadCollabGetSelection(),
+      await (window as unknown as PresenceWindow).Module.kicadCollabGetSelection(),
     ),
   );
   expect(localSel).toEqual([]);
@@ -341,9 +341,9 @@ test("cross-app ghost render: a pcbnew peer's xsel uuid resolves on the current 
   // footprint's path by the TS side. The fixture has no symbols, but the C++
   // resolve/draw path is uuid-kind-agnostic — a wire uuid exercises it fully.
   await page.evaluate(
-    ({ id }) => {
+    async ({ id }) => {
       const w = window as unknown as PresenceWindow;
-      w.Module.kicadCollabSetRemote(
+      await w.Module.kicadCollabSetRemote(
         JSON.stringify({
           peers: [
             {
@@ -365,9 +365,9 @@ test("cross-app ghost render: a pcbnew peer's xsel uuid resolves on the current 
   await expect
     .poll(
       () =>
-        page.evaluate(() =>
+        page.evaluate(async () =>
           JSON.parse(
-            (window as unknown as PresenceWindow).Module.kicadCollabTestGetCrossMapped(),
+            await (window as unknown as PresenceWindow).Module.kicadCollabTestGetCrossMapped(),
           ),
         ),
       { timeout: 10000 },
@@ -381,14 +381,14 @@ test("cross-app ghost render: a pcbnew peer's xsel uuid resolves on the current 
     .toBe(true);
 
   // No selection leak, unknown uuids map to nothing, clear restores pixels.
-  const localSel = await page.evaluate(() =>
-    JSON.parse((window as unknown as PresenceWindow).Module.kicadCollabGetSelection()),
+  const localSel = await page.evaluate(async () =>
+    JSON.parse(await (window as unknown as PresenceWindow).Module.kicadCollabGetSelection()),
   );
   expect(localSel).toEqual([]);
 
-  await page.evaluate(() => {
+  await page.evaluate(async () => {
     const w = window as unknown as PresenceWindow;
-    w.Module.kicadCollabSetRemote(
+    await w.Module.kicadCollabSetRemote(
       JSON.stringify({
         peers: [
           {
@@ -406,9 +406,9 @@ test("cross-app ghost render: a pcbnew peer's xsel uuid resolves on the current 
   await expect
     .poll(
       () =>
-        page.evaluate(() =>
+        page.evaluate(async () =>
           JSON.parse(
-            (window as unknown as PresenceWindow).Module.kicadCollabTestGetCrossMapped(),
+            await (window as unknown as PresenceWindow).Module.kicadCollabTestGetCrossMapped(),
           ),
         ),
       { timeout: 10000 },
@@ -440,19 +440,20 @@ test("fitViewport applies a world rect (contain) — GetViewport round trip", as
   await bootAndOpen(page);
 
   const target = { cx: 120e6, cy: 90e6, halfW: 40e6, halfH: 30e6 };
-  await page.evaluate((t) => {
+  await page.evaluate(async (t) => {
     const m = (window as unknown as PresenceWindow).Module as unknown as {
-      kicadCollabFitViewport(cx: number, cy: number, hw: number, hh: number): void;
+      kicadCollabFitViewport(cx: number, cy: number, hw: number, hh: number): Promise<void>;
     };
-    m.kicadCollabFitViewport(t.cx, t.cy, t.halfW, t.halfH);
+    await m.kicadCollabFitViewport(t.cx, t.cy, t.halfW, t.halfH);
   }, target);
 
-  // The fit is CallAfter+fiber scheduled — poll the transform until it lands.
+  // The exact owner ticket above settles after the native fit completes. Read
+  // the resulting transform until the canvas publishes the new viewport.
   await expect
     .poll(
       async () => {
-        const vp = await page.evaluate(() =>
-          JSON.parse((window as unknown as PresenceWindow).Module.kicadCollabGetViewport()),
+        const vp = await page.evaluate(async () =>
+          JSON.parse(await (window as unknown as PresenceWindow).Module.kicadCollabGetViewport()),
         );
         return Math.abs(vp.cx - target.cx) < 1e6 && Math.abs(vp.cy - target.cy) < 1e6;
       },
@@ -460,8 +461,8 @@ test("fitViewport applies a world rect (contain) — GetViewport round trip", as
     )
     .toBe(true);
 
-  const vp = await page.evaluate(() =>
-    JSON.parse((window as unknown as PresenceWindow).Module.kicadCollabGetViewport()),
+  const vp = await page.evaluate(async () =>
+    JSON.parse(await (window as unknown as PresenceWindow).Module.kicadCollabGetViewport()),
   );
   // Contain: at least one axis' visible half-extent matches the request (the
   // other overshoots by the canvas aspect), and neither is SMALLER (cropping).
@@ -479,8 +480,8 @@ test("fitViewport applies a world rect (contain) — GetViewport round trip", as
 test("viewport export returns a sane world↔screen transform", async ({ page, testLogger }) => {
   await bootAndOpen(page);
 
-  const vp = await page.evaluate(() =>
-    JSON.parse((window as unknown as PresenceWindow).Module.kicadCollabGetViewport()),
+  const vp = await page.evaluate(async () =>
+    JSON.parse(await (window as unknown as PresenceWindow).Module.kicadCollabGetViewport()),
   );
   expect(vp.w).toBeGreaterThan(0);
   expect(vp.h).toBeGreaterThan(0);

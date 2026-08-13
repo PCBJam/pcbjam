@@ -70,6 +70,37 @@ wxEND_EVENT_TABLE()
 
 wxIMPLEMENT_APP(TimerTestApp);
 
+#ifdef __EMSCRIPTEN__
+// A long interval makes every callback remain in the browser-delay half of the
+// mailbox. Repeating beyond MAX_MAILBOX_JOBS proves Stop() returns each exact
+// reservation, and starting an already-running timer proves restart cancels
+// the previous identity before it creates the replacement.
+extern "C" int EMSCRIPTEN_KEEPALIVE wx_timer_cancellation_probe()
+{
+    wxTimer timer;
+    timer.Stop(); // The public contract says this is an idempotent no-op.
+
+    for (int i = 0; i < 4097; ++i)
+    {
+        if (!timer.Start(60 * 60 * 1000) || !timer.IsRunning())
+            return 0;
+
+        timer.Stop();
+        if (timer.IsRunning())
+            return 0;
+    }
+
+    if (!timer.Start(60 * 60 * 1000) ||
+        !timer.Start(60 * 60 * 1000) || !timer.IsRunning())
+    {
+        return 0;
+    }
+
+    timer.Stop();
+    return timer.IsRunning() ? 0 : 1;
+}
+#endif
+
 bool TimerTestApp::OnInit()
 {
     if (!wxApp::OnInit())

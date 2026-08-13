@@ -1,18 +1,29 @@
-// Host shims for the occ_service worker module (emscripten --pre-js).
+// In-memory wxConfig host for headless Emscripten modules.
 //
-// KiCad's wxWidgets wasm port reads/writes settings through wxConfig, which
-// bridges to JS hooks (getConfigEntryLength, …). The web editor provides those
-// via wx.js, backed by the browser's localStorage. The service runs in a
-// dedicated Worker (or Node for unit runs) with no localStorage and needs no
-// persisted settings, so we back the same hooks with an in-memory store: every
-// read returns "absent" → KiCad falls back to defaults; writes live only for
-// the module lifetime. Semantics mirror wxwidgets/build/wasm/wx.js exactly
-// (sans persistence). Same shim as wasm/cli/sym_convert_pre.js.
+// Browsers provide a complete Storage object. Node 25 can expose a truthy
+// `globalThis.localStorage` placeholder whose methods are absent when no
+// --localstorage-file was supplied. Test the Storage contract, not only the
+// object's presence, before selecting it.
 (function( g ) {
-  if( !g.localStorage )
+  var ls;
+
+  try
+  {
+    ls = g.localStorage;
+  }
+  catch( _error )
+  {
+    ls = null;
+  }
+
+  if( !ls
+      || typeof ls.getItem !== 'function'
+      || typeof ls.setItem !== 'function'
+      || typeof ls.removeItem !== 'function'
+      || typeof ls.key !== 'function' )
   {
     var store = new Map();
-    g.localStorage = {
+    ls = {
       get length() { return store.size; },
       key: function( i ) { var k = Array.from( store.keys() )[i]; return k === undefined ? null : k; },
       getItem: function( k ) { return store.has( k ) ? store.get( k ) : null; },
@@ -20,12 +31,12 @@
       removeItem: function( k ) { store.delete( k ); },
       clear: function() { store.clear(); },
     };
+    g.localStorage = ls;
   }
 
-  var ls = g.localStorage;
-
-  // Only reached once a stored value exists; with the empty in-memory store these
-  // never run, but keep them correct in case settings are written then read back.
+  // Only reached once a stored value exists; with the empty in-memory store
+  // these do not run during normal startup. Keep them complete because a
+  // module can write a setting and then read it in the same process.
   var s2u = function( str, buf, len ) {
     var f = g.stringToUTF8 || ( g.Module && g.Module.stringToUTF8 );
     f( str, buf, len );

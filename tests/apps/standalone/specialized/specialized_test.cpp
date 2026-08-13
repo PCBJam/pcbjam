@@ -41,7 +41,7 @@ public:
 
         // Left: wxTreebook
         wxStaticBoxSizer* treebookSizer = new wxStaticBoxSizer(wxVERTICAL, mainPanel, "wxTreebook (Settings)");
-        CreateTreebook(mainPanel);
+        m_treebook = new wxTreebook(mainPanel, wxID_ANY);
         treebookSizer->Add(m_treebook, 1, wxEXPAND | wxALL, 5);
         contentSizer->Add(treebookSizer, 1, wxEXPAND | wxALL, 5);
 
@@ -81,6 +81,12 @@ public:
         mainSizer->Add(m_log, 0, wxEXPAND | wxALL, 5);
 
         mainPanel->SetSizer(mainSizer);
+        mainPanel->Layout();
+
+        // KiCad's calculator lays out an empty wxTreebook and adds its pages
+        // afterwards. Keep that order here: an empty-controller best-size
+        // cache must not leave the later tree at zero width.
+        PopulateTreebook();
 
         CreateStatusBar();
         SetStatusText("Specialized controls test app started");
@@ -88,9 +94,11 @@ public:
     }
 
 private:
-    void CreateTreebook(wxWindow* parent)
+    void PopulateTreebook()
     {
-        m_treebook = new wxTreebook(parent, wxID_ANY);
+        // Match KiCad Calculator's structure: non-selectable group nodes have
+        // null pages and each real panel is a subpage.
+        m_treebook->AddPage(nullptr, "General system design");
 
         // General settings page
         wxPanel* generalPage = new wxPanel(m_treebook);
@@ -100,7 +108,9 @@ private:
         generalSizer->Add(new wxCheckBox(generalPage, wxID_ANY, "Auto-save"), 0, wxALL, 5);
         generalSizer->Add(new wxCheckBox(generalPage, wxID_ANY, "Show welcome dialog"), 0, wxALL, 5);
         generalPage->SetSizer(generalSizer);
-        m_treebook->AddPage(generalPage, "General");
+        m_treebook->AddSubPage(generalPage, "General");
+
+        m_treebook->AddPage(nullptr, "Display group");
 
         // Display page with sub-pages
         wxPanel* displayPage = new wxPanel(m_treebook);
@@ -108,7 +118,7 @@ private:
         displaySizer->Add(new wxStaticText(displayPage, wxID_ANY, "Display Settings"), 0, wxALL, 10);
         displaySizer->Add(new wxCheckBox(displayPage, wxID_ANY, "Anti-aliasing"), 0, wxALL, 5);
         displayPage->SetSizer(displaySizer);
-        m_treebook->AddPage(displayPage, "Display");
+        m_treebook->AddSubPage(displayPage, "Display");
 
         // Display sub-page: Colors
         wxPanel* colorsPage = new wxPanel(m_treebook);
@@ -134,6 +144,8 @@ private:
         gridPage->SetSizer(gridSizer);
         m_treebook->AddSubPage(gridPage, "Grid");
 
+        m_treebook->AddPage(nullptr, "Editing group");
+
         // Editing page
         wxPanel* editPage = new wxPanel(m_treebook);
         wxBoxSizer* editSizer = new wxBoxSizer(wxVERTICAL);
@@ -142,7 +154,7 @@ private:
         editSizer->Add(new wxCheckBox(editPage, wxID_ANY, "Magnetic graphics"), 0, wxALL, 5);
         editSizer->Add(new wxCheckBox(editPage, wxID_ANY, "Allow free pads"), 0, wxALL, 5);
         editPage->SetSizer(editSizer);
-        m_treebook->AddPage(editPage, "Editing");
+        m_treebook->AddSubPage(editPage, "Editing");
 
         // Editing sub-page: Defaults
         wxPanel* defaultsPage = new wxPanel(m_treebook);
@@ -155,6 +167,8 @@ private:
         defaultsPage->SetSizer(defaultsSizer);
         m_treebook->AddSubPage(defaultsPage, "Defaults");
 
+        m_treebook->AddPage(nullptr, "Printing group");
+
         // Printing page
         wxPanel* printPage = new wxPanel(m_treebook);
         wxBoxSizer* printSizer = new wxBoxSizer(wxVERTICAL);
@@ -162,7 +176,10 @@ private:
         printSizer->Add(new wxCheckBox(printPage, wxID_ANY, "Print mirrored"), 0, wxALL, 5);
         printSizer->Add(new wxCheckBox(printPage, wxID_ANY, "Print in black"), 0, wxALL, 5);
         printPage->SetSizer(printSizer);
-        m_treebook->AddPage(printPage, "Printing");
+        m_treebook->AddSubPage(printPage, "Printing");
+
+        for (size_t page = 0; page < m_treebook->GetPageCount(); ++page)
+            m_treebook->ExpandNode(page);
 
         m_treebook->Bind(wxEVT_TREEBOOK_PAGE_CHANGED, &SpecializedFrame::OnTreebookPageChanged, this);
     }

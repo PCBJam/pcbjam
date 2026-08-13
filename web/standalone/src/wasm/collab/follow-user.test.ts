@@ -144,4 +144,28 @@ describe("createFollow", () => {
     follow.unfollow();
     expect(seen).toEqual([LEADER, null]);
   });
+
+  it("makes an accepted viewport ticket inert after unfollow or destroy", async () => {
+    const p = fakePresence([peer()]);
+    const calls: Array<() => boolean> = [];
+    const fit = Object.assign(vi.fn(), {
+      __wxGuardedCall: vi.fn((_args: unknown[], isCurrent: () => boolean) => {
+        calls.push(isCurrent);
+        return Promise.resolve();
+      }),
+    });
+    const follow = createFollow({ presence: p.handle, fit });
+
+    follow.follow(LEADER);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!()).toBe(true);
+    follow.unfollow();
+    expect(calls[0]!()).toBe(false);
+
+    follow.follow(LEADER);
+    expect(calls).toHaveLength(2);
+    follow.destroy();
+    expect(calls[1]!()).toBe(false);
+    expect(fit).not.toHaveBeenCalled();
+  });
 });

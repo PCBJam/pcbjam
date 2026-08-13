@@ -58,12 +58,12 @@ test.describe( 'Real BS::thread_pool (GetKiCadThreadPool) — multi-core under n
   // complete cleanly. (Red under JS-EH, green under native-EH — the contrast IS the proof.)
   test( 'mode 6: throw on a worker is safe under native-EH and rethrows on main', async ( { page, testLogger } ) => {
     await page.goto( `${APP}#m=6` );
-    // A worker throw is a mode-c crash under JS-EH and only safe under native wasm-EH, so this
-    // assertion is native-EH-only. The app reports its EH model early; skip on a JS-EH build
-    // (builds are always native-EH now, so this never skips) rather than asserting a crash.
+    // A worker throw is a mode-c crash under JS-EH and only safe under native wasm-EH. Native EH
+    // is a required build invariant now; silently skipping here would let a stale JS-EH artifact
+    // remove the exact regression proof this test exists to provide.
     await waitForLog( testLogger, '[POOL] EH=' );
-    test.skip( !testLogger.consoleLogs.some( l => l.includes( '[POOL] EH=native' ) ),
-               'throw-on-worker (mode-c) is native-EH-only; JS-EH build skips this assertion' );
+    expect( testLogger.consoleLogs.some( l => l.includes( '[POOL] EH=native' ) ),
+            'the shipped real-thread-pool harness must use native wasm EH' ).toBe( true );
     await waitForLog( testLogger, '[POOL] SUCCESS mode=6' );
     const r = parse( testLogger.consoleLogs, 6 )!;
     expect( r.caught, 'the worker throw must rethrow + be caught on main' ).toBe( 1 );

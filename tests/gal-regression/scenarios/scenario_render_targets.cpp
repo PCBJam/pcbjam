@@ -62,13 +62,14 @@ void RenderRenderTargets(GAL* gal, int width, int height) {
     double spacing = 180;
 
     // Box 1: CACHED (persistent content)
-    gal->SetLayerDepth(50);
+    gal->SetLayerDepth(70);
     gal->SetIsFill(true);
     gal->SetIsStroke(false);
     gal->SetFillColor(COLOR4D(0.15, 0.3, 0.15, 1.0));
     gal->DrawRectangle(VECTOR2D(startX, startY), VECTOR2D(startX + boxW, startY + boxH));
 
     // Static PCB elements (what would go in cached)
+    gal->SetLayerDepth(60);
     gal->SetFillColor(COLOR4D(0.7, 0.5, 0.2, 1.0));
     gal->DrawSegment(VECTOR2D(startX + 20, startY + 50), VECTOR2D(startX + boxW - 20, startY + 50), 6);
     gal->DrawSegment(VECTOR2D(startX + 20, startY + 100), VECTOR2D(startX + boxW - 20, startY + 100), 6);
@@ -83,6 +84,7 @@ void RenderRenderTargets(GAL* gal, int width, int height) {
     gal->DrawCircle(VECTOR2D(startX + boxW - 40, startY + 150), 12);
 
     // Frame
+    gal->SetLayerDepth(50);
     gal->SetIsFill(false);
     gal->SetIsStroke(true);
     gal->SetLineWidth(3.0);
@@ -96,13 +98,14 @@ void RenderRenderTargets(GAL* gal, int width, int height) {
 
     // Box 2: NONCACHED (dynamic content)
     double box2X = startX + spacing;
-    gal->SetLayerDepth(50);
+    gal->SetLayerDepth(70);
     gal->SetIsFill(true);
     gal->SetIsStroke(false);
     gal->SetFillColor(COLOR4D(0.3, 0.25, 0.1, 1.0));
     gal->DrawRectangle(VECTOR2D(box2X, startY), VECTOR2D(box2X + boxW, startY + boxH));
 
     // Dynamic elements (selection highlights, moving items)
+    gal->SetLayerDepth(60);
     gal->SetFillColor(COLOR4D(1.0, 1.0, 0.2, 0.4));
     gal->DrawRectangle(VECTOR2D(box2X + 30, startY + 40), VECTOR2D(box2X + boxW - 30, startY + 80));
 
@@ -119,6 +122,7 @@ void RenderRenderTargets(GAL* gal, int width, int height) {
     gal->DrawLine(VECTOR2D(box2X + 80, startY + 180), VECTOR2D(box2X + 90, startY + 170));
 
     // Frame
+    gal->SetLayerDepth(50);
     gal->SetLineWidth(3.0);
     gal->SetStrokeColor(COLOR4D(0.8, 0.7, 0.2, 1.0));
     gal->DrawRectangle(VECTOR2D(box2X, startY), VECTOR2D(box2X + boxW, startY + boxH));
@@ -130,13 +134,14 @@ void RenderRenderTargets(GAL* gal, int width, int height) {
 
     // Box 3: OVERLAY (crosshairs, measurements)
     double box3X = startX + spacing * 2;
-    gal->SetLayerDepth(50);
+    gal->SetLayerDepth(70);
     gal->SetIsFill(true);
     gal->SetIsStroke(false);
     gal->SetFillColor(COLOR4D(0.15, 0.15, 0.25, 1.0));
     gal->DrawRectangle(VECTOR2D(box3X, startY), VECTOR2D(box3X + boxW, startY + boxH));
 
     // Crosshair overlay
+    gal->SetLayerDepth(60);
     gal->SetIsFill(false);
     gal->SetIsStroke(true);
     gal->SetLineWidth(1.0);
@@ -156,6 +161,7 @@ void RenderRenderTargets(GAL* gal, int width, int height) {
     gal->DrawCircle(VECTOR2D(box3X + boxW - 30, startY + 160), 4);
 
     // Frame
+    gal->SetLayerDepth(50);
     gal->SetIsFill(false);
     gal->SetIsStroke(true);
     gal->SetLineWidth(3.0);
@@ -169,13 +175,14 @@ void RenderRenderTargets(GAL* gal, int width, int height) {
 
     // Box 4: TEMP (special operations)
     double box4X = startX + spacing * 3;
-    gal->SetLayerDepth(50);
+    gal->SetLayerDepth(70);
     gal->SetIsFill(true);
     gal->SetIsStroke(false);
     gal->SetFillColor(COLOR4D(0.25, 0.15, 0.25, 1.0));
     gal->DrawRectangle(VECTOR2D(box4X, startY), VECTOR2D(box4X + boxW, startY + boxH));
 
     // Temporary rendering (drag preview, etc)
+    gal->SetLayerDepth(60);
     gal->SetFillColor(COLOR4D(0.8, 0.3, 0.8, 0.5));
     gal->DrawRectangle(VECTOR2D(box4X + 40, startY + 60), VECTOR2D(box4X + boxW - 40, startY + 120));
 
@@ -194,6 +201,7 @@ void RenderRenderTargets(GAL* gal, int width, int height) {
     }
 
     // Frame
+    gal->SetLayerDepth(50);
     gal->SetLineWidth(3.0);
     gal->SetStrokeColor(COLOR4D(0.7, 0.3, 0.7, 1.0));
     gal->DrawRectangle(VECTOR2D(box4X, startY), VECTOR2D(box4X + boxW, startY + boxH));
@@ -205,7 +213,7 @@ void RenderRenderTargets(GAL* gal, int width, int height) {
 
     // Bottom: API demonstration - HasTarget results
     double apiY = 340;
-    gal->SetLayerDepth(40);
+    gal->SetLayerDepth(70);
 
     // Check target availability (these are API calls)
     bool hasCached = gal->HasTarget(TARGET_CACHED);
@@ -222,6 +230,7 @@ void RenderRenderTargets(GAL* gal, int width, int height) {
     gal->DrawRectangle(VECTOR2D(40, apiY), VECTOR2D(760, apiY + 100));
 
     // Indicator for each target
+    gal->SetLayerDepth(60);
     double indicatorY = apiY + 50;
     double indicatorSpacing = 180;
 
@@ -242,6 +251,7 @@ void RenderRenderTargets(GAL* gal, int width, int height) {
     gal->DrawCircle(VECTOR2D(startX + spacing * 3 + boxW / 2, indicatorY), 15);
 
     // Frame around API section
+    gal->SetLayerDepth(50);
     gal->SetIsFill(false);
     gal->SetIsStroke(true);
     gal->SetLineWidth(2.0);

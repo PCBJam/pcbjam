@@ -2,11 +2,11 @@
  * Embind bindings for KiCad WASM
  * Exposes core PCBnew objects to JavaScript
  *
- * This provides a foundation for future Pyodide integration.
- *
- * Note: GetBoard() is not available when KICAD_SCRIPTING=OFF.
- * These bindings expose the classes for use when a board reference
- * is obtained through other means (e.g., from the UI).
+ * Stateful browser APIs use stable ids and copied values. Raw BOARD,
+ * FOOTPRINT, and PAD handles are intentionally not exported: an object-shaped
+ * Embind handle cannot be copied safely into the execution-owner queue and can
+ * become stale while it waits. A future Pyodide API needs an owner-aware
+ * stable-id adapter instead.
  */
 
 #ifdef __EMSCRIPTEN__
@@ -53,6 +53,7 @@
 #include "collab_common.h"
 #include "collab_presence_core.h"
 #include "open_gate.h"
+#include "owned_open.h"
 #include "main_stack_runner.h"
 #include "timer_park.h"
 #include "fiber_park.h"
@@ -74,6 +75,10 @@
 using namespace emscripten;
 using json = nlohmann::json;
 
+// Exact Wasm-only oracle from PCB_EDIT_FRAME's process-wide plugin listener.
+// A panel-targeted Preferences completion must not increment it.
+unsigned int pcbWasmPluginAvailabilityFrameEventsForTest();
+
 // Programmatically open a project file (board/schematic) in the running editor
 // frame, without UI automation. Mirrors single_top.cpp's MacOpenFile path:
 // the editor frame is the app's top window and is a KIWAY_PLAYER. Returns the
@@ -91,8 +96,7 @@ bool kicadOpenFile( std::string path )
     // Held across every Asyncify park of the load; see open_gate.h.
     pcbjam_open::BusyGuard busy;
 
-    if( pcbjam_open::testParkMs() > 0 )
-        emscripten_sleep( pcbjam_open::testParkMs() );
+    pcbjam_open::testParkIfArmed();
 
     KIWAY_PLAYER* frame =
             wxTheApp ? static_cast<KIWAY_PLAYER*>( wxTheApp->GetTopWindow() ) : nullptr;
@@ -108,10 +112,15 @@ bool kicadOpenFile( std::string path )
 
     // Test-only post-load park (open_gate.h): model fully loaded, gate still
     // closed — the deterministic window the collab-load-fuzz spec hammers.
-    if( pcbjam_open::testParkMs() > 0 )
-        emscripten_sleep( pcbjam_open::testParkMs() );
+    pcbjam_open::testParkIfArmed();
 
     return ok;
+}
+
+bool kicadOpenFileStart( int token, std::string path )
+{
+    return pcbjam_open::startOwnedOpen(
+            token, [path = std::move( path )]() { return kicadOpenFile( path ); } );
 }
 
 // JS-pollable open-in-flight probe (open_gate.h): the web shell defers the
@@ -1456,13 +1465,6 @@ void schedulePresenceSelCheck()
 // mis-dispatch and trap inside KiCad core, on it they dispatch correctly (eeschema 0007).
 void pcbCollabApply( std::string aJson )
 {
-    // Open-in-flight guard (open_gate.h): never touch the model while a
-    // kicadOpenFile Asyncify chain is parked mid-load — commits/virtuals on a
-    // half-built board mis-dispatch ("indirect call signature mismatch").
-    // Callers gate on kicadOpenFileBusy; fuzzed by tests/kicad/collab-load-fuzz.spec.ts.
-    if( pcbjam_open::busy() )
-        return;
-
     json delta = json::parse( aJson, nullptr, /*allow_exceptions*/ false );
 
     if( delta.is_discarded() )
@@ -1481,9 +1483,6 @@ void pcbCollabApply( std::string aJson )
 // (the blob parse + commit must run where native edits run — see above).
 void pcbCollabApplyItems( std::string aJson )
 {
-    if( pcbjam_open::busy() ) // open in flight (open_gate.h) — see pcbCollabApply
-        return;
-
     json wire = json::parse( aJson, nullptr, /*allow_exceptions*/ false );
 
     if( wire.is_discarded() )
@@ -1502,10 +1501,6 @@ void pcbCollabApplyItems( std::string aJson )
 // change listener on first call.
 std::string pcbCollabSnapshot()
 {
-    if( pcbjam_open::busy() ) // open in flight (open_gate.h) — see pcbCollabApply
-        return json{ { "added", json::array() }, { "changed", json::array() },
-                     { "removed", json::array() } }.dump();
-
     BOARD* board = ensureBridge();
 
     json added = json::array();
@@ -1529,10 +1524,6 @@ std::string pcbCollabSnapshot()
 // listener + rebaselines exactly like kicadCollabSnapshot.
 std::string pcbCollabSnapshotItems()
 {
-    if( pcbjam_open::busy() ) // open in flight (open_gate.h) — see pcbCollabApply
-        return json{ { "added", json::array() }, { "changed", json::array() },
-                     { "removed", json::array() } }.dump();
-
     BOARD* board = ensureBridge();
 
     json added = json::array();
@@ -1960,7 +1951,7 @@ bool pcbCollabTestClearSelection()
     if( !fr )
         return false;
 
-    fr->CallAfter( [fr]() {
+    pcbjam_collab::runOnFiber( fr, [fr]() {
         // ClearSelection is not on the shared SELECTION_TOOL base — the one
         // presence hook that stays editor-typed.
         if( PCB_SELECTION_TOOL* st = fr->GetToolManager()->GetTool<PCB_SELECTION_TOOL>() )
@@ -2338,76 +2329,7 @@ std::string pcbCollabTestDuplicateBoardItem( std::string aId, int aDx, int aDy )
     return id;
 }
 
-// Wrapper to return footprints as vector for JS iteration
-std::vector<FOOTPRINT*> Board_GetFootprints(BOARD* board) {
-    if (!board) return {};
-    std::vector<FOOTPRINT*> result;
-    for (FOOTPRINT* fp : board->Footprints()) {
-        result.push_back(fp);
-    }
-    return result;
-}
-
-// Wrapper to return pads as vector
-std::vector<PAD*> Footprint_GetPads(FOOTPRINT* fp) {
-    if (!fp) return {};
-    std::vector<PAD*> result;
-    for (PAD* pad : fp->Pads()) {
-        result.push_back(pad);
-    }
-    return result;
-}
-
-// Wrapper for GetFileName since it returns wxString
-std::string Board_GetFileName(BOARD* board) {
-    if (!board) return "";
-    return board->GetFileName().ToStdString();
-}
-
-// Wrapper for footprint reference
-std::string Footprint_GetReference(FOOTPRINT* fp) {
-    if (!fp) return "";
-    return fp->GetReference().ToStdString();
-}
-
-// Wrapper for footprint value
-std::string Footprint_GetValue(FOOTPRINT* fp) {
-    if (!fp) return "";
-    return fp->GetValue().ToStdString();
-}
-
-// Wrapper for pad number
-std::string Pad_GetNumber(PAD* pad) {
-    if (!pad) return "";
-    return pad->GetNumber().ToStdString();
-}
-
-// Wrapper for pad pin function
-std::string Pad_GetPinFunction(PAD* pad) {
-    if (!pad) return "";
-    return pad->GetPinFunction().ToStdString();
-}
-
-static bool kicadCollabFiberBusyProbe()
-{
-    return pcbjam_collab::fiberBusy() || !pcbjam_collab::fiberQueue().empty();
-}
-
 EMSCRIPTEN_BINDINGS(pcbnew) {
-    // Register vector types for iteration
-    register_vector<FOOTPRINT*>("FootprintVector");
-    register_vector<PAD*>("PadVector");
-
-    // Helper functions that operate on pointers
-    // Note: GetBoard() not available - will be added when Pyodide integration is done
-    function("Board_GetFootprints", &Board_GetFootprints, allow_raw_pointers());
-    function("Board_GetFileName", &Board_GetFileName, allow_raw_pointers());
-    function("Footprint_GetPads", &Footprint_GetPads, allow_raw_pointers());
-    function("Footprint_GetReference", &Footprint_GetReference, allow_raw_pointers());
-    function("Footprint_GetValue", &Footprint_GetValue, allow_raw_pointers());
-    function("Pad_GetNumber", &Pad_GetNumber, allow_raw_pointers());
-    function("Pad_GetPinFunction", &Pad_GetPinFunction, allow_raw_pointers());
-
     // Programmatic save of the in-memory board (round-trip tests, README §A).
     function("kicadSaveBoard", &kicadSaveBoard);
     // pcbnew-only test helper (no eeschema counterpart — name is not shared).
@@ -2425,12 +2347,15 @@ EMSCRIPTEN_BINDINGS(pcbnew) {
     function("kicadCollabTestSetBoardItemLocked", &pcbCollabTestSetBoardItemLocked);
     function("kicadCollabTestMoveBoardItem", &pcbCollabTestMoveBoardItem);
     function("kicadCollabTestDuplicateBoardItem", &pcbCollabTestDuplicateBoardItem);
+    function("kicadTestPcbPluginAvailabilityFrameEvents",
+             &pcbWasmPluginAvailabilityFrameEventsForTest);
 
 #ifndef KICAD_MERGED_EMBIND
     // JS names ALSO registered by eeschema_embind.cpp — in the merged image these are
     // registered once by kicad_editor_embind.cpp, dispatching on the active frame.
     // Programmatic file open (preferred over UI automation from the web app).
     function("kicadOpenFile", &kicadOpenFile);
+    function("kicadOpenFileStart", &kicadOpenFileStart);
     function("kicadOpenFileBusy", &kicadOpenFileBusy);
     function("kicadTestSetOpenPark", &kicadTestSetOpenPark);
     function("kicadTestArmTimerPark", &kicadTestArmTimerPark);
@@ -2441,7 +2366,6 @@ EMSCRIPTEN_BINDINGS(pcbnew) {
     function("kicadTestFiberParkState", &kicadTestFiberParkState);
     function("kicadTestFiberParkStartSecond", &kicadTestFiberParkStartSecond);
     function("kicadTestFiberParkPokeSecond", &kicadTestFiberParkPokeSecond);
-    function("kicadCollabFiberBusy", &kicadCollabFiberBusyProbe);
     // Read-only viewer lock (read-only-viewer).
     function("kicadSetReadOnly", &kicadSetReadOnly);
     // Yjs collaborative bridge entry points (same contract as pl_editor / eeschema).

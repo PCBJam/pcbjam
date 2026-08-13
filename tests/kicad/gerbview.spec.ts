@@ -94,10 +94,10 @@ test.describe('gerbview WASM', () => {
     test('kicadOpenFiles opens a whole fabrication set in one call', async ({ page, testLogger }) => {
         await waitForEditorReady(page);
 
-        const opened = await page.evaluate(({ gerbers, drill }) => {
+        const opened = await page.evaluate(async ({ gerbers, drill }) => {
             const w = window as unknown as {
                 FS: { mkdirTree(p: string): void; writeFile(p: string, d: string): void };
-                Module: { kicadOpenFiles?: (json: string) => boolean };
+                Module: { kicadOpenFiles?: (json: string) => Promise<boolean> };
             };
             const dir = '/home/kicad/documents/fab';
             w.FS.mkdirTree(dir);
@@ -110,10 +110,9 @@ test.describe('gerbview WASM', () => {
             const drillPath = `${dir}/board-PTH.drl`;
             w.FS.writeFile(drillPath, drill);
             paths.push(drillPath);
-            const registryBefore = window.wxElementRegistry!.findAll({ visible: true }).length;
-            if (typeof w.Module.kicadOpenFiles !== 'function') return { hook: false, registryBefore };
-            w.Module.kicadOpenFiles(JSON.stringify(paths));
-            return { hook: true, registryBefore };
+            if (typeof w.Module.kicadOpenFiles !== 'function') return { hook: false };
+            await w.Module.kicadOpenFiles(JSON.stringify(paths));
+            return { hook: true };
         }, {
             gerbers: {
                 'board-F_Cu.gbr': gerber(30),
@@ -124,10 +123,8 @@ test.describe('gerbview WASM', () => {
         });
 
         expect(opened.hook, 'gerbview exposes kicadOpenFiles (gerbview_embind.cpp)').toBe(true);
-        // NOT the return value: OpenProjectFiles parks under Asyncify, so the
-        // embind call unwinds and hands back a falsy placeholder long before the
-        // load finishes (same reason open-flow.ts ignores kicadOpenFile's bool).
-        // The truthful completion signal is the open-gate probe.
+        // The exact owned-open Promise above is the completion signal. Keep the
+        // open-gate probe as an independent state cross-check.
         await expect.poll(
             async () => page.evaluate(() => {
                 const w = window as unknown as { Module: { kicadOpenFileBusy?: () => boolean } };
@@ -136,11 +133,22 @@ test.describe('gerbview WASM', () => {
             { timeout: 30000, intervals: [250] },
         ).toBe(false);
 
-        // Each file became its own draw layer, so the UI gained rows/entries.
-        expect(
-            await page.evaluate(() => window.wxElementRegistry!.findAll({ visible: true }).length),
-            'the layers UI grew once the set loaded',
-        ).toBeGreaterThan(opened.registryBefore);
+        // Each file became its own checked draw layer. Do not use the total
+        // registry size as the completion witness: GerbView replaces its empty
+        // layer projection in place, so a correct four-row result can have the
+        // same total number of registered elements as the initial frame.
+        await expect(
+            page.getByRole('checkbox', { checked: true }),
+            'three Gerber layers and one drill layer are visible',
+        ).toHaveCount(4);
+
+        const layerLabels = await page.evaluate(() =>
+            window.wxElementRegistry!
+                .findAll({ visible: true })
+                .map((entry) => entry.label ?? '')
+                .filter((label) => /^\d+\s+board/.test(label)),
+        );
+        expect(layerLabels, 'the layer projection contains all four opened files').toHaveLength(4);
 
         expect(hasAbort(testLogger), 'no WASM abort during the multi-file open').toBe(false);
     });

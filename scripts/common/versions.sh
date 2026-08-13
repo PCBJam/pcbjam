@@ -51,9 +51,10 @@ export CAIRO_URL="https://cairographics.org/releases/cairo-${CAIRO_VERSION}.tar.
 export PIXMAN_URL="https://cairographics.org/releases/pixman-${PIXMAN_VERSION}.tar.gz"
 export OCC_URL="https://github.com/Open-Cascade-SAS/OCCT/archive/refs/tags/V${OCC_VERSION//./_}.tar.gz"
 export RAPIDJSON_URL="https://github.com/Tencent/rapidjson/archive/${RAPIDJSON_COMMIT}.tar.gz"
-# downloads.sourceforge.net serves the file directly; the projects/... /download
-# form returns an HTML redirect page that breaks curl-based fetches.
-export NGSPICE_URL="https://downloads.sourceforge.net/project/ngspice/ng-spice-rework/${NGSPICE_VERSION}/ngspice-${NGSPICE_VERSION}.tar.gz"
+# Pinned releases move under old-releases when ngspice publishes the next
+# version. downloads.sourceforge.net serves the archive directly; the
+# projects/.../download form can return an HTML landing page.
+export NGSPICE_URL="https://downloads.sourceforge.net/project/ngspice/ng-spice-rework/old-releases/${NGSPICE_VERSION}/ngspice-${NGSPICE_VERSION}.tar.gz"
 
 # SHA256 checksums (to be filled in after first successful download)
 # export ZSTD_SHA256=""

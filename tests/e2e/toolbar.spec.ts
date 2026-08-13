@@ -12,6 +12,7 @@ test.describe('wxToolBar & wxStatusBar Tests', () => {
 
     const hasStartup = testLogger.consoleLogs.some(l => l.includes('Toolbar test app started'));
 
+    expect(hasStartup, 'the native toolbar app must reach its startup marker').toBe(true);
     expect(testLogger.errors.filter(e => !e.includes('favicon'))).toHaveLength(0);
   });
 
@@ -88,6 +89,37 @@ test.describe('wxToolBar & wxStatusBar Tests', () => {
     ).toBe(true);
 
     await stableShot(page, 'toolbar-06-toggle-off.png', { fullPage: true });
+
+    const schedulerLive = await page.evaluate(() => {
+      const scheduler = (globalThis as any).__wxScheduler;
+      return !!scheduler && !scheduler.dead;
+    });
+    expect(schedulerLive, 'back-to-back DOM receipts must not terminalize the scheduler').toBe(true);
+  });
+
+  test('repeated toggle receipts survive Asyncify transition windows', async ({ page, testLogger }) => {
+    await page.goto('/standalone/toolbar/toolbar_test.html');
+    await waitForWxApp(page);
+
+    const CLICKS = 12;
+    for (let i = 0; i < CLICKS; i++) {
+      expect(await clickToolbarTool(page, 'Toggle'), `toggle click ${i + 1}`).toBe(true);
+      await expect.poll(
+        () => testLogger.consoleLogs.filter(l => l.includes('Toolbar: Toggle ')).length,
+        { message: `toggle receipt ${i + 1} should be delivered exactly once` }
+      ).toBe(i + 1);
+      const expected = i % 2 === 0 ? 'ON' : 'OFF';
+      const toggleLogs = testLogger.consoleLogs.filter(l => l.includes('Toolbar: Toggle '));
+      expect(toggleLogs[toggleLogs.length - 1]).toContain(`Toolbar: Toggle ${expected}`);
+    }
+
+    const books = await page.evaluate(() => {
+      const scheduler = (globalThis as any).__wxScheduler;
+      return scheduler ? { dead: scheduler.dead, deferred: scheduler.nativeEntryDeferred } : null;
+    });
+    expect(books, 'scheduler should be installed').not.toBeNull();
+    expect(books!.dead, 'receipt bursts must leave the scheduler live').toBe(false);
+    expect(books!.deferred, 'the reducer should exercise a physical transition window').toBeGreaterThan(0);
   });
 
   test('Status bar shows messages', async ({ page, testLogger }) => {

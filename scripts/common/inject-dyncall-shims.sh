@@ -51,6 +51,18 @@ done
 # Wait() re-runs (tool_manager ScheduleWait "!pendingWait" assert + busy-loop). The instrumented
 # dynCall_<sig> export rewinds correctly. (Without these fixes the libcontext fiber entry stays the
 # empty (a1=>{}) stub, so tool coroutines never start and every GAL app stalls at InvokeTool.)
+#
+# With ASSERTIONS enabled, Emscripten emits a throwing fiber-entry stub instead of the empty stub if
+# wasm-emscripten-finalize did not add dynCall_vi. Do not rewrite that to a direct table call: table
+# entries are not Asyncify-instrumented exports and cannot be used as the rewind entry. Reject the
+# artifact at build time with the actual toolchain diagnosis.
+FIBER_DYNCALL_ERROR='Attempted to invoke wasm function pointer with signature "vi", but no such functions have gotten exported!'
+if grep -qF "$FIBER_DYNCALL_ERROR" "$JS_FILE"; then
+    echo "ERROR: Emscripten fiber glue has no dynCall_vi export in $JS_FILE" >&2
+    echo "ERROR: wasm-emscripten-finalize must be real during the em++ link (not the large-app no-op stub)" >&2
+    exit 1
+fi
+
 echo "Fixing empty callback arrow functions..."
 TOTAL_FIXED=0
 apply_fix() { # <grep/sed pattern> <sed replacement> <label>
@@ -125,13 +137,12 @@ else
     echo "Warning: dynCallLegacy pattern not found - skipping embind dynCall fallback"
 fi
 
-# --- 3d. Embind invoker: don't Promise-wrap a SYNCHRONOUS call when the main loop is parked --------
-# Emscripten's embind invoker returns a Promise iff Asyncify.currData is set AFTER the wasm call. But
-# the native-EH per-frame-yield main loop parks via Asyncify (currData stays SET between frames), so a
-# JS-initiated embind call (e.g. kicadCollabSnapshot from a test or the UI) that does NOT itself
-# suspend is mis-detected as async and returns "[object Promise]" instead of the value -> the caller's
-# JSON.parse(...) gets "[object Promise]". Capture currData before the call and only treat it as async
-# if THIS call left a NEW currData. Harmless under legacy/JS-EH (currData is null when the app is idle).
+# --- 3d. Embind invoker: don't Promise-wrap a SYNCHRONOUS nested call ------------------------------
+# Emscripten's invoker returns a Promise iff Asyncify.currData is set AFTER the wasm call. The
+# scheduler can restore another physical context's saved currData around a nested native entry, so a
+# synchronous snapshot/control export can otherwise be mis-detected as async and return
+# "[object Promise]". Capture currData before the call and only treat it as async if THIS call leaves
+# a NEW buffer. The execution-owner gateway controls whether that entry is allowed in the first place.
 if grep -q 'Asyncify.currData !== __ehPrev' "$JS_FILE"; then
     echo "embind invoker currData re-entrancy fix already present - skipping"
 elif grep -q 'return Asyncify.currData ? Asyncify.whenDone' "$JS_FILE"; then
@@ -143,14 +154,11 @@ else
 fi
 
 # --- 3c. Fiber trampoline self-heal -------------------------------------------
-# emscripten_set_main_loop(...,1) throws "unwind" during startup to establish the
-# main loop. KiCad establishes that loop from inside a tool coroutine, so the throw
-# propagates THROUGH Fibers.trampoline()'s do/while, skipping its
-# `trampolineRunning = false` reset. The flag then stays true forever and
-# Fibers.trampoline() becomes a permanent no-op (guard: `if (!trampolineRunning ...)`),
-# so every later fiber swap silently fails to switch — the schematic load and all
-# post-idle tool actions hang. Wrap the loop in try/finally so the flag is always
-# reset (self-healing).
+# Any exception or internal Asyncify unwind that crosses Emscripten's generated fiber trampoline can
+# skip its plain `trampolineRunning = false` tail. The flag then stays true and every later fiber swap
+# becomes a no-op. The wx main loop now starts on a detached scheduler context, so its startup no
+# longer creates this topology; other generated-fiber clients still require exception-safe cleanup.
+# Wrap the loop in try/finally so the generated guard always resets.
 # (The SHIM_DISABLE_TRAMPOLINE_HEAL ablation skip was deleted at doc 20 D-1
 # with the races_test_noheal build that used it.)
 if grep -qF '} finally { Fibers.trampolineRunning = false; }' "$JS_FILE"; then

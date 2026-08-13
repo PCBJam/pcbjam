@@ -48,6 +48,10 @@ export DEPS_EH_FLAGS="-fwasm-exceptions -sSUPPORT_LONGJMP=wasm -sWASM_LEGACY_EXC
 # Emscripten SDK setup
 # If EMSDK is already set (e.g. Docker entrypoint sourced emsdk_env.sh), use it.
 # Otherwise auto-install a local copy under tools/emsdk/.
+# emsdk's activation script deliberately unsets a caller-provided EM_CACHE.
+# Preserve it across activation so Docker can keep Emscripten's downloaded ports
+# and generated sysroot in the named build-cache volume.
+_KICAD_WASM_REQUESTED_EM_CACHE="${EM_CACHE:-}"
 if [ -n "$EMSDK" ] && [ -f "$EMSDK/emsdk_env.sh" ]; then
     # emsdk already active (e.g., Docker entrypoint sourced it)
     source "$EMSDK/emsdk_env.sh" 2>/dev/null
@@ -66,6 +70,11 @@ else
         source "$_EMSDK_ENV" 2>/dev/null
     fi
 fi
+
+if [ -n "$_KICAD_WASM_REQUESTED_EM_CACHE" ]; then
+    export EM_CACHE="$_KICAD_WASM_REQUESTED_EM_CACHE"
+fi
+unset _KICAD_WASM_REQUESTED_EM_CACHE
 
 # --- Ensure a working `python` command for build codegen steps --------------
 # Some build steps run scripts via a `#!/usr/bin/env python` shebang (e.g.

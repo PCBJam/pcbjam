@@ -6,16 +6,16 @@
 // that window's own opaque chrome: every glcanvas-* was hard-coded to z-index
 // 100, but showing the secondary frame raises its window-N chrome div to
 // z-index 101 (raiseWindow → maxZ+1 over the visible main canvas at 100), so the
-// chrome painted over the GL canvas. The fix (wx.js createGLCanvas) lifts a GL
-// canvas created while another GL canvas is already visible to z-index
-// 2147483647, above the chrome.
+// chrome painted over the GL canvas. The fix has wxGLCanvas pass its owning
+// top-level window's explicit role to wx.js createGLCanvas: the main-frame GL
+// canvas stays at z-index 100 and the secondary-frame GL canvas is lifted to
+// z-index 2147483647, above the chrome.
 //
 // This is the minimal pure-wxWidgets repro: a main frame with a wxGLCanvas plus
 // a button that opens a SECOND top-level frame with its own wxGLCanvas. Opening
-// the second frame only after the main one is visible mirrors opening KiCad's 3D
-// viewer from a menu — and is exactly what makes createGLCanvas's hasVisibleGL
-// true and triggers raiseWindow on the secondary frame. The e2e spec asserts the
-// secondary GL canvas is z-lifted above the other canvases and the window chrome.
+// the second frame after the main one is visible mirrors opening KiCad's 3D
+// viewer from a menu. The e2e spec asserts both exact semantic z-index roles and
+// that the secondary GL canvas remains above the other canvases and window chrome.
 
 #include "wx/wxprec.h"
 
@@ -77,7 +77,7 @@ private:
     void OnOpenSecond( wxCommandEvent& WXUNUSED( evt ) )
     {
         // Create the secondary frame's GL canvas only now, with the main canvas
-        // already visible — the conditions the fix keys on.
+        // already visible, to mirror the real 3D viewer lifecycle.
         ( new SecondGLFrame() )->Show( true );
     }
 };

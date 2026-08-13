@@ -41,6 +41,7 @@ static int g_currentScenario = -1;
 static int g_totalScenarios = 28;
 static KIGFX::WEBGL_GAL* g_gal = nullptr;
 static wxFrame* g_frame = nullptr;
+static bool g_ready = false;
 
 /**
  * Render the current scenario
@@ -96,10 +97,20 @@ int runScenario(int scenarioIndex) {
         return -1;
     }
 
+    if (!g_ready || !g_gal) {
+        printf("ERROR: GAL is not ready\n");
+        return -2;
+    }
+
     g_currentScenario = scenarioIndex;
     renderCurrentScenario();
 
     return 0;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int isGalReady() {
+    return g_ready ? 1 : 0;
 }
 
 EMSCRIPTEN_KEEPALIVE
@@ -200,6 +211,8 @@ bool GALTestApp::OnInit() {
 
     printf("\nReady for scenarios. Total: %d\n", g_totalScenarios);
     printf("Call runScenario(index) from JavaScript to render.\n");
+
+    g_ready = true;
 
     return true;
 }

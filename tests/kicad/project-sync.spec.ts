@@ -268,20 +268,20 @@ function resistorSch(ref: string): string {
 const BOOT_TIMEOUT = 150000;
 
 interface FS { mkdirTree(p: string): void; writeFile(p: string, d: string): void; }
-interface Mod { kicadOpenFile(p: string): unknown; }
+interface Mod { kicadOpenFile(p: string): Promise<unknown>; }
 
 /** Stage board + schematic + minimal .kicad_pro into MEMFS, then open the board. */
 async function stageAndOpen(page: import('@playwright/test').Page, sch: string): Promise<void> {
     await page.goto('/kicad/pcbnew.html');
     await waitForEditorReady(page);
     await page.evaluate(
-        ({ dir, stem, pcb, sch, pro }) => {
+        async ({ dir, stem, pcb, sch, pro }) => {
             const w = window as unknown as { FS: FS; Module: Mod };
             try { w.FS.mkdirTree(dir); } catch { /* exists */ }
             w.FS.writeFile(`${dir}/${stem}.kicad_pcb`, pcb);
             w.FS.writeFile(`${dir}/${stem}.kicad_sch`, sch);
             w.FS.writeFile(`${dir}/${stem}.kicad_pro`, pro);
-            w.Module.kicadOpenFile(`${dir}/${stem}.kicad_pcb`);
+            await w.Module.kicadOpenFile(`${dir}/${stem}.kicad_pcb`);
         },
         { dir: DIR, stem: STEM, pcb: PCB, sch, pro: PRO },
     );

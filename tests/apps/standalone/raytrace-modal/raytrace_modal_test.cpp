@@ -23,8 +23,10 @@
 #include <condition_variable>
 #include <cstdarg>
 #include <cstdio>
+#include <functional>
 #include <mutex>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #ifdef __EMSCRIPTEN__
@@ -176,8 +178,44 @@ class AutoClosingDialog : public wxDialog
 {
 public:
     AutoClosingDialog( wxWindow* parent ) :
-            wxDialog( parent, wxID_ANY, "rt-modal", wxDefaultPosition, wxSize( 280, 120 ) ) {}
+            wxDialog( parent, wxID_ANY, "rt-modal", wxDefaultPosition, wxSize( 280, 120 ) ),
+            m_workTimer( this, ID_MODAL_WORK )
+    {
+        Bind( wxEVT_SHOW, &AutoClosingDialog::OnShow, this );
+        Bind( wxEVT_TIMER, &AutoClosingDialog::OnWorkTimer,
+              this, ID_MODAL_WORK );
+    }
+
+    void RunWorkAfterShow( std::function<void()> work, int delayMs )
+    {
+        m_work = std::move( work );
+        m_workDelayMs = delayMs;
+    }
+
     void EndModalExternal( int code ) { EndModal( code ); }
+
+private:
+    void OnShow( wxShowEvent& event )
+    {
+        if( event.IsShown() && m_work )
+            m_workTimer.StartOnce( m_workDelayMs );
+
+        event.Skip();
+    }
+
+    void OnWorkTimer( wxTimerEvent& )
+    {
+        if( m_work )
+        {
+            auto work = std::move( m_work );
+            m_work = nullptr;
+            work();
+        }
+    }
+
+    wxTimer m_workTimer;
+    std::function<void()> m_work;
+    int m_workDelayMs = 0;
 };
 
 class RtModalFrame : public wxFrame
@@ -186,15 +224,13 @@ public:
     RtModalFrame( int mode ) :
             wxFrame( nullptr, wxID_ANY, "Raytrace Modal Test", wxDefaultPosition, wxSize( 420, 140 ) ),
             m_mode( mode ),
-            m_scenarioTimer( this, ID_SCENARIO ),
-            m_modalWorkTimer( this, ID_MODAL_WORK )
+            m_scenarioTimer( this, ID_SCENARIO )
     {
         wxPanel* p = new wxPanel( this );
         wxBoxSizer* s = new wxBoxSizer( wxVERTICAL );
         s->Add( new wxStaticText( p, wxID_ANY, "Raytrace-in-modal repro — see console." ), 0, wxALL, 16 );
         p->SetSizer( s );
         Bind( wxEVT_TIMER, &RtModalFrame::OnScenario, this, ID_SCENARIO );
-        Bind( wxEVT_TIMER, &RtModalFrame::OnModalWork, this, ID_MODAL_WORK );
     }
 
     void armScenario() { m_scenarioTimer.StartOnce( 50 ); }
@@ -206,7 +242,7 @@ private:
     {
         AutoClosingDialog* dlg = new AutoClosingDialog( this );
         m_activeDialog = dlg;
-        m_modalWorkTimer.StartOnce( 30 );
+        dlg->RunWorkAfterShow( [this]() { OnModalWork(); }, 30 );
         rtlog( "[RTPOOL] showing modal (mode=%d) — work runs from the modal pump's ProcessEvents", m_mode );
         dlg->ShowModal(); // returns when OnModalWork's pass finishes and closes it
         m_activeDialog = nullptr;
@@ -216,7 +252,7 @@ private:
     }
 
     // Fires from the modal pump's ProcessEvents — a fresh managed entry at Asyncify state == Normal.
-    void OnModalWork( wxTimerEvent& )
+    void OnModalWork()
     {
 #ifdef __EMSCRIPTEN__
         int st = EM_ASM_INT( {
@@ -236,7 +272,6 @@ private:
     AutoClosingDialog* m_activeDialog = nullptr;
     clk::time_point    m_t0;
     wxTimer            m_scenarioTimer;
-    wxTimer            m_modalWorkTimer;
 };
 
 class RtModalApp : public wxApp

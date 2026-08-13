@@ -16,9 +16,10 @@
 // app-level try/catch that could change unwinding): the spec types into the
 // <input>, which fires a genuine DOM 'input' event -> wx-dom.js dispatch() ->
 // wx_dom_event() (extern "C") -> OnDomEvent. The bound wxEVT_TEXT handler throws
-// once; the throw escapes OnDomEvent and is caught by dispatch()'s try/catch at
-// the JS boundary (exactly as a real handler exception would be). The spec then
-// clicks a button that does a programmatic ChangeValue() and checks the element.
+// once; wxEvtHandler::SafelyProcessEvent catches it at the wx event boundary.
+// This test app explicitly continues its main loop after that expected
+// exception. The spec then clicks a button that does a programmatic
+// ChangeValue() and checks the element.
 //
 //   RED  (bug present): the <input> keeps the typed text; ChangeValue is dropped.
 //   GREEN (fixed):      the <input> shows the programmatic value.
@@ -34,7 +35,11 @@
 #include <emscripten/emscripten.h>
 #endif
 
-enum { ID_SET_PROGRAMMATIC = wxID_HIGHEST + 1 };
+enum
+{
+    ID_SET_PROGRAMMATIC = wxID_HIGHEST + 1,
+    ID_BLOCK_OWNER
+};
 
 class ReproFrame : public wxFrame
 {
@@ -44,6 +49,7 @@ public:
 private:
     void OnText(wxCommandEvent &evt);
     void OnSetProgrammatic(wxCommandEvent &evt);
+    void OnBlockOwner(wxCommandEvent &evt);
 
     wxTextCtrl *m_text = nullptr;
     bool m_throwArmed = true;
@@ -62,6 +68,10 @@ ReproFrame::ReproFrame()
     button->Bind(wxEVT_BUTTON, &ReproFrame::OnSetProgrammatic, this);
     sizer->Add(button, 0, wxALL, 10);
 
+    wxButton *blockButton = new wxButton(this, ID_BLOCK_OWNER, "Block Owner");
+    blockButton->Bind(wxEVT_BUTTON, &ReproFrame::OnBlockOwner, this);
+    sizer->Add(blockButton, 0, wxALL, 10);
+
     SetSizer(sizer);
 
 #ifdef __EMSCRIPTEN__
@@ -72,6 +82,13 @@ ReproFrame::ReproFrame()
 void ReproFrame::OnText(wxCommandEvent &evt)
 {
     evt.Skip();
+
+#ifdef __EMSCRIPTEN__
+    const wxScopedCharBuffer value = m_text->GetValue().utf8_str();
+    EM_ASM({
+        console.log('[DOM_INGRESS] value=' + UTF8ToString($0));
+    }, value.data());
+#endif
 
     // A handler that throws (a validator failure, a wxLogError turned into an
     // exception by a custom log target, ...). Throw once so the app survives.
@@ -88,6 +105,20 @@ void ReproFrame::OnSetProgrammatic(wxCommandEvent &WXUNUSED(evt))
     m_text->ChangeValue("PROGRAMMATIC_OK");
 }
 
+void ReproFrame::OnBlockOwner(wxCommandEvent &WXUNUSED(evt))
+{
+    // The ordering reducer needs an owner that is physically parked while two
+    // browser input events arrive. Do not throw from those input handlers: this
+    // scenario isolates receipt-time state from the older reentry-guard repro.
+    m_throwArmed = false;
+
+#ifdef __EMSCRIPTEN__
+    EM_ASM({ console.log('[DOM_INGRESS] block-start'); });
+    emscripten_sleep(300);
+    EM_ASM({ console.log('[DOM_INGRESS] block-end'); });
+#endif
+}
+
 class ReproApp : public wxApp
 {
 public:
@@ -97,6 +128,14 @@ public:
             return false;
 
         (new ReproFrame())->Show(true);
+        return true;
+    }
+
+    bool OnExceptionInMainLoop() override
+    {
+        // The exception is the stimulus for this reducer. wxApp's default
+        // implementation returns false and exits the main loop, which would
+        // test application shutdown instead of the text-control reentry guard.
         return true;
     }
 };

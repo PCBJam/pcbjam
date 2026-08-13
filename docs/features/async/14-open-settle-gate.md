@@ -1,5 +1,14 @@
 # 14 — The open-settle gate: prod "indirect call signature mismatch" at board load
 
+> **Status: HISTORICAL INCIDENT RECORD (2026-08-11).** Current builds expose
+> programmatic open as an exact execution-owner Promise. That Promise remains
+> pending through native completion and modal input; it is now the primary
+> contract. `kicadOpenFileBusy()` remains as a legacy-binary fallback and a
+> deterministic test probe, not as a second poll after a current Promise.
+> The unreferenced `kicadCollabFiberBusy()` JavaScript probe was removed; exact
+> owner tickets now cover the retained `runOnFiber` tail. See
+> [`23-execution-owner-implementation.md`](23-execution-owner-implementation.md).
+
 ## Symptom
 
 Intermittent, prod, mostly Firefox: loading an editor URL (observed on

@@ -8,7 +8,7 @@ import { waitForWxApp, stableShot } from '../e2e/utils/element-tracker';
  * the end-to-end proof of the 0009-A "version cap only, no token strip" finding.
  *
  * Boots the project-scoped footprint_editor against the GPL example backend
- * (:3060) serving curated footprint fixtures (LIBS_DIR=/tmp/fp-fixtures). Boot
+ * (:3060) serving its self-provisioned curated footprint fixtures. Boot
  * generates the fp-lib-table from `listLibs?kind=footprint`; the test expands a
  * lib in the tree (FootprintEnumerate) and opens a footprint (FootprintLoad →
  * Parse). Pass: the footprint OPENS (title = lib:footprint) — which requires
@@ -81,10 +81,7 @@ async function dblclickRow(page: Page, re: RegExp): Promise<string | null> {
   return row.label;
 }
 
-  // KNOWN-BROKEN: the fp/sym editor kicadLibs enumerate/save flows are dead
-  // (docs/features/web-e2e-rot/01-editor-lib-bridge-flows.md). fixme, not fail:
-  // on CI this dies in a 180s boot timeout per engine — running it buys no signal.
-test.fixme('footprint editor browses + loads a real ingested footprint (read path / version cap)', async ({ page }) => {
+test('footprint editor browses + loads a real ingested footprint (read path / version cap)', async ({ page }) => {
   const logs: string[] = [];
   page.on('console', (m) => logs.push(`[${m.type()}] ${m.text()}`));
   page.on('pageerror', (e) => logs.push(`[pageerror] ${e.message}`));

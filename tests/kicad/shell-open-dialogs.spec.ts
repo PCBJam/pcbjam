@@ -1,7 +1,7 @@
 import { test, expect, type Page } from './fixtures';
 import { injectFromSubmodule } from './utils/fs-inject';
 import { DEMO, PROJECT_DIR_MEMFS, countGlCanvases, openThreeDViewer } from './utils/threed-viewer';
-import { waitForBoardLoaded } from './utils/board-ready';
+import { openBoardProgrammatically } from './utils/board-ready';
 import { waitForPcbnew } from './utils/pcbnew-ready';
 import { clickMenuBarItem, clickMenuItemByText } from '../e2e/utils/element-tracker';
 
@@ -10,9 +10,9 @@ import { clickMenuBarItem, clickMenuItemByText } from '../e2e/utils/element-trac
  * class). The user's live-editor path opens boards through the WEB SHELL's
  * `Module.kicadOpenFile(path)` — which Phase F wrapped to run the open body on
  * a DISPATCH CONTEXT and hand the shell a promise over an "open" wait token.
- * EVERY existing board-load spec instead drives File → Open (the wxFileDialog
- * → OpenProjectFiles path), so NONE exercises that wrapper — the exact gap the
- * user's "pcbnew dialogs are broken, eeschema is fine" report lives in.
+ * This spec explicitly exercises that wrapper. UI File → Open has a different
+ * causal receipt (exact wxFileDialog identity plus an owner barrier) and is
+ * covered separately by load-pcb.spec.ts.
  *
  * These specs reproduce the shell path (inject the board, then
  * `await Module.kicadOpenFile`) and THEN drive the dialogs the user reported
@@ -22,10 +22,6 @@ import { clickMenuBarItem, clickMenuItemByText } from '../e2e/utils/element-trac
 
 const TRAP =
     /Aborted\(|index out of bounds|unreachable executed|indirect call signature|null function|memory access out of bounds/;
-
-interface Mod {
-    kicadOpenFile(path: string): Promise<boolean> | boolean;
-}
 
 // Load the board the way the WEB SHELL does — through Module.kicadOpenFile
 // (the Phase F dispatch-context wrapper), not File → Open.
@@ -38,13 +34,13 @@ async function openBoardViaShell(
     await injectFromSubmodule(page, `kicad/demos/${DEMO.dir}/${pcb}`, `${PROJECT_DIR_MEMFS}/${pcb}`);
     await injectFromSubmodule(page, `kicad/demos/${DEMO.dir}/${pro}`, `${PROJECT_DIR_MEMFS}/${pro}`);
 
-    const ok = await page.evaluate(async (path) => {
-        const m = (window as unknown as { Module: Mod }).Module;
-        return await m.kicadOpenFile(path);
-    }, `${PROJECT_DIR_MEMFS}/${pcb}`);
-    expect(ok, 'Module.kicadOpenFile resolved true').toBe(true);
-
-    const result = await waitForBoardLoaded(page, logger, 60000);
+    const result = await openBoardProgrammatically(
+        page,
+        `${PROJECT_DIR_MEMFS}/${pcb}`,
+        DEMO.stem,
+        logger,
+        60000,
+    );
     console.log(`[TEST] shell-open board-ready: ${result}`);
 }
 
@@ -120,7 +116,8 @@ test.describe('shell-opened board → dialogs (Phase F open-lane regression)', (
         await assertResponsive(page, 'modal open');
         noTrap(testLogger, 'modal open');
 
-        // Close it (Escape → EndModal(wxID_CANCEL) → resolves the modal wait).
+        // Board Setup is quasi-modal: Escape → EndQuasiModal(wxID_CANCEL) →
+        // resolves the nested loop's exact modal-lease wait.
         await page.keyboard.press('Escape');
         await page.waitForFunction(
             () =>

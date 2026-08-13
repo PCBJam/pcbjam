@@ -13,15 +13,13 @@ const SCOPE = 'default';
  * → PUT /api/libs/:lib/items/... on the example backend. Verify the backend
  * persisted a valid fork-native body, then reload and confirm it enumerates.
  *
- * Requires the example backend (:3060) running with USER_LIBS_DIR set.
+ * Requires the example backend (:3060). It uses USER_LIBS_DIR when set and
+ * otherwise the backend's owner-namespaced `.user-libs` default.
  */
 
 const BACKEND = process.env.BACKEND_URL ?? 'http://localhost:3060';
 
-  // KNOWN-BROKEN: the fp/sym editor kicadLibs enumerate/save flows are dead
-  // (docs/features/web-e2e-rot/01-editor-lib-bridge-flows.md). fixme, not fail:
-  // on CI this dies in a 180s boot timeout per engine — running it buys no signal.
-test.fixme('symbol editor save persists to the backend (remote write round-trip)', async ({ page }) => {
+test('symbol editor save persists to the backend (remote write round-trip)', async ({ page }) => {
   // Unique owner per run so the test is isolated from prior runs.
   const owner = `e2e-${Date.now()}`;
   const logs: string[] = [];

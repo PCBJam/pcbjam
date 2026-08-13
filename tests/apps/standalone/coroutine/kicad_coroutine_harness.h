@@ -32,6 +32,18 @@ private:
     class CallContext
     {
     public:
+        ~CallContext()
+        {
+#ifdef __EMSCRIPTEN__
+            if( !m_mainStackContext || !m_mainStackContext->ctx )
+                return;
+
+            libcontext::fcontext_t owned = m_mainStackContext->ctx;
+            m_mainStackContext->ctx = nullptr;
+            libcontext::release_fcontext( owned );
+#endif
+        }
+
         void SetMainStack( Context* aStack )
         {
             m_mainStackContext = aStack;
@@ -76,8 +88,10 @@ public:
 
     using EntryFn = std::function<void( TestCoroutine& )>;
 
-    explicit TestCoroutine( EntryFn aEntry, std::size_t aStackSize = 256 * 1024 ) :
+    explicit TestCoroutine( EntryFn aEntry, std::size_t aStackSize = 256 * 1024,
+                            std::size_t aStackSkew = 0 ) :
             m_stackSize( aStackSize ),
+            m_stackSkew( aStackSkew ),
             m_entry( std::move( aEntry ) )
     {
     }
@@ -171,6 +185,14 @@ public:
         return m_entryCount;
     }
 
+    // Exposes the opaque token only to the standalone lifetime reducers. They
+    // keep a stale copy across destruction and prove that it cannot alias or
+    // enter a later context.
+    libcontext::fcontext_t ContextHandleForTest() const
+    {
+        return m_callee.ctx;
+    }
+
 private:
     static void callerStub( intptr_t aData )
     {
@@ -191,8 +213,9 @@ private:
 
     Invocation* doCall( Invocation* aInvocation )
     {
-        m_stack = std::make_unique<char[]>( m_stackSize );
-        void* stackTop = m_stack.get() + m_stackSize;
+        m_stack = std::make_unique<char[]>( m_stackSize + m_stackSkew );
+        char* stackBottom = m_stack.get() + m_stackSkew;
+        void* stackTop = stackBottom + m_stackSize;
 
         m_callee.ctx = libcontext::make_fcontext( stackTop, m_stackSize, callerStub );
         m_running = true;
@@ -217,6 +240,17 @@ private:
     void jumpOut( InvocationType aType, intptr_t aValue )
     {
         Invocation args{ aType, nullptr, nullptr, aValue };
+
+#ifdef __EMSCRIPTEN__
+        // Completion is not an ordinary suspension. Finish the physical fiber
+        // before the TestCoroutine destructor can release its C stack.
+        if( !m_running )
+        {
+            libcontext::finish_fcontext( &( m_callee.ctx ), m_caller.ctx,
+                                         reinterpret_cast<intptr_t>( &args ) );
+        }
+#endif
+
         Invocation* ret = reinterpret_cast<Invocation*>(
                 libcontext::jump_fcontext( &( m_callee.ctx ), m_caller.ctx,
                                            reinterpret_cast<intptr_t>( &args ) ) );
@@ -238,6 +272,7 @@ private:
 
 private:
     std::size_t                 m_stackSize;
+    std::size_t                 m_stackSkew;
     EntryFn                     m_entry;
     bool                        m_running = false;
     std::unique_ptr<char[]>     m_stack;

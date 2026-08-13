@@ -85,12 +85,12 @@ type FS = {
   readFile(p: string, o: { encoding: "utf8" }): string;
 };
 type Mod = {
-  kicadOpenFile(p: string): unknown;
-  kicadCollabSnapshotItems(): string;
-  kicadCollabApplyItems(j: string): unknown;
-  kicadCollabTestMoveFirst(dx: number, dy: number): string;
-  kicadCollabGetPos(id: string): string;
-  kicadSaveBoard(p: string): unknown;
+  kicadOpenFile(p: string): Promise<unknown>;
+  kicadCollabSnapshotItems(): Promise<string>;
+  kicadCollabApplyItems(j: string): Promise<unknown>;
+  kicadCollabTestMoveFirst(dx: number, dy: number): Promise<string>;
+  kicadCollabGetPos(id: string): Promise<string>;
+  kicadSaveBoard(p: string): Promise<void>;
 };
 
 const BOOT_TIMEOUT = 150000;
@@ -126,7 +126,7 @@ async function bootOpen(page: Page): Promise<void> {
     null,
     { timeout: BOOT_TIMEOUT },
   );
-  await page.evaluate((content) => {
+  await page.evaluate(async (content) => {
     const w = window as unknown as { FS: FS; Module: Mod };
     try {
       w.FS.mkdirTree("/home/kicad/documents");
@@ -135,15 +135,15 @@ async function bootOpen(page: Page): Promise<void> {
     }
     const p = "/home/kicad/documents/rt.kicad_pcb";
     w.FS.writeFile(p, content);
-    w.Module.kicadOpenFile(p);
+    await w.Module.kicadOpenFile(p);
   }, SAMPLE_PCB);
 }
 
 function saveRead(page: Page): Promise<string> {
-  return page.evaluate(() => {
+  return page.evaluate(async () => {
     const w = window as unknown as { FS: FS; Module: Mod };
     const out = "/home/kicad/documents/probe.kicad_pcb";
-    w.Module.kicadSaveBoard(out);
+    await w.Module.kicadSaveBoard(out);
     return w.FS.readFile(out, { encoding: "utf8" });
   });
 }
@@ -208,8 +208,8 @@ test.describe("pcbnew ysync repros (v2 items wire, single tab)", () => {
   }) => {
     await bootOpen(page);
     expect(await saveRead(page)).toContain(SEG2);
-    await page.evaluate((seg) => {
-      window.Module.kicadCollabApplyItems(
+    await page.evaluate(async (seg) => {
+      await window.Module.kicadCollabApplyItems(
         JSON.stringify({ added: [], changed: [], removed: [seg] }),
       );
     }, SEG2);
@@ -229,8 +229,8 @@ test.describe("pcbnew ysync repros (v2 items wire, single tab)", () => {
     // The wire a peer sends after deleting the fp_text: a bare child removal
     // (the emit side lifts adds/changes to a parent re-blob but NOT removals —
     // 03-bug-child-removal-dangling-slot.md).
-    await page.evaluate((uuid) => {
-      window.Module.kicadCollabApplyItems(
+    await page.evaluate(async (uuid) => {
+      await window.Module.kicadCollabApplyItems(
         JSON.stringify({ added: [], changed: [], removed: [uuid] }),
       );
     }, FP1_TXT);
@@ -291,12 +291,13 @@ test.describe("pcbnew ysync repros (v2 items wire, single tab)", () => {
     // fires the listener (flush queued BEHIND the apply), then the apply's
     // global rebaseline() snapshots the model WITH the move already in it, so
     // the flush diffs to empty (05-bug-rebaseline-swallows-local-edits.md).
-    const movedId = (await page.evaluate((fpSexpr) => {
+    const movedId = (await page.evaluate(async (fpSexpr) => {
       const m = window.Module;
-      const id = m.kicadCollabTestMoveFirst(3_000_000, 0);
-      m.kicadCollabApplyItems(
+      const move = m.kicadCollabTestMoveFirst(3_000_000, 0);
+      const apply = m.kicadCollabApplyItems(
         JSON.stringify({ added: [{ sexpr: fpSexpr, parent: null }], changed: [], removed: [] }),
       );
+      const [id] = await Promise.all([move, apply]);
       return id;
     }, NEW_FP_SEXPR)) as string;
     expect(movedId).toMatch(/[0-9a-f-]{36}/);
@@ -329,26 +330,24 @@ test.describe("pcbnew ysync repros (v2 items wire, single tab)", () => {
   // green precondition that the edit LANDED → expected-fail that it EMITTED.
   // The "local move emits" control above proves the emit harness itself.
 
-  /** Baseline + capture + hook-presence guard (returns false on stale wasm). */
-  async function armed(page: Page, hook: string): Promise<boolean> {
+  /** Baseline + capture; the current wasm must expose the requested hook. */
+  async function armed(page: Page, hook: string): Promise<void> {
     await bootOpen(page);
     const has = await page.evaluate(
       (h) => typeof (window as unknown as { Module: Record<string, unknown> }).Module[h] === "function",
       hook,
     );
-    if (!has) return false;
+    expect(has, `current wasm exposes ${hook}`).toBe(true);
     await page.evaluate(() => window.Module.kicadCollabSnapshotItems());
     await captureEmits(page);
-    return true;
   }
 
   test("an anchor-centred footprint rotation reaches the wire", async ({ page, testLogger }) => {
-    const ok = await armed(page, "kicadCollabTestRotateItem");
-    test.skip(!ok, "wasm build predates the ysync repro hooks");
+    await armed(page, "kicadCollabTestRotateItem");
 
     const queued = await page.evaluate(
       (id) =>
-        (window as unknown as { Module: { kicadCollabTestRotateItem(i: string, d: number): boolean } })
+        (window as unknown as { Module: { kicadCollabTestRotateItem(i: string, d: number): Promise<boolean> } })
           .Module.kicadCollabTestRotateItem(id, 90),
       FP2,
     );
@@ -373,12 +372,11 @@ test.describe("pcbnew ysync repros (v2 items wire, single tab)", () => {
   });
 
   test("a pad size edit reaches the wire", async ({ page, testLogger }) => {
-    const ok = await armed(page, "kicadCollabTestSetPadSize");
-    test.skip(!ok, "wasm build predates the ysync repro hooks");
+    await armed(page, "kicadCollabTestSetPadSize");
 
     const queued = await page.evaluate(
       (id) =>
-        (window as unknown as { Module: { kicadCollabTestSetPadSize(i: string, w: number, h: number): boolean } })
+        (window as unknown as { Module: { kicadCollabTestSetPadSize(i: string, w: number, h: number): Promise<boolean> } })
           .Module.kicadCollabTestSetPadSize(id, 2_000_000, 2_000_000),
       PAD1,
     );
@@ -402,12 +400,11 @@ test.describe("pcbnew ysync repros (v2 items wire, single tab)", () => {
   });
 
   test("a graphic-shape endpoint drag reaches the wire", async ({ page, testLogger }) => {
-    const ok = await armed(page, "kicadCollabTestMoveEndpoint");
-    test.skip(!ok, "wasm build predates the ysync repro hooks");
+    await armed(page, "kicadCollabTestMoveEndpoint");
 
     const queued = await page.evaluate(
       (id) =>
-        (window as unknown as { Module: { kicadCollabTestMoveEndpoint(i: string, dx: number, dy: number): boolean } })
+        (window as unknown as { Module: { kicadCollabTestMoveEndpoint(i: string, dx: number, dy: number): Promise<boolean> } })
           .Module.kicadCollabTestMoveEndpoint(id, 5_000_000, 0),
       GRL1,
     );
@@ -440,11 +437,11 @@ test.describe("pcbnew ysync repros (v2 items wire, single tab)", () => {
         typeof (window as unknown as { Module: Record<string, unknown> }).Module
           .kicadCollabTestRemoveItem === "function",
     );
-    test.skip(!has, "wasm build predates the ysync repro hooks");
+    expect(has, "current wasm exposes kicadCollabTestRemoveItem").toBe(true);
 
     const queued = await page.evaluate(
       (id) =>
-        (window as unknown as { Module: { kicadCollabTestRemoveItem(i: string): boolean } })
+        (window as unknown as { Module: { kicadCollabTestRemoveItem(i: string): Promise<boolean> } })
           .Module.kicadCollabTestRemoveItem(id),
       FP1_TXT,
     );
@@ -459,12 +456,11 @@ test.describe("pcbnew ysync repros (v2 items wire, single tab)", () => {
   });
 
   test("a child deletion goes out as the parent's re-blob", async ({ page, testLogger }) => {
-    const ok = await armed(page, "kicadCollabTestRemoveItem");
-    test.skip(!ok, "wasm build predates the ysync repro hooks");
+    await armed(page, "kicadCollabTestRemoveItem");
 
     await page.evaluate(
       (id) =>
-        (window as unknown as { Module: { kicadCollabTestRemoveItem(i: string): boolean } })
+        (window as unknown as { Module: { kicadCollabTestRemoveItem(i: string): Promise<boolean> } })
           .Module.kicadCollabTestRemoveItem(id),
       FP1_TXT,
     );

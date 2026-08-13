@@ -48,10 +48,10 @@ interface ToolCfg {
 }
 
 type Mod = {
-  kicadOpenFile(p: string): unknown;
-  kicadCollabSnapshotItems(): string;
-  kicadCollabApplyItems(j: string): unknown;
-} & Record<string, (p: string) => unknown>;
+  kicadOpenFile(p: string): Promise<unknown>;
+  kicadCollabSnapshotItems(): Promise<string>;
+  kicadCollabApplyItems(j: string): Promise<unknown>;
+} & Record<string, (p: string) => Promise<unknown>>;
 type FS = {
   mkdirTree(p: string): void;
   writeFile(p: string, d: string): void;
@@ -94,7 +94,7 @@ async function bootOpen(page: Page, cfg: ToolCfg, content: string, name: string)
     { timeout: BOOT_TIMEOUT },
   );
   await page.evaluate(
-    ({ content, name, ext }) => {
+    async ({ content, name, ext }) => {
       const w = window as unknown as { FS: FS; Module: Mod };
       try {
         w.FS.mkdirTree("/home/kicad/documents");
@@ -103,7 +103,7 @@ async function bootOpen(page: Page, cfg: ToolCfg, content: string, name: string)
       }
       const p = `/home/kicad/documents/${name}.${ext}`;
       w.FS.writeFile(p, content);
-      w.Module.kicadOpenFile(p);
+      await w.Module.kicadOpenFile(p);
     },
     { content, name, ext: cfg.ext },
   );
@@ -112,10 +112,10 @@ async function bootOpen(page: Page, cfg: ToolCfg, content: string, name: string)
 /** Save the current model to MEMFS via the tool's save export and read it back. */
 async function saveRead(page: Page, cfg: ToolCfg, name: string): Promise<string> {
   return page.evaluate(
-    ({ saveFn, ext, name }) => {
+    async ({ saveFn, ext, name }) => {
       const w = window as unknown as { FS: FS; Module: Mod };
       const out = `/home/kicad/documents/${name}.${ext}`;
-      w.Module[saveFn](out);
+      await w.Module[saveFn](out);
       return w.FS.readFile(out, { encoding: "utf8" });
     },
     { saveFn: cfg.saveFn, ext: cfg.ext, name },
@@ -153,17 +153,8 @@ async function roundTrip(
   await bootOpen(rebuild, cfg, cfg.empty, "rt");
   await rebuild.evaluate((s) => window.Module.kicadCollabApplyItems(s), snap);
 
-  // apply() runs async for eeschema/pcbnew (CallAfter + coroutine). Best-effort wait
-  // for the first applied item to materialize — but DON'T fail here: proceed to save
-  // REGEN regardless, so sexprDiff reports exactly which items failed to round-trip
-  // (a poll timeout would hide that signal). pl_editor settles within a tick.
-  const deadline = Date.now() + 15000;
-  for (;;) {
-    const probe = await saveRead(rebuild, cfg, "regen_probe");
-    if (probe.includes(`(uuid "${ids[0]}")`) || Date.now() >= deadline) break;
-    await rebuild.waitForTimeout(300);  // eslint-disable-line -- deliberate best-effort poll (a hard wait would hide which items failed)
-  }
-
+  // The owner-backed apply ticket covers the native mutation tail. A save can
+  // therefore follow it directly; polling here would hide premature completion.
   const regen = await saveRead(rebuild, cfg, "regen_dump");
   await rebuild.close();
   return { orig, regen };
@@ -503,14 +494,7 @@ test.describe("round trip: file → yjs → file", () => {
     expect(hasAbort(testLogger), "no WASM abort").toBe(false);
   });
 
-  // REMAINING KNOWN GAP (ysync 0008 status, known limit 1 — tracked, not a test
-  // bug): pcbnew track/via/zone/text APPLY rides the `(kicad_pcb …)` envelope
-  // parse, the codebase's documented asyncify-fragile path (even a verbatim
-  // SaveSelection envelope for a segment dies silently in the commit). The full
-  // fixture (via + gr_text + segments) therefore still loses those items on the
-  // rebuild side. Un-fixme when the envelope parse is solved. Run with
-  // --grep-invert skipped to see the live diff.
-  test.fixme(
+  test(
     "pcbnew preserves items through a yjs round trip",
     async ({ context, testLogger }) => {
       const { orig, regen } = await roundTrip(context, PCB);

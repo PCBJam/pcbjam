@@ -1,8 +1,8 @@
 import type { Page } from '@playwright/test';
 import { expect } from '@playwright/test';
-import { clickMenuBarItem, clickMenuItemByText, waitUntil } from '../../e2e/utils/element-tracker';
+import { clickMenuBarItem, clickMenuItemByText } from '../../e2e/utils/element-tracker';
 import { injectFromSubmodule } from './fs-inject';
-import { waitForBoardLoaded } from './board-ready';
+import { openBoardProgrammatically } from './board-ready';
 
 // Shared helpers for the 3D-viewer specs (3d-viewer.spec.ts + 3d-viewer-deadlock.spec.ts).
 
@@ -27,38 +27,13 @@ export async function loadBoard(
     await injectFromSubmodule(page, `kicad/demos/${DEMO.dir}/${proFilename}`,
         `${PROJECT_DIR_MEMFS}/${proFilename}`);
 
-    expect(await clickMenuBarItem(page, 'File'), 'File menu should be findable').toBe(true);
-    await clickMenuItemByText(page, 'Open');
-
-    await page.waitForFunction(() => {
-        const registry = window.wxElementRegistry;
-        return !!registry && registry.findAll({ visible: true })
-            .some((el) => el.typeName === 'wxFileDialog');
-    }, null, { timeout: 15000 });
-    // Wait for the filename text input to paint (replaces a fixed 1000ms).
-    await waitUntil(page, () => {
-        const r = window.wxElementRegistry;
-        return !!r && r.findAll({ visible: true }).some((el) => el.typeName === 'wxTextCtrl' && el.name === 'text');
-    }, 'file dialog filename input');
-
-    const filenameInput = await page.evaluate(() => {
-        const registry = window.wxElementRegistry;
-        if (!registry) return null;
-        const text = registry.findAll({ visible: true })
-            .find((el) => el.typeName === 'wxTextCtrl' && el.name === 'text');
-        return text ? { x: text.centerX, y: text.centerY } : null;
-    });
-    expect(filenameInput, 'filename text input should be visible').not.toBeNull();
-    if (!filenameInput) throw new Error('filename text input not found');
-
-    await page.mouse.click(filenameInput.x, filenameInput.y);
-    // Documented interaction dwells: focus + typed-text registration have no observable signal.
-    await page.waitForTimeout(200); // eslint-disable-line -- documented interaction dwell
-    await page.keyboard.type(pcbFilename);
-    await page.waitForTimeout(300); // eslint-disable-line -- documented interaction dwell
-    await page.keyboard.press('Enter');
-
-    const result = await waitForBoardLoaded(page, testLogger, 60000);
+    const result = await openBoardProgrammatically(
+        page,
+        `${PROJECT_DIR_MEMFS}/${pcbFilename}`,
+        DEMO.stem,
+        testLogger,
+        60000,
+    );
     console.log(`[TEST] ${DEMO.name} board-ready result: ${result}`);
 }
 
@@ -128,7 +103,67 @@ export async function openThreeDViewer(page: Page, glBefore: number): Promise<nu
     return glAfter;
 }
 
-// Wait until the NEWEST glcanvas actually shows a rendered scene (> minColors distinct
+/**
+ * Return the DOM window that owns the real 3D viewer chrome.
+ *
+ * Do not identify it as "the first window id created after the menu click".
+ * Board-load warnings and other auxiliary top-level windows can finish their
+ * delayed creation in the same interval.  The title-bar text is the stable
+ * semantic identity supplied by EDA_3D_VIEWER_FRAME itself.
+ */
+export async function waitForThreeDViewerWindow(page: Page): Promise<string> {
+    const findViewerWindow = () => {
+        const title = Array.from(document.querySelectorAll<HTMLElement>(
+            '#window-container .window-titlebar-text'))
+            .find((el) => el.textContent?.trim() === '3D Viewer');
+        return title?.closest<HTMLElement>('[id^="window-"]')?.id ?? null;
+    };
+
+    await page.waitForFunction(findViewerWindow, null, { timeout: 60000 });
+    const id = await page.evaluate(findViewerWindow);
+    expect(id, 'the 3D viewer should own a titled top-level DOM window').toBeTruthy();
+    return id as string;
+}
+
+/**
+ * Return the visible GL surface owned by the 3D viewer.
+ *
+ * DOM creation order is not an identity: the viewer can create later hidden
+ * helper canvases while it resolves models.  The viewer surface is visible,
+ * has a real client area, and occupies the raised secondary-frame z-layer.
+ */
+export async function waitForThreeDViewerCanvas(page: Page): Promise<string> {
+    const findViewerCanvas = () => {
+        const candidates = Array.from(document.querySelectorAll<HTMLCanvasElement>(
+            '#window-container canvas[id^="glcanvas-"]'))
+            .map((canvas) => {
+                const style = getComputedStyle(canvas);
+                const rect = canvas.getBoundingClientRect();
+                return {
+                    canvas,
+                    visible: style.display !== 'none' && style.visibility !== 'hidden',
+                    z: parseInt(style.zIndex, 10) || 0,
+                    area: rect.width * rect.height,
+                    sequence: parseInt(canvas.id.replace(/^glcanvas-/, ''), 10) || 0,
+                };
+            })
+            .filter((candidate) => candidate.visible)
+            // Pick identity before readiness.  The viewer's raised canvas is
+            // briefly 20x20 during bootstrap; filtering by area first would
+            // latch onto the older, already-large main-editor GAL canvas.
+            .sort((a, b) => b.z - a.z || b.sequence - a.sequence || b.area - a.area);
+
+        const viewer = candidates[0];
+        return viewer && viewer.area > 32 * 32 ? viewer.canvas.id : null;
+    };
+
+    await page.waitForFunction(findViewerCanvas, null, { timeout: 60000 });
+    const id = await page.evaluate(findViewerCanvas);
+    expect(id, 'the 3D viewer should own a visible GL canvas').toBeTruthy();
+    return id as string;
+}
+
+// Wait until the identified viewer canvas actually shows a rendered scene (> minColors distinct
 // colours on a 16×16 grid) instead of sleeping a fixed interval. The viewer's first frame
 // can lag the canvas's creation, especially on CI's software WebGL under parallel load —
 // sampling too early reads an all-black backbuffer, which is exactly main's live 3D flake
@@ -139,9 +174,9 @@ export async function openThreeDViewer(page: Page, glBefore: number): Promise<nu
 export async function waitForThreeDRender(
     page: Page, minColors = 8, timeoutMs = 90000,
 ): Promise<void> {
-    await page.waitForFunction((min: number) => {
-        const list = document.querySelectorAll('canvas[id^="glcanvas-"]');
-        const el = list[list.length - 1] as HTMLCanvasElement | undefined;
+    const canvasId = await waitForThreeDViewerCanvas(page);
+    await page.waitForFunction(([id, min]: [string, number]) => {
+        const el = document.getElementById(id) as HTMLCanvasElement | null;
         if (!el || !el.width || !el.height) return false;
         const tmp = document.createElement('canvas');
         tmp.width = el.width; tmp.height = el.height;
@@ -157,5 +192,5 @@ export async function waitForThreeDRender(
             }
         }
         return colors.size > min;
-    }, minColors, { timeout: timeoutMs, polling: 1000 });
+    }, [canvasId, minColors] as [string, number], { timeout: timeoutMs, polling: 1000 });
 }

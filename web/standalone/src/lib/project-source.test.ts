@@ -35,6 +35,19 @@ async function loadStatic() {
   return (await import("./project-source")).projectSource;
 }
 
+async function loadRemote() {
+  vi.resetModules();
+  vi.doMock("@/lib/config", () => ({
+    API_BASE_URL: "http://localhost:3050",
+    PROJECT_SOURCE_KIND: "remote",
+    PROJECT_MANIFEST_URL: "",
+    LOCAL_PROJECTS_ENABLED: false,
+    userSlug: () => "test-user",
+    currentScope: () => "team",
+  }));
+  return (await import("./project-source")).projectSource;
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -101,5 +114,184 @@ describe("static project source", () => {
     const manifestCalls = fetchMock.mock.calls.filter((c) => c[0] === MANIFEST_URL);
     expect(manifestCalls).toHaveLength(1);
     expect(manifestCalls[0]![1]).toEqual({ cache: "no-store" });
+  });
+});
+
+describe("remote project source save revisions", () => {
+  const project = {
+    id: "00000000-0000-4000-8000-000000000001",
+    scope: "team",
+    slug: "demo",
+    name: "Demo",
+    createdAt: new Date(0).toISOString(),
+    updatedAt: new Date(0).toISOString(),
+  };
+  const file = {
+    id: "00000000-0000-4000-8000-000000000002",
+    projectId: project.id,
+    path: "board.kicad_pcb",
+    size: 1,
+    contentType: "text/plain",
+    revision: 4,
+    createdAt: new Date(0).toISOString(),
+    updatedAt: new Date(0).toISOString(),
+  };
+
+  it("does not use a listed revision as the write base", async () => {
+    const seen: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === "PUT") {
+          seen.push(new Headers(init.headers).get("x-pcbjam-file-revision")!);
+          return new Response(JSON.stringify({ ...file, revision: 1 }), {
+            status: 200,
+            headers: {
+              "content-type": "application/json",
+              "x-pcbjam-file-revision": "1",
+            },
+          });
+        }
+        return new Response(JSON.stringify({ project, files: [file] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }),
+    );
+    const source = (await loadRemote())();
+    await source.getProject("demo");
+    await source.uploadFileBytes!("demo", file.path, new Uint8Array([1]));
+    expect(seen).toEqual(["0"]);
+  });
+
+  it("uses a loaded body's revision and advances it only after acknowledged commits", async () => {
+    const seen: string[] = [];
+    let saves = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method !== "PUT") {
+          return new Response(new Uint8Array([1]), {
+            status: 200,
+            headers: {
+              "content-type": "application/octet-stream",
+              "x-pcbjam-file-revision": "4",
+            },
+          });
+        }
+        seen.push(new Headers(init.headers).get("x-pcbjam-file-revision")!);
+        const revision = ++saves + 4;
+        return new Response(JSON.stringify({ ...file, revision }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }),
+    );
+    const source = (await loadRemote())();
+    await source.fetchFileBytes("demo", file.path);
+    expect(await source.uploadFileBytes!("demo", file.path, new Uint8Array([2]))).toEqual({
+      kind: "committed",
+    });
+    await source.uploadFileBytes!("demo", file.path, new Uint8Array([3]));
+    expect(seen).toEqual(["4", "5"]);
+  });
+
+  it("keeps conflict and refreshed revisions observed-only", async () => {
+    const seen: string[] = [];
+    let bodyLoaded = false;
+    let conflicts = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === "PUT") {
+          seen.push(new Headers(init.headers).get("x-pcbjam-file-revision")!);
+          const revision = ++conflicts + 6;
+          return new Response(
+            JSON.stringify({ current: { ...file, revision }, expectedRevision: 4 }),
+            {
+              status: 409,
+              headers: {
+                "content-type": "application/json",
+                "x-pcbjam-file-revision": String(revision),
+              },
+            },
+          );
+        }
+        if (!bodyLoaded) {
+          bodyLoaded = true;
+          return new Response(new Uint8Array([1]), {
+            status: 200,
+            headers: {
+              "content-type": "application/octet-stream",
+              "x-pcbjam-file-revision": "4",
+            },
+          });
+        }
+        return new Response(JSON.stringify([{ ...file, revision: 9 }]), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }),
+    );
+    const source = (await loadRemote())();
+    await source.fetchFileBytes("demo", file.path);
+    const conflict = await source.uploadFileBytes!(
+      "demo",
+      file.path,
+      new Uint8Array([2]),
+    );
+    expect(conflict).toMatchObject({ kind: "conflict" });
+    await source.refreshFileRevision!("demo", file.path);
+    await source.uploadFileBytes!("demo", file.path, new Uint8Array([3]));
+    expect(seen).toEqual(["4", "4"]);
+  });
+
+  it("returns unknown for transport loss and non-prepublication server errors", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Promise.reject(new TypeError("offline"))));
+    const source = (await loadRemote())();
+    expect(
+      await source.uploadFileBytes!("demo", file.path, new Uint8Array([1])),
+    ).toMatchObject({ kind: "unknown" });
+  });
+
+  it("returns not-committed only for a response known to precede publication", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 428 })));
+    const source = (await loadRemote())();
+    expect(
+      await source.uploadFileBytes!("demo", file.path, new Uint8Array([1])),
+    ).toEqual({ kind: "not-committed", message: `Save failed (428): ${file.path}` });
+  });
+
+  it("accepts a success revision header and rejects inconsistent acknowledgements", async () => {
+    let call = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        call++;
+        if (call === 1) {
+          return new Response("not json", {
+            status: 200,
+            headers: {
+              "content-type": "application/json",
+              "x-pcbjam-file-revision": "1",
+            },
+          });
+        }
+        return new Response(JSON.stringify({ ...file, revision: 3 }), {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+            "x-pcbjam-file-revision": "2",
+          },
+        });
+      }),
+    );
+    const source = (await loadRemote())();
+    expect(
+      await source.uploadFileBytes!("demo", file.path, new Uint8Array([1])),
+    ).toEqual({ kind: "committed" });
+    expect(
+      await source.uploadFileBytes!("demo", file.path, new Uint8Array([2])),
+    ).toMatchObject({ kind: "unknown" });
   });
 });

@@ -3,6 +3,11 @@ import { clog } from "./debug";
 import type { PresenceHandle, PresencePeer } from "./presence";
 import type { ViewportState } from "./presence-kicad";
 import { viewportRect } from "./presence-kicad";
+import {
+  observeOwnerJob,
+  runGuardedOwnerExport,
+  type GuardedOwnerExport,
+} from "../owner-job";
 
 /**
  * Follow-user controller (collab-presence 0008): mirror a peer's viewport
@@ -73,7 +78,7 @@ function isEcho(vp: ViewportState, target: PresenceViewport): boolean {
 export function createFollow(opts: {
   presence: PresenceHandle;
   /** Module.kicadCollabFitViewport, bound; absent on older wasm → no-op UI. */
-  fit: (cx: number, cy: number, halfW: number, halfH: number) => void;
+  fit: GuardedOwnerExport<readonly [number, number, number, number], void>;
   /** The sheet THIS tab shows (eeschema); undefined for single-doc tools. */
   ownSheetPath?: () => string | undefined;
 }): FollowHandle {
@@ -85,6 +90,8 @@ export function createFollow(opts: {
   /** Grace: ignore break-checks until the first fit's echo arrived, else the
    *  stale pre-follow viewport emit would instantly end the follow. */
   let sawEcho = false;
+  let fitGeneration = 0;
+  let destroyed = false;
 
   const subscribers = new Set<(t: FollowTarget | null) => void>();
   const notify = () => {
@@ -122,11 +129,23 @@ export function createFollow(opts: {
     }
     applied = rect;
     sawEcho = false;
-    fit(rect.cx, rect.cy, rect.halfW, rect.halfH);
+    const generation = ++fitGeneration;
+    const leaderClientId = target.clientId;
+    observeOwnerJob("fit followed viewport", () =>
+      runGuardedOwnerExport(
+        fit,
+        [rect.cx, rect.cy, rect.halfW, rect.halfH] as const,
+        () =>
+          !destroyed &&
+          fitGeneration === generation &&
+          target?.clientId === leaderClientId,
+      ),
+    );
   };
 
   const stop = () => {
     if (!target) return;
+    ++fitGeneration;
     target = null;
     applied = null;
     sawEcho = false;
@@ -137,6 +156,7 @@ export function createFollow(opts: {
 
   return {
     follow(t) {
+      ++fitGeneration;
       target = t;
       applied = null;
       sawEcho = false;
@@ -161,6 +181,9 @@ export function createFollow(opts: {
       stop();
     },
     destroy() {
+      if (destroyed) return;
+      destroyed = true;
+      ++fitGeneration;
       unsubscribePresence();
       subscribers.clear();
       target = null;

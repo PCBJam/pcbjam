@@ -38,91 +38,160 @@
  */
 
 #include <wx/wasm/private/sched_context.h>
+#include <wx/wasm/private/execution_owner.h>
 
 #include <emscripten/emscripten.h>
 
+#include <cmath>
+#include <cstdlib>
 #include <cstdint>
-
-// The scheduler mailbox (wx/wasm/private/mailbox.h). A timer message is the
-// wake source: it is delivered from a fresh JS task on the main stack, which
-// is where a resume is allowed to happen.
-extern "C" void wxWasmMailboxEnqueueAfter( void ( *aFn )( void* ), void* aArg, int aMillisecs );
-
-// Does some wx pump already own this context's wake (the main loop's rAF, a
-// dispatch context's tick)? Parking such a context here would give it TWO
-// owners, and the second wake resumes a capture the first already consumed —
-// measured 2026-08-07 as a doRewind trap through wxWasmArmFrameWake. Those
-// contexts keep the in-place yield; the tool coroutines this exists for have
-// no other wake source, which is precisely why their wait must park.
-extern "C" int wxWasmContextWakeIsPumpOwned( unsigned aId );
+#include <limits>
 
 namespace
 {
 
-void wake_sleeper( void* aArg )
+[[noreturn]] void fail_context_sleep( const char* aReason )
 {
-    const pcbjam_sched::ContextId id =
-            static_cast<pcbjam_sched::ContextId>( reinterpret_cast<uintptr_t>( aArg ) );
+    wxWasmExecutionFailStop( aReason );
+    std::abort();
+}
 
-    // mark_ready never resumes inline (doc 13 §1.4). WHO performs the entry
-    // depends on where this delivery landed:
-    if( !pcbjam_sched::mark_ready( id, 0 ) )
-        return;
-
-    if( pcbjam_sched::current() == 0 )
-    {
-        // On the scheduler stack: drain here.
-        pcbjam_sched::drain_all();
-        return;
+EM_JS( int, schedule_context_sleep_wake,
+       ( unsigned aContext, unsigned aToken, int aDelay ), {
+    var scheduler = globalThis.__wxScheduler;
+    if (!scheduler || typeof scheduler.scheduleContextSleep !== "function") {
+        globalThis.__wxWasmFailed = true;
+        console.error("[wx-scheduler] context-sleep owner is missing");
+        return 0;
     }
+    return scheduler.scheduleContextSleep(
+            aContext >>> 0, aToken >>> 0, aDelay) ? 1 : 0;
+} );
 
-    // Delivered ON a context — the mailbox tick itself now runs on a dispatch
-    // context (doc 22 §10). drain() would refuse re-entry, and it should: the
-    // outer drain_all that entered this context keeps pumping once it parks,
-    // and picks up the context we just marked ready. Arm a pump anyway so a
-    // delivery that reached here by some other route cannot strand it.
-    EM_ASM( {
-        setTimeout( function() {
-            if( Module["_wxWasmSchedPump"] ) Module["_wxWasmSchedPump"]();
-        }, 0 );
-    } );
+EM_JS( int, cancel_context_sleep_wake,
+       ( unsigned aContext, unsigned aToken ), {
+    var scheduler = globalThis.__wxScheduler;
+    if (!scheduler || typeof scheduler.cancelContextSleep !== "function")
+        return 0;
+    return scheduler.cancelContextSleep(
+            aContext >>> 0, aToken >>> 0) ? 1 : 0;
+} );
+
+bool cancel_context_sleep( pcbjam_sched::ContextId aContext,
+                           pcbjam_sched::WakeToken aToken )
+{
+    return cancel_context_sleep_wake( aContext, aToken ) != 0;
 }
 
 }  // namespace
 
 extern "C" {
 
+// Exact scheduler control, not a wx pending event or a modal child command.
+// The timer task only changes this ContextId from Parked to Ready and asks the
+// scheduler for a separate fresh pump; it never executes model code under the
+// mailbox's authority.
+int EMSCRIPTEN_KEEPALIVE pcbjam_context_sleep_wake( unsigned aContext,
+                                                    unsigned aToken )
+{
+    if( pcbjam_sched::current() != 0 ||
+        pcbjam_sched::transition_in_flight() )
+    {
+        wxWasmExecutionFailStop(
+                "context-sleep wake entered while scheduler was busy" );
+        return 0;
+    }
+
+    if( !pcbjam_sched::mark_ready_owned(
+            static_cast<pcbjam_sched::ContextId>( aContext ), 0,
+            static_cast<pcbjam_sched::WakeToken>( aToken ) ) )
+    {
+        wxWasmExecutionFailStop(
+                "context-sleep target refused its exact wake" );
+        return 0;
+    }
+
+    EM_ASM( {
+        var scheduler = globalThis.__wxScheduler;
+        if( scheduler && typeof scheduler._armSchedPump === "function" )
+            scheduler._armSchedPump();
+    } );
+    return 1;
+}
+
 /**
  * Park the running context for aMillisecs instead of suspending this stack.
  *
  * Returns 1 if the wait was taken as a context park, 0 if the caller must fall
- * back to the in-place Asyncify yield — which is the right answer whenever no
- * context owns this stack: the main loop itself, a bridge entered before the
- * scheduler exists, or a libcontext fiber swapped in above a context (yielding
- * there would save the WRONG stack — doc 22 §7 rule 4, enforced by
+ * back to the in-place Asyncify yield. That is the right answer when no
+ * context owns this stack, when an ordinary wake is already deferred for this
+ * context, or when a libcontext fiber is swapped in above a context. Yielding
+ * in the last case would save the wrong stack (doc 22 §7 rule 4, enforced by
  * can_yield_here()).
  */
 int pcbjam_context_sleep_ms( double aMillisecs )
 {
+    // A zero-duration sleep is a scheduling hint, not permission to suspend
+    // the current stack. In particular, mimalloc calls sleep(0) while its heap
+    // metadata is transient. Keep the primitive safe even if a future caller
+    // bypasses nanosleep(), which enforces the same rule.
+    if( !( aMillisecs > 0.0 ) )
+        return 0;
+
     const pcbjam_sched::ContextId self = pcbjam_sched::current();
 
     if( !self || !pcbjam_sched::can_yield_here() )
         return 0;
 
-    if( wxWasmContextWakeIsPumpOwned( self ) )
+    // A re-entrant ordinary wake which arrived while this context was Running
+    // belongs to its next External park. Do not install an unrelated exact
+    // timer lease in front of it; the in-place fallback preserves the pending
+    // wake until that external park consumes it.
+    if( pcbjam_sched::has_pending_wake( self ) )
         return 0;
 
-    // Round up: a 0 ms mailbox delay would re-enter this poll in the same
-    // macrotask chain and spin the CPU exactly as the sleep exists to avoid.
-    int delay = static_cast<int>( aMillisecs );
+    const pcbjam_sched::WakeToken token = pcbjam_sched::reserve_wake_token();
 
-    if( delay < 1 )
+    if( !token )
+    {
+        fail_context_sleep(
+                "context-sleep wake-token space is exhausted" );
+    }
+
+    // Round up: nanosleep must not return before the requested interval.
+    // Clamp before the cast so a non-finite or very large value cannot
+    // overflow it.
+    const double rounded = std::ceil( aMillisecs );
+    const double maximum = static_cast<double>( std::numeric_limits<int>::max() );
+    int delay;
+
+    if( !( rounded >= 1.0 ) )
         delay = 1;
+    else if( rounded >= maximum )
+        delay = std::numeric_limits<int>::max();
+    else
+        delay = static_cast<int>( rounded );
 
-    wxWasmMailboxEnqueueAfter( &wake_sleeper,
-                               reinterpret_cast<void*>( static_cast<uintptr_t>( self ) ),
-                               delay );
-    pcbjam_sched::yield_park( "main-thread-sleep" );
+    if( !schedule_context_sleep_wake( self, token, delay ) )
+    {
+        fail_context_sleep(
+                "context-sleep wake could not acquire its timer lease" );
+    }
+
+    const pcbjam_sched::ParkResult parked = pcbjam_sched::yield_park(
+            "main-thread-sleep",
+            pcbjam_sched::ParkWake::Cancellable(
+                    token, &cancel_context_sleep ) );
+
+    if( !parked.accepted )
+    {
+        if( !cancel_context_sleep( self, token ) )
+            fail_context_sleep(
+                    "failed context sleep could not revoke its timer lease" );
+
+        fail_context_sleep(
+                "context-sleep could not park its owning context" );
+    }
     return 1;
 }
 

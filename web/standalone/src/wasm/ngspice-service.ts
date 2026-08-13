@@ -83,107 +83,304 @@ export function ngspiceWorkerBlobParts(glueHref: string): string[] {
   ];
 }
 
-export function installNgspiceService(log: (msg: string) => void): void {
+export interface NgspiceServiceWatchdogs {
+  /** Maximum time from the first request until a new generation announces `ready`. */
+  bootTimeoutMs?: number;
+  /** Maximum time for any one request in a ready generation to answer. */
+  responseTimeoutMs?: number;
+}
+
+// These are last-resort failure bounds, not normal scheduling deadlines.
+// SPICE startup and foreground simulations can be expensive on slow devices,
+// so production defaults deliberately leave a large margin.
+export const NGSPICE_BOOT_TIMEOUT_MS = 2 * 60_000;
+export const NGSPICE_RESPONSE_TIMEOUT_MS = 30 * 60_000;
+
+export function installNgspiceService(
+  log: (msg: string) => void,
+  watchdogs: NgspiceServiceWatchdogs = {},
+): void {
   if (globalThis.ngspiceService) return;
 
+  const bootTimeoutMs =
+    watchdogs.bootTimeoutMs ?? NGSPICE_BOOT_TIMEOUT_MS;
+  const responseTimeoutMs =
+    watchdogs.responseTimeoutMs ?? NGSPICE_RESPONSE_TIMEOUT_MS;
+
+  interface WorkerSlot {
+    generation: number;
+    worker?: Worker;
+    workerUrl?: string;
+    failed: boolean;
+    ready: Promise<WorkerSlot>;
+    bootTimer?: ReturnType<typeof setTimeout>;
+    rejectBoot?: (reason?: unknown) => void;
+    removeBootListener?: () => void;
+  }
+
+  interface PendingRequest {
+    generation: number;
+    resolve: (res: NgspiceResponse) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }
+
   let nextId = 1;
-  const pending = new Map<number, (res: NgspiceResponse) => void>();
-  let workerP: Promise<Worker> | null = null;
+  let nextGeneration = 1;
+  const pending = new Map<number, PendingRequest>();
+  let workerSlot: WorkerSlot | null = null;
 
   // Events can arrive before the client stub installs __ngspiceOnEvent
   // (the handler comes with the first editor-side ngSpice_Init).
-  const evtQueue: NgspiceEvent[] = [];
-  const dispatchEvt = (evt: NgspiceEvent) => {
+  interface QueuedEventFrame {
+    generation: number;
+    evt: NgspiceEvent;
+    sequence: number;
+    bytes: number;
+  }
+  const MAX_QUEUED_EVENT_FRAMES = 64;
+  const MAX_QUEUED_EVENT_BYTES = 8 * 1024 * 1024;
+  const evtQueue: QueuedEventFrame[] = [];
+  let evtQueueBytes = 0;
+  const ackEvent = (slot: WorkerSlot, frame: QueuedEventFrame): boolean => {
+    if (slot.failed || workerSlot !== slot || !slot.worker) return false;
+    try {
+      slot.worker.postMessage({
+        eventAck: { sequence: frame.sequence, bytes: frame.bytes },
+      });
+      return true;
+    } catch (error) {
+      retireWorker(slot, `ngspice_service event acknowledgment failed: ${String(error)}`);
+      return false;
+    }
+  };
+  const dispatchEvt = (
+    slot: WorkerSlot,
+    evt: NgspiceEvent,
+    sequence: number,
+    bytes: number,
+  ) => {
+    if (slot.failed || workerSlot !== slot) return;
+    if (!Number.isSafeInteger(sequence) || sequence < 1
+        || !Number.isSafeInteger(bytes) || bytes < 1
+        || bytes > MAX_QUEUED_EVENT_BYTES) {
+      retireWorker(slot, "ngspice_service sent invalid event-frame credit");
+      return;
+    }
+    const frame = { generation: slot.generation, evt, sequence, bytes };
     const handler = globalThis.__ngspiceOnEvent;
     if (handler) {
-      while (evtQueue.length) handler(evtQueue.shift()!);
+      while (evtQueue.length) {
+        const queued = evtQueue.shift()!;
+        evtQueueBytes -= queued.bytes;
+        if (queued.generation !== slot.generation) continue;
+        handler(queued.evt);
+        if (!ackEvent(slot, queued)) return;
+      }
       handler(evt);
+      ackEvent(slot, frame);
     } else {
-      evtQueue.push(evt);
+      if (evtQueue.length >= MAX_QUEUED_EVENT_FRAMES
+          || evtQueueBytes > MAX_QUEUED_EVENT_BYTES - bytes) {
+        retireWorker(slot, "ngspice_service event-frame queue exceeded credit");
+        return;
+      }
+      evtQueue.push(frame);
+      evtQueueBytes += bytes;
     }
   };
 
-  const failAllPending = (why: string) => {
-    for (const [, resolve] of pending) resolve({ error: why });
-    pending.clear();
+  const failPending = (generation: number, why: string): void => {
+    for (const [id, request] of pending) {
+      if (request.generation !== generation) continue;
+      pending.delete(id);
+      clearTimeout(request.timer);
+      request.resolve({ error: why });
+    }
   };
 
-  const ensureWorker = (): Promise<Worker> => {
-    if (!workerP) {
-      workerP = (async () => {
+  const retireWorker = (slot: WorkerSlot, why: string): void => {
+    if (slot.failed) return;
+    slot.failed = true;
+    if (slot.bootTimer !== undefined) {
+      clearTimeout(slot.bootTimer);
+      slot.bootTimer = undefined;
+    }
+    slot.removeBootListener?.();
+    slot.removeBootListener = undefined;
+    failPending(slot.generation, why);
+    for (let i = evtQueue.length - 1; i >= 0; --i) {
+      if (evtQueue[i]!.generation === slot.generation) {
+        evtQueueBytes -= evtQueue[i]!.bytes;
+        evtQueue.splice(i, 1);
+      }
+    }
+    if (workerSlot === slot) workerSlot = null;
+    try {
+      slot.worker?.terminate();
+    } catch {
+      /* already gone */
+    }
+    if (slot.workerUrl) {
+      try {
+        URL.revokeObjectURL(slot.workerUrl);
+      } catch {
+        /* URL cleanup must not prevent exact wait settlement */
+      }
+      slot.workerUrl = undefined;
+    }
+    const reject = slot.rejectBoot;
+    slot.rejectBoot = undefined;
+    reject?.(new Error(why));
+  };
+
+  const ensureWorker = (): Promise<WorkerSlot> => {
+    if (!workerSlot) {
+      const slot = {
+        generation: nextGeneration++,
+        failed: false,
+      } as WorkerSlot;
+      // Publish the generation before its async boot reaches the first await.
+      // This also lets every continuation test exact slot ownership directly.
+      workerSlot = slot;
+
+      // The editor is parked for this entire operation, including delivery
+      // discovery. Start the generation deadline before resolveWasmBase(): a
+      // hung manifest/CDN lookup must settle the exact wait just like a Worker
+      // which never announces ready.
+      const bootDeadline = new Promise<never>((_resolve, reject) => {
+        slot.rejectBoot = reject;
+        slot.bootTimer = setTimeout(() => {
+          if (slot.failed || workerSlot !== slot) return;
+          const why =
+            `ngspice_service boot timed out after ${bootTimeoutMs} ms`;
+          log(`[ngspice] ${why} — resetting service`);
+          retireWorker(slot, why);
+        }, bootTimeoutMs);
+      });
+
+      const boot = (async () => {
         const base = await resolveWasmBase("ngspice_service");
+        if (slot.failed || workerSlot !== slot) {
+          throw new Error(
+            "ngspice_service worker retired during delivery resolution",
+          );
+        }
         const glue = new URL(`${base}/ngspice_service.js`, window.location.href).href;
         log(`[ngspice] booting ngspice_service from ${base}`);
 
-        const worker = new Worker(
-          URL.createObjectURL(
-            new Blob(ngspiceWorkerBlobParts(glue), { type: "text/javascript" }),
-          ),
+        slot.workerUrl = URL.createObjectURL(
+          new Blob(ngspiceWorkerBlobParts(glue), { type: "text/javascript" }),
         );
+        const worker = new Worker(slot.workerUrl);
+        slot.worker = worker;
 
         worker.onmessage = (e) => {
+          if (slot.failed || workerSlot !== slot) return;
           const data = e.data ?? {};
+          if (data.fatal) {
+            failWorker(`event stream failure: ${String(data.fatal)}`);
+            return;
+          }
           if (data.evt) {
-            dispatchEvt(data.evt as NgspiceEvent);
+            dispatchEvt(
+              slot,
+              data.evt as NgspiceEvent,
+              data.eventSequence,
+              data.eventBytes,
+            );
             return;
           }
           if (typeof data.id !== "number") return;
-          const resolve = pending.get(data.id);
-          if (resolve) {
+          const request = pending.get(data.id);
+          if (request?.generation === slot.generation) {
             pending.delete(data.id);
-            resolve(data.res as NgspiceResponse);
+            clearTimeout(request.timer);
+            request.resolve(data.res as NgspiceResponse);
           }
         };
 
         // A dead worker (hard ngspice fault) must not strand the editor
         // suspended in an EM_ASYNC_JS bridge: fail everything in flight and
         // make the next request boot a fresh worker.
-        worker.onerror = (e) => {
-          log(`[ngspice] worker error: ${e.message} — resetting service`);
-          failAllPending(`ngspice_service crashed: ${e.message}`);
-          workerP = null;
-          try {
-            worker.terminate();
-          } catch {
-            /* already gone */
-          }
+        const failWorker = (detail: string) => {
+          const why = `ngspice_service crashed: ${detail}`;
+          log(`[ngspice] worker error: ${detail} — resetting service`);
+          retireWorker(slot, why);
         };
+        worker.onerror = (e) => failWorker(e.message || "worker error");
+        worker.onmessageerror = () => failWorker("message decode failed");
 
-        await new Promise<void>((resolve, reject) => {
+        await new Promise<void>((resolve) => {
           const onFirst = (e: MessageEvent) => {
             if (e.data?.ready) {
-              worker.removeEventListener("message", onFirst);
+              if (slot.bootTimer !== undefined) {
+                clearTimeout(slot.bootTimer);
+                slot.bootTimer = undefined;
+              }
+              slot.removeBootListener?.();
+              slot.removeBootListener = undefined;
+              slot.rejectBoot = undefined;
               resolve();
             } else if (e.data?.bootError) {
-              reject(new Error(e.data.bootError));
+              const why = `ngspice_service boot failed: ${String(e.data.bootError)}`;
+              retireWorker(slot, why);
             }
           };
           worker.addEventListener("message", onFirst);
+          slot.removeBootListener = () =>
+            worker.removeEventListener("message", onFirst);
         });
 
+        if (slot.failed || workerSlot !== slot) {
+          throw new Error("ngspice_service worker retired during boot");
+        }
         log("[ngspice] ngspice_service ready");
-        return worker;
-      })().catch((e) => {
-        workerP = null; // a failed boot must stay retryable
+        return slot;
+      })();
+
+      slot.ready = Promise.race([boot, bootDeadline]).catch((e) => {
+        // A late failure from a retired generation must not clear a replacement
+        // which a re-entrant caller has already started.
+        retireWorker(slot, `ngspice_service unavailable: ${String(e)}`);
         throw e;
       });
     }
-    return workerP;
+    return workerSlot.ready;
+  };
+
+  const post = (slot: WorkerSlot, req: NgspiceRequest): Promise<NgspiceResponse> => {
+    const worker = slot.worker;
+    if (!worker || slot.failed || workerSlot !== slot) {
+      return Promise.resolve({ error: "ngspice_service worker is unavailable" });
+    }
+    const id = nextId++;
+    return new Promise<NgspiceResponse>((resolve) => {
+      const timer = setTimeout(() => {
+        if (pending.get(id)?.generation !== slot.generation) return;
+        const why =
+          `ngspice_service response timed out after ${responseTimeoutMs} ms`;
+        log(`[ngspice] ${why} — resetting service`);
+        retireWorker(slot, why);
+      }, responseTimeoutMs);
+      pending.set(id, { generation: slot.generation, resolve, timer });
+      try {
+        worker.postMessage({ id, req });
+      } catch (error) {
+        pending.delete(id);
+        clearTimeout(timer);
+        resolve({ error: `ngspice_service request failed: ${String(error)}` });
+      }
+    });
   };
 
   const request = async (req: NgspiceRequest): Promise<NgspiceResponse> => {
-    let worker: Worker;
+    let slot: WorkerSlot;
     try {
-      worker = await ensureWorker();
+      slot = await ensureWorker();
     } catch (e) {
       return { error: `ngspice_service unavailable: ${e}` };
     }
-
-    const id = nextId++;
-    return new Promise<NgspiceResponse>((resolve) => {
-      pending.set(id, resolve);
-      worker.postMessage({ id, req });
-    });
+    return post(slot, req);
   };
 
   globalThis.ngspiceService = { request };

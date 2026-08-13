@@ -29,10 +29,13 @@
 #include <string>
 #include <vector>
 #include <wx/app.h>
+#include <wx/button.h>
+#include <wx/dialog.h>
 #include <wx/string.h>
 #include <wx/window.h>
 #include <wx/frame.h>
 #include <wx/menu.h>
+#include <wx/sizer.h>
 #include <wx/statusbr.h>
 #include <wx/aui/framemanager.h>
 #include <kiway.h>
@@ -42,6 +45,7 @@
 
 #include "pcbjam_libs_reload.h"
 #include "open_gate.h"
+#include "owned_open.h"
 #include "main_stack_runner.h"
 #include "timer_park.h"
 #include "fiber_park.h"
@@ -143,8 +147,7 @@ static bool kicadOpenFile( std::string path )
     // Held across every Asyncify park of the load; see open_gate.h.
     pcbjam_open::BusyGuard busy;
 
-    if( pcbjam_open::testParkMs() > 0 )
-        emscripten_sleep( pcbjam_open::testParkMs() );
+    pcbjam_open::testParkIfArmed();
 
     KIWAY_PLAYER* frame =
             wxTheApp ? static_cast<KIWAY_PLAYER*>( wxTheApp->GetTopWindow() ) : nullptr;
@@ -160,8 +163,7 @@ static bool kicadOpenFile( std::string path )
 
     // Test-only post-load park (open_gate.h): model fully loaded, gate still
     // closed — the deterministic window the collab-load-fuzz spec hammers.
-    if( pcbjam_open::testParkMs() > 0 )
-        emscripten_sleep( pcbjam_open::testParkMs() );
+    pcbjam_open::testParkIfArmed();
 
     return ok;
 }
@@ -177,30 +179,13 @@ static bool kicadOpenFile( std::string path )
 // value is delivered as an unwind PLACEHOLDER (0) into a rewind JS discards —
 // the same gotcha the fiber-park levers document. So the shim wrapper mints
 // the wait token in pure JS (no swap), hands it in here, and awaits its
-// promise; this starter returns void and its own placeholder return is
-// harmless. The job resolves the token when the load completes.
-extern "C" void wxWasmRunOnDispatchContext( void ( *fn )( void* ), void* arg );
-extern "C" void wxWasmResolveWait( int aToken, int aResult );
+// promise. This starter returns only whether the execution queue accepted the
+// job; the owned-open helper resolves the token at the real body tail.
 
-namespace
+static bool kicadOpenFileStart( int token, std::string path )
 {
-struct OPEN_JOB
-{
-    std::string path;
-    int         token;
-};
-
-void kicadOpenFileJob( void* aArg )
-{
-    std::unique_ptr<OPEN_JOB> job( static_cast<OPEN_JOB*>( aArg ) );
-    const bool ok = kicadOpenFile( job->path );
-    wxWasmResolveWait( job->token, ok ? 1 : 0 );
-}
-}  // namespace
-
-static void kicadOpenFileStart( int token, std::string path )
-{
-    wxWasmRunOnDispatchContext( &kicadOpenFileJob, new OPEN_JOB{ std::move( path ), token } );
+    return pcbjam_open::startOwnedOpen(
+            token, [path = std::move( path )]() { return kicadOpenFile( path ); } );
 }
 
 // JS-pollable open-in-flight probe (open_gate.h): the web shell defers the
@@ -258,6 +243,202 @@ static bool kicadTestFiberParkStartSecond()
 static bool kicadTestFiberParkPokeSecond()
 {
     return pcbjam_fiber_park::pokeSecond();
+}
+
+
+// Deterministic reducer for runOnFiber's hardest lifetime path. The first
+// body parks after COROUTINE::Call() has returned to its dispatch callback;
+// the second body must remain queued until the first body's rewind tail has
+// scheduled and completed affiliated cleanup under the retained owner.
+namespace
+{
+struct RUN_ON_FIBER_PARK_STATE
+{
+    int stage = 0;
+    int parkMs = 0;
+    int firstRuns = 0;
+    int secondRuns = 0;
+    int violations = 0;
+};
+
+RUN_ON_FIBER_PARK_STATE& runOnFiberParkState()
+{
+    static RUN_ON_FIBER_PARK_STATE s_state;
+    return s_state;
+}
+} // namespace
+
+
+static bool kicadCollabTestRunOnFiberPark( int aParkMs )
+{
+    KIWAY_PLAYER* frame =
+            wxTheApp ? dynamic_cast<KIWAY_PLAYER*>( wxTheApp->GetTopWindow() ) : nullptr;
+
+    if( !frame || aParkMs <= 0 || pcbjam_collab::fiberWorkPending() )
+    {
+        return false;
+    }
+
+    runOnFiberParkState() = {};
+    runOnFiberParkState().parkMs = aParkMs;
+
+    pcbjam_collab::runOnFiber( frame, []() {
+        RUN_ON_FIBER_PARK_STATE& state = runOnFiberParkState();
+        ++state.firstRuns;
+
+        if( state.stage != 0 )
+            ++state.violations;
+
+        state.stage = 1;
+        emscripten_sleep( state.parkMs );
+
+        if( state.stage != 1 )
+            ++state.violations;
+
+        state.stage = 2;
+    } );
+
+    pcbjam_collab::runOnFiber( frame, []() {
+        RUN_ON_FIBER_PARK_STATE& state = runOnFiberParkState();
+        ++state.secondRuns;
+
+        if( state.stage != 2 )
+            ++state.violations;
+
+        state.stage = 3;
+    } );
+
+    return true;
+}
+
+
+static std::string kicadTestRunOnFiberParkState()
+{
+    const RUN_ON_FIBER_PARK_STATE& state = runOnFiberParkState();
+    const bool busy = pcbjam_collab::fiberWorkPending();
+
+    return std::string( "{\"stage\":" ) + std::to_string( state.stage )
+           + ",\"parkMs\":" + std::to_string( state.parkMs )
+           + ",\"firstRuns\":" + std::to_string( state.firstRuns )
+           + ",\"secondRuns\":" + std::to_string( state.secondRuns )
+           + ",\"violations\":" + std::to_string( state.violations )
+           + ",\"busy\":" + ( busy ? "true" : "false" ) + "}";
+}
+
+
+// Deterministic reducer for the owner-lane cycle which a single global
+// FiberSlot cannot solve. The parent runOnFiber body parks in a real modal.
+// Its exact-scope button event is admitted as a child owner and queues another
+// runOnFiber body. Only that child body closes the modal. The parent therefore
+// cannot resume until the child lane has run and released its owner.
+namespace
+{
+struct RUN_ON_FIBER_MODAL_STATE
+{
+    int stage = 0;
+    int parentRuns = 0;
+    int childHandlers = 0;
+    int childRuns = 0;
+    int jobsAtChild = 0;
+    int lanesAtChild = 0;
+    int parentReturns = 0;
+    int modalResult = 0;
+    int violations = 0;
+};
+
+RUN_ON_FIBER_MODAL_STATE& runOnFiberModalState()
+{
+    static RUN_ON_FIBER_MODAL_STATE s_state;
+    return s_state;
+}
+} // namespace
+
+
+static bool kicadCollabTestRunOnFiberModal()
+{
+    KIWAY_PLAYER* frame =
+            wxTheApp ? dynamic_cast<KIWAY_PLAYER*>( wxTheApp->GetTopWindow() ) : nullptr;
+
+    if( !frame || pcbjam_collab::fiberWorkPending() )
+        return false;
+
+    runOnFiberModalState() = {};
+
+    pcbjam_collab::runOnFiber( frame, [frame]() {
+        RUN_ON_FIBER_MODAL_STATE& state = runOnFiberModalState();
+        ++state.parentRuns;
+
+        if( state.stage != 0 )
+            ++state.violations;
+
+        wxDialog dialog( frame, wxID_ANY, "runOnFiber owner-lane reducer",
+                         wxDefaultPosition, wxDefaultSize,
+                         wxDEFAULT_DIALOG_STYLE );
+        wxBoxSizer* sizer = new wxBoxSizer( wxVERTICAL );
+        wxButton* childButton =
+                new wxButton( &dialog, wxID_ANY, "Run child fiber" );
+        childButton->SetName( "runOnFiberModalChild" );
+        sizer->Add( childButton, 0, wxALL | wxALIGN_CENTER, 12 );
+        dialog.SetSizerAndFit( sizer );
+
+        childButton->Bind( wxEVT_BUTTON, [&dialog]( wxCommandEvent& ) {
+            RUN_ON_FIBER_MODAL_STATE& childState = runOnFiberModalState();
+            ++childState.childHandlers;
+
+            if( childState.stage != 1 )
+                ++childState.violations;
+
+            childState.stage = 2;
+
+            pcbjam_collab::runOnFiber( &dialog, [&dialog]() {
+                RUN_ON_FIBER_MODAL_STATE& fiberState = runOnFiberModalState();
+                ++fiberState.childRuns;
+                fiberState.jobsAtChild =
+                        static_cast<int>( pcbjam_collab::retainedFiberJobCount() );
+                fiberState.lanesAtChild =
+                        static_cast<int>( pcbjam_collab::fiberLaneCount() );
+
+                if( fiberState.stage != 2 )
+                    ++fiberState.violations;
+
+                fiberState.stage = 3;
+                dialog.EndModal( wxID_OK );
+            } );
+        } );
+
+        state.stage = 1;
+        const int result = dialog.ShowModal();
+        state.modalResult = result;
+        ++state.parentReturns;
+
+        if( state.stage != 3 || result != wxID_OK )
+            ++state.violations;
+
+        state.stage = 4;
+    } );
+
+    return true;
+}
+
+
+static std::string kicadTestRunOnFiberModalState()
+{
+    const RUN_ON_FIBER_MODAL_STATE& state = runOnFiberModalState();
+
+    return std::string( "{\"stage\":" ) + std::to_string( state.stage )
+           + ",\"parentRuns\":" + std::to_string( state.parentRuns )
+           + ",\"childHandlers\":" + std::to_string( state.childHandlers )
+           + ",\"childRuns\":" + std::to_string( state.childRuns )
+           + ",\"jobsAtChild\":" + std::to_string( state.jobsAtChild )
+           + ",\"lanesAtChild\":" + std::to_string( state.lanesAtChild )
+           + ",\"parentReturns\":" + std::to_string( state.parentReturns )
+           + ",\"modalResult\":" + std::to_string( state.modalResult )
+           + ",\"violations\":" + std::to_string( state.violations )
+           + ",\"jobs\":"
+           + std::to_string( pcbjam_collab::retainedFiberJobCount() )
+           + ",\"lanes\":" + std::to_string( pcbjam_collab::fiberLaneCount() )
+           + ",\"busy\":"
+           + ( pcbjam_collab::fiberWorkPending() ? "true" : "false" ) + "}";
 }
 
 
@@ -600,16 +781,7 @@ static bool collabTestClearSelection()
 }
 
 
-static bool kicadCollabFiberBusyProbe()
-{
-    return pcbjam_collab::fiberBusy() || !pcbjam_collab::fiberQueue().empty();
-}
-
 EMSCRIPTEN_BINDINGS(kicad_editor) {
-    // Fiber-queue idle probe (drift-trio finding #10b): a bare-embind-stack
-    // save during a parked apply fiber mis-dispatches (table index OOB) — the
-    // JS side must defer scratch saves while collab fiber work is in flight.
-    function("kicadCollabFiberBusy", &kicadCollabFiberBusyProbe);
     // Programmatic file open (preferred over UI automation from the web app).
     function("kicadOpenFile", &kicadOpenFile);
     function("kicadOpenFileStart", &kicadOpenFileStart);
@@ -623,6 +795,10 @@ EMSCRIPTEN_BINDINGS(kicad_editor) {
     function("kicadTestFiberParkState", &kicadTestFiberParkState);
     function("kicadTestFiberParkStartSecond", &kicadTestFiberParkStartSecond);
     function("kicadTestFiberParkPokeSecond", &kicadTestFiberParkPokeSecond);
+    function("kicadCollabTestRunOnFiberPark", &kicadCollabTestRunOnFiberPark);
+    function("kicadTestRunOnFiberParkState", &kicadTestRunOnFiberParkState);
+    function("kicadCollabTestRunOnFiberModal", &kicadCollabTestRunOnFiberModal);
+    function("kicadTestRunOnFiberModalState", &kicadTestRunOnFiberModalState);
 
     // Canvas-only mobile mode (features/mobile).
     function("kicadSetChrome", &kicadSetChrome);

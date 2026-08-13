@@ -18,6 +18,7 @@
 #include <wx/window.h>
 #include <nlohmann/json.hpp>
 #include "open_gate.h"
+#include "owned_open.h"
 #include "main_stack_runner.h"
 #include <eda_draw_frame.h>
 #include <kiid.h>
@@ -42,8 +43,7 @@ bool kicadOpenFile( std::string path )
     // Held across every Asyncify park of the load; see open_gate.h.
     pcbjam_open::BusyGuard busy;
 
-    if( pcbjam_open::testParkMs() > 0 )
-        emscripten_sleep( pcbjam_open::testParkMs() );
+    pcbjam_open::testParkIfArmed();
 
     KIWAY_PLAYER* frame =
             wxTheApp ? static_cast<KIWAY_PLAYER*>( wxTheApp->GetTopWindow() ) : nullptr;
@@ -59,10 +59,15 @@ bool kicadOpenFile( std::string path )
 
     // Test-only post-load park (open_gate.h): model fully loaded, gate still
     // closed — the deterministic window the collab-load-fuzz spec hammers.
-    if( pcbjam_open::testParkMs() > 0 )
-        emscripten_sleep( pcbjam_open::testParkMs() );
+    pcbjam_open::testParkIfArmed();
 
     return ok;
+}
+
+bool kicadOpenFileStart( int token, std::string path )
+{
+    return pcbjam_open::startOwnedOpen(
+            token, [path = std::move( path )]() { return kicadOpenFile( path ); } );
 }
 
 // JS-pollable open-in-flight probe (open_gate.h): the web shell defers the
@@ -313,11 +318,6 @@ void addBlob( DS_DATA_MODEL& aModel, const json& j )
 // resulting model mutations are not re-emitted as local changes.
 void kicadCollabApply( std::string aJson )
 {
-    // Open-in-flight guard (open_gate.h): never touch the model while a
-    // kicadOpenFile Asyncify chain is parked mid-load; see kicadOpenFileBusy.
-    if( pcbjam_open::busy() )
-        return;
-
     json delta = json::parse( aJson, nullptr, /*allow_exceptions*/ false );
 
     if( delta.is_discarded() )
@@ -464,10 +464,6 @@ extern "C" void kicadCollabOnSave( const char* aPath )
 // join and to (re)baseline the differ. Idempotent.
 std::string kicadCollabSnapshot()
 {
-    if( pcbjam_open::busy() ) // open in flight (open_gate.h) — see kicadCollabApply
-        return json{ { "added", json::array() }, { "changed", json::array() },
-                     { "removed", json::array() } }.dump();
-
     std::map<std::string, json> cur = snapshotMap();
 
     json added = json::array();
@@ -492,10 +488,6 @@ std::string kicadCollabSnapshot()
 // differ exactly like kicadCollabSnapshot, so a v2 consumer gets no echo either.
 std::string kicadCollabSnapshotItems()
 {
-    if( pcbjam_open::busy() ) // open in flight (open_gate.h) — see kicadCollabApply
-        return json{ { "added", json::array() }, { "changed", json::array() },
-                     { "removed", json::array() } }.dump();
-
     DS_DATA_MODEL& model = DS_DATA_MODEL::GetTheInstance();
 
     json added = json::array();
@@ -515,9 +507,6 @@ std::string kicadCollabSnapshotItems()
 // drop any pre-existing item that shares an appended uuid (replace-by-uuid).
 void kicadCollabApplyItems( std::string aJson )
 {
-    if( pcbjam_open::busy() ) // open in flight (open_gate.h) — see kicadCollabApply
-        return;
-
     json wire = json::parse( aJson, nullptr, /*allow_exceptions*/ false );
 
     if( wire.is_discarded() )
@@ -617,6 +606,7 @@ std::string kicadCollabTestAddText( std::string aText, double aX, double aY )
 EMSCRIPTEN_BINDINGS(pl_editor) {
     // Programmatic file open (preferred over UI automation from the web app).
     function("kicadOpenFile", &kicadOpenFile);
+    function("kicadOpenFileStart", &kicadOpenFileStart);
     function("kicadOpenFileBusy", &kicadOpenFileBusy);
     function("kicadTestSetOpenPark", &kicadTestSetOpenPark);
     // Read-only viewer lock (read-only-viewer).

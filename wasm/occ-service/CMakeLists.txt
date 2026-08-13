@@ -66,6 +66,6 @@ target_link_options( occ_service PRIVATE
 # uses GetKiCadThreadPool (step_pcb_model.cpp), and a browser cannot spawn
 # workers on demand while the calling thread is blocked inside occExport —
 # an undersized pool deadlocks in Chromium.
-# --pre-js supplies the wxConfig JS hooks backed by an in-memory store.
+# --pre-js supplies the shared wxConfig hooks backed by an in-memory store.
 set_target_properties( occ_service PROPERTIES
-    LINK_FLAGS "-Oz -g0 -sASYNCIFY=0 -sMODULARIZE=1 -sEXPORT_NAME=OccService -sENVIRONMENT=worker,node -sEXIT_RUNTIME=0 --pre-js ${CMAKE_CURRENT_SOURCE_DIR}/occ_service_pre.js" )
+    LINK_FLAGS "-Oz -g0 -sASYNCIFY=0 -sMODULARIZE=1 -sEXPORT_NAME=OccService -sENVIRONMENT=worker,node -sEXIT_RUNTIME=0 --pre-js ${KICAD_WASM_LAYER}/shims/in_memory_config_pre.js" )

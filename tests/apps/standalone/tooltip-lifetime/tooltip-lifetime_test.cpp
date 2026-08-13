@@ -54,11 +54,32 @@ public:
 
 private:
     void RunTest();
+    void OnOpenModal(wxCommandEvent& event);
+    void OnOpenPointerModal(wxCommandEvent& event);
 };
 
 ReproFrame::ReproFrame()
-    : wxFrame(nullptr, wxID_ANY, "wxToolTip lifetime repro")
+    : wxFrame(nullptr, wxID_ANY, "wxToolTip lifetime repro",
+              wxDefaultPosition, wxSize(420, 180))
 {
+    wxBoxSizer * const sizer = new wxBoxSizer(wxVERTICAL);
+    sizer->Add(new wxStaticText(
+            this, wxID_ANY,
+            "Tooltip ownership and window-lifetime reducer"),
+            0, wxALL, 12);
+
+    wxButton * const open = new wxButton(
+            this, wxID_ANY, "Open Modal Tooltip");
+    open->Bind(wxEVT_BUTTON, &ReproFrame::OnOpenModal, this);
+    sizer->Add(open, 0, wxLEFT | wxRIGHT | wxBOTTOM, 12);
+
+    wxButton * const openPointer = new wxButton(
+            this, wxID_ANY, "Open Pointer Scroll Modal");
+    openPointer->Bind(wxEVT_BUTTON,
+                      &ReproFrame::OnOpenPointerModal, this);
+    sizer->Add(openPointer, 0, wxLEFT | wxRIGHT | wxBOTTOM, 12);
+    SetSizer(sizer);
+
     CallAfter(&ReproFrame::RunTest);
 }
 
@@ -87,6 +108,94 @@ void ReproFrame::RunTest()
            wxString::Format("armed=%d hover=%p victim=0x%lx",
                             armed ? 1 : 0, (void *)hover,
                             static_cast<unsigned long>(victimAddr)));
+}
+
+void ReproFrame::OnOpenModal(wxCommandEvent& WXUNUSED(event))
+{
+    wxDialog dialog(this, wxID_ANY, "Tooltip Modal");
+    wxBoxSizer * const sizer = new wxBoxSizer(wxVERTICAL);
+
+    wxButton * const target = new wxButton(
+            &dialog, wxID_ANY, "Modal Tooltip Target");
+    target->SetToolTip("MODAL_TOOLTIP");
+    sizer->Add(target, 0, wxALL | wxALIGN_CENTER_HORIZONTAL, 16);
+    sizer->Add(new wxButton(&dialog, wxID_CANCEL, "Close"),
+               0, wxLEFT | wxRIGHT | wxBOTTOM | wxALIGN_CENTER_HORIZONTAL,
+               16);
+
+    dialog.SetSizerAndFit(sizer);
+
+    // Queue the exact hover operation before ShowModal(), then let the modal
+    // pump admit it after the dialog lease is open. This is the deterministic
+    // equivalent of wxApp::HandleMouseEvent's hover call, without depending on
+    // browser scroll geometry for a secondary DOM-backed top-level window.
+    //
+    // RED before the owner-aware fix: the derived tooltip timer owns itself,
+    // so its expiry is Ordinary and waits behind this parked modal opener.
+    // GREEN after the fix: Arm() binds it to target and captures this dialog's
+    // exact top-level scope and active lease generation.
+    dialog.CallAfter([target]() {
+        wxWasmTooltipOnHoverChange(target);
+        Report("tooltip_modal_timer_armed",
+               wxWasmTooltipDebugHoverWindow() == target,
+               wxString::Format("hover=%p target=%p",
+                                (void *)wxWasmTooltipDebugHoverWindow(),
+                                (void *)target));
+    });
+
+    dialog.ShowModal();
+}
+
+void ReproFrame::OnOpenPointerModal(wxCommandEvent& WXUNUSED(event))
+{
+    wxDialog dialog(this, wxID_ANY, "Pointer Scroll Modal");
+    wxBoxSizer * const sizer = new wxBoxSizer(wxVERTICAL);
+
+    wxButton * const target = new wxButton(
+            &dialog, wxID_ANY, "Pointer Scroll Target");
+    sizer->Add(target, 0, wxALL | wxALIGN_CENTER_HORIZONTAL, 16);
+    sizer->Add(new wxButton(&dialog, wxID_CANCEL, "Close Pointer Modal"),
+               0, wxLEFT | wxRIGHT | wxBOTTOM | wxALIGN_CENTER_HORIZONTAL,
+               16);
+
+    dialog.SetSizerAndFit(sizer);
+
+    // The generated standalone shell leaves #window-container in document
+    // flow after the full-height main canvas. A browser therefore scrolls this
+    // real DOM button into view. Its visual client coordinates no longer share
+    // an origin with #canvas, but the forwarded event must remain in wx screen
+    // coordinates and reach this exact native control.
+    bool motionReported = false;
+    target->Bind(wxEVT_MOTION,
+                 [target, &motionReported](wxMouseEvent& motion) {
+        if ( !motionReported )
+        {
+            motionReported = true;
+            const wxPoint client = motion.GetPosition();
+            const wxPoint screen = target->ClientToScreen(client);
+            const wxRect targetRect = target->GetScreenRect();
+            const bool pass = target->GetClientRect().Contains(client)
+                              && targetRect.Contains(screen);
+
+            Report("dom_pointer_scroll_target", pass,
+                   wxString::Format(
+                           "client=%d,%d screen=%d,%d target=%d,%d,%d,%d",
+                           client.x, client.y, screen.x, screen.y,
+                           targetRect.x, targetRect.y,
+                           targetRect.width, targetRect.height));
+        }
+
+        motion.Skip();
+    });
+
+    dialog.CallAfter([target]() {
+        const wxRect rect = target->GetScreenRect();
+        Report("dom_pointer_scroll_ready", true,
+               wxString::Format("target=%d,%d,%d,%d",
+                                rect.x, rect.y, rect.width, rect.height));
+    });
+
+    dialog.ShowModal();
 }
 
 class ReproApp : public wxApp

@@ -17,6 +17,8 @@ import {
 } from "./kicad-binding";
 import type { ProviderConfig, YjsProvider } from "./provider";
 import { clog, cwarn } from "./debug";
+import { destroyKicadDocSession } from "./doc-session-owner";
+import { isTerminalOwnerJobError } from "../owner-job";
 
 /**
  * Warm-pool multi-room collab manager for hierarchical schematics (subschemas).
@@ -78,6 +80,10 @@ export interface SheetManagerOptions {
   projectId: string;
   /** The env-selected Yjs provider config (same one the single-room path uses). */
   provider: ProviderConfig;
+  /** Owning editor lifetime; aborts room handshakes which have not published. */
+  signal?: AbortSignal;
+  /** Test/diagnostic override for the initial provider sync deadline. */
+  syncTimeoutMs?: number;
   /**
    * Lossless seed for an EMPTY room: the child `.kicad_sch` parsed from MEMFS
    * (`fileToDoc`), so a first-ever-opened sheet seeds its room from the file.
@@ -136,6 +142,20 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
   // mode, entry sheet) share ONE connection instead of opening the room twice.
   const connecting = new Map<string, Promise<Room>>();
   let activePath: string | null = null;
+  let destroyed = false;
+  // A manager is affine to the exact editor Module passed at construction.
+  // Terminal native failure stops only editor binding/switch work; warm Yjs
+  // rooms can remain useful until the manager's ordinary destroy lifecycle.
+  let nativeSwitchStopped = false;
+  const connectionAbort = new AbortController();
+  const ownerWasAlreadyAborted = opts.signal?.aborted ?? false;
+  const onOwnerAbort = () => {
+    connectionAbort.abort(opts.signal?.reason);
+    destroy();
+  };
+  if (!ownerWasAlreadyAborted) {
+    opts.signal?.addEventListener("abort", onOwnerAbort, { once: true });
+  }
 
   // Coalesce rapid navigations: only the LATEST requested sheet is actually bound, and
   // switches run one-at-a-time so concurrent `onSheetChanged` events can't interleave.
@@ -158,6 +178,7 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
       dirty: false,
     });
   }
+  if (ownerWasAlreadyAborted) onOwnerAbort();
 
   // Skeleton presence for every PARKED room (0003): mark this user as "in this
   // schematic, on `activePath`". The bound room is skipped — its full state is
@@ -173,6 +194,7 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
   }
 
   async function ensureRoom(sheetPath: string): Promise<Room> {
+    if (destroyed) throw new Error("sheet collab manager is destroyed");
     const existing = rooms.get(sheetPath);
     if (existing) return existing;
     const inflight = connecting.get(sheetPath);
@@ -182,7 +204,15 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
       const session = await connectKicadDoc({
         provider,
         room: collabRoomId(scopeId, projectId, sheetPath),
+        signal: connectionAbort.signal,
+        syncTimeoutMs: opts.syncTimeoutMs,
       });
+      // Teardown aborts the handshake. Keep this generation check too: a
+      // provider constructor can finish after the abort before its wait starts.
+      if (destroyed) {
+        destroyKicadDocSession(session);
+        throw new Error(`sheet room connected after destroy: ${sheetPath}`);
+      }
       // Invisible observer (read-only-viewer): drop the provider's initial
       // empty awareness state before anyone can see it.
       if (opts.readOnly) session.provider.awareness?.setLocalState(null);
@@ -225,6 +255,23 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
     room.detachWatch = () => room.doc.off("update", onUpdate);
   }
 
+  function detachBinding(room: Room): void {
+    const binding = room.binding;
+    if (!binding) return;
+    // Clear identity before destroy. A pending seed continuation can then see
+    // that another navigation already retired this exact binding.
+    room.binding = undefined;
+    binding.destroy();
+    startWatch(room);
+  }
+
+  function detachBindingsExcept(sheetPath: string): void {
+    for (const [path, room] of rooms) {
+      if (path !== sheetPath) detachBinding(room);
+    }
+    if (activePath !== sheetPath) activePath = null;
+  }
+
   async function doSwitch(sheetPath: string): Promise<void> {
     if (activePath === sheetPath) return;
 
@@ -233,15 +280,16 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
     // what is now the wrong (new) active screen. Its provider/doc stay warm.
     if (activePath) {
       const old = rooms.get(activePath);
-      if (old?.binding) {
-        old.binding.destroy();
-        old.binding = undefined;
-        startWatch(old);
-      }
+      if (old) detachBinding(old);
     }
     activePath = null;
 
     const room = await ensureRoom(sheetPath);
+
+    // Navigation can change while the room handshake is in flight. The room
+    // remains useful in the warm pool, but only the latest requested sheet may
+    // bind to the editor's singleton bridge.
+    if (destroyed || requestedPath !== sheetPath) return;
 
     // Activating: stop tracking parked updates and bind the (warm) doc to the editor.
     room.detachWatch?.();
@@ -249,20 +297,46 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
 
     const binding = bindKicadCollab(room.doc, bridge, { readOnly: opts.readOnly });
     room.binding = binding;
+    const firstActivation = !room.seeded;
 
-    if (!room.seeded) {
-      // First activation: file-seed an empty room, else adopt peer/server state.
-      binding.seed(seedDocForPath(sheetPath), { editorMatchesDoc: room.editorMatchesDoc });
+    try {
+      if (firstActivation) {
+        // First activation: file-seed an empty room, else adopt peer/server state.
+        await binding.seed(seedDocForPath(sheetPath), {
+          editorMatchesDoc: room.editorMatchesDoc,
+        });
+      } else if (room.dirty) {
+        // Remote edits landed while parked: adopt to catch the editor's screen up.
+        await binding.seed(undefined, { editorMatchesDoc: false });
+      } else {
+        // Clean revisit: the editor screen already matches the doc — baseline the differ
+        // (rebound after the C++ rebaseline on navigation), no full re-apply.
+        await binding.seed(undefined, { editorMatchesDoc: true });
+      }
+    } catch (err) {
+      if (room.binding === binding) detachBinding(room);
+      throw err;
+    }
+
+    // Snapshot/apply now waits for owner admission. Navigation or teardown can
+    // supersede this switch while that ticket is queued. Do not publish a
+    // stale binding after the await; its browser hook remains inert because
+    // destroy() closes the binding before the next switch starts.
+    if (
+      destroyed ||
+      requestedPath !== sheetPath ||
+      room.binding !== binding
+    ) {
+      if (room.binding === binding) detachBinding(room);
+      return;
+    }
+
+    if (firstActivation) {
       room.seeded = true;
       clog(`[sheet] seeded ${sheetPath} (editorMatchesDoc=${room.editorMatchesDoc})`);
     } else if (room.dirty) {
-      // Remote edits landed while parked: adopt to catch the editor's screen up.
-      binding.seed(undefined, { editorMatchesDoc: false });
       clog(`[sheet] re-adopted ${sheetPath} (caught up parked remote edits)`);
     } else {
-      // Clean revisit: the editor screen already matches the doc — baseline the differ
-      // (rebound after the C++ rebaseline on navigation), no full re-apply.
-      binding.seed(undefined, { editorMatchesDoc: true });
       clog(`[sheet] rebound ${sheetPath} (no apply)`);
     }
 
@@ -277,40 +351,80 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
   }
 
   function switchTo(sheetPath: string): Promise<void> {
+    if (destroyed || nativeSwitchStopped) return Promise.resolve();
     requestedPath = sheetPath;
+    // The C++ navigation event means the singleton editor already targets this
+    // sheet. Retire any old or still-seeding binding synchronously, before its
+    // queued native projection can be delivered.
+    const retiringActive = activePath !== null && activePath !== sheetPath;
+    detachBindingsExcept(sheetPath);
+    // The item binding is not the whole active-sheet lifetime. Presence,
+    // comments, follow, drift, and project-path publication belong to the same
+    // generation and must retire before the new room handshake/seed can wait.
+    if (retiringActive) opts.onActiveChange?.(null);
     if (retryTimer) {
       clearTimeout(retryTimer);
       retryTimer = undefined;
     }
-    queue = queue
+    const attempt = queue
       .then(() => {
         // Superseded by a newer navigation — skip this stale switch. The editor's active
         // screen always reflects `requestedPath`, so we only bind when they agree (the
         // seed/snapshot then reads the right screen).
-        if (requestedPath !== sheetPath) return;
+        if (nativeSwitchStopped || requestedPath !== sheetPath) return;
         return doSwitch(sheetPath).then(() => {
           retryDelayMs = 2000; // bound succeeded — reset the backoff
         });
       })
       .catch((err) => {
+        if (isTerminalOwnerJobError(err)) {
+          nativeSwitchStopped = true;
+          requestedPath = null;
+          if (retryTimer) {
+            clearTimeout(retryTimer);
+            retryTimer = undefined;
+          }
+          cwarn(
+            `[sheet] native switching stopped after terminal owner failure on ${sheetPath}`,
+            err,
+          );
+          return;
+        }
         cwarn(`[sheet] switchTo(${sheetPath}) failed`, err);
+        // A document produced by a newer incompatible schema cannot become
+        // bindable by retrying. Reject the caller (the initial boot turns this
+        // into its version error) and do not create an endless timer loop.
+        if ((err as { name?: string } | undefined)?.name === "SexprVersionError") {
+          throw err;
+        }
         // Still the sheet the editor shows and not yet bound → retry with backoff,
         // else the editor stays unbound and every edit silently never syncs.
         if (requestedPath === sheetPath && activePath !== sheetPath) {
           retryTimer = setTimeout(() => {
             retryTimer = undefined;
-            if (requestedPath === sheetPath && activePath !== sheetPath) {
+            if (
+              !nativeSwitchStopped &&
+              requestedPath === sheetPath &&
+              activePath !== sheetPath
+            ) {
               log(`[sheet] retrying switch to ${sheetPath}`);
-              void switchTo(sheetPath);
+              void switchTo(sheetPath).catch((retryErr) => {
+                cwarn(`[sheet] retry of ${sheetPath} stopped`, retryErr);
+              });
             }
           }, retryDelayMs);
           retryDelayMs = Math.min(retryDelayMs * 2, 30000);
         }
       });
-    return queue;
+    // Keep the private serialization tail fulfilled so one operation failure
+    // does not poison later navigation. A terminal Module failure instead
+    // latches nativeSwitchStopped above; later events remain data-only.
+    queue = attempt.catch(() => {});
+    return attempt;
   }
 
   async function onboard(sheetPath: string): Promise<void> {
+    if (destroyed) return;
     if (rooms.has(sheetPath)) return;
     log(`[sheet] onboarding new sheet ${sheetPath}`);
     try {
@@ -335,6 +449,7 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
   }
 
   async function connectAll(sheetPaths: string[]): Promise<void> {
+    if (destroyed) return;
     await Promise.all(
       sheetPaths.map((p) =>
         ensureRoom(p).catch((err) => {
@@ -353,21 +468,43 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
   }
 
   function destroy(): void {
+    if (destroyed) return;
+    destroyed = true;
+    opts.signal?.removeEventListener("abort", onOwnerAbort);
+    connectionAbort.abort(
+      new DOMException("The sheet collaboration manager was destroyed", "AbortError"),
+    );
     if (retryTimer) {
       clearTimeout(retryTimer);
       retryTimer = undefined;
     }
     for (const [path, room] of rooms) {
+      const detachWatch = room.detachWatch;
+      room.detachWatch = undefined;
       try {
-        room.detachWatch?.();
-        room.binding?.destroy();
-        room.session.provider.destroy();
-        room.doc.destroy();
+        detachWatch?.();
       } catch (err) {
-        cwarn(`[sheet] destroy ${path} failed`, err);
+        cwarn(`[sheet] detach watch for ${path} failed`, err);
+      }
+
+      // Invalidate identities before calling user/library destructors. Every
+      // acquired resource then gets its own cleanup attempt: a throwing
+      // binding or provider must not strand the room's socket or Y.Doc.
+      const binding = room.binding;
+      room.binding = undefined;
+      try {
+        binding?.destroy();
+      } catch (err) {
+        cwarn(`[sheet] destroy binding for ${path} failed`, err);
+      }
+      try {
+        destroyKicadDocSession(room.session);
+      } catch (err) {
+        cwarn(`[sheet] destroy session for ${path} failed`, err);
       }
     }
     rooms.clear();
+    connecting.clear();
     activePath = null;
     requestedPath = null;
     opts.onActiveChange?.(null);

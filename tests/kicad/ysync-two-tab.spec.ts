@@ -153,8 +153,8 @@ async function bootOpen(page: Page, cfg: ToolCfg, name: string): Promise<void> {
     { timeout: BOOT_TIMEOUT },
   );
   await page.evaluate(
-    ({ content, ext, name }) => {
-      const w = window as unknown as { FS: FS; Module: { kicadOpenFile(p: string): unknown } };
+    async ({ content, ext, name }) => {
+      const w = window as unknown as { FS: FS; Module: { kicadOpenFile(p: string): Promise<unknown> } };
       try {
         w.FS.mkdirTree("/home/kicad/documents");
       } catch {
@@ -162,7 +162,7 @@ async function bootOpen(page: Page, cfg: ToolCfg, name: string): Promise<void> {
       }
       const p = `/home/kicad/documents/${name}.${ext}`;
       w.FS.writeFile(p, content);
-      w.Module.kicadOpenFile(p);
+      await w.Module.kicadOpenFile(p);
     },
     { content: cfg.fixture, ext: cfg.ext, name },
   );
@@ -187,10 +187,10 @@ function startV2(
 /** Read a tab's current model back as text via save-to-MEMFS. */
 function modelText(page: Page, cfg: ToolCfg): Promise<string> {
   return page.evaluate(
-    ({ saveFn, ext }) => {
+    async ({ saveFn, ext }) => {
       const w = window as unknown as { FS: FS; Module: Mod };
       const out = `/home/kicad/documents/_dump.${ext}`;
-      (w.Module[saveFn] as (p: string) => unknown)(out);
+      await (w.Module[saveFn] as (p: string) => Promise<unknown>)(out);
       return w.FS.readFile(out, { encoding: "utf8" });
     },
     { saveFn: cfg.saveFn, ext: cfg.ext },
@@ -218,7 +218,7 @@ function drift(page: Page, cfg: ToolCfg) {
           driftReport(
             f: string,
             p: string,
-          ): { added: string[]; updated: string[]; removed: string[] } | null;
+          ): Promise<{ added: string[]; updated: string[]; removed: string[] } | null>;
         };
       };
       return w.KicadCollabV2.driftReport(saveFn, `/home/kicad/documents/_drift.${ext}`);
@@ -229,7 +229,7 @@ function drift(page: Page, cfg: ToolCfg) {
 
 function getPos(page: Page, uuid: string): Promise<string> {
   return page.evaluate(
-    (id) => (window as unknown as { Module: { kicadCollabGetPos(i: string): string } }).Module.kicadCollabGetPos(id),
+    (id) => (window as unknown as { Module: { kicadCollabGetPos(i: string): Promise<string> } }).Module.kicadCollabGetPos(id),
     uuid,
   );
 }
@@ -260,7 +260,7 @@ test.describe("v2 items wire — pl_editor two tabs (green baseline)", () => {
     // A→B. pl_editor's emit hook is EAGER (OnModify, registered at module init),
     // so bug 01's never-registered-listener hole does not gate this tool.
     const uuidA = (await tabA.evaluate(() =>
-      (window as unknown as { Module: { kicadCollabTestAddText(t: string, x: number, y: number): string } })
+      (window as unknown as { Module: { kicadCollabTestAddText(t: string, x: number, y: number): Promise<string> } })
         .Module.kicadCollabTestAddText("Hello from A", 40, 40),
     )) as string;
     expect(uuidA).toMatch(/[0-9a-f-]{36}/);
@@ -271,7 +271,7 @@ test.describe("v2 items wire — pl_editor two tabs (green baseline)", () => {
 
     // B→A (the adopting side's listener registered via its seed's snapshotItems).
     const uuidB = (await tabB.evaluate(() =>
-      (window as unknown as { Module: { kicadCollabTestAddText(t: string, x: number, y: number): string } })
+      (window as unknown as { Module: { kicadCollabTestAddText(t: string, x: number, y: number): Promise<string> } })
         .Module.kicadCollabTestAddText("Hello from B", 60, 60),
     )) as string;
     await expect
@@ -374,7 +374,7 @@ for (const [cfg, label] of [
       for (const u of uuids) before[u] = await getPos(tabA, u);
 
       const movedId = (await tabA.evaluate(() =>
-        (window as unknown as { Module: { kicadCollabTestMoveFirst(dx: number, dy: number): string } })
+        (window as unknown as { Module: { kicadCollabTestMoveFirst(dx: number, dy: number): Promise<string> } })
           .Module.kicadCollabTestMoveFirst(2_000_000, 0),
       )) as string;
       expect(movedId).toMatch(/[0-9a-f-]{36}/);

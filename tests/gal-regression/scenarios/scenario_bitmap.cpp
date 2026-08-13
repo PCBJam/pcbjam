@@ -22,7 +22,7 @@
 // Native-only includes for shader workaround
 // WebGL uses a different shader architecture and doesn't need this workaround
 #ifndef __EMSCRIPTEN__
-#include <GL/glew.h>
+#include <kicad_gl/kiglad.h>
 #include <gal/opengl/opengl_gal.h>
 #include "../native/gal_test_accessor.h"
 #endif

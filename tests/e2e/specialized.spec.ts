@@ -1,6 +1,16 @@
 // Specialized wxWidgets Controls Tests - Treebook, RearrangeCtrl, BitmapComboBox
 import { test, expect } from './utils/fixtures';
-import { clickByLabel, clickComboButton, selectComboItem, clickListboxItem, clickTreeItem, waitForWxApp, stableShot } from './utils/element-tracker';
+import {
+  clickByLabel,
+  clickComboButton,
+  selectComboItem,
+  clickListboxItem,
+  clickTreeItem,
+  findAllTreeItems,
+  waitForWxApp,
+  waitUntil,
+  stableShot,
+} from './utils/element-tracker';
 
 test.describe('Specialized wxWidgets Controls Tests', () => {
 
@@ -17,7 +27,12 @@ test.describe('Specialized wxWidgets Controls Tests', () => {
     await page.goto('/standalone/specialized/specialized_test.html');
     await waitForWxApp(page);
 
-    // Treebook should show General page by default with tree on left
+    const labels = (await findAllTreeItems(page)).map((item) => item.label);
+    expect(labels, 'treebook paints and publishes all top-level pages').toEqual(
+      expect.arrayContaining(['General', 'Display', 'Editing', 'Printing']),
+    );
+
+    // Treebook should show General page by default with tree on left.
     await stableShot(page, 'specialized-02-treebook-initial.png', { fullPage: true });
   });
 
@@ -26,11 +41,20 @@ test.describe('Specialized wxWidgets Controls Tests', () => {
     await waitForWxApp(page);
 
     // Click on Display page using element registry
-    await clickTreeItem(page, 'Display');
-    await page.waitForTimeout(200); // eslint-disable-line -- documented interaction dwell: treebook page-switch settle before the next tree click (no console observable in this app)
+    expect(await clickTreeItem(page, 'Display'), 'Display tree item is clickable').toBe(true);
+    await waitUntil(
+      page,
+      () => !!window.wxElementRegistry?.findByLabel('Display Settings', {}).length,
+      'Display page is projected after the tree click',
+    );
 
     // Click on Printing page using element registry
-    await clickTreeItem(page, 'Printing');
+    expect(await clickTreeItem(page, 'Printing'), 'Printing tree item is clickable').toBe(true);
+    await waitUntil(
+      page,
+      () => !!window.wxElementRegistry?.findByLabel('Print Settings', {}).length,
+      'Printing page is projected after the tree click',
+    );
 
     await stableShot(page, 'specialized-03-treebook-subpage.png', { fullPage: true });
   });
@@ -40,7 +64,7 @@ test.describe('Specialized wxWidgets Controls Tests', () => {
     await waitForWxApp(page);
 
     // Click on Editing page using element registry
-    await clickTreeItem(page, 'Editing');
+    expect(await clickTreeItem(page, 'Editing'), 'Editing tree item is clickable').toBe(true);
 
     await stableShot(page, 'specialized-04-treebook-expand.png', { fullPage: true });
   });

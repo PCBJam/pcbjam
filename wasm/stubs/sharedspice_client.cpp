@@ -14,11 +14,11 @@
  * Callbacks: KiCad registers its cbSendChar/cbSendStat/cbControlledExit/
  * cbBGThreadRunning with pcbjam_ngSpice_Init; the worker streams `{ evt }`
  * frames which the provider hands to `globalThis.__ngspiceOnEvent` (installed
- * here). The dispatcher calls the exported pcbjam_ngspice_event — a fresh
- * WASM entry from JS, safe while the main C++ stack is Asyncify-suspended
- * (the wx-dom DOM-event mechanism, wxwidgets/src/wasm/domevents.cpp); KiCad's
- * callbacks only take a mutex and wxQueueEvent, so nothing on this path can
- * suspend.
+ * here). The exported pcbjam_ngspice_event is only an ingress adapter: it
+ * copies the frame and queues an ordinary wx execution-owner job. A fresh
+ * Wasm entry is not permission to inspect KiCad state while another owner is
+ * parked, even when the eventual callbacks mostly take a mutex or queue a wx
+ * event.
  *
  * ngSpice_running stays cheap: a client-side atomic mirror maintained from
  * command results and bg events — the simulator UI polls it on a refresh
@@ -38,7 +38,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -47,6 +49,7 @@
 #include <nlohmann/json.hpp>
 
 #include <ngspice/sharedspice.h>
+#include <wx/wasm/private/execution_owner.h>
 
 using nlohmann::json;
 
@@ -62,12 +65,21 @@ using nlohmann::json;
 // (the early-resolve contract, doc 22 §10 Phase E retry entry).
 // clang-format off
 EM_JS( void, js_ngspice_request_start, ( int aToken, const char* aReqJson ), {
+    const scheduler = globalThis.__wxScheduler;
     const finish = ( res ) => {
-        const s = JSON.stringify( res ?? {} );
-        const n = lengthBytesUTF8( s ) + 1;
-        const p = _malloc( n );
-        stringToUTF8( s, p, n );
-        globalThis.__wxScheduler.resolveWait( aToken, p );
+        if( !scheduler || typeof scheduler.runWaitCompletion !== 'function' )
+            return;
+        scheduler.runWaitCompletion( 'ngspice request completion', aToken, () => {
+            const s = JSON.stringify( res ?? {} );
+            const n = lengthBytesUTF8( s ) + 1;
+            const p = _malloc( n );
+
+            if( !p )
+                return 0;
+
+            stringToUTF8( s, p, n );
+            return p;
+        } );
     };
     let req;
     try {
@@ -77,8 +89,14 @@ EM_JS( void, js_ngspice_request_start, ( int aToken, const char* aReqJson ), {
         else
             req = Promise.resolve( svc.request( JSON.parse( UTF8ToString( aReqJson ) ) ) );
     } catch( e ) {
+        if( scheduler && typeof scheduler._terminalizeNativeTrap === 'function'
+            && scheduler._terminalizeNativeTrap(
+                'ngspice request setup trapped', e ) )
+            throw e;
         req = Promise.resolve( { error: String( e ) } );
     }
+    // If the first completion traps, its boundary closes the gate before the
+    // catch attempts the error response. The second `finish` is then inert.
     req.then( finish ).catch( ( e ) => finish( { error: String( e ) } ) );
 } );
 
@@ -92,7 +110,7 @@ EM_JS( void, js_ngspice_request_start, ( int aToken, const char* aReqJson ), {
 EM_JS( void, js_ngspice_get_vec_start,
        ( int aToken, const char* aName, int* aMeta, double** aReal, double** aComp,
          char** aVName ), {
-    const finish = ( status ) => globalThis.__wxScheduler.resolveWait( aToken, status );
+    const scheduler = globalThis.__wxScheduler;
     let req;
     try {
         const svc = globalThis.ngspiceService;
@@ -100,37 +118,78 @@ EM_JS( void, js_ngspice_get_vec_start,
                                                     name: UTF8ToString( aName ) } ) )
                   : Promise.resolve( { error: 'ngspiceService provider not installed' } );
     } catch( e ) {
+        if( scheduler && typeof scheduler._terminalizeNativeTrap === 'function'
+            && scheduler._terminalizeNativeTrap(
+                'ngspice vector request setup trapped', e ) )
+            throw e;
         req = Promise.resolve( { error: String( e ) } );
     }
     req.catch( ( e ) => ( { error: String( e ) } ) ).then( ( res ) => {
-        HEAP32[aMeta >> 2] = 0;
-        HEAPU32[aReal >> 2] = 0;
-        HEAPU32[aComp >> 2] = 0;
-        HEAPU32[aVName >> 2] = 0;
-        if( !res || res.error )
-            return finish( 1 );
-        if( !res.found )
-            return finish( 0 );
-        HEAP32[( aMeta >> 2 ) + 1] = res.vtype | 0;
-        HEAP32[( aMeta >> 2 ) + 2] = res.flags | 0;
-        HEAP32[( aMeta >> 2 ) + 3] = res.length | 0;
-        if( res.real && res.real.length ) {
-            const p = _malloc( res.real.length * 8 );
-            HEAPF64.set( res.real, p >> 3 );
-            HEAPU32[aReal >> 2] = p;
-        }
-        if( res.comp && res.comp.length ) {
-            const p = _malloc( res.comp.length * 8 );
-            HEAPF64.set( res.comp, p >> 3 );
-            HEAPU32[aComp >> 2] = p;
-        }
-        const s = res.vname || '';
-        const n = lengthBytesUTF8( s ) + 1;
-        const vp = _malloc( n );
-        stringToUTF8( s, vp, n );
-        HEAPU32[aVName >> 2] = vp;
-        HEAP32[aMeta >> 2] = 1;
-        finish( 0 );
+        if( !scheduler || typeof scheduler.runWaitCompletion !== 'function' )
+            return;
+        scheduler.runWaitCompletion( 'ngspice vector completion', aToken, () => {
+            HEAP32[aMeta >> 2] = 0;
+            HEAPU32[aReal >> 2] = 0;
+            HEAPU32[aComp >> 2] = 0;
+            HEAPU32[aVName >> 2] = 0;
+            if( !res || res.error )
+                return 1;
+            if( !res.found )
+                return 0;
+
+            // Allocate the complete result before copying or publishing any
+            // part of it. Allocation failure is an ordinary request failure:
+            // release private scratch, leave every output null, and return the
+            // non-zero status expected by pcbjam_ngGet_Vec_Info.
+            let real = 0;
+            let comp = 0;
+            let vname = 0;
+            const release = () => {
+                if( real )
+                    _free( real );
+                if( comp )
+                    _free( comp );
+                if( vname )
+                    _free( vname );
+            };
+
+            if( res.real && res.real.length ) {
+                real = _malloc( res.real.length * 8 );
+                if( !real ) {
+                    release();
+                    return 1;
+                }
+            }
+            if( res.comp && res.comp.length ) {
+                comp = _malloc( res.comp.length * 8 );
+                if( !comp ) {
+                    release();
+                    return 1;
+                }
+            }
+            const s = res.vname || String();
+            const n = lengthBytesUTF8( s ) + 1;
+            vname = _malloc( n );
+            if( !vname ) {
+                release();
+                return 1;
+            }
+
+            if( real )
+                HEAPF64.set( res.real, real >> 3 );
+            if( comp )
+                HEAPF64.set( res.comp, comp >> 3 );
+            stringToUTF8( s, vname, n );
+
+            HEAP32[( aMeta >> 2 ) + 1] = res.vtype | 0;
+            HEAP32[( aMeta >> 2 ) + 2] = res.flags | 0;
+            HEAP32[( aMeta >> 2 ) + 3] = res.length | 0;
+            HEAPU32[aReal >> 2] = real;
+            HEAPU32[aComp >> 2] = comp;
+            HEAPU32[aVName >> 2] = vname;
+            HEAP32[aMeta >> 2] = 1;
+            return 0;
+        } );
     } );
 } );
 
@@ -138,32 +197,80 @@ EM_JS( void, js_ngspice_get_vec_start,
 extern "C" int wxWasmBeginWait( const char* aKind );
 extern "C" int wxWasmYieldUntil( int aToken );
 
-// Event dispatcher: provider `{ evt }` frames -> KiCad's registered callbacks
-// via the exported pcbjam_ngspice_event (fresh wasm entries; see header
-// comment). Installed once, at first pcbjam_ngSpice_Init.
+// Event dispatcher: provider `{ evt }` frames -> KiCad's registered callbacks.
+// One worker batch becomes one native owner job; a verbose simulation must not
+// consume one bounded queue slot per output line. Installation is idempotent
+// only for one exact editor Module lifetime. A replacement instance in the
+// same realm replaces the handler instead of retaining an export closure into
+// the old Wasm heap.
 EM_JS( void, js_ngspice_install_events, (), {
-    if( globalThis.__ngspiceOnEvent )
+    const installingModule = Module;
+    const installed = globalThis.__ngspiceOnEvent;
+    if( installed
+        && installed.__pcbjamNgspiceOwnerModule === installingModule )
         return;
-    globalThis.__ngspiceOnEvent = ( evt ) => {
-        const call = ( kind, text, a, b ) => {
-            let p = 0;
-            if( text != null ) {
-                const n = lengthBytesUTF8( text ) + 1;
-                p = _malloc( n );
-                stringToUTF8( text, p, n );
-            }
-            Module._pcbjam_ngspice_event( kind, p, a | 0, b | 0 );
+
+    const handler = ( evt ) => {
+        const scheduler = globalThis.__wxScheduler;
+        const currentModule = scheduler && scheduler.ownerModule;
+        if( !scheduler || typeof scheduler.enqueueNativeCompletion !== 'function'
+            || typeof scheduler.canTouchNative !== 'function'
+            || !scheduler.canTouchNative()
+            || currentModule !== installingModule
+            || globalThis.__ngspiceOnEvent !== handler )
+            return;
+
+        const enqueue = ( site, bytes, run ) => {
+            scheduler.enqueueNativeCompletion( site, bytes, () => {
+                // The completion can wait behind an Asyncify transition. Do
+                // not let an accepted old-instance closure enter after the
+                // page has installed a replacement Module and scheduler.
+                if( globalThis.__ngspiceOnEvent !== handler
+                    || globalThis.__wxScheduler !== scheduler
+                    || scheduler.ownerModule !== currentModule
+                    || !scheduler.canTouchNative() )
+                    return;
+                run( currentModule );
+            } );
         };
         if( evt.kind === 'char' || evt.kind === 'stat' ) {
-            for( const line of evt.lines || [] )
-                call( evt.kind === 'char' ? 0 : 1, line, 0, 0 );
+            // Snapshot the worker-owned frame before retaining it. A verbose
+            // provider batch occupies one bounded physical-entry job, not one
+            // job per output line.
+            const lines = Array.isArray( evt.lines ) ? evt.lines.map( String ) : [];
+            if( lines.length ) {
+                const payload = JSON.stringify( lines );
+                const payloadBytes = lengthBytesUTF8( payload ) + 1;
+                const kind = evt.kind === 'char' ? 0 : 1;
+                enqueue( 'ngspice output event', payloadBytes, ( module ) => {
+                    const n = lengthBytesUTF8( payload ) + 1;
+                    const p = _malloc( n );
+
+                    if( !p )
+                    {
+                        console.error( '[sharedspice_client] could not allocate output event batch' );
+                        return;
+                    }
+
+                    stringToUTF8( payload, p, n );
+                    module._pcbjam_ngspice_event_batch( kind, p );
+                } );
+            }
         } else if( evt.kind === 'bg' ) {
-            call( 2, null, evt.finished ? 1 : 0, 0 );
+            const finished = evt.finished ? 1 : 0;
+            enqueue( 'ngspice background-state event', 0, ( module ) => {
+                module._pcbjam_ngspice_event( 2, 0, finished, 0 );
+            } );
         } else if( evt.kind === 'exit' ) {
-            call( 3, null, evt.status | 0,
-                  ( evt.immediate ? 1 : 0 ) | ( evt.quit ? 2 : 0 ) );
+            const status = evt.status | 0;
+            const flags = ( evt.immediate ? 1 : 0 ) | ( evt.quit ? 2 : 0 );
+            enqueue( 'ngspice exit event', 0, ( module ) => {
+                module._pcbjam_ngspice_event( 3, 0, status, flags );
+            } );
         }
     };
+    handler.__pcbjamNgspiceOwnerModule = installingModule;
+    globalThis.__ngspiceOnEvent = handler;
 } );
 // clang-format on
 
@@ -186,6 +293,10 @@ std::atomic<bool> s_bgRunning{ false };
 json rpc( const json& aReq )
 {
     const int token = wxWasmBeginWait( "ngspice" );
+
+    if( token <= 0 )
+        return json{ { "error", "scheduler refused an exact ngspice wait" } };
+
     js_ngspice_request_start( token, aReq.dump().c_str() );
 
     // The malloc'd JSON pointer rides the wait as an int32.
@@ -204,6 +315,102 @@ json rpc( const json& aReq )
     }
 
     return res;
+}
+
+struct NgspiceEventJob
+{
+    int                      kind = 0;
+    std::vector<std::string> lines;
+    int                      a = 0;
+    int                      b = 0;
+};
+
+std::size_t retainedNgspiceEventBytes( const NgspiceEventJob& aJob,
+                                      std::size_t aTransportBytes )
+{
+    // This is a conservative native footprint, not allocator telemetry. The
+    // vector objects and each string capacity can expand a compact JSON batch;
+    // the transport size remains the floor so the byte lease genuinely moves
+    // from the JS completion queue into this native semantic queue.
+    constexpr std::size_t overflow =
+            wx_wasm_execution::MaxQueuedRetainedBytes + 1;
+    std::size_t bytes = sizeof( NgspiceEventJob );
+
+    const auto add = [&bytes]( std::size_t aAmount ) {
+        if( aAmount > wx_wasm_execution::MaxQueuedRetainedBytes - bytes )
+        {
+            bytes = wx_wasm_execution::MaxQueuedRetainedBytes + 1;
+            return false;
+        }
+
+        bytes += aAmount;
+        return true;
+    };
+
+    if( aJob.lines.capacity()
+        > ( wx_wasm_execution::MaxQueuedRetainedBytes - bytes )
+                  / sizeof( std::string ) )
+    {
+        return overflow;
+    }
+
+    if( !add( aJob.lines.capacity() * sizeof( std::string ) ) )
+        return overflow;
+
+    for( const std::string& line : aJob.lines )
+    {
+        if( line.capacity() >= wx_wasm_execution::MaxQueuedRetainedBytes
+            || !add( line.capacity() + 1 ) )
+        {
+            return overflow;
+        }
+    }
+
+    return bytes > aTransportBytes ? bytes : aTransportBytes;
+}
+
+void deliverNgspiceEvent( void* aArg )
+{
+    std::unique_ptr<NgspiceEventJob> job( static_cast<NgspiceEventJob*>( aArg ) );
+
+    switch( job->kind )
+    {
+    case 0: // char
+        if( s_sendChar )
+        {
+            for( std::string& line : job->lines )
+                s_sendChar( line.empty() ? const_cast<char*>( "" ) : line.data(), 0, s_user );
+        }
+        break;
+
+    case 1: // stat
+        if( s_sendStat )
+        {
+            for( std::string& line : job->lines )
+                s_sendStat( line.empty() ? const_cast<char*>( "" ) : line.data(), 0, s_user );
+        }
+        break;
+
+    case 2: // bg: a = finished
+        s_bgRunning.store( job->a == 0 );
+
+        if( s_bgThreadRunning )
+            s_bgThreadRunning( job->a != 0, 0, s_user );
+        break;
+
+    case 3: // exit: a = status, b = immediate|quit<<1
+        s_bgRunning.store( false );
+
+        if( s_controlledExit )
+            s_controlledExit( job->a, ( job->b & 1 ) != 0,
+                              ( job->b & 2 ) != 0, 0, s_user );
+        break;
+    }
+}
+
+void discardNgspiceEvent( void* aArg )
+{
+    delete static_cast<NgspiceEventJob*>( aArg );
 }
 
 // Read an editor-MEMFS file; returns false if it doesn't exist.
@@ -326,39 +533,82 @@ void collectIncludeFiles( const std::vector<std::string>& aLines, json* aFiles,
 } // namespace
 
 // -------------------------------------------------------------------------
-// Event entry from JS (fresh wasm entry; must never suspend)
+// Event entry from JS. Copy only; stateful delivery requires owner admission.
 // -------------------------------------------------------------------------
 
 extern "C" EMSCRIPTEN_KEEPALIVE void pcbjam_ngspice_event( int aKind, char* aText, int aA, int aB )
 {
-    switch( aKind )
+    std::unique_ptr<NgspiceEventJob> job;
+    const std::size_t transportBytes = aText ? std::strlen( aText ) + 1 : 0;
+
+    try
     {
-    case 0: // char
-        if( s_sendChar )
-            s_sendChar( aText ? aText : const_cast<char*>( "" ), 0, s_user );
-        break;
-
-    case 1: // stat
-        if( s_sendStat )
-            s_sendStat( aText ? aText : const_cast<char*>( "" ), 0, s_user );
-        break;
-
-    case 2: // bg: aA = finished
-        s_bgRunning.store( aA == 0 );
-
-        if( s_bgThreadRunning )
-            s_bgThreadRunning( aA != 0, 0, s_user );
-        break;
-
-    case 3: // exit: aA = status, aB = immediate|quit<<1
-        s_bgRunning.store( false );
-
-        if( s_controlledExit )
-            s_controlledExit( aA, ( aB & 1 ) != 0, ( aB & 2 ) != 0, 0, s_user );
-        break;
+        job = std::make_unique<NgspiceEventJob>();
+        job->kind = aKind;
+        if( aText )
+            job->lines.emplace_back( aText );
+        job->a = aA;
+        job->b = aB;
+    }
+    catch( ... )
+    {
+        std::free( aText );
+        wxWasmExecutionFailStop( "could not copy ngspice service event" );
+        return;
     }
 
     std::free( aText );
+
+    const std::size_t retainedBytes =
+            retainedNgspiceEventBytes( *job, transportBytes );
+
+    if( !wxWasmExecutionQueueOrdinaryRetained(
+            deliverNgspiceEvent, job.get(), retainedBytes,
+            discardNgspiceEvent ) )
+    {
+        wxWasmExecutionFailStop( "could not queue ngspice service event" );
+        return;
+    }
+
+    job.release();
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE void pcbjam_ngspice_event_batch( int aKind, char* aLinesJson )
+{
+    std::unique_ptr<char, decltype( &std::free )> payload( aLinesJson, &std::free );
+    std::unique_ptr<NgspiceEventJob>              job;
+    const std::size_t transportBytes =
+            payload ? std::strlen( payload.get() ) + 1 : 0;
+
+    try
+    {
+        json lines = json::parse( payload ? payload.get() : "[]" );
+
+        if( !lines.is_array() )
+            throw std::runtime_error( "ngspice event batch is not an array" );
+
+        job = std::make_unique<NgspiceEventJob>();
+        job->kind = aKind;
+        job->lines = lines.get<std::vector<std::string>>();
+    }
+    catch( ... )
+    {
+        wxWasmExecutionFailStop( "could not copy ngspice service event batch" );
+        return;
+    }
+
+    const std::size_t retainedBytes =
+            retainedNgspiceEventBytes( *job, transportBytes );
+
+    if( !wxWasmExecutionQueueOrdinaryRetained(
+            deliverNgspiceEvent, job.get(), retainedBytes,
+            discardNgspiceEvent ) )
+    {
+        wxWasmExecutionFailStop( "could not queue ngspice service event batch" );
+        return;
+    }
+
+    job.release();
 }
 
 // -------------------------------------------------------------------------
@@ -432,6 +682,10 @@ pvector_info pcbjam_ngGet_Vec_Info( char* aVecName )
     char*   vname = nullptr;
 
     const int token = wxWasmBeginWait( "ngspice" );
+
+    if( token <= 0 )
+        return nullptr;
+
     js_ngspice_get_vec_start( token, aVecName ? aVecName : "", meta, &real, &comp, &vname );
 
     if( wxWasmYieldUntil( token ) != 0 )

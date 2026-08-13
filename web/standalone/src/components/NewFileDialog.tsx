@@ -111,7 +111,14 @@ export function NewFileDialog({
         slug = created.slug;
       } else {
         slug = project ? project.slug : target;
-        for (const f of files) await uploadFileBytes(slug, f.path, f.bytes);
+        for (const f of files) {
+          const outcome = await uploadFileBytes(slug, f.path, f.bytes);
+          if (outcome.kind !== "committed") {
+            throw new Error(
+              outcome.message ?? `Could not create ${f.path} (${outcome.kind})`,
+            );
+          }
+        }
       }
       // Full navigation so Emscripten boots into a clean page opening the file.
       // A home-created project is browser-local (@local scope); an in-project new

@@ -24,8 +24,8 @@ import { hideCursor } from './utils/screenshot-compare';
 
 type SnapItem = { id: string; type: string; x: number; y: number };
 type CollabModule = {
-    kicadCollabSnapshot(): string;
-    kicadCollabGetPos(id: string): string;
+    kicadCollabSnapshot(): Promise<string>;
+    kicadCollabGetPos(id: string): Promise<string>;
 };
 
 async function waitForCollabModule(page: Page): Promise<void> {
@@ -41,9 +41,9 @@ async function waitForCollabModule(page: Page): Promise<void> {
 }
 
 async function snapshotItems(page: Page): Promise<SnapItem[]> {
-    return page.evaluate(() => {
+    return page.evaluate(async () => {
         const m = (window as unknown as { Module: CollabModule }).Module;
-        const snap = JSON.parse(m.kicadCollabSnapshot()) as { added: SnapItem[] };
+        const snap = JSON.parse(await m.kicadCollabSnapshot()) as { added: SnapItem[] };
         return snap.added;
     });
 }

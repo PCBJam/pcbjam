@@ -7,7 +7,11 @@ import {
     waitForRenderedByLabel,
     waitUntil, stableShot, shotPath } from '../e2e/utils/element-tracker';
 import { injectFromSubmodule } from './utils/fs-inject';
-import { waitForBoardLoaded } from './utils/board-ready';
+import {
+    checkpointFileDialogs,
+    waitForNewFileDialog,
+    waitForUiBoardReady,
+} from './utils/board-ready';
 
 /**
  * Spike test: load real .kicad_pcb demos through pcbnew's File → Open.
@@ -103,16 +107,14 @@ function runLoadPcbTest(demo: DemoCfg): void {
         // Items register progressively while the popup paints — wait for the one
         // we click (clickMenuItem is single-shot; the >3-items gate isn't enough).
         await waitForRenderedByLabel(page, 'Open...', { elementType: 'menuitem' });
+        const fileDialogCheckpoint = await checkpointFileDialogs(page);
         const openClicked = await clickMenuItem(page, 'Open...');
         expect(openClicked, 'Open… menu item should be findable').toBe(true);
 
-        // ── Wait for the wxFileDialog to appear, file list to paint. ───
-        await page.waitForFunction(() => {
-            const registry = window.wxElementRegistry;
-            if (!registry) return false;
-            return registry.findAll({ visible: true })
-                .some((el) => el.typeName === 'wxFileDialog');
-        }, null, { timeout: 15000 });
+        // Capture the exact dialog created by THIS Open command. Readiness
+        // later waits for this identity to be unregistered; an old/no-longer
+        // visible dialog cannot satisfy the causal edge.
+        const fileDialog = await waitForNewFileDialog(page, fileDialogCheckpoint);
         // stableShot stabilizes the file-list paint before comparing — deterministically
         // replacing a fixed 1000ms that used to catch the dialog mid-paint (black rectangle).
         await stableShot(page, `load-pcb-${demo.name}-01-dialog-open.png`);
@@ -144,24 +146,21 @@ function runLoadPcbTest(demo: DemoCfg): void {
         await page.waitForTimeout(300); // eslint-disable-line -- documented interaction dwell
         await page.keyboard.press('Enter');
 
-        // ── Wait for the load to complete (no dialogs visible). The
-        //    wxInfoBar that pcbnew shows for "older format" PCBs is not a
-        //    wxDialog, so waitForBoardLoaded doesn't get blocked by it. ──
-        //    If we ever need to dismiss post-load wxMessageDialogs (missing
-        //    libs etc.), do it INSIDE waitForBoardLoaded so the dismiss
-        //    side-effect lives with the polling loop — calling page.evaluate
-        //    from the test driver hangs once the post-load asyncify clipboard
-        //    runtime error breaks the wasm event loop. ───────────────────
-
-        // ── Wait for the load to complete (no dialogs visible). ───────
-        const result = await waitForBoardLoaded(page, testLogger, 60000);
+        // The exact file-dialog disappearance only says its modal lifetime
+        // ended. Submit an Ordinary owner barrier behind the still-live open,
+        // await exact owner retirement, verify the expected document title,
+        // then wait for stable board pixels.
+        const result = await waitForUiBoardReady(
+            page,
+            fileDialog,
+            demo.stem,
+            testLogger,
+            60000,
+        );
         console.log(`[TEST] ${demo.name} board-ready result: ${result}`);
 
-        // Take the screenshot immediately. Don't wait — KiCad's post-load
-        // clipboard-polling path can hit a wasm RuntimeError that occasionally
-        // closes the page entirely on Firefox; if we sleep first we sometimes
-        // lose the page before page.screenshot runs. The canvas is already
-        // fully painted by the time waitForBoardLoaded returns.
+        // The readiness helper already proved the expected document identity
+        // and stable pixels, so capture without another arbitrary dwell.
         await page.screenshot({
             path: shotPath(page, `load-pcb-${demo.name}.png`),
             scale: 'css',

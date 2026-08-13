@@ -211,6 +211,7 @@ all: minimal_test.html \
      $(S)/coroutine/coroutine_test.html \
      $(S)/coroutine-nested/nested_test.html \
      $(S)/asyncify-races/races_test.html \
+     $(S)/pending-event-owner/pending_event_owner_test.html \
      $(S)/sched-context/sched_context_test.html \
      $(S)/coroutine-pthread/coroutine_test_wxpt.html \
      $(S)/coroutine-pthread/embind_repro.html \
@@ -699,14 +700,45 @@ pthread-ondemand: $(OD)/pthread_ondemand_test.html
 
 all: $(OD)/pthread_ondemand_test.html
 
+# Main-thread mimalloc contention regression.  This has no wx dependency: it
+# needs only pthreads, Asyncify, mimalloc, and the project's nanosleep override.
+# Worker frees race the main heap's delayed-free collector; a JS timer proves
+# that sleep(0) never unwinds through Asyncify while a positive sleep still does.
+MIMALLOC_STORM = $(S)/mimalloc-storm
+LDFLAGS_MIMALLOC_STORM = $(EH_FLAGS) $(DEBUG_LDFLAGS) -sALLOW_MEMORY_GROWTH \
+                        -sERROR_ON_UNDEFINED_SYMBOLS=0 -sASYNCIFY=1 \
+                        -sASYNCIFY_STACK_SIZE=65536 -sDYNCALLS=1 -pthread \
+                        -sPTHREAD_POOL_SIZE='navigator.hardwareConcurrency' \
+                        -sPTHREAD_POOL_SIZE_STRICT=0 -sMALLOC=mimalloc \
+                        -sEXPORTED_RUNTIME_METHODS=['ccall']
+
+$(MIMALLOC_STORM)/mimalloc_storm_test.o: $(MIMALLOC_STORM)/mimalloc_storm_test.cpp
+	$(CXX) -c $(CXXFLAGS) -pthread $< -o $@
+
+$(MIMALLOC_STORM)/nanosleep_yield.o: $(SHIMS)/nanosleep_yield.c
+	$(CXX) -c -pthread -DPCBJAM_NANOSLEEP_TEST_HOOK $< -o $@
+
+$(MIMALLOC_STORM)/mimalloc_storm_test.html: $(MIMALLOC_STORM)/mimalloc_storm_test.o $(MIMALLOC_STORM)/nanosleep_yield.o
+	$(CXX) $(filter %.o %.a,$^) $(LDFLAGS_MIMALLOC_STORM) -o $@
+
+mimalloc-storm: $(MIMALLOC_STORM)/mimalloc_storm_test.html
+.PHONY: mimalloc-storm
+
+all: $(MIMALLOC_STORM)/mimalloc_storm_test.html
+
 # Library-preload native-EH repro (1b). Standalone std::async worker that parses+throws (mode-c)
 # and proxies a fetch to main (emscripten_proxy_*) — mirrors the KiCad-10 PCBJAM preload shape.
-# No KiCad source. Uses the system proxying queue (built into the pthread runtime).
+# No KiCad source. Uses the system proxying queue (built into the pthread runtime). Four fixed
+# workers make the held-Promise concurrency reducer independent of browser hardwareConcurrency.
+LDFLAGS_ASYNC_PRELOAD = $(DEBUG_LDFLAGS) $(COROUTINE_BASE_LDFLAGS) -pthread \
+                        -sPTHREAD_POOL_SIZE=4 -sPTHREAD_POOL_SIZE_STRICT=0 \
+                        $(WX_LDFLAGS_NOGL)
+
 $(S)/async-preload/async_preload_test.o: $(S)/async-preload/async_preload_test.cpp
 	$(CXX) -c $(CXXFLAGS) -pthread $< -o $@
 
 $(S)/async-preload/async_preload_test.html: $(S)/async-preload/async_preload_test.o $(WX_CORE_LIB) $(JS_FILES)
-	$(CXX) $< $(LDFLAGS_RAYTRACE) --pre-js $(JS) --shell-file $(HTML) -o $@
+	$(CXX) $< $(LDFLAGS_ASYNC_PRELOAD) --pre-js $(JS) --shell-file $(HTML) -o $@
 	../../scripts/common/inject-dyncall-shims.sh $(basename $@).js
 
 async-preload: $(S)/async-preload/async_preload_test.html
@@ -737,10 +769,14 @@ $(S)/logerror/logerror_test.html: $(S)/logerror/logerror_test.o $(WX_CORE_LIB) $
 	$(CXX) $< $(LDFLAGS_NOGL) --pre-js $(JS) --shell-file $(HTML) -o $@
 
 # Coroutine stress harness - mirrors KiCad coroutine semantics against real libcontext
-$(S)/coroutine/coroutine_test.o: $(S)/coroutine/coroutine_test.cpp $(S)/coroutine/kicad_coroutine_harness.h
+$(S)/coroutine/coroutine_test.o: $(S)/coroutine/coroutine_test.cpp \
+                                  $(S)/coroutine/kicad_coroutine_harness.h \
+                                  ../../wxwidgets/include/wx/wasm/private/sched_context.h
 	$(CXX) -c $(CXXFLAGS) -I$(KICAD_ROOT)/thirdparty/libcontext $< -o $@
 
-$(S)/coroutine/libcontext.o: $(KICAD_ROOT)/thirdparty/libcontext/libcontext.cpp $(KICAD_ROOT)/thirdparty/libcontext/libcontext.h
+$(S)/coroutine/libcontext.o: $(KICAD_ROOT)/thirdparty/libcontext/libcontext.cpp \
+                            $(KICAD_ROOT)/thirdparty/libcontext/libcontext.h \
+                            ../../wxwidgets/include/wx/wasm/private/sched_context.h
 	$(CXX) -c $(CXXFLAGS) -I$(KICAD_ROOT)/thirdparty/libcontext $< -o $@
 
 $(S)/coroutine/coroutine_test.html: $(S)/coroutine/coroutine_test.o $(S)/coroutine/libcontext.o $(WX_CORE_LIB) $(JS_FILES)
@@ -763,7 +799,9 @@ $(S)/coroutine-nested/nested_test.html: $(S)/coroutine-nested/nested_test.o $(S)
 # a failure here can still only be the contexts layer.
 SCHED_CTX_INC = ../../wxwidgets/include
 
-$(S)/sched-context/sched_context_test.o: $(S)/sched-context/sched_context_test.cpp $(SCHED_CTX_INC)/wx/wasm/private/sched_context.h
+$(S)/sched-context/sched_context_test.o: $(S)/sched-context/sched_context_test.cpp \
+                                        $(SCHED_CTX_INC)/wx/wasm/private/sched_context.h \
+                                        $(SCHED_CTX_INC)/wx/wasm/private/execution_owner.h
 	$(CXX) -c $(CXXFLAGS) -I$(SCHED_CTX_INC) $< -o $@
 
 $(S)/sched-context/sched_context_test.html: $(S)/sched-context/sched_context_test.o
@@ -777,6 +815,13 @@ $(S)/asyncify-races/races_test.o: $(S)/asyncify-races/races_test.cpp $(S)/corout
 	$(CXX) -c $(CXXFLAGS) -I$(KICAD_ROOT)/thirdparty/libcontext -I$(S)/coroutine $< -o $@
 
 $(S)/asyncify-races/races_test.html: $(S)/asyncify-races/races_test.o $(S)/coroutine/libcontext.o $(WX_CORE_LIB)
+	$(CXX) $^ $(LDFLAGS_RACES) --pre-js $(JS) --shell-file $(HTML) -o $@
+	../../scripts/common/inject-dyncall-shims.sh $(basename $@).js
+
+$(S)/pending-event-owner/pending_event_owner_test.o: $(S)/pending-event-owner/pending_event_owner_test.cpp
+	$(CXX) -c $(CXXFLAGS) $< -o $@
+
+$(S)/pending-event-owner/pending_event_owner_test.html: $(S)/pending-event-owner/pending_event_owner_test.o $(WX_CORE_LIB)
 	$(CXX) $^ $(LDFLAGS_RACES) --pre-js $(JS) --shell-file $(HTML) -o $@
 	../../scripts/common/inject-dyncall-shims.sh $(basename $@).js
 
@@ -852,6 +897,7 @@ retinascale: $(S)/retinascale/retinascale_test.html
 coroutine: $(S)/coroutine/coroutine_test.html
 coroutine-nested: $(S)/coroutine-nested/nested_test.html
 asyncify-races: $(S)/asyncify-races/races_test.html
+pending-event-owner: $(S)/pending-event-owner/pending_event_owner_test.html
 sched-context: $(S)/sched-context/sched_context_test.html
 
 # Only delete generated app files (*_test*, *_repro*) — a bare $(S)/*/*.js would
@@ -862,7 +908,7 @@ clean:
 	rm -f $(S)/*/*_test*.html $(S)/*/*_test*.js $(S)/*/*_test*.wasm
 	rm -f $(S)/*/*_repro*.html $(S)/*/*_repro*.js $(S)/*/*_repro*.wasm
 
-.PHONY: all clean menu contextmenu scrollbar clipboard filedialog layout aui toolbar grid dialog timer tree dataview htmlwin stc print dnd propgrid pickers collapsible listctrl infobar dataviewvirtual auinotebook wizard gridedit calendar gridrenderers printpreview bitmapbuttons specialized validators ownerdrawn popup xml wasmedge fontenum textdecor bitmask regions maximize earlysize selectheight uipolish threadpool logerror retinascale coroutine coroutine-nested asyncify-races notebook radiogroups collapse-relayout
+.PHONY: all clean menu contextmenu scrollbar clipboard filedialog layout aui toolbar grid dialog timer tree dataview htmlwin stc print dnd propgrid pickers collapsible listctrl infobar dataviewvirtual auinotebook wizard gridedit calendar gridrenderers printpreview bitmapbuttons specialized validators ownerdrawn popup xml wasmedge fontenum textdecor bitmask regions maximize earlysize selectheight uipolish threadpool logerror retinascale coroutine coroutine-nested asyncify-races pending-event-owner notebook radiogroups collapse-relayout
 
 # === Coroutine pthread variant — reproduces the KiCad Asyncify-fiber x pthreads crash ===
 # Same modal-free harness as `coroutine`, but compiled/linked with pthreads to match
@@ -872,7 +918,9 @@ LDFLAGS_COROUTINE_PTHREAD = $(DEBUG_LDFLAGS) $(COROUTINE_BASE_LDFLAGS) -pthread 
                   -sPTHREAD_POOL_SIZE='navigator.hardwareConcurrency' -sPTHREAD_POOL_SIZE_STRICT=0 \
                   $(WX_LDFLAGS_NOGL)
 
-$(S)/coroutine-pthread/coroutine_test_pt.o: $(S)/coroutine/coroutine_test.cpp $(S)/coroutine/kicad_coroutine_harness.h
+$(S)/coroutine-pthread/coroutine_test_pt.o: $(S)/coroutine/coroutine_test.cpp \
+                                           $(S)/coroutine/kicad_coroutine_harness.h \
+                                           ../../wxwidgets/include/wx/wasm/private/sched_context.h
 	@mkdir -p $(S)/coroutine-pthread
 	$(CXX) -c $(CXXFLAGS) -pthread -I$(KICAD_ROOT)/thirdparty/libcontext -I$(S)/coroutine $< -o $@
 

@@ -1,3 +1,6 @@
+import fs from 'fs';
+import path from 'path';
+
 import { test, expect, tryLoadApp } from '../e2e/utils/fixtures';
 
 /**
@@ -10,7 +13,9 @@ import { test, expect, tryLoadApp } from '../e2e/utils/fixtures';
  * battery asserts the invariants, and this spec additionally gates the thing
  * doc 20 §7 risk 1 demands: contexts must be bounded and MEASURED.
  *
- * No production path runs on contexts yet — that starts at D2.
+ * Production dispatch now runs on these contexts. The semantic-owner reducer
+ * additionally proves that physical schedulability does not imply permission
+ * to enter mutable model state.
  */
 
 const SCENARIOS = [
@@ -18,17 +23,44 @@ const SCENARIOS = [
   'park_and_resume',
   'no_park_in_place',
   'parked_does_not_block',
+  'execution_owner_half_reducer',
+  'execution_owner_positive_sleep_nested_pump',
+  'execution_owner_popup_scope_policy',
+  'execution_owner_startup_boundary',
+  'execution_lease_provenance_reopen',
+  'execution_ingress_receipt_handback',
+  'execution_ancestor_close_lifo',
+  'execution_submit_discard_handshake',
+  'execution_queue_counters',
+  'execution_retained_byte_lease',
   'fifo_order',
   'one_transition_in_flight',
   'registry_refusals',
+  'ready_publication_is_transactional',
   'deep_park_sizing',
   'fiber_nests_in_context',
   'foreign_stack_refused',
   'fiber_roundtrip',
+  'fiber_normalizes_every_stack_alignment',
+  'fiber_release_clears_generated_guard',
   'fiber_release_suspended',
+  'fiber_admission_refusals',
+  'fiber_ready_claim_is_not_transferable',
   'fiber_and_star_coexist',
+  'fiber_terminal_direct',
+  'dispatch_context_release_before_erase',
+  'dispatch_context_release_refusal_retains_id',
+  'fiber_release_inplace_park_refused_until_wake',
+  'generated_scoped_dom_defers_for_direct_inplace_park',
+  'fiber_release_cancels_owned_park',
+  'fiber_release_external_park_refused',
+  'retained_exact_negative_result_is_data',
+  'owned_wake_token_and_cancel_refusal',
+  'pending_wake_does_not_consume_exact_lease',
+  'fiber_terminal_star',
   'star_transfer_call_is_synchronous',
   'star_transfer_chain',
+  'drain_budget_finite_continuation',
   'async_wake',
 ];
 
@@ -51,6 +83,7 @@ type Stats = {
   transitions: number;
   refusals: number;
   foreignStackRefusals: number;
+  readyPublicationFailures: number;
   running: number;
   transitionInFlight: boolean;
   readyQueued: number;
@@ -70,11 +103,15 @@ type Stats = {
   fiberRefusals: number;
   fiberReleasedSuspended: number;
   fiberReleasedRunning: number;
+  fiberReleaseRefusals: number;
   fiberNonEnterableSwaps: number;
   fiberRunning: number;
   fiberBytes: number;
   fiberPeakBytes: number;
   fiberAsyncifyHighWater: number;
+  drainBudgetExhaustionStreak: number;
+  drainBudgetYields: number;
+  drainLivelocks: number;
 };
 
 function findLine(logs: string[], marker: string): string | undefined {
@@ -89,6 +126,78 @@ function parseTagged<T>(logs: string[], marker: string): T | null {
 }
 
 test.describe('Design B D1 — scheduler contexts', () => {
+  test('main-loop detach requires an acknowledged initial scheduler edge', async ({ page }) => {
+    await page.goto('/standalone/toolbar/toolbar_test.html');
+    expect(await tryLoadApp(page, 30000), 'wx app should load before the reducer').toBe(true);
+
+    const result = await page.evaluate(() => {
+      const root = globalThis as typeof globalThis & {
+        __wxScheduler?: unknown;
+        Module?: { _wxWasmTestMainLoopKickSubmission?: () => number };
+      };
+      const original = root.__wxScheduler;
+      const invoke = root.Module?._wxWasmTestMainLoopKickSubmission;
+
+      if (typeof invoke !== 'function')
+        return { missing: -1, rejecting: -1, throwing: -1 };
+
+      const run = (scheduler: unknown) => {
+        root.__wxScheduler = scheduler;
+        try {
+          return invoke();
+        } finally {
+          root.__wxScheduler = original;
+        }
+      };
+
+      return {
+        missing: run(undefined),
+        rejecting: run({
+          canTouchNative: () => true,
+          enqueueNativeEntry: () => false,
+        }),
+        throwing: run({
+          canTouchNative: () => true,
+          enqueueNativeEntry: () => {
+            throw new Error('deterministic initial-kick failure');
+          },
+        }),
+      };
+    });
+
+    expect(result).toEqual({ missing: 0, rejecting: 0, throwing: 0 });
+
+    const source = fs.readFileSync(
+      path.resolve(__dirname, '../../wxwidgets/src/wasm/evtloop.cpp'),
+      'utf8',
+    );
+    const begin = source.indexOf('extern "C" bool wxWasmDetachMainLoop');
+    const end = source.indexOf('extern "C" bool wxWasmMainLoopDetached', begin);
+    const detach = source.slice(begin, end);
+    const submission = detach.indexOf('if (!wxWasmArmMainLoopKick())');
+
+    expect(begin).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(begin);
+    expect(submission).toBeGreaterThanOrEqual(0);
+    expect(detach.indexOf('g_mainLoopContext = 0;', submission)).toBeGreaterThan(submission);
+    expect(detach.indexOf('fiber_release(fresh)', submission)).toBeGreaterThan(submission);
+    expect(detach.indexOf('g_mainLoopDetached = true;')).toBeGreaterThan(submission);
+  });
+
+  test('scoped DOM submission uses the complete physical-entry predicate', () => {
+    const source = fs.readFileSync(
+      path.resolve(__dirname, '../../wxwidgets/src/wasm/evtloop.cpp'),
+      'utf8',
+    );
+    const begin = source.indexOf('wxWasmRunOnDispatchContextScoped(');
+    const end = source.indexOf('// wxGUIEventLoop', begin);
+    expect(begin, 'scoped DOM submission function should exist').toBeGreaterThanOrEqual(0);
+    expect(end, 'scoped DOM submission function should have a bounded source section').toBeGreaterThan(begin);
+
+    const scopedSubmission = source.slice(begin, end);
+    expect(scopedSubmission).toContain('if (wxWasmSchedulerEntryBusy())');
+  });
+
   test('battery: every context invariant holds', async ({ page, testLogger }) => {
     await page.goto('/standalone/sched-context/sched_context_test.html');
     expect(await tryLoadApp(page, 30000), 'sched-context harness should load').toBe(true);
@@ -158,11 +267,18 @@ test.describe('Design B D1 — scheduler contexts', () => {
     expect(stats.transitionInFlight, 'no transition left in flight').toBe(false);
     expect(stats.running, 'no context left running').toBe(0);
     expect(stats.readyQueued, 'ready queue drained').toBe(0);
+    expect(stats.drainBudgetExhaustionStreak, 'quiescence reset the drain streak').toBe(0);
+    expect(stats.drainBudgetYields, 'the >4096 reducer yielded to a fresh task').toBeGreaterThan(0);
+    expect(stats.drainLivelocks, 'finite work was not classified as livelock').toBe(0);
 
     // --- refusals are EXPECTED here: three scenarios provoke them ----------
     // (yield_park off a context, destroy while parked, mark_ready twice /
     // unknown id). Zero would mean those scenarios stopped provoking.
     expect(stats.refusals, 'illegal operations were refused and counted').toBeGreaterThan(0);
+    expect(
+      stats.readyPublicationFailures,
+      'every deterministic FIFO allocation failure reached the transactional boundary',
+    ).toBe(7);
 
     // --- the D3 blocker, pinned -------------------------------------------
     // A wait called from a fiber running ON TOP of a context (a KiCad tool
@@ -231,14 +347,19 @@ test.describe('Design B D1 — scheduler contexts', () => {
     expect(stats.fiberSwaps, 'symmetric swaps and star transfers happened').toBeGreaterThanOrEqual(
       12,
     );
-    // Both releases happened mid-suspend — libcontext's refcount-drop shape.
-    expect(stats.fiberReleasedSuspended, 'suspended releases are legal and counted').toBe(2);
+    // Several releases happened mid-suspend — including the in-place cancellation
+    // reducer after its delayed wake established a safe symmetric suspension.
+    expect(stats.fiberReleasedSuspended, 'suspended releases are legal and counted').toBe(4);
     // One deliberate stale-id swap was refused (use-after-free made loud).
     expect(stats.fiberRefusals, 'a stale fiber id was refused').toBeGreaterThanOrEqual(1);
     // THE Phase A tripwires: no swap ever entered a non-enterable fiber, and
     // no release ever hit a fiber the registry believed was running.
     expect(stats.fiberNonEnterableSwaps, 'zero swaps into stale rewind state').toBe(0);
     expect(stats.fiberReleasedRunning, 'zero releases of a running fiber').toBe(0);
+    expect(
+      stats.fiberReleaseRefusals,
+      'live in-place, ordinary, retained-exact, and failed-revocation wakes refused release',
+    ).toBeGreaterThanOrEqual(4);
     // The sizing input Phase E reads: a suspended fiber's capture was measured
     // (sampled before the resume consumes it, when the buffer is non-empty).
     expect(

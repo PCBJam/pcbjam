@@ -72,10 +72,10 @@ type FS = {
   readFile(p: string, o: { encoding: "utf8" }): string;
 };
 type Mod = {
-  kicadOpenFile(p: string): unknown;
-  kicadCollabSnapshotItems(): string;
-  kicadCollabApplyItems(j: string): unknown;
-  kicadSaveSchematic(p: string): unknown;
+  kicadOpenFile(p: string): Promise<unknown>;
+  kicadCollabSnapshotItems(): Promise<string>;
+  kicadCollabApplyItems(j: string): Promise<unknown>;
+  kicadSaveSchematic(p: string): Promise<void>;
 };
 
 const BOOT_TIMEOUT = 150000;
@@ -111,7 +111,7 @@ async function bootOpen(page: Page, content: string, name: string): Promise<void
     { timeout: BOOT_TIMEOUT },
   );
   await page.evaluate(
-    ({ content, name }) => {
+    async ({ content, name }) => {
       const w = window as unknown as { FS: FS; Module: Mod };
       try {
         w.FS.mkdirTree("/home/kicad/documents");
@@ -120,7 +120,7 @@ async function bootOpen(page: Page, content: string, name: string): Promise<void
       }
       const p = `/home/kicad/documents/${name}.kicad_sch`;
       w.FS.writeFile(p, content);
-      w.Module.kicadOpenFile(p);
+      await w.Module.kicadOpenFile(p);
     },
     { content, name },
   );
@@ -142,10 +142,10 @@ function startV2(
 }
 
 function saveText(page: Page): Promise<string> {
-  return page.evaluate(() => {
+  return page.evaluate(async () => {
     const w = window as unknown as { FS: FS; Module: Mod };
     const out = "/home/kicad/documents/_dump.kicad_sch";
-    w.Module.kicadSaveSchematic(out);
+    await w.Module.kicadSaveSchematic(out);
     return w.FS.readFile(out, { encoding: "utf8" });
   });
 }

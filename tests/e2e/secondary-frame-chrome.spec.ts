@@ -12,8 +12,8 @@ import { clickByLabel, waitForWxApp } from './utils/element-tracker';
  * dialogs) a real DOM `.window-titlebar` (drag + `.window-titlebar-close`) that
  * wins hit-testing via normal stacking.
  *
- * Drag dispatches real pointer events on the title bar (→ wx_window_move →
- * wxWindow::Move); close clicks the × (→ wx_window_close → wx Close(); for a
+ * Drag dispatches real pointer events on the title bar (→ wx_window_move_stage →
+ * wxWindow::Move); close clicks the × (→ wx_window_close_stage → wx Close(); for a
  * modal dialog this ends the modal loop via EndModal).
  */
 

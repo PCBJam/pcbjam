@@ -2,7 +2,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { Page, CDPSession } from '@playwright/test';
 import { injectFileIntoMemfs } from './fs-inject';
-import { waitForBoardLoaded } from './board-ready';
+import { openBoardProgrammatically } from './board-ready';
+import { waitForCanvasStable } from '../../e2e/utils/element-tracker';
 
 /**
  * Runtime-perf helpers for the track-only perf specs (eeschema-perf, pcbnew-perf).
@@ -18,7 +19,7 @@ import { waitForBoardLoaded } from './board-ready';
 const MAIN_CANVAS = '#canvas';
 const RESULTS_DIR = path.join(__dirname, '..', '..', 'test-results');
 
-type KicadModule = { kicadOpenFile(p: string): unknown };
+type KicadModule = { kicadOpenFile(p: string): Promise<unknown> };
 
 /** Fully booted editor: visible canvas + wx registry + kicadOpenFile hook + a top-level *Frame. */
 export async function waitForReady(page: Page, timeout = 120000): Promise<void> {
@@ -66,18 +67,21 @@ export async function measureOpenRender(
     await injectFileIntoMemfs(page, hostPath, memfsPath);
 
     const t0 = Date.now();
-    await page.evaluate((p) => {
-        (window as unknown as { Module: KicadModule }).Module.kicadOpenFile(p);
-    }, memfsPath);
-
     if (kind === 'board') {
-        await waitForBoardLoaded(page, logger, timeout);
+        await openBoardProgrammatically(page, memfsPath, 'perf-demo', logger, timeout);
     } else {
+        await page.evaluate(async (p) => {
+            await (window as unknown as { Module: KicadModule }).Module.kicadOpenFile(p);
+        }, memfsPath);
         const deadline = Date.now() + timeout;
         while (Date.now() < deadline) {
             if (/perf-demo/i.test(await page.title())) break;
             await page.waitForTimeout(200);
         }
+        if (!/perf-demo/i.test(await page.title())) {
+            throw new Error(`Timed out waiting for schematic title after ${timeout}ms`);
+        }
+        await waitForCanvasStable(page, MAIN_CANVAS, { timeout });
     }
     return Date.now() - t0;
 }

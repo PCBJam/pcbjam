@@ -114,7 +114,24 @@
             'transform-api'     // 27
         ];
 
+        // The wxWasm shell contract names the main host element explicitly.
+        // This custom harness does not use build/wasm/template.html, so it
+        // must provide the same binding before any wx EM_ASM callback runs.
+        var mainWindow = document.getElementById('main-window');
         var wasmModule = null;
+
+        function nativeGalReady() {
+            if (!wasmModule) {
+                return false;
+            }
+
+            try {
+                return wasmModule.ccall('isGalReady', 'number', [], []) === 1;
+            } catch (error) {
+                console.error('[GAL Test] Readiness check failed:', error);
+                return false;
+            }
+        }
 
         // Populate scenario dropdown
         function populateScenarios() {
@@ -130,9 +147,10 @@
         // Run a single scenario
         function runScenario(index) {
             console.log('[DEBUG JS] runScenario called with index:', index, 'wasmModule:', !!wasmModule);
-            if (!wasmModule) {
-                console.log('[DEBUG JS] wasmModule is null, returning early');
-                return;
+            if (!nativeGalReady()) {
+                const message = 'GAL native runtime is not ready';
+                setStatus(`ERROR: ${message}`);
+                throw new Error(message);
             }
 
             try {
@@ -142,16 +160,22 @@
                 if (result === 0) {
                     setStatus(`Rendered: ${SCENARIO_NAMES[index]}`);
                 } else {
-                    setStatus(`ERROR: Failed scenario ${index}`);
+                    throw new Error(`native runScenario(${index}) returned ${result}`);
                 }
+
+                return result;
             } catch (e) {
-                console.error('[DEBUG JS] ccall threw error:', e);
+                setStatus(`ERROR: Failed scenario ${index}: ${e.message}`);
+                console.error('[GAL Test] runScenario failed:', e);
+                throw e;
             }
         }
 
         // Run all scenarios
         async function runAllScenarios() {
-            if (!wasmModule) return;
+            if (!nativeGalReady()) {
+                throw new Error('GAL native runtime is not ready');
+            }
 
             const total = wasmModule.ccall('getTotalScenarios', 'number', [], []);
             setStatus(`Running all ${total} scenarios...`);
@@ -172,18 +196,9 @@
 
         // Get the GL canvas for screenshots
         function getGLCanvas() {
-            // wxGLCanvas creates canvases with class 'gl-canvas' or id 'glcanvas-N'
-            const glCanvases = document.querySelectorAll('.gl-canvas');
-            if (glCanvases.length > 0) {
-                return glCanvases[0];
-            }
-            // Fallback to any canvas in window-container
-            const containerCanvases = document.querySelectorAll('#window-container canvas');
-            if (containerCanvases.length > 0) {
-                return containerCanvases[0];
-            }
-            // Fallback to main canvas
-            return document.getElementById('canvas');
+            // wxGLCanvas always creates a dedicated WebGL canvas. Returning the
+            // 2D wx canvas here would let a failed GAL startup look successful.
+            return document.querySelector('.gl-canvas');
         }
 
         // Export for Playwright
@@ -193,7 +208,7 @@
             getScenarioName: (index) => SCENARIO_NAMES[index],
             getTotalScenarios: () => SCENARIO_NAMES.length,
             getGLCanvas: getGLCanvas,
-            isReady: () => wasmModule !== null
+            isReady: nativeGalReady
         };
 
         // Create canvas immediately (before module loads)
@@ -212,7 +227,7 @@
             setStatus('WebGL context lost!');
             e.preventDefault();
         }, false);
-        document.getElementById('main-window').appendChild(canvas);
+        mainWindow.appendChild(canvas);
 
         // Module configuration for MODULARIZE
         var Module = {
@@ -234,6 +249,12 @@
         // Setup UI after module loads
         function onModuleReady(module) {
             wasmModule = module;
+            positionGalOverlay();
+
+            if (!nativeGalReady()) {
+                throw new Error('WASM module resolved before GAL initialization completed');
+            }
+
             setStatus('Ready. Select a scenario.');
 
             document.getElementById('run-btn').disabled = false;
@@ -260,9 +281,33 @@
             window.dispatchEvent(new CustomEvent('gal-test-ready'));
         }
 
+        function positionGalOverlay() {
+            // The modularized wx pre-js gives the shared overlay a relative
+            // stacking context when createGALTest() runs. In this custom page
+            // the main host participates in normal flow, so that would place
+            // the overlay one full host-height below the viewport. Reapply the
+            // host geometry after the factory resolves.
+            const overlay = document.getElementById('window-container');
+            overlay.style.position = 'absolute';
+            overlay.style.left = '0';
+            overlay.style.top = '0';
+            overlay.style.width = '100%';
+            overlay.style.height = '100%';
+        }
+
+        function startGalModule() {
+            positionGalOverlay();
+            createGALTest(Module)
+                .then(onModuleReady)
+                .catch(e => {
+                    console.error(e);
+                    setStatus('Load error: ' + e.message);
+                });
+        }
+
         // Initialize
         populateScenarios();
     </script>
-    <script src="gal_webgl_test.js" onload="createGALTest(Module).then(onModuleReady).catch(e => setStatus('Load error: ' + e.message))"></script>
+    <script src="gal_webgl_test.js" onload="startGalModule()"></script>
 </body>
 </html>

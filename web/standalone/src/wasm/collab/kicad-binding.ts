@@ -28,6 +28,7 @@ import {
   type KicadYItems,
 } from "@pcbjam/shared";
 import { clog, cwarn } from "./debug";
+import { classifyOwnerJobFailure } from "../owner-job";
 
 /**
  * The Slot-model collab binding (ysync 0008 Stage B) — the THIN RUNTIME over the
@@ -53,12 +54,18 @@ import { clog, cwarn } from "./debug";
  */
 export const DOC_REVERTED_EVENT = "pcbjam:doc-reverted";
 
+// Do not let a permanently busy room keep one projection promise alive
+// forever. A live failure enters the bounded retry lane below. A seed failure
+// propagates so its owner can tear the binding down and retry cleanly.
+const MAX_IMMEDIATE_RECONCILIATION_PASSES = 32;
+const MAX_CONSECUTIVE_PROJECTION_FAILURES = 8;
+
 /** The v2 per-item s-expr bridge (Stage C C++ contract), runtime-adapted. */
 export interface KicadItemsBridge {
   /** Full current model as an all-`added` ItemsWireDelta JSON. */
-  snapshotItems(): string;
+  snapshotItems(isCurrent?: () => boolean): string | Promise<string>;
   /** Apply a remote ItemsWireDelta JSON (per-item Parse + splice by uuid). */
-  applyItems(json: string): void;
+  applyItems(json: string, isCurrent?: () => boolean): void | Promise<void>;
   /** Register the local-edit emit hook (Format changed items → JSON). */
   onItems(cb: (json: string) => void): void;
 }
@@ -77,7 +84,7 @@ export interface KicadBinding {
    * (docToFile — the Y.Doc-load path), so the adopt re-apply would be a no-op
    * full-document blob apply; skip it and just baseline the wasm differ.
    */
-  seed(seedDoc?: KicadDoc, opts?: { editorMatchesDoc?: boolean }): void;
+  seed(seedDoc?: KicadDoc, opts?: { editorMatchesDoc?: boolean }): Promise<void>;
   destroy(): void;
   /** The underlying kdoc items map (exposed for tests/inspection). */
   readonly items: KicadYItems;
@@ -135,6 +142,29 @@ export function bindKicadCollab(
   // sheet-switch gap, when C++ has already rebaselined to the NEW sheet — must
   // be dropped here or it writes the new sheet's items into the OLD room (bug 07).
   let destroyed = false;
+  let bindingGeneration = 1;
+  // Yjs transactions are atomic, but their projection into the editor can wait
+  // in the native owner gateway. Track that asynchronous projection separately
+  // so a failed or overtaken delta is repaired from the authoritative Y.Doc.
+  let remoteVersion = 0;
+  let projectedVersion = 0;
+  let projectionDirty = false;
+  // Keep at most one derived transaction while native code is available. If a
+  // second transaction arrives before that projection finishes, discard the
+  // derived payload and reconcile once from the authoritative Y.Doc. This is a
+  // level signal: a parked native owner cannot create an unbounded closure and
+  // serialized-wire backlog.
+  let pendingProjection:
+    | { targetVersion: number; wireJson: string | undefined }
+    | undefined;
+  let projectionScheduled = false;
+  let projectionRunning = false;
+  let projectionRetry: ReturnType<typeof setTimeout> | undefined;
+  let projectionRetryMs = 100;
+  let projectionStopped = false;
+  let projectionCircuitOpen = false;
+  let consecutiveProjectionFailures = 0;
+  let seedPromise: Promise<void> | undefined;
   // Concurrent double-seed arbitration cleanup (bug 06); set by the file-seed branch.
   let detachSeedArbitration: (() => void) | undefined;
 
@@ -163,6 +193,248 @@ export function bindKicadCollab(
   // child reaches the sender's serializer unlifted.
   const warnSkip = (w: { sexpr: string }, err: unknown): void =>
     cwarn("wire entry skipped (un-resolvable):", err, w.sexpr.slice(0, 200));
+
+  const generationGuard = (generation = bindingGeneration) =>
+    () => !destroyed && bindingGeneration === generation;
+
+  const buildAdoptWire = (
+    editorWire: ItemsWireDelta,
+    view: Record<string, KicadItem>,
+  ): ItemsWireDelta => {
+    const editorDelta = itemsWireToDelta(editorWire, view, warnSkip);
+    const editorUuids = wireItemUuids(editorWire, warnSkip);
+    const liftToRoot = (uuid: string): string => {
+      let cur = uuid;
+      while (view[cur]?.parent != null) cur = view[cur]!.parent!;
+      return cur;
+    };
+    const docOnly = Object.entries(view)
+      .filter(([uuid, it]) => it.parent === null && !editorUuids.has(uuid))
+      .map(([uuid, it]) => ({ uuid, ...it }));
+    const changedRoots = [
+      ...new Set(
+        editorDelta.updated
+          .filter((it) => it.uuid in view)
+          .map((it) => liftToRoot(it.uuid)),
+      ),
+    ]
+      .filter((uuid) => !docOnly.some((it) => it.uuid === uuid))
+      .map((uuid) => ({ uuid, ...view[uuid]! }));
+    const removed = editorDelta.added
+      .filter((it) => it.parent === null && !(it.uuid in view))
+      .map((it) => it.uuid);
+    return deltaToItemsWire(
+      { added: docOnly, updated: changedRoots, removed },
+      view,
+      libDefs,
+    );
+  };
+
+  const applyDocAuthority = async (
+    editorWire: ItemsWireDelta,
+    isCurrent: () => boolean,
+  ): Promise<void> => {
+    if (!isCurrent()) return;
+    projectionDirty = false;
+    const view = itemsView();
+    const targetVersion = remoteVersion;
+    const adoptWire = buildAdoptWire(editorWire, view);
+    clog(
+      `seed: doc has ${items.size} item(s) → ADOPTING diff:`,
+      `+${adoptWire.added.length} ~${adoptWire.changed.length} -${adoptWire.removed.length}`,
+    );
+    if (!isEmptyItemsWireDelta(adoptWire)) {
+      await bridge.applyItems(JSON.stringify(adoptWire), isCurrent);
+    }
+    if (isCurrent()) projectedVersion = targetVersion;
+  };
+
+  const reconcileProjection = async (isCurrent: () => boolean): Promise<void> => {
+    for (let pass = 0; pass < MAX_IMMEDIATE_RECONCILIATION_PASSES && isCurrent(); pass++) {
+      projectionDirty = false;
+      const wire = parseItemsWireDelta(await bridge.snapshotItems(isCurrent));
+      if (!isCurrent()) return;
+      await applyDocAuthority(wire, isCurrent);
+      if (
+        isCurrent() &&
+        !projectionDirty &&
+        projectedVersion === remoteVersion
+      ) {
+        return;
+      }
+    }
+    if (isCurrent()) {
+      throw new Error(
+        `collaborative projection did not settle after ${MAX_IMMEDIATE_RECONCILIATION_PASSES} passes`,
+      );
+    }
+  };
+
+  const scheduleProjectionDrain = (): void => {
+    if (
+      destroyed ||
+      !seeded ||
+      projectionScheduled ||
+      projectionRunning ||
+      projectionRetry ||
+      projectionStopped ||
+      projectionCircuitOpen
+    ) {
+      return;
+    }
+    projectionScheduled = true;
+    queueMicrotask(() => {
+      projectionScheduled = false;
+      void drainProjection();
+    });
+  };
+
+  const requestAuthoritativeProjection = (): void => {
+    if (projectionStopped) return;
+    projectionDirty = true;
+    pendingProjection = undefined;
+    scheduleProjectionDrain();
+  };
+
+  const armProjectionRetry = (): void => {
+    if (
+      destroyed ||
+      !seeded ||
+      projectionRetry ||
+      projectionStopped ||
+      projectionCircuitOpen
+    ) {
+      return;
+    }
+    projectionRetry = setTimeout(() => {
+      projectionRetry = undefined;
+      requestAuthoritativeProjection();
+    }, projectionRetryMs);
+    projectionRetryMs = Math.min(projectionRetryMs * 2, 5000);
+  };
+
+  const stopProjection = (kind: "stale" | "terminal", error: unknown): void => {
+    projectionStopped = true;
+    projectionDirty = false;
+    pendingProjection = undefined;
+    if (projectionRetry) clearTimeout(projectionRetry);
+    projectionRetry = undefined;
+    cwarn(`remote projection stopped after ${kind} owner failure`, error);
+  };
+
+  const handleProjectionFailure = (error: unknown): void => {
+    const kind = classifyOwnerJobFailure(error);
+    if (kind === "stale" || kind === "terminal") {
+      stopProjection(kind, error);
+      return;
+    }
+
+    if (kind === "backpressure") {
+      cwarn("remote projection owner queue is full; scheduling bounded retry", error);
+      armProjectionRetry();
+      return;
+    }
+
+    consecutiveProjectionFailures++;
+    if (consecutiveProjectionFailures >= MAX_CONSECUTIVE_PROJECTION_FAILURES) {
+      projectionCircuitOpen = true;
+      projectionDirty = false;
+      pendingProjection = undefined;
+      cwarn(
+        `remote projection paused after ${consecutiveProjectionFailures} consecutive failures; ` +
+          "a newer Yjs transaction will retry",
+        error,
+      );
+      return;
+    }
+    cwarn("remote projection failed; scheduling authoritative reconciliation", error);
+    armProjectionRetry();
+  };
+
+  async function drainProjection(): Promise<void> {
+    if (
+      destroyed ||
+      !seeded ||
+      projectionRunning ||
+      projectionRetry ||
+      projectionStopped ||
+      projectionCircuitOpen
+    ) {
+      return;
+    }
+    const generation = bindingGeneration;
+    const isCurrent = generationGuard(generation);
+    projectionRunning = true;
+    try {
+      while (isCurrent() && (projectionDirty || pendingProjection)) {
+        if (projectionDirty) {
+          pendingProjection = undefined;
+          await reconcileProjection(isCurrent);
+          continue;
+        }
+
+        const next = pendingProjection!;
+        pendingProjection = undefined;
+        if (next.targetVersion !== projectedVersion + 1) {
+          projectionDirty = true;
+          continue;
+        }
+        if (next.wireJson !== undefined) {
+          try {
+            await bridge.applyItems(next.wireJson, isCurrent);
+            if (!isCurrent()) return;
+          } catch (err) {
+            if (!isCurrent()) return;
+            if (classifyOwnerJobFailure(err) !== "other") throw err;
+            projectionDirty = true;
+            cwarn("remote applyItems failed; reconciling from Y.Doc", err);
+            continue;
+          }
+        }
+        projectedVersion = next.targetVersion;
+      }
+      if (isCurrent()) {
+        projectionRetryMs = 100;
+        consecutiveProjectionFailures = 0;
+      }
+    } catch (err) {
+      if (!isCurrent()) return;
+      projectionDirty = true;
+      pendingProjection = undefined;
+      handleProjectionFailure(err);
+    } finally {
+      projectionRunning = false;
+      if (
+        isCurrent() &&
+        !projectionRetry &&
+        !projectionStopped &&
+        !projectionCircuitOpen &&
+        (projectionDirty || pendingProjection)
+      ) {
+        scheduleProjectionDrain();
+      }
+    }
+  }
+
+  const requestIncrementalProjection = (
+    targetVersion: number,
+    wireJson: string | undefined,
+  ): void => {
+    // Anything already waiting or running means the payload was derived from a
+    // view that can be overtaken. Keep no second payload; one authoritative
+    // reconciliation covers every transaction represented by remoteVersion.
+    if (
+      projectionDirty ||
+      pendingProjection ||
+      projectionRunning ||
+      projectionRetry
+    ) {
+      requestAuthoritativeProjection();
+      return;
+    }
+    pendingProjection = { targetVersion, wireJson };
+    scheduleProjectionDrain();
+  };
 
   // DOWN: local editor change → Y.Doc
   bridge.onItems((json: string) => {
@@ -204,17 +476,49 @@ export function bindKicadCollab(
   // (the runtime); the event→delta computation is the shared default impl.
   const observer = (events: Y.YEvent<Y.Map<unknown>>[], txn: Y.Transaction) => {
     if (txn.origin === ORIGIN) return; // our own echo — ignore
-    if (!seeded) return; // pre-seed state sync — seed()'s adopt covers it
+    const targetVersion = ++remoteVersion;
+    if (projectionStopped) return;
+    if (projectionCircuitOpen) {
+      projectionCircuitOpen = false;
+      consecutiveProjectionFailures = 0;
+      projectionRetryMs = 100;
+      // Cover both this transaction and every state change missed before the
+      // circuit opened. A delta derived only from this event is insufficient.
+      requestAuthoritativeProjection();
+      return;
+    }
+    if (!seeded) {
+      projectionDirty = true;
+      return; // seed() reconciles every transaction that arrived behind its barrier
+    }
+    // Once native projection has started, the Y.Doc is the only payload we
+    // retain. Later transactions only raise the same level signal. Do this
+    // check before deriving a delta or serializing item bodies.
+    if (
+      projectionDirty ||
+      pendingProjection ||
+      projectionRunning ||
+      projectionRetry
+    ) {
+      requestAuthoritativeProjection();
+      return;
+    }
     const delta = deltaFromYEvents(items, events);
-    if (isEmptyKicadDelta(delta)) return;
+    if (isEmptyKicadDelta(delta)) {
+      requestIncrementalProjection(targetVersion, undefined);
+      return;
+    }
     const wire = deltaToItemsWire(delta, itemsView(), libDefs);
-    if (isEmptyItemsWireDelta(wire)) return;
+    if (isEmptyItemsWireDelta(wire)) {
+      requestIncrementalProjection(targetVersion, undefined);
+      return;
+    }
     clog("⬆ remote Y change → apply to editor:", {
       added: wire.added.length,
       changed: wire.changed.length,
       removed: wire.removed.length,
     });
-    bridge.applyItems(JSON.stringify(wire));
+    requestIncrementalProjection(targetVersion, JSON.stringify(wire));
   };
   items.observeDeep(observer);
 
@@ -243,8 +547,12 @@ export function bindKicadCollab(
   };
   revMeta.observe(onRevertMeta);
 
-  function seed(seedDoc?: KicadDoc, opts?: { editorMatchesDoc?: boolean }): void {
-    seeded = true; // open the UP gate; everything below runs synchronously
+  async function performSeed(
+    seedDoc?: KicadDoc,
+    opts?: { editorMatchesDoc?: boolean },
+  ): Promise<void> {
+    const isCurrent = generationGuard();
+    const versionAtStart = remoteVersion;
     // `ydocHasState` (meta + layout + items), NOT `items.size`: a populated
     // drawing sheet (pl_editor .kicad_wks) has zero uuid items, so an items-only
     // check would mis-classify a seeded room as empty and re-seed/clobber it.
@@ -253,145 +561,88 @@ export function bindKicadCollab(
       // adopt apply needed. snapshotItems() still runs to BASELINE the wasm
       // differ — otherwise the first local edit would re-emit the full model.
       clog(`seed: editor matches doc (${items.size} item(s)) → baseline only, no apply`);
-      try {
-        bridge.snapshotItems();
-      } catch (err) {
-        cwarn("seed: snapshotItems baseline failed", err);
-      }
-      return;
-    }
-    if (!ydocHasState(doc) && seedDoc) {
+      await bridge.snapshotItems(isCurrent);
+      projectedVersion = versionAtStart;
+    } else if (!ydocHasState(doc) && seedDoc) {
       if (readOnly) {
         // A viewer never authors a room. The editor keeps showing the file it
-        // opened; when a writer later seeds this room, the (now-open) UP
-        // observer streams their state in.
+        // opened; when a writer later seeds this room, the UP observer streams
+        // their state in after this initial barrier opens.
         clog("seed: read-only viewer on an empty room — not seeding");
-        return;
-      }
-      // First tab, file-seeded: write the FULL doc (meta + layout + items) so
-      // the Y.Doc — not the editor snapshot — is the lossless source of truth
-      // (the file is recoverable via docToFile). The editor already opened the
-      // same file, so no applyItems is needed.
-      clog(
-        `seed: doc empty → SEEDING from file (${Object.keys(seedDoc.items).length} item(s), root ${seedDoc.root})`,
-      );
-      // Arbitrated seed (bug 06): the empty-room check above is check-then-act,
-      // so a peer may be seeding concurrently. seedDocToY stamps our nonce; if a
-      // FOREIGN nonce wins the meta LWW merge, our layout inserts are retracted
-      // (kdoc_items converges per key on its own) leaving the winner's single
-      // clean sequence.
-      const nonce = `${doc.clientID}:${Math.random().toString(36).slice(2)}`;
-      const retract = seedDocToY(seedDoc, doc, ORIGIN, nonce);
-      const meta = doc.getMap(Y_KDOC_META);
-      const onMeta = () => {
-        const winner = meta.get(Y_KDOC_SEED_NONCE);
-        if (winner !== undefined && winner !== nonce) {
-          detachSeedArbitration?.();
-          detachSeedArbitration = undefined;
-          retract();
-          clog("seed: concurrent double-seed lost LWW — retracted our layout inserts");
-        }
-      };
-      meta.observe(onMeta);
-      detachSeedArbitration = () => meta.unobserve(onMeta);
-      // snapshotItems() does double duty here. Its side effects register the
-      // C++ change listener (bug 01 — without it this tab would receive but
-      // never SEND) and rebaseline the wasm differ. Its RESULT re-upserts the
-      // item bodies in the EDITOR's serialization: the file's formatting and
-      // the writer's normalized output can differ textually, and every future
-      // emit/drift-compare uses the writer's form — keeping file-formatted
-      // bodies would false-positive drift-detect on every file-seeded room
-      // and defeat upsertYItem's no-op skip. Meta + layout stay file-derived.
-      try {
-        const wire = parseItemsWireDelta(bridge.snapshotItems());
+        projectedVersion = remoteVersion;
+      } else {
+        // First tab, file-seeded: write the FULL doc (meta + layout + items) so
+        // the Y.Doc — not the editor snapshot — is the lossless source of truth.
+        clog(
+          `seed: doc empty → SEEDING from file (${Object.keys(seedDoc.items).length} item(s), root ${seedDoc.root})`,
+        );
+        const nonce = `${doc.clientID}:${Math.random().toString(36).slice(2)}`;
+        const retract = seedDocToY(seedDoc, doc, ORIGIN, nonce);
+        const meta = doc.getMap(Y_KDOC_META);
+        const onMeta = () => {
+          const winner = meta.get(Y_KDOC_SEED_NONCE);
+          if (winner !== undefined && winner !== nonce) {
+            detachSeedArbitration?.();
+            detachSeedArbitration = undefined;
+            retract();
+            clog("seed: concurrent double-seed lost LWW — retracted our layout inserts");
+          }
+        };
+        meta.observe(onMeta);
+        detachSeedArbitration = () => meta.unobserve(onMeta);
+        const wire = parseItemsWireDelta(await bridge.snapshotItems(isCurrent));
+        if (!isCurrent()) return;
         const local = itemsWireToDelta(wire, itemsView(), warnSkip);
         if (!isEmptyKicadDelta(local)) applyDeltaToY(doc, local, ORIGIN);
-      } catch (err) {
-        cwarn("seed: post-file-seed baseline failed", err);
+        projectedVersion = versionAtStart;
       }
-      return;
-    }
-
-    let wire: ItemsWireDelta;
-    try {
-      wire = parseItemsWireDelta(bridge.snapshotItems());
-    } catch (err) {
-      cwarn("seed: snapshotItems unparseable", err);
-      return;
-    }
-
-    const hasState = ydocHasState(doc);
-
-    if (!hasState) {
-      if (readOnly) {
-        clog("seed: read-only viewer on an empty room — not snapshot-seeding");
-        return;
+    } else {
+      const wire = parseItemsWireDelta(await bridge.snapshotItems(isCurrent));
+      if (!isCurrent()) return;
+      const hasState = ydocHasState(doc);
+      if (!hasState) {
+        if (readOnly) {
+          clog("seed: read-only viewer on an empty room — not snapshot-seeding");
+        } else {
+          const local = itemsWireToDelta(wire, {}, warnSkip);
+          clog(`seed: doc empty → SEEDING from editor snapshot (${local.added.length} item(s))`);
+          doc.transact(() => {
+            applyDeltaToY(doc, local, ORIGIN);
+            upsertLibSymbolsToY(doc, wireLibSymbols(wire), ORIGIN);
+          }, ORIGIN);
+        }
+        projectedVersion = remoteVersion;
+      } else {
+        await applyDocAuthority(wire, isCurrent);
       }
-      // First tab, no file source: seed the shared doc from the editor model.
-      const local = itemsWireToDelta(wire, {}, warnSkip);
-      clog(`seed: doc empty → SEEDING from editor snapshot (${local.added.length} item(s))`);
-      doc.transact(() => {
-        applyDeltaToY(doc, local, ORIGIN);
-        upsertLibSymbolsToY(doc, wireLibSymbols(wire), ORIGIN);
-      }, ORIGIN);
-      return;
     }
 
-    // Joining a populated doc: the editor adopts it (seed-once authority, same
-    // rationale as the scalar reconciler §2 — divergent local uuids from a
-    // never-saved cold open must yield to the doc's identity). Diff the editor
-    // snapshot against the doc VIEW and apply only the DIFFERENCE (opt 13):
-    // identical items cost nothing, the apply commit (and its undo entry — the
-    // adopt undo-bomb, miss 09) shrinks to the real changed set, and a clean
-    // rebind degrades to baseline-only.
-    const view = itemsView();
-    const editorDelta = itemsWireToDelta(wire, view, warnSkip); // editor state vs doc view
-    const editorUuids = wireItemUuids(wire, warnSkip);
+    if (!isCurrent()) return;
+    if (projectionDirty || projectedVersion !== remoteVersion) {
+      await reconcileProjection(isCurrent);
+    }
+    if (isCurrent()) seeded = true;
+  }
 
-    // Doc authority, inverted per class:
-    //  - doc-only ROOTS → add to the editor (their sexprs embed descendants;
-    //    a doc-only CHILD makes its shared parent's body differ → covered below);
-    //  - items that DIFFER → re-apply the doc's version, lifted to their root
-    //    (the C++ upsert replaces roots; a bare child apply would mis-parent);
-    //  - editor-only ROOTS → remove (editor-only children disappear with their
-    //    parent's re-apply).
-    const liftToRoot = (uuid: string): string => {
-      let cur = uuid;
-      while (view[cur]?.parent != null) cur = view[cur]!.parent!;
-      return cur;
-    };
-    const docOnly = Object.entries(view)
-      .filter(([uuid, it]) => it.parent === null && !editorUuids.has(uuid))
-      .map(([uuid, it]) => ({ uuid, ...it }));
-    const changedRoots = [
-      ...new Set(
-        editorDelta.updated.filter((it) => it.uuid in view).map((it) => liftToRoot(it.uuid)),
-      ),
-    ]
-      .filter((uuid) => !docOnly.some((it) => it.uuid === uuid))
-      .map((uuid) => ({ uuid, ...view[uuid]! }));
-    const removed = editorDelta.added
-      .filter((it) => it.parent === null && !(it.uuid in view))
-      .map((it) => it.uuid);
-
-    const adoptWire = deltaToItemsWire(
-      { added: docOnly, updated: changedRoots, removed },
-      view,
-      libDefs,
-    );
-
-    clog(
-      `seed: doc has ${items.size} item(s) → ADOPTING diff:`,
-      `+${adoptWire.added.length} ~${adoptWire.changed.length} -${adoptWire.removed.length}`,
-    );
-    if (isEmptyItemsWireDelta(adoptWire)) return; // editor already matches — baseline only
-    bridge.applyItems(JSON.stringify(adoptWire));
+  function seed(
+    seedDoc?: KicadDoc,
+    opts?: { editorMatchesDoc?: boolean },
+  ): Promise<void> {
+    return (seedPromise ??= performSeed(seedDoc, opts));
   }
 
   return {
     seed,
     destroy: () => {
       destroyed = true; // gates the DOWN hook — see bug 07 note above
+      bindingGeneration++;
+      seeded = false;
+      projectionStopped = true;
+      projectionCircuitOpen = false;
+      if (projectionRetry) clearTimeout(projectionRetry);
+      projectionRetry = undefined;
+      pendingProjection = undefined;
+      projectionDirty = false;
       detachSeedArbitration?.();
       detachSeedArbitration = undefined;
       items.unobserveDeep(observer);
@@ -405,8 +656,8 @@ export function bindKicadCollab(
 
 /** The Stage C Module exports + window hook, as the browser exposes them. */
 export interface KicadItemsModule {
-  kicadCollabSnapshotItems(): string;
-  kicadCollabApplyItems(json: string): void;
+  kicadCollabSnapshotItems(): Promise<string>;
+  kicadCollabApplyItems(json: string): Promise<void>;
 }
 
 export interface KicadItemsWindow {
@@ -419,11 +670,48 @@ export function moduleItemsBridge(
   win: KicadItemsWindow,
 ): KicadItemsBridge {
   return {
-    snapshotItems: () => mod.kicadCollabSnapshotItems(),
-    applyItems: (json) => mod.kicadCollabApplyItems(json),
+    snapshotItems: (isCurrent) =>
+      guardedModuleCall<string>(
+        mod.kicadCollabSnapshotItems,
+        [],
+        isCurrent,
+        () => mod.kicadCollabSnapshotItems(),
+      ),
+    applyItems: (json, isCurrent) =>
+      guardedModuleCall<void>(
+        mod.kicadCollabApplyItems,
+        [json],
+        isCurrent,
+        () => mod.kicadCollabApplyItems(json),
+      ),
     onItems: (cb) => {
       // Preserve any sibling hooks (e.g. the legacy onDelta) on the global.
       win.kicadCollab = { ...win.kicadCollab, onItems: cb };
     },
   };
+}
+
+type GuardedModuleFunction = Function & {
+  __wxGuardedCall?: (args: unknown[], isCurrent: () => boolean) => Promise<unknown>;
+};
+
+/**
+ * Scheduler builds expose a guarded-call hook on wrapped stateful exports. It
+ * checks the resource generation immediately before native delivery. Legacy
+ * builds execute these exports synchronously, so an admission-time check is
+ * sufficient there.
+ */
+function guardedModuleCall<T>(
+  fn: Function,
+  args: unknown[],
+  isCurrent: (() => boolean) | undefined,
+  direct: () => T | Promise<T>,
+): T | Promise<T> {
+  if (!isCurrent) return direct();
+  if (!isCurrent()) {
+    return Promise.reject(new Error("stale collaborative projection"));
+  }
+  const guarded = (fn as GuardedModuleFunction).__wxGuardedCall;
+  if (guarded) return guarded(args, isCurrent) as Promise<T>;
+  return direct();
 }

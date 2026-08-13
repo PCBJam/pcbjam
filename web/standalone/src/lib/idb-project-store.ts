@@ -4,6 +4,7 @@ import {
   type ProjectFile,
   type ProjectWithFiles,
 } from "@pcbjam/shared";
+import { SAVE_COMMITTED } from "@/wasm/save-flow";
 import type { ProjectSource } from "./project-source";
 import {
   SOURCE_DESCRIPTORS,
@@ -198,13 +199,14 @@ export function idbProjectStore(): LocalProjectStore {
       return v.bytes;
     },
 
-    async uploadFileBytes(slug, relPath, bytes): Promise<void> {
+    async uploadFileBytes(slug, relPath, bytes) {
       const d = await db();
       const tx = d.transaction(FILES, "readwrite");
       const rec: FileRecord = { slug, path: relPath, size: bytes.length, bytes };
       tx.objectStore(FILES).put(rec, fileKey(slug, relPath));
       await txDone(tx);
       await touch(d, slug);
+      return SAVE_COMMITTED;
     },
 
     async hasProject(slug: string): Promise<boolean> {

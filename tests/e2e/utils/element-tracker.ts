@@ -15,6 +15,8 @@ export interface WxElement {
   parentId: string | null;
   visible: boolean;
   enabled: boolean;
+  /** Browser control identity. Zero means this wxWindow is canvas-only. */
+  domId?: number;
   lastUpdated: number;
 }
 
@@ -38,6 +40,8 @@ export interface RegistryStats {
 
 export interface WxRenderedElement {
   id: string;
+  /** Stable identity of the live DOM object, when this rendered item has one. */
+  browserId?: string;
   parentId: string;
   elementType: 'tool' | 'menuitem' | 'sash' | 'auipart' | 'tab' | 'gridcell' | 'listitem' | 'datecell' | 'treeitem' | 'dataviewitem' | 'proprow' | 'listboxitem' | 'spinbutton' | 'slider' | 'slidertrack' | 'textctrl' | 'combobutton' | 'combotextarea' | 'searchctrl' | 'searchbutton' | 'columnheader' | 'styledtext';
   subType: string;
@@ -212,7 +216,7 @@ export async function clickByLabel(
     return false;
   }
 
-  await page.mouse.click(element.centerX, element.centerY);
+  await clickTrackedElement(page, element);
   return true;
 }
 
@@ -230,8 +234,26 @@ export async function clickByName(
     return false;
   }
 
-  await page.mouse.click(element.centerX, element.centerY);
+  await clickTrackedElement(page, element);
   return true;
+}
+
+/**
+ * Click the stable browser identity when a wxWindow has a DOM control.
+ *
+ * Native ingress is queued, so a previously submitted event can relayout a
+ * control between the registry lookup above and the click. A raw coordinate
+ * click would then hit whichever control moved under the old point. Locator
+ * click resolves the same DOM node's live geometry when Playwright commits the
+ * pointer action. Canvas-only windows keep using their native screen point.
+ */
+async function clickTrackedElement(page: Page, element: WxElement): Promise<void> {
+  if (element.domId && element.domId > 0) {
+    await page.locator(`[data-wx-dom-id="${element.domId}"]`).click();
+    return;
+  }
+
+  await page.mouse.click(element.centerX, element.centerY);
 }
 
 /**
@@ -445,7 +467,7 @@ export async function clickMenuBarItem(
     console.warn(`Menu bar item "${label}" is disabled`);
     return false;
   }
-  await page.mouse.click(menuItem.centerX, menuItem.centerY);
+  await clickRenderedElement(page, menuItem);
   return true;
 }
 
@@ -456,9 +478,15 @@ export async function clickMenuItem(
   page: Page,
   label: string
 ): Promise<boolean> {
-  const menuItem = await findRenderedByLabel(page, label, {
+  const menuItems = await findAllRenderedByLabel(page, label, {
     elementType: 'menuitem'
   });
+  const liveBrowserIds = new Set(await page.evaluate((ids: string[]) =>
+    ids.filter((id) => document.getElementById(id)?.isConnected),
+    menuItems.map((item) => item.browserId).filter(Boolean) as string[]));
+  const menuItem = menuItems.find((item) =>
+    item.subType !== 'menubar' &&
+    (!item.browserId || liveBrowserIds.has(item.browserId))) ?? null;
   if (!menuItem) {
     console.warn(`Menu item "${label}" not found`);
     return false;
@@ -467,8 +495,23 @@ export async function clickMenuItem(
     console.warn(`Menu item "${label}" is disabled`);
     return false;
   }
-  await page.mouse.click(menuItem.centerX, menuItem.centerY);
+  await clickRenderedElement(page, menuItem);
   return true;
+}
+
+/**
+ * Use a rendered object's browser identity when one exists. Menu structures
+ * can be rebuilt by native update-UI work between a registry lookup and input
+ * dispatch; a coordinate from the retired row can then hit an unrelated live
+ * row. A unique DOM id either clicks the same object or fails loudly.
+ */
+async function clickRenderedElement(page: Page, element: WxRenderedElement): Promise<void> {
+  if (element.browserId) {
+    await page.locator(`#${element.browserId}`).click();
+    return;
+  }
+
+  await page.mouse.click(element.centerX, element.centerY);
 }
 
 /**
@@ -1681,7 +1724,10 @@ export async function waitUntil<Arg = undefined>(
 ): Promise<void> {
   const timeout = options.timeout ?? 15000;
   try {
-    await page.waitForFunction(pageFunction, options.arg as Arg, {
+    // Playwright's public generic uses an internal recursive Unboxed<Arg>
+    // type. Preserve this helper's call-site type checking, then bridge that
+    // implementation-only distinction at the serialization boundary.
+    await page.waitForFunction(pageFunction as any, options.arg as any, {
       timeout,
       polling: options.polling ?? 'raf',
     });
@@ -1719,6 +1765,51 @@ export async function waitForEditorReady(
     'editor registry populated + a toolbar laid out',
     { timeout }
   );
+
+  await assertEditorRuntimeHealthy(page, 'editor readiness');
+}
+
+/**
+ * Refuse a painted last frame from an Emscripten instance that has already
+ * aborted or whose scheduler has entered its terminal state.  A populated wx
+ * registry is historical UI state; by itself it does not prove that native
+ * execution is still available.
+ */
+export async function assertEditorRuntimeHealthy(
+  page: Page,
+  site = 'editor operation'
+): Promise<void> {
+  const health = await page.evaluate(() => {
+    const runtime = globalThis as typeof globalThis & {
+      ABORT?: boolean;
+      __wxWasmFailed?: boolean;
+      __wxNativeIntegrityUnknown?: boolean;
+      __wxScheduler?: { dead?: boolean };
+    };
+
+    return {
+      aborted: runtime.ABORT === true,
+      schedulerInstalled: !!runtime.__wxScheduler,
+      schedulerDead: runtime.__wxScheduler?.dead === true,
+      wasmFailed: runtime.__wxWasmFailed === true,
+      integrityUnknown: runtime.__wxNativeIntegrityUnknown === true,
+    };
+  });
+
+  if (
+    !health.schedulerInstalled ||
+    health.aborted ||
+    health.schedulerDead ||
+    health.wasmFailed ||
+    health.integrityUnknown
+  ) {
+    throw new Error(
+      `editor runtime is terminal at ${site}: ` +
+        `scheduler.installed=${health.schedulerInstalled}, ABORT=${health.aborted}, ` +
+        `scheduler.dead=${health.schedulerDead}, ` +
+        `wasmFailed=${health.wasmFailed}, integrityUnknown=${health.integrityUnknown}`
+    );
+  }
 }
 
 /**
@@ -2019,6 +2110,7 @@ export async function waitForWxApp(
     'wx element registry populated',
     { timeout }
   );
+  await assertEditorRuntimeHealthy(page, 'wx harness readiness');
 }
 
 /**
@@ -2035,6 +2127,7 @@ export async function waitForCanvasApp(
   const selector = options.selector ?? '#canvas';
   await page.locator(selector).waitFor({ state: 'visible', timeout });
   await waitForCanvasStable(page, selector, { timeout });
+  await assertEditorRuntimeHealthy(page, 'wx canvas-harness readiness');
 }
 
 /**
@@ -2059,20 +2152,32 @@ export async function clickMenuItemByText(
       const r = window.wxElementRegistry;
       if (!r || !r.findAllRendered) return false;
       return r.findAllRendered({ elementType: 'menuitem' })
-        .some((m) => norm(m.label || '') === w && m.enabled !== false);
+        .some((m) => norm(m.label || '') === w && m.enabled !== false &&
+          m.subType !== 'menubar' &&
+          (!m.browserId || !!document.getElementById(m.browserId)?.isConnected));
     },
     `enabled menu item "${base}"`,
     { timeout, arg: want }
   );
-  const pos = await page.evaluate((w: string) => {
+  const target = await page.evaluate((w: string) => {
     const norm = (s: string) => (s || '').replace(/&/g, '').replace(/[.…\s]+$/u, '').trim();
     const r = window.wxElementRegistry!;
     const hit = r.findAllRendered!({ elementType: 'menuitem' })
-      .find((m) => norm(m.label || '') === w && m.enabled !== false);
-    return hit ? { x: hit.centerX, y: hit.centerY } : null;
+      .find((m) => norm(m.label || '') === w && m.enabled !== false &&
+        m.subType !== 'menubar' &&
+        (!m.browserId || !!document.getElementById(m.browserId)?.isConnected));
+    return hit ? {
+      browserId: hit.browserId || '',
+      x: hit.centerX,
+      y: hit.centerY,
+    } : null;
   }, want);
-  if (!pos) throw new Error(`clickMenuItemByText: "${base}" vanished after appearing`);
-  await page.mouse.click(pos.x, pos.y);
+  if (!target) throw new Error(`clickMenuItemByText: "${base}" vanished after appearing`);
+  if (target.browserId) {
+    await page.locator(`#${target.browserId}`).click();
+    return;
+  }
+  await page.mouse.click(target.x, target.y);
 }
 
 /**

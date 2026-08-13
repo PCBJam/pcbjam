@@ -8,8 +8,8 @@
 #ifndef KICAD_STUBS_H
 #define KICAD_STUBS_H
 
-// GLEW must come before any OpenGL headers (including wx/glcanvas.h)
-#include <GL/glew.h>
+// KiCad's GLAD loader must come before any OpenGL headers.
+#include <kicad_gl/kiglad.h>
 
 // System wxWidgets
 #include <wx/wx.h>

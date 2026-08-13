@@ -22,16 +22,16 @@ const MANIFEST_PATH = path.join(__dirname, '../3d-regression/manifest.json');
 const OUTPUT_DIR = path.join(__dirname, '../3d-regression/output/webgl');
 const APP_JS = path.join(__dirname, '../apps/3d-webgl/3d_webgl_test.js');
 
+expect(
+  fs.existsSync(APP_JS),
+  'CI/current-tree prerequisite: build the 3D WebGL harness before running browser tests',
+).toBe(true);
+
 const MANIFEST: { width: number; height: number; scenarios: string[] } = JSON.parse(
   fs.readFileSync(MANIFEST_PATH, 'utf8')
 );
 
 test.describe('3D WebGL Regression', () => {
-  test.skip(
-    !fs.existsSync(APP_JS),
-    '3d-webgl harness not built (run scripts/build-3d-webgl-test.sh)'
-  );
-
   test.beforeAll(async () => {
     fs.mkdirSync(OUTPUT_DIR, { recursive: true });
   });

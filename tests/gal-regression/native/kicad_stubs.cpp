@@ -5,7 +5,7 @@
  * but not included in the GAL source files we compile.
  */
 
-#include <GL/glew.h>
+#include <kicad_gl/kiglad.h>
 #include <wx/wx.h>
 #include <wx/glcanvas.h>
 #include <wx/snglinst.h>
@@ -20,7 +20,7 @@ class NOTIFICATIONS_MANAGER {};
 // Include KiCad headers
 #include <pgm_base.h>
 #include <advanced_config.h>
-#include <gal/opengl/gl_context_mgr.h>  // For GL_CONTEXT_MANAGER definition
+#include <kicad_gl/gl_context_mgr.h>  // For GL_CONTEXT_MANAGER definition
 
 //=============================================================================
 // PGM_BASE minimal implementation
@@ -47,6 +47,10 @@ PGM_BASE& Pgm() {
         s_pgmInstance = new PGM_BASE_TEST();
     }
     return *s_pgmInstance;
+}
+
+PGM_BASE* PgmOrNull() {
+    return s_pgmInstance;
 }
 
 //=============================================================================
@@ -168,6 +172,7 @@ void DisplayErrorMessage(wxWindow*, const wxString&, const wxString&) {}
 
 // OpenGL info stub
 void SetOpenGLInfo(const char*, const char*, const char*) {}
+void SetOpenGLBackendInfo(wxString) {}
 
 // Math logging stub
 void kimathLogOverflow(double, const char*) {}
@@ -265,7 +270,8 @@ void VC_SETTINGS::Reset() {}
 // KIFONT::FONT::Draw stub (the version with cursor position)
 namespace KIFONT {
 void FONT::Draw(KIGFX::GAL*, const wxString&, const VECTOR2I&, const VECTOR2I&,
-                const TEXT_ATTRIBUTES&, const METRICS&) const {}
+                const TEXT_ATTRIBUTES&, const METRICS&, std::optional<VECTOR2I>,
+                wxString*) const {}
 } // namespace KIFONT
 
 //=============================================================================

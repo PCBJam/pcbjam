@@ -13,11 +13,11 @@ import { test, expect, type Page } from '@playwright/test';
 const SCOPE = 'default';
 
 type Mod = {
-  kicadCollabGetSelection(): string;
-  kicadCollabTestGetLocked(): string;
-  kicadCollabTestSelectComponent(): string;
-  kicadCollabTestSelectByUuid(uuid: string): boolean;
-  kicadCollabTestClearSelection(): boolean;
+  kicadCollabGetSelection(): Promise<string>;
+  kicadCollabTestGetLocked(): Promise<string>;
+  kicadCollabTestSelectComponent(): Promise<string>;
+  kicadCollabTestSelectByUuid(uuid: string): Promise<boolean>;
+  kicadCollabTestClearSelection(): Promise<boolean>;
 };
 type W = { Module: Mod };
 
@@ -41,12 +41,12 @@ async function bootBoard(page: Page, user: string): Promise<void> {
 }
 
 const selection = (page: Page) =>
-  page.evaluate(() =>
-    JSON.parse((window as unknown as W).Module.kicadCollabGetSelection()),
+  page.evaluate(async () =>
+    JSON.parse(await (window as unknown as W).Module.kicadCollabGetSelection()),
   );
 const locked = (page: Page) =>
-  page.evaluate(() =>
-    JSON.parse((window as unknown as W).Module.kicadCollabTestGetLocked()),
+  page.evaluate(async () =>
+    JSON.parse(await (window as unknown as W).Module.kicadCollabTestGetLocked()),
   );
 
 test('a peer selection locks the item; overlapping holds tiebreak deterministically', async ({

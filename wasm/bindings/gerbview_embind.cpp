@@ -25,6 +25,7 @@
 #include <wx/app.h>
 #include <wx/string.h>
 #include "open_gate.h"
+#include "owned_open.h"
 #include "main_stack_runner.h"
 
 using namespace emscripten;
@@ -78,6 +79,21 @@ static bool kicadOpenFiles( std::string pathsJson )
     return openFileSet( files );
 }
 
+static bool kicadOpenFileStart( int token, std::string path )
+{
+    return pcbjam_open::startOwnedOpen(
+            token, [path = std::move( path )]() { return kicadOpenFile( path ); } );
+}
+
+static bool kicadOpenFilesStart( int token, std::string pathsJson )
+{
+    return pcbjam_open::startOwnedOpen(
+            token,
+            [pathsJson = std::move( pathsJson )]() {
+                return kicadOpenFiles( pathsJson );
+            } );
+}
+
 /** JS-pollable open-in-flight probe — same contract as the editors. */
 static bool kicadOpenFileBusy()
 {
@@ -87,6 +103,8 @@ static bool kicadOpenFileBusy()
 EMSCRIPTEN_BINDINGS( gerbview )
 {
     function( "kicadOpenFile", &kicadOpenFile );
+    function( "kicadOpenFileStart", &kicadOpenFileStart );
     function( "kicadOpenFiles", &kicadOpenFiles );
+    function( "kicadOpenFilesStart", &kicadOpenFilesStart );
     function( "kicadOpenFileBusy", &kicadOpenFileBusy );
 }

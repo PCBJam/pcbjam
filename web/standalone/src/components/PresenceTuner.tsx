@@ -2,6 +2,7 @@ import * as React from "react";
 import { setPinRadiusPx } from "@/wasm/collab/pin-geometry";
 import { PRESENCE_COLORS } from "@pcbjam/shared";
 import { Palette, X } from "lucide-react";
+import { observeOwnerJob } from "@/wasm/owner-job";
 
 /**
  * DEV-TIME presence style tuner (VITE_PRESENCE_TUNER=1): live-patches the wasm
@@ -15,13 +16,13 @@ import { Palette, X } from "lucide-react";
  */
 
 export interface TunerModule {
-  kicadCollabSetStyle(json: string): void;
-  kicadCollabSetRemote(json: string): void;
-  kicadCollabSetPins(json: string): void;
-  kicadCollabGetViewport(): string;
-  kicadCollabTestListItems(n: number): string;
+  kicadCollabSetStyle(json: string): Promise<void>;
+  kicadCollabSetRemote(json: string): Promise<void>;
+  kicadCollabSetPins(json: string): Promise<void>;
+  kicadCollabGetViewport(): Promise<string>;
+  kicadCollabTestListItems(n: number): Promise<string>;
   /** Varied demo groups (small/large footprint, busiest nets) — newer builds. */
-  kicadCollabTestDemoSet?(): string;
+  kicadCollabTestDemoSet?(): Promise<string>;
 }
 
 export function hasTunerBridge(mod: unknown): mod is TunerModule {
@@ -121,7 +122,9 @@ export function PresenceTuner({ mod, tool }: { mod: TunerModule; tool: string })
 
   // Push on mount (restores a stored style after reload) + on every change.
   React.useEffect(() => {
-    mod.kicadCollabSetStyle(JSON.stringify(style));
+    observeOwnerJob("set presence tuner style", () =>
+      mod.kicadCollabSetStyle(JSON.stringify(style)),
+    );
     // The DOM half of the comment pins (hit target / highlight / popover
     // offset in CommentLayer) mirrors the GAL radius — keep it in step with
     // the live re-style, or the highlight drifts off the drawn bubble.
@@ -137,15 +140,19 @@ export function PresenceTuner({ mod, tool }: { mod: TunerModule; tool: string })
     setStyle((s) => ({ ...s, [k]: v }));
 
   const injectDemo = React.useCallback(
-    (on: boolean) => {
+    async (on: boolean) => {
       setDemo(on);
       if (!on) {
-        mod.kicadCollabSetRemote(JSON.stringify({ peers: [] }));
-        mod.kicadCollabSetPins(JSON.stringify({ pins: [] }));
+        try {
+          await mod.kicadCollabSetRemote(JSON.stringify({ peers: [] }));
+          await mod.kicadCollabSetPins(JSON.stringify({ pins: [] }));
+        } catch (error) {
+          console.error(`[wasm-owner] clear presence tuner demo failed: ${String(error)}`);
+        }
         return;
       }
       try {
-        const vp = JSON.parse(mod.kicadCollabGetViewport());
+        const vp = JSON.parse(await mod.kicadCollabGetViewport());
         const spanX = vp.w / vp.scale;
         const spanY = vp.h / vp.scale;
         // Varied selections (small + large footprint, two busiest nets) from
@@ -153,8 +160,11 @@ export function PresenceTuner({ mod, tool }: { mod: TunerModule; tool: string })
         let bobSel: string[] = [];
         let carolSel: string[] = [];
         try {
+          const groupsJson = mod.kicadCollabTestDemoSet
+            ? await mod.kicadCollabTestDemoSet()
+            : '{"groups":[]}';
           const groups = (
-            JSON.parse(mod.kicadCollabTestDemoSet?.() ?? '{"groups":[]}') as {
+            JSON.parse(groupsJson) as {
               groups: Array<{ label: string; ids: string[] }>;
             }
           ).groups;
@@ -166,7 +176,7 @@ export function PresenceTuner({ mod, tool }: { mod: TunerModule; tool: string })
           /* fall through to the flat list */
         }
         if (!bobSel.length && !carolSel.length) {
-          const items = JSON.parse(mod.kicadCollabTestListItems(3)) as string[];
+          const items = JSON.parse(await mod.kicadCollabTestListItems(3)) as string[];
           bobSel = items.slice(0, 1);
           carolSel = items.slice(1, 3);
         }
@@ -204,10 +214,10 @@ export function PresenceTuner({ mod, tool }: { mod: TunerModule; tool: string })
             resolved: false,
           },
         ];
-        mod.kicadCollabSetRemote(JSON.stringify({ peers }));
-        mod.kicadCollabSetPins(JSON.stringify({ pins }));
-      } catch {
-        /* frame not up yet */
+        await mod.kicadCollabSetRemote(JSON.stringify({ peers }));
+        await mod.kicadCollabSetPins(JSON.stringify({ pins }));
+      } catch (error) {
+        console.error(`[wasm-owner] set presence tuner demo failed: ${String(error)}`);
       }
     },
     [mod],

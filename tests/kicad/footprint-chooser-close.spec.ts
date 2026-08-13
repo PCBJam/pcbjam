@@ -95,43 +95,34 @@ test.describe('Add Footprint chooser close (doc-19 dead-app repro)', () => {
         await synthClick(page, Math.round(canvas.width * 0.35), Math.round(canvas.height * 0.45));
 
         // The chooser is a second top-level frame + a "nested" scheduler wait.
-        await page
-            .waitForFunction(
-                (n) =>
-                    (window.wxElementRegistry?.findAll({ visible: true }) ?? []).filter((e) =>
-                        /Frame$/.test(e.typeName || ''),
-                    ).length > n,
-                framesBefore,
-                { timeout: 40000 },
-            )
-            .catch(() => {});
+        await expect
+            .poll(() => frameCount(page), {
+                timeout: 40000,
+                message: 'footprint chooser frame opened',
+            })
+            .toBeGreaterThan(framesBefore);
         const framesOpen = await frameCount(page);
         console.log(`[TEST] frames: ${framesBefore} → ${framesOpen}`);
         expect(framesOpen, 'footprint chooser frame opened').toBeGreaterThan(framesBefore);
         await assertResponsive(page, 'chooser open');
 
-        // Click the real Cancel button (coords from the element registry).
-        const cancel = await page.evaluate(() => {
-            const b = (window.wxElementRegistry?.findAll({ visible: true }) ?? []).find(
-                (e) => /Button/i.test(e.typeName || '') && /cancel/i.test(e.label || ''),
-            );
-            return b ? { x: b.centerX, y: b.centerY } : null;
-        });
-        expect(cancel, 'Cancel button found').not.toBeNull();
-        await synthClick(page, cancel!.x, cancel!.y);
+        // Click the real DOM Cancel button. Dispatching an event on #canvas
+        // does not retarget it by coordinates and therefore cannot activate
+        // wxButton's DOM listener.
+        // Registry coordinates are local to the chooser TLW. A page-level
+        // mouse click needs the TLW offset and can silently miss the button.
+        // Target the real DOM control so this reducer exercises wxButton's
+        // browser listener and the exact modal-close continuation.
+        await page.getByRole('button', { name: 'Cancel', exact: true }).click();
 
         // The chooser must close AND the app must stay alive. On the broken
         // build the loop stalls here (the dropped fiber resume).
-        await page
-            .waitForFunction(
-                (n) =>
-                    (window.wxElementRegistry?.findAll({ visible: true }) ?? []).filter((e) =>
-                        /Frame$/.test(e.typeName || ''),
-                    ).length <= n,
-                framesBefore,
-                { timeout: 20000 },
-            )
-            .catch(() => {});
+        await expect
+            .poll(() => frameCount(page), {
+                timeout: 20000,
+                message: 'footprint chooser frame closed',
+            })
+            .toBeLessThanOrEqual(framesBefore);
         await assertResponsive(page, 'chooser cancel');
 
         const traps = [...testLogger.consoleLogs, ...testLogger.errors].filter((l) => TRAP.test(l));

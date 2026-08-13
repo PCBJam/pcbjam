@@ -60,6 +60,7 @@
 #include <pcbjam_remote_lock.h>
 #include "collab_common.h"
 #include "open_gate.h"
+#include "owned_open.h"
 #include "main_stack_runner.h"
 #include "collab_presence_core.h"
 #include "collab_presence_style.h"
@@ -87,8 +88,7 @@ bool kicadOpenFile( std::string path )
     // Held across every Asyncify park of the load; see open_gate.h.
     pcbjam_open::BusyGuard busy;
 
-    if( pcbjam_open::testParkMs() > 0 )
-        emscripten_sleep( pcbjam_open::testParkMs() );
+    pcbjam_open::testParkIfArmed();
 
     KIWAY_PLAYER* frame =
             wxTheApp ? static_cast<KIWAY_PLAYER*>( wxTheApp->GetTopWindow() ) : nullptr;
@@ -104,10 +104,15 @@ bool kicadOpenFile( std::string path )
 
     // Test-only post-load park (open_gate.h): model fully loaded, gate still
     // closed — the deterministic window the collab-load-fuzz spec hammers.
-    if( pcbjam_open::testParkMs() > 0 )
-        emscripten_sleep( pcbjam_open::testParkMs() );
+    pcbjam_open::testParkIfArmed();
 
     return ok;
+}
+
+bool kicadOpenFileStart( int token, std::string path )
+{
+    return pcbjam_open::startOwnedOpen(
+            token, [path = std::move( path )]() { return kicadOpenFile( path ); } );
 }
 
 // JS-pollable open-in-flight probe (open_gate.h): the web shell defers the
@@ -1123,7 +1128,8 @@ void doApplyItems( SCH_EDIT_FRAME* aFrame, const json& aWire )
     scheduleFlush();
 }
 
-// Test/PoC move (the SCH_COMMIT body for kicadCollabTestMoveFirst, deferred via CallAfter).
+// Test/PoC move (the SCH_COMMIT body for kicadCollabTestMoveFirst, run on the
+// owner-retaining coroutine lane).
 void collabTestMove( SCH_EDIT_FRAME* aFrame, SCH_ITEM* aItem, SCH_SCREEN* aScreen, int aDx,
                      int aDy )
 {
@@ -1147,13 +1153,6 @@ void collabTestMove( SCH_EDIT_FRAME* aFrame, SCH_ITEM* aItem, SCH_SCREEN* aScree
 // exact context real UI edits run in. So defer the whole mutation there.
 void schCollabApply( std::string aJson )
 {
-    // Open-in-flight guard (open_gate.h): never touch the model while a
-    // kicadOpenFile Asyncify chain is parked mid-load — commits/virtuals on a
-    // half-built schematic mis-dispatch ("indirect call signature mismatch").
-    // Callers gate on kicadOpenFileBusy; fuzzed by tests/kicad/collab-load-fuzz.spec.ts.
-    if( pcbjam_open::busy() )
-        return;
-
     json delta = json::parse( aJson, nullptr, /*allow_exceptions*/ false );
 
     if( delta.is_discarded() )
@@ -1177,10 +1176,6 @@ void schCollabApply( std::string aJson )
 // registers the change listener on first call.
 std::string schCollabSnapshot()
 {
-    if( pcbjam_open::busy() ) // open in flight (open_gate.h) — see schCollabApply
-        return json{ { "added", json::array() }, { "changed", json::array() },
-                     { "removed", json::array() } }.dump();
-
     ensureBridge();
     json added = snapshotItems( schFrame() );
 
@@ -1197,9 +1192,6 @@ std::string schCollabSnapshot()
 // (LoadContent + SCH_COMMIT must run where native edits run).
 void schCollabApplyItems( std::string aJson )
 {
-    if( pcbjam_open::busy() ) // open in flight (open_gate.h) — see schCollabApply
-        return;
-
     json wire = json::parse( aJson, nullptr, /*allow_exceptions*/ false );
 
     if( wire.is_discarded() )
@@ -1219,10 +1211,6 @@ void schCollabApplyItems( std::string aJson )
 // Registers the listener + rebaselines exactly like kicadCollabSnapshot.
 std::string schCollabSnapshotItems()
 {
-    if( pcbjam_open::busy() ) // open in flight (open_gate.h) — see schCollabApply
-        return json{ { "added", json::array() }, { "changed", json::array() },
-                     { "removed", json::array() } }.dump();
-
     SCH_EDIT_FRAME* fr = schFrame();
 
     json added = json::array();
@@ -1266,7 +1254,11 @@ std::string schCollabTestMoveFirst( int aDx, int aDy )
 
         for( SCH_ITEM* item : screen->Items() )
         {
-            fr->CallAfter( [fr, item, screen, aDx, aDy]() { collabTestMove( fr, item, screen, aDx, aDy ); } );
+            pcbjam_collab::runOnFiber(
+                    fr,
+                    [fr, item, screen, aDx, aDy]() {
+                        collabTestMove( fr, item, screen, aDx, aDy );
+                    } );
             return toUtf8( item->m_Uuid.AsString() );
         }
     }
@@ -1557,7 +1549,7 @@ std::string schCollabTestAddSymbol( std::string aLibId, int aX, int aY, std::str
     return id;
 }
 
-// By-uuid variant of MoveFirst (same CallAfter + devirtualized move path).
+// By-uuid variant of MoveFirst (same owner-retaining, devirtualized move path).
 bool schCollabTestMoveSchItem( std::string aId, int aDx, int aDy )
 {
     SCH_EDIT_FRAME* fr = schFrame();
@@ -1574,7 +1566,7 @@ bool schCollabTestMoveSchItem( std::string aId, int aDx, int aDy )
     // between and the captured pointer would be dangling — the commit would
     // resurrect a deleted item (drift-trio S4 move-vs-delete). Vanished =>
     // the move loses, silently.
-    fr->CallAfter( [fr, aId, aDx, aDy]() {
+    pcbjam_collab::runOnFiber( fr, [fr, aId, aDx, aDy]() {
         SCH_SHEET_PATH path;
         SCH_ITEM* item = fr->Schematic().ResolveItem( KIID( wxString::FromUTF8( aId.c_str() ) ),
                                                       &path, /*allowNull*/ true );
@@ -1984,7 +1976,7 @@ bool schCollabTestClearSelection()
     if( !fr )
         return false;
 
-    fr->CallAfter( [fr]() {
+    pcbjam_collab::runOnFiber( fr, [fr]() {
         // ClearSelection is not on the shared SELECTION_TOOL base — the one
         // presence hook that stays editor-typed.
         if( SCH_SELECTION_TOOL* st = fr->GetToolManager()->GetTool<SCH_SELECTION_TOOL>() )
@@ -2037,11 +2029,6 @@ void kicadSaveSchematic( std::string path )
 }
 
 
-static bool kicadCollabFiberBusyProbe()
-{
-    return pcbjam_collab::fiberBusy() || !pcbjam_collab::fiberQueue().empty();
-}
-
 EMSCRIPTEN_BINDINGS(eeschema) {
     // Programmatic save of the in-memory schematic (round-trip tests, README §A).
     function("kicadSaveSchematic", &kicadSaveSchematic);
@@ -2062,9 +2049,9 @@ EMSCRIPTEN_BINDINGS(eeschema) {
     // registered once by kicad_editor_embind.cpp, dispatching on the active frame.
     // Programmatic file open (preferred over UI automation from the web app).
     function("kicadOpenFile", &kicadOpenFile);
+    function("kicadOpenFileStart", &kicadOpenFileStart);
     function("kicadOpenFileBusy", &kicadOpenFileBusy);
     function("kicadTestSetOpenPark", &kicadTestSetOpenPark);
-    function("kicadCollabFiberBusy", &kicadCollabFiberBusyProbe);
     // Read-only viewer lock (read-only-viewer).
     function("kicadSetReadOnly", &kicadSetReadOnly);
     // Yjs collaborative bridge entry points (same contract as pl_editor).

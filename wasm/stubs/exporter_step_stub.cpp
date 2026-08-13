@@ -65,13 +65,22 @@ EM_JS( void, js_occExportStart,
     const boardPath = UTF8ToString( aBoardPath );
     const jobJson = UTF8ToString( aJobJson );
     const fileName = UTF8ToString( aFileName );
+    const scheduler = globalThis.__wxScheduler;
 
     const finish = ( res ) => {
-        const s = JSON.stringify( res || { ok: false, report: 'occ_service: no response' } );
-        const n = lengthBytesUTF8( s ) + 1;
-        const p = _malloc( n );
-        stringToUTF8( s, p, n );
-        globalThis.__wxScheduler.resolveWait( aToken, p );
+        if( !scheduler || typeof scheduler.runWaitCompletion !== 'function' )
+            return;
+        scheduler.runWaitCompletion( 'OCC export completion', aToken, () => {
+            const s = JSON.stringify( res || { ok: false, report: 'occ_service: no response' } );
+            const n = lengthBytesUTF8( s ) + 1;
+            const p = _malloc( n );
+
+            if( !p )
+                return 0;
+
+            stringToUTF8( s, p, n );
+            return p;
+        } );
     };
 
     let req;
@@ -92,12 +101,18 @@ EM_JS( void, js_occExportStart,
     }
     catch( e )
     {
+        if( scheduler && typeof scheduler._terminalizeNativeTrap === 'function'
+            && scheduler._terminalizeNativeTrap(
+                'OCC export request setup trapped', e ) )
+            throw e;
         console.error( '[pcbjam-occ] export request failed:', e );
         req = Promise.resolve( { ok: false, report: 'occ_service request failed: ' + e } );
     }
 
     req.then( finish ).catch( ( e ) => {
         console.error( '[pcbjam-occ] export request failed:', e );
+        // A native trap closes the completion gate before this catch, so this
+        // fallback cannot repeat native work in a damaged instance.
         finish( { ok: false, report: 'occ_service request failed: ' + e } );
     } );
 } )
@@ -168,6 +183,10 @@ bool EXPORTER_STEP::Export()
     const wxString downloadName = wxFileName( m_outputFile ).GetFullName();
 
     const int token = wxWasmBeginWait( "occ" );
+
+    if( token <= 0 )
+        return false;
+
     js_occExportStart( token, TMP_BOARD, jobJson.c_str(), downloadName.utf8_string().c_str() );
 
     // The malloc'd JSON pointer rides the wait as an int32.

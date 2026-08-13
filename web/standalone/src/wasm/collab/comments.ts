@@ -23,6 +23,12 @@ import {
   type CommentThread,
 } from "@pcbjam/shared";
 import { clog } from "./debug";
+import {
+  observeOwnerJob,
+  runGuardedOwnerExport,
+  type GuardedOwnerExport,
+} from "../owner-job";
+import { createLatestOwnerProjection } from "../latest-owner-projection";
 
 /**
  * Comments controller (collab-presence 0005): glues the MIT `kdoc_comments`
@@ -43,9 +49,9 @@ export const IU_PER_MM: Record<string, number> = {
 };
 
 export interface CommentPinsModule {
-  kicadCollabSetPins(json: string): void;
-  kicadCollabSetViewport(cx: number, cy: number): void;
-  kicadCollabGetViewport(): string;
+  kicadCollabSetPins(json: string): Promise<void>;
+  kicadCollabSetViewport(cx: number, cy: number): Promise<void>;
+  kicadCollabGetViewport(): Promise<string>;
 }
 
 /** True when the loaded wasm exposes the comment-pin bridge (0005 exports). */
@@ -132,8 +138,18 @@ export function createComments(opts: {
   tool: string;
   /** Presence color resolver (nth-in-room); undefined falls back to the hash. */
   colorFor?: (userId: string) => string | undefined;
+  /** Exact active-sheet generation for queued viewport/pin native work. */
+  isCurrent?: () => boolean;
+  /** Host-owned authoritative pin projection. Includes teardown clears. */
+  projectPins: (json: string, isCurrent: () => boolean) => Promise<unknown>;
 }): CommentsController {
   const { doc, mod, user } = opts;
+  let destroyed = false;
+  let controllerGeneration = 0;
+  const generationGuard = (generation = controllerGeneration) => () =>
+    !destroyed &&
+    controllerGeneration === generation &&
+    (opts.isCurrent?.() ?? true);
   const iuPerMm = IU_PER_MM[opts.tool] ?? 1e6;
   // Fallback chain: live presence (nth-in-room) → the doc's comment-author
   // slot (0009 C — presence-less binds still color deterministically) → hash.
@@ -154,30 +170,35 @@ export function createComments(opts: {
     return cache;
   };
 
-  const pushPins = () => {
-    mod.kicadCollabSetPins(
-      JSON.stringify({
-        // Resolved threads drop their dot (figma-style) — they stay reachable
-        // through the panel's "resolved" filter. Matches the DOM hit targets.
-        // A global hide (toolbar eye) empties the set entirely.
-        pins: !visible
-          ? []
-          : cache
-              .filter((t) => !t.resolved)
-              .map((t) => ({
-                id: t.id,
-                // Author name rides along so the tuner's palette override can
-                // recolor pins consistently with that user's cursor/boxes.
-                name: t.createdBy,
-                x: t.world.x,
-                y: t.world.y,
-                color: colorFor(t.createdBy),
-                resolved: t.resolved,
-                unread: threadUnreadCount(t, user.id) > 0,
-              })),
-      }),
-    );
-  };
+  const pinsJson = () =>
+    JSON.stringify({
+      // Resolved threads drop their dot (figma-style) — they stay reachable
+      // through the panel's "resolved" filter. Matches the DOM hit targets.
+      // A global hide (toolbar eye) empties the set entirely.
+      pins: !visible
+        ? []
+        : cache
+            .filter((t) => !t.resolved)
+            .map((t) => ({
+              id: t.id,
+              // Author name rides along so the tuner's palette override can
+              // recolor pins consistently with that user's cursor/boxes.
+              name: t.createdBy,
+              x: t.world.x,
+              y: t.world.y,
+              color: colorFor(t.createdBy),
+              resolved: t.resolved,
+              unread: threadUnreadCount(t, user.id) > 0,
+            })),
+    });
+
+  const pinProjection = createLatestOwnerProjection({
+    label: "project comment pins",
+    snapshot: pinsJson,
+    submit: (json, isCurrent) =>
+      opts.projectPins(json, () => isCurrent() && (opts.isCurrent?.() ?? true)),
+  });
+  const pushPins = () => pinProjection.request();
 
   let timer: ReturnType<typeof setTimeout> | undefined;
   const schedule = () => {
@@ -283,19 +304,37 @@ export function createComments(opts: {
     colorFor,
     jumpTo(threadId) {
       const t = cache.find((x) => x.id === threadId);
-      if (t) mod.kicadCollabSetViewport(t.world.x, t.world.y);
+      if (t) {
+        const generation = controllerGeneration;
+        const setViewport = mod.kicadCollabSetViewport as GuardedOwnerExport<
+          readonly [number, number],
+          void
+        >;
+        observeOwnerJob(
+          "jump to comment",
+          () =>
+            runGuardedOwnerExport(
+              setViewport,
+              [t.world.x, t.world.y] as const,
+              generationGuard(generation),
+            ),
+        );
+      }
     },
     destroy() {
+      if (destroyed) return;
+      destroyed = true;
+      ++controllerGeneration;
+      pinProjection.stop();
       offComments();
       items.unobserveDeep(onItems);
       subscribers.clear();
       if (timer) clearTimeout(timer);
       timer = undefined;
-      try {
-        mod.kicadCollabSetPins(JSON.stringify({ pins: [] }));
-      } catch {
-        /* wasm may already be gone on teardown */
-      }
+      const clear = JSON.stringify({ pins: [] });
+      observeOwnerJob("clear comment pins", () =>
+        opts.projectPins(clear, () => opts.isCurrent?.() ?? true),
+      );
     },
   };
 }

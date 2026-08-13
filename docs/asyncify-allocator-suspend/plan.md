@@ -1,8 +1,10 @@
-<!-- STATUS: PLANNED, NOT EXECUTED (saved 2026-08-10). Verification findings herein are real
-     (measured against the Aug 6 kicad_editor build, emsdk 4.0.2); the shim guard, the test,
-     and the removelist additions have NOT been applied yet. -->
+<!-- STATUS: GUARD + REGRESSION IMPLEMENTED (updated 2026-08-11).
+     The temporary pre-fix control was RED with stormTurns=60. The fixed shim was GREEN with
+     mainZeroSleepCalls>0, stormTurns=0, sleepTurned=1, completed=1. The broad removelist expansion remains DEFERRED:
+     its call-graph evidence is from the Aug 6 editor module and must be repeated against a
+     freshly rebuilt module from this branch before those optimization exclusions are applied. -->
 
-# Nanosleep shim zero-duration guard + mimalloc contention red/green test
+# Nanosleep shim zero-duration guard + mimalloc contention regression
 
 ## Context
 
@@ -10,19 +12,21 @@ The asyncify investigation established that **memory allocation can suspend on t
 
 Adversarial verification (real kicad_editor binary + emsdk 4.0.2 sources) proved: the `sleep(0)` chain is the allocator's **only** suspend path; all four mimalloc spin sites sleep constant 0; mimalloc is the module's **only zero-duration sleeper** (all other nanosleep callers are ≥1 ms constants); `std::this_thread::yield`/`sched_yield` don't route through nanosleep. Hence an `ms == 0` early return in the shim severs the path completely and affects nothing else.
 
-**This task:** (1) the zero-duration guard in the shim; (2) a standalone red/green C++ wasm test that exercises the mimalloc contention path and detects main-thread event-loop turns — RED before the fix, GREEN after; (3) add the verified-safe memory-touching entry families to `scripts/common/asyncify-removelist.txt` (user-proposed list, adversarially verified against the real module first).
+**Implemented here:** (1) the zero-duration guard in the shim; (2) a standalone red/green C++ wasm test that exercises the mimalloc contention path and detects main-thread event-loop turns — RED before the fix, GREEN after.
 
-Out of scope (explicit follow-ups): full kicad_editor rebuild + 3D e2e suite run with the new removelist (the new entries only take effect at the next app build's post-process anyway).
+**Deferred:** the memory-touching additions to `scripts/common/asyncify-removelist.txt`. The recorded audit remains useful evidence, but an Asyncify removelist is an assertion about the complete current call graph. Re-run the audit against the newly built editor module before applying the candidates below.
 
-## Part 1 — shim fix
+Out of scope (explicit follow-up): apply the candidate removelist only after the fresh audit, and then rebuild `kicad_editor` and run the editor/3D e2e suites. Removelist changes take effect only during the app's post-process step.
 
-**File:** `pcbjam/wasm/shims/nanosleep_yield.c` (52 lines).
+## Part 1 — shim fix (IMPLEMENTED)
+
+**File:** `pcbjam/wasm/shims/nanosleep_yield.c`.
 
 In `nanosleep()`: after computing `ms`, wrap the yield/sleep branch in `if (ms > 0.0)` — zero-duration requests return 0 immediately on both main thread and workers (a 0 ms blocking sleep is a no-op anyway; `sleep(0)` arrives as exactly `{0,0}` per musl, so the guard fires deterministically). Extend the header comment: mimalloc's `mi_atomic_yield` is `sleep(0)` (spin-politeness hint, must NOT become an event-loop yield mid-malloc); a zero-duration sleep never promised an event-loop turn; verified 2026-08-10 that mimalloc is the only zero-duration caller in the module.
 
 Rebuild consequences: only binaries that link the shim — future KiCad app builds, `pthread-ondemand`, and the new test. Already-built `output/*.wasm` unchanged. (CI: touching `wasm/**` busts the testapps cache — expected.)
 
-## Part 2 — the test
+## Part 2 — the test (IMPLEMENTED)
 
 ### App: `tests/apps/standalone/mimalloc-storm/mimalloc_storm_test.cpp`
 
@@ -35,11 +39,14 @@ Plain `int main()` app (non-wx — template: `standalone/coroutine-pthread/main_
 - Bounded by ITERATION counts (no wall-clock). Early-exit once ≥50 turns observed (keeps pre-fix RED runs fast); parameters tuned empirically at the red-validation step.
 
 **Detector** (did main return to the event loop mid-storm?):
+- Test-only counters in the linked nanosleep shim record all zero-duration
+  calls and the main-runtime-thread subset. The test requires a main-thread
+  count above zero, so worker-only contention cannot produce a false pass.
 - `EM_ASM` arms a self-re-arming `setTimeout(0)` that increments `globalThis.__stormTurns`; a synchronous C++ storm can only let it run if an Asyncify unwind happened inside. Main checks the counter via `EM_ASM_INT` every k iterations.
 - Phase 2 assertion (shim's load-bearing behavior unchanged): re-arm marker, `nanosleep(5 ms)` on main → the marker MUST have run (nonzero sleeps still yield).
 - Console contract (repo idiom — `EM_ASM` console.log markers, self-terminating, documented in the file header):
   - `[MIMALLOC_STORM] START threads=W blocks=B rounds=R`
-  - `[MIMALLOC_STORM] SUMMARY stormTurns=N sleepTurned=0|1 completed=1`
+  - `[MIMALLOC_STORM] SUMMARY zeroSleepCalls=Z mainZeroSleepCalls=M stormTurns=N sleepTurned=0|1 completed=1`
 
 ### Build rules: `tests/apps/Makefile.wasm`
 
@@ -50,12 +57,14 @@ Plain `int main()` app (non-wx — template: `standalone/coroutine-pthread/main_
 ### Spec: `tests/e2e/mimalloc-storm.spec.ts`
 
 - Placement in `tests/e2e/` → runs under the existing `wx-chromium` project; **zero playwright-config/CI edits** and passes `lint:ci-coverage`.
-- Pattern copied from `tests/e2e/coroutine-pthread.spec.ts` (the non-wx precedent): `testLogger` fixture, best-effort `tryLoadApp(...).catch(() => {})` with the documented marker comment, then `expect.poll` for the `SUMMARY` line; parse it; assert `stormTurns === 0`, `sleepTurned === 1`, `completed === 1`, and no page errors (favicon-filtered).
+- Pattern copied from `tests/e2e/coroutine-pthread.spec.ts` (the non-wx precedent): `testLogger` fixture, best-effort `tryLoadApp(...).catch(() => {})` with the documented marker comment, then `expect.poll` for the `SUMMARY` line; parse it; assert `mainZeroSleepCalls > 0`, `stormTurns === 0`, `sleepTurned === 1`, `completed === 1`, and no page errors (favicon-filtered).
 - Determinism compliance: no `waitForTimeout`, no inline retries, bounded C++ iterations; the app always emits a terminal SUMMARY (self-capping), so the poll is bounded.
 
-## Part 3 — asyncify-removelist additions (VERIFIED)
+## Part 3 — candidate asyncify-removelist additions (DEFERRED)
 
-Adversarial verification against the real kicad_editor module is complete: **all proposed families SAFE**, conditional on the Part 1 shim guard shipping first. Add to `scripts/common/asyncify-removelist.txt` (exact patterns — see traps below):
+The following candidates were verified against the Aug 6 `kicad_editor` module. They are not present in the current removelist. Do not copy them into production based only on the allocator regression: first repeat the whole-module call-graph audit on a fresh build of this branch and then run the editor e2e suites with the resulting binary.
+
+The earlier adversarial verification against the Aug 6 `kicad_editor` module found all proposed families safe, conditional on the Part 1 shim guard. These were the candidate patterns (see the traps below):
 
 ```
 # --- Memory-touching families (safe ONLY with the nanosleep zero-duration guard:
@@ -108,24 +117,24 @@ sbrk
 
 Run C is a strict subset of B (sanity: zero additions); only non-matching warnings are the 5 pre-existing OCC entries (expected — OCC absent from this app). Audit validity: this binary / emsdk 4.0.2; re-run on emsdk bump or libc++ ABI-namespace change (artifacts in `$W`: `analysis.pkl`, `logC.txt`, `runC.wasm`).
 
-## Part 4 — execution sequence
+## Part 4 — recorded execution
 
-1. **Build the test against the UNPATCHED shim**: `./scripts/build-wasm-test.sh mimalloc-storm` (targeted — the default `all` target is currently broken by pre-existing working-tree deletions, see caveat). Run the spec: `cd tests && npx playwright test --project=wx-chromium e2e/mimalloc-storm.spec.ts`. Expect the spec to FAIL with `stormTurns > 0` — that failure IS the red validation (proves the storm reaches the mimalloc yield). Record the observed turn count; tune B/R/W if turns are marginal (<~10).
-2. **Apply the shim fix** (Part 1), rebuild the same target (make tracks the shim as an explicit prerequisite), re-run the spec → GREEN: `stormTurns === 0`, storm completes (no-deadlock proof), `sleepTurned === 1`.
-3. `cd tests && npm run lint:determinism` (spec must pass the linter).
-4. **Removelist update:** add the verified entries to `scripts/common/asyncify-removelist.txt` with a documented block: the guard dependency (entries safe ONLY with the zero-duration nanosleep guard), the dormant-slot condition (deferred-free/new_handler/output hooks unregistered), and the `std::__2::__function*` exclusion rationale. Sanity-check the new list against the scratch module: one `wasm-opt --asyncify` run on `$W/hoisted.wasm` with the updated file confirms the expected instrumented-function count and that no entry matches zero functions unexpectedly.
-5. Stop before committing — present the diff; commit on main via the user's `/git-feature-commit` flow on request (trunk-based repo).
+1. Built a temporary control with the old zero-duration behavior and ran `npx playwright test --project=wx-chromium e2e/mimalloc-storm.spec.ts`. It failed as intended with `stormTurns=60`.
+2. Built the same test with the guard and reran the spec. It passed with `stormTurns=0 sleepTurned=1 completed=1`.
+3. `npm run lint:ci-coverage` and the repository-wide determinism guard passed. Two swallowed waits in `kicad/footprint-chooser-close.spec.ts` were converted to bounded `expect.poll` assertions so the chooser regression now fails deterministically instead of hiding a timeout.
+4. Did not add the candidate removelist entries. A fresh editor-module audit and editor e2e run remain required.
 
-## Caveats found during exploration
+## Caveats and follow-up work
 
-- **Pre-existing working-tree deletions** (not ours; do not touch): `tests/apps/standalone/asyncify-races/races_test.cpp`, `tests/asyncify/asyncify-races.spec.ts`, `tests/web/eeschema-fp-selector.spec.ts` are tracked but deleted, which breaks `Makefile.wasm`'s `all` target and full `npm run test:e2e`. We build only our target and run only our spec; flag the state to the user at the end.
 - `build-wasm-test.sh` requires `build-wasm/wxwidgets/wx-config` (wx libs built) and stubs the emsdk in-link asyncify — the emsdk lives at `tools/emsdk/` (installed via `scripts/setup-emsdk.sh` if absent).
 - Reference precedents: `races_test.cpp` (via `git show HEAD:...`) for Asyncify-state probing from C++ if the setTimeout detector needs corroboration; `pthread_ondemand_test.cpp` for the watchdog/marker idiom.
+- Repeat the removelist source/call-graph audit against the fresh editor binary, apply only the candidates that remain non-suspending, then run the full editor and 3D e2e suites.
 
-## Verification summary
+## Verification summary (2026-08-11)
 
-- RED observed pre-fix (spec fails on `stormTurns > 0`), GREEN post-fix on identical parameters — the core deliverable.
-- GREEN also proves: spin completes without the yield (no deadlock), 5 ms sleep still turns the event loop (worker-boot behavior preserved).
-- `lint:determinism` clean.
-- Removelist sanity run on `$W/hoisted.wasm` reproduces run C's numbers (60,047 instrumented / 204 MB pre-O1) with no unexpected non-matching-pattern warnings.
-- Follow-ups NOT here: full editor rebuild + 3D e2e suite with the new removelist (entries take effect at the next app build's host post-process).
+- RED: `stormTurns=60` with the old zero-duration behavior.
+- GREEN: `mainZeroSleepCalls>0 stormTurns=0 sleepTurned=1 completed=1` with the guard, on identical storm parameters.
+- GREEN proves that the synchronous allocation storm completes without an event-loop yield and that a 5 ms sleep still turns the event loop for worker boot.
+- The pinned Emscripten source still selects mimalloc's `sleep(0)` fallback for wasm and calls `mi_atomic_yield` from its delayed-free page paths. No application source registers mimalloc deferred-free/output/error hooks or a `std::new_handler`.
+- `lint:ci-coverage` and the determinism guard pass for the complete test corpus.
+- Removelist results in Part 3 are historical measurements, not changes made by this branch. Fresh-binary audit, editor rebuild, and full editor/3D e2e coverage remain follow-up work.

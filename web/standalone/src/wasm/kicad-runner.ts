@@ -1,10 +1,11 @@
 import type { Tool } from "@pcbjam/shared";
 import { FILELESS_TOOLS, toolForFile } from "@pcbjam/shared";
 import { defaultKicadPro } from "../lib/new-file";
-import { memfsFilePath, memfsProjectDir } from "./constants";
+import { memfsFilePath } from "./constants";
 import { mark } from "./load-trace";
 import { prescanBoardModels } from "./libs/models-bridge";
 import { openFileInTool } from "./open-flow";
+import { runOwnerJob } from "./owner-job";
 
 /**
  * The only thing the editor needs to know about a file to sync it into MEMFS:
@@ -21,8 +22,15 @@ export interface DriveOptions {
   files: ToolFile[];
   targetPath?: string;
   fetchBytes: (relPath: string) => Promise<Uint8Array>;
+  /** True only while this project source still belongs to the current tool
+   *  lifetime. The owner gateway evaluates it immediately before delivery, so
+   *  a fetch completed by an old mount cannot publish into a replacement
+   *  runtime. */
+  isCurrent?: () => boolean;
   log: (msg: string) => void;
   onStatus: (text: string) => void;
+  /** Uncover the wx UI when an exact owned open is waiting for modal input. */
+  onOpenInputDialog?: (visible: boolean) => void;
   /** Per-file staging progress (files fetched+written so far, total) — drives
    *  the boot overlay's "Project files — n/m" line. Reported once up front
    *  with done=0 so the line appears as soon as staging starts. */
@@ -51,11 +59,44 @@ function getFS(win: ToolWindow): EmscriptenFS {
   return fs as EmscriptenFS;
 }
 
+function canTouchToolNative(win: ToolWindow): boolean {
+  const runtime = win as ToolWindow & {
+    __wxNativeIntegrityUnknown?: boolean;
+    __wxScheduler?: {
+      dead?: boolean;
+      canTouchNative?: () => boolean;
+    };
+  };
+  if (runtime.__wxNativeIntegrityUnknown) return false;
+  const scheduler = runtime.__wxScheduler;
+  if (!scheduler) return true; // staging also supports non-scheduler tool diets
+  return typeof scheduler.canTouchNative === "function"
+    ? scheduler.canTouchNative()
+    : !scheduler.dead;
+}
+
+function touchToolNative<T>(win: ToolWindow, site: string, fn: () => T): T {
+  try {
+    return fn();
+  } catch (error) {
+    const runtime = win as ToolWindow & {
+      __wxScheduler?: {
+        _terminalizeNativeTrap?: (site: string, error: unknown) => boolean;
+      };
+    };
+    runtime.__wxScheduler?._terminalizeNativeTrap?.(site, error);
+    throw error;
+  }
+}
+
 /**
- * Write one project file into the tool's MEMFS. Shared by the boot-time
- * whole-tree staging below and the live sibling re-stage (collab/sibling-restage):
- * a peer's schematic edits must land in MEMFS so "Update PCB from Schematic"
- * reads current data, not the page-load snapshot.
+ * Write one project file into the tool's MEMFS.
+ *
+ * This is the synchronous primitive. Call it only from a closure which already
+ * owns the current native operation, or in a tool diet with no scheduler.
+ * Delayed browser sources must use {@link restageBytesFileAsOwner} or
+ * {@link restageTextFileAsOwner}; checking `canTouchNative` is a lifetime gate,
+ * not execution-owner admission.
  */
 export function restageFile(
   win: ToolWindow,
@@ -64,26 +105,185 @@ export function restageFile(
   bytes: Uint8Array,
   log: (msg: string) => void,
 ): void {
+  if (!canTouchToolNative(win)) return;
   const fs = getFS(win);
   const dest = memfsFilePath(slug, relPath);
-  fs.mkdirTree(dest.slice(0, dest.lastIndexOf("/")));
-  fs.writeFile(dest, bytes);
+  touchToolNative(win, "project MEMFS write trapped", () => {
+    fs.mkdirTree(dest.slice(0, dest.lastIndexOf("/")));
+    fs.writeFile(dest, bytes);
+  });
   log(`[memfs] wrote ${dest} (${bytes.length} bytes)`);
 }
 
-/** Read one staged project file back from the tool's MEMFS (null if absent).
- *  Counterpart of {@link restageFile}; used post-open to inspect the target
- *  document (e.g. which lib nicknames it references). */
-export function readStagedFile(
+const BYTE_STRING_CHUNK = 0x8000;
+
+/** Copy mutable fetch output into an immutable, exactly reversible gateway
+ * argument. Owner jobs deliberately reject reference-shaped arguments: an
+ * external Uint8Array could change after enqueue and its retained object graph
+ * could not be bounded. This string packs two bytes into each code unit, so
+ * the scheduler's conservative two-bytes-per-code-unit estimate matches the
+ * input size instead of halving the 16 MiB payload limit. */
+function bytesToRetainedString(bytes: Uint8Array): string {
+  const chunks: string[] = [];
+  const codeUnits = new Array<number>(BYTE_STRING_CHUNK);
+  for (let offset = 0; offset < bytes.length; ) {
+    let used = 0;
+    while (used < BYTE_STRING_CHUNK && offset < bytes.length) {
+      const low = bytes[offset++]!;
+      const high = offset < bytes.length ? bytes[offset++]! : 0;
+      codeUnits[used++] = low | (high << 8);
+    }
+    chunks.push(String.fromCharCode(...codeUnits.slice(0, used)));
+  }
+  return chunks.join("");
+}
+
+function retainedStringToBytes(value: string, byteLength: number): Uint8Array {
+  const bytes = new Uint8Array(byteLength);
+  for (let i = 0, offset = 0; i < value.length; i++) {
+    const codeUnit = value.charCodeAt(i);
+    bytes[offset++] = codeUnit & 0xff;
+    if (offset < byteLength) bytes[offset++] = codeUnit >>> 8;
+  }
+  return bytes;
+}
+
+/**
+ * Re-stage fetched bytes at the explicit Emscripten runtime boundary.
+ *
+ * This is an explicit two-phase boundary. Before boot.ts publishes
+ * `__pcbjamNativeRuntimeReady === true`, Emscripten has created MEMFS but has
+ * not installed the native entry exports. The short write runs directly in
+ * that phase; JavaScript run-to-completion guarantees it finishes before the
+ * runtime callback and main can run. After the explicit edge, the same write
+ * uses the Ordinary owner gateway. Scheduler or FS existence is never used as
+ * a readiness signal. `isCurrent` is checked immediately before either form
+ * of publication, so obsolete project lifetimes cannot write stale bytes.
+ */
+export function restageBytesFileAsOwner(
   win: ToolWindow,
   slug: string,
   relPath: string,
-): Uint8Array | null {
+  bytes: Uint8Array,
+  log: (msg: string) => void,
+  isCurrent?: () => boolean,
+): Promise<void> {
+  const retainedBytes = bytesToRetainedString(bytes);
+  return restageRetainedBytesAtRuntimeBoundary(
+    win,
+    slug,
+    relPath,
+    retainedBytes,
+    bytes.length,
+    log,
+    isCurrent,
+  );
+}
+
+function restageRetainedBytesAtRuntimeBoundary(
+  win: ToolWindow,
+  slug: string,
+  relPath: string,
+  retainedBytes: string,
+  byteLength: number,
+  log: (msg: string) => void,
+  isCurrent?: () => boolean,
+): Promise<void> {
+  if (win.__pcbjamNativeRuntimeReady !== true) {
+    try {
+      if (isCurrent && !isCurrent()) {
+        return Promise.reject(
+          Object.assign(
+            new Error(
+              `[wasm-owner] project MEMFS restage: ${relPath} rejected for a stale resource`,
+            ),
+            { code: "WX_MUTATOR_STALE" },
+          ),
+        );
+      }
+      restageFile(
+        win,
+        slug,
+        relPath,
+        retainedStringToBytes(retainedBytes, byteLength),
+        log,
+      );
+      return Promise.resolve();
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  }
+  return runOwnerJob(
+    win,
+    `project MEMFS restage: ${relPath}`,
+    [slug, relPath, retainedBytes, byteLength] as const,
+    (currentSlug, currentPath, currentBytes, currentByteLength) => {
+      restageFile(
+        win,
+        currentSlug,
+        currentPath,
+        retainedStringToBytes(currentBytes, currentByteLength),
+        log,
+      );
+    },
+    isCurrent,
+  );
+}
+
+/**
+ * Re-stage a text project file as Ordinary execution-owner work.
+ *
+ * The text is retained as the gateway argument so its memory counts against
+ * the bounded owner queue. Encoding and the actual MEMFS write happen inside
+ * the admitted owner. `isCurrent` is checked immediately before native
+ * delivery, which lets a latest-value producer cancel a superseded body
+ * without ever writing the obsolete content.
+ */
+export function restageTextFileAsOwner(
+  win: ToolWindow,
+  slug: string,
+  relPath: string,
+  text: string,
+  log: (msg: string) => void,
+  isCurrent?: () => boolean,
+): Promise<void> {
+  return runOwnerJob(
+    win,
+    `sibling MEMFS restage: ${relPath}`,
+    [text] as const,
+    (currentText) => {
+      restageFile(
+        win,
+        slug,
+        relPath,
+        new TextEncoder().encode(currentText),
+        log,
+      );
+    },
+    isCurrent,
+  );
+}
+
+/** Read one staged project file back as Ordinary execution-owner work.
+ *  Counterpart of {@link restageFile}; used post-open to inspect the target
+ *  document (e.g. which lib nicknames it references). */
+export async function readStagedFileAsOwner(
+  win: ToolWindow,
+  slug: string,
+  relPath: string,
+): Promise<Uint8Array | null> {
   try {
-    const fs = getFS(win) as unknown as {
-      readFile(path: string): Uint8Array;
-    };
-    return fs.readFile(memfsFilePath(slug, relPath));
+    return await runOwnerJob(
+      win,
+      `project MEMFS read: ${relPath}`,
+      [memfsFilePath(slug, relPath)] as const,
+      (path) => {
+        const fs = getFS(win) as unknown as {
+          readFile(path: string): Uint8Array;
+        };
+        return fs.readFile(path);
+      },
+    );
   } catch {
     return null;
   }
@@ -114,19 +314,51 @@ const STAGE_CONCURRENCY = 8;
  * Fetches run CONCURRENTLY (bounded by STAGE_CONCURRENCY): a project with a
  * few hundred files — an uploaded repo, say — spent one full request
  * round-trip per file when this was serial, which dominated the open on any
- * real-latency connection. The writes themselves are synchronous FS calls on
- * distinct paths, so they can land in whatever order the fetches complete.
+ * real-latency connection. A completed body enters the staging publication
+ * lane; after native readiness that lane uses the execution-owner FIFO. The
+ * fetch which produced it stays outside both. Each worker waits for its exact
+ * publication tail before retaining another body, which bounds staging
+ * publications to STAGE_CONCURRENCY without making the requests serial.
  */
 async function syncProjectToMemfs(win: ToolWindow, opts: DriveOptions): Promise<void> {
-  getFS(win).mkdirTree(memfsProjectDir(opts.slug));
+  if (!canTouchToolNative(win)) return;
 
   let staged = 0;
   opts.onFileProgress?.(0, opts.files.length);
   const queue = [...opts.files];
+  // Keep only one project body in the scheduler's bounded payload queue. The
+  // fetch workers can still hold one completed body each, but eight individually
+  // valid files must not collide with the gateway's aggregate 16 MiB limit.
+  // A rejection advances the lane so in-flight sibling fetches can settle; the
+  // allSettled result below still propagates the first failure to the caller.
+  let publicationTail = Promise.resolve();
+  const publish = (file: ToolFile, bytes: Uint8Array): Promise<void> => {
+    // Take immutable ownership at receipt. A fetch adapter may reuse or mutate
+    // its view while this body waits behind an earlier publication.
+    const retainedBytes = bytesToRetainedString(bytes);
+    const byteLength = bytes.length;
+    const publication = publicationTail.then(() =>
+      restageRetainedBytesAtRuntimeBoundary(
+        win,
+        opts.slug,
+        file.path,
+        retainedBytes,
+        byteLength,
+        opts.log,
+        opts.isCurrent,
+      ),
+    );
+    publicationTail = publication.then(
+      () => undefined,
+      () => undefined,
+    );
+    return publication;
+  };
   const worker = async (): Promise<void> => {
     for (let file = queue.shift(); file; file = queue.shift()) {
       const bytes = await opts.fetchBytes(file.path);
-      restageFile(win, opts.slug, file.path, bytes, opts.log);
+      if (!canTouchToolNative(win)) return;
+      await publish(file, bytes);
       opts.onFileProgress?.(++staged, opts.files.length);
       // 3D models: prefetch every model this board references (R2 → IDB → MEMFS)
       // so the 3D viewer's first open resolves locally. Fire-and-forget — project
@@ -159,14 +391,22 @@ async function syncProjectToMemfs(win: ToolWindow, opts: DriveOptions): Promise<
  * MEMFS for the target document when the project doesn't provide its own.
  * MEMFS-only: it is not added to the project file list or uploaded.
  */
-function synthesizeProjectFile(win: ToolWindow, opts: DriveOptions): void {
+async function synthesizeProjectFile(win: ToolWindow, opts: DriveOptions): Promise<void> {
+  if (!canTouchToolNative(win)) return;
   const match = (opts.targetPath ?? "").match(/^(.*)\.kicad_(pcb|sch)$/);
   if (!match) return;
   const proPath = `${match[1]}.kicad_pro`;
   if (opts.files.some((f) => f.path === proPath)) return;
   const fileName = proPath.slice(proPath.lastIndexOf("/") + 1);
   const bytes = new TextEncoder().encode(defaultKicadPro(fileName));
-  getFS(win).writeFile(memfsFilePath(opts.slug, proPath), bytes);
+  await restageBytesFileAsOwner(
+    win,
+    opts.slug,
+    proPath,
+    bytes,
+    () => {},
+    opts.isCurrent,
+  );
   opts.log(`[memfs] synthesized ${proPath} (project has no project file)`);
 }
 
@@ -209,6 +449,7 @@ async function openGerberSet(
   const abs = paths.map((path) => memfsFilePath(opts.slug, path));
   return openFileInTool(win, abs[0]!, {
     log: opts.log,
+    onInputDialog: opts.onOpenInputDialog,
     open: () => {
       // Feature-detect HERE, not before the call: embind registers the Module
       // functions during runtime init, which lands AFTER the Emscripten FS is
@@ -217,19 +458,18 @@ async function openGerberSet(
       // (openFileInTool's frame wait is what guarantees the exports exist).
       const mod = win.Module as
         | {
-            kicadOpenFiles?: (json: string) => boolean;
-            kicadOpenFile?: (path: string) => unknown;
+            kicadOpenFiles?: (json: string) => Promise<boolean> | boolean;
+            kicadOpenFile?: (path: string) => Promise<boolean> | boolean;
           }
         | undefined;
       if (typeof mod?.kicadOpenFiles === "function") {
         opts.log(`[open] gerbview: opening ${abs.length} file(s) from ${opts.targetPath}`);
-        mod.kicadOpenFiles(JSON.stringify(abs));
-        return;
+        return mod.kicadOpenFiles(JSON.stringify(abs));
       }
       opts.log(
         "[open] gerbview bundle has no kicadOpenFiles — opening the clicked layer only",
       );
-      mod?.kicadOpenFile?.(abs[0]!);
+      return mod?.kicadOpenFile?.(abs[0]!);
     },
   });
 }
@@ -263,7 +503,7 @@ export async function driveProjectIntoTool(
   onStatus("Loading project files…");
   await syncProjectToMemfs(win, opts);
   log(mark("stage:done", `${opts.files.length} file(s)`));
-  synthesizeProjectFile(win, opts);
+  await synthesizeProjectFile(win, opts);
 
   let result: "programmatic" | "ui" | "failed" | "none" = "none";
   if (opts.targetPath && opts.tool === "gerbview") {
@@ -281,7 +521,10 @@ export async function driveProjectIntoTool(
     // timer re-arms every 100 ms until first paint. Bracketing it is what lets a
     // crash report be placed inside or outside that window.
     log(mark("open:start", opts.targetPath));
-    result = await openFileInTool(win, abs, { log });
+    result = await openFileInTool(win, abs, {
+      log,
+      onInputDialog: opts.onOpenInputDialog,
+    });
     log(mark("open:settled", `result=${result}`));
     log(`[open] result: ${result}`);
   }

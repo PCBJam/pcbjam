@@ -2,34 +2,13 @@ import type { Page } from "@playwright/test";
 import { test, expect } from "./fixtures";
 
 /**
- * Doc-19 strand red spec (docs/features/async/19, 20 §6 D0, 21 §4).
- *
- * The user-visible bug: Symbol Properties (any quasi-modal opened from a tool
- * action) stops responding — OK/Cancel click, nothing happens, only the
- * titlebar × closes it. Mechanism (doc 19 §4): the tool fiber that owns the
- * dialog parks mid-body in the quasi-modal wait; a concurrent park's wake
- * aliases over its live sleep buffer (`aliased-wake-live`), the stale-fiber
- * guard quarantines it, and the fiber's own legitimate resume is then REFUSED
- * (`fiber-resume-refused`) and dropped. The fiber never completes, the
- * dispatch guard it holds never releases, every later click defers forever.
- *
- * Staging: the strand needs concurrent parks over the dialog's parked fiber.
- * The deterministic lever is the parking timer (wasm/bindings/timer_park.h):
- * arm it so its Notify() parks and wakes while the Symbol Properties fiber is
- * parked — the same overlap Leonardo's warm loads produce by volume dice
- * (docs/features/async/19 §5, gal-refresh lineage).
- *
- * Two tests, deliberately split so the red pin cannot rot into vacuity:
- *  - "staging" is a plain GREEN test: the dialog opens, the timer window
- *    engages (fired + parked + done). RE-PINNED AT THE FLIP (doc 22 §10,
- *    2026-08-08): the overlap the shim used to observe is structurally
- *    impossible post-D5, so the assert now pins ZERO observable
- *    concurrent-park windows instead.
- *  - "OK closes" is the RED pin, marked test.fail(): its assertions are the
- *    desired end state (dialog closes, no refused-resume beacon, wait books
- *    balanced). It goes green at D3 (waits become context yields), at which
- *    point Playwright reports "expected to fail but passed" and the marker
- *    must be removed — the forced flip doc 20 §8 asks for.
+ * Regression for the doc-19 quasi-modal strand and for execution-owner modal
+ * admission. Symbol Properties parks its parent owner behind an exact modal
+ * lease. The ownerless test timer is Ordinary work, so it must remain queued
+ * while the lease is open. The dialog's exact-scope OK input must bypass that
+ * blocked work, close the lease, and resume the parent. The timer can run only
+ * after the modal owner retires. This ordering removes the concurrent native
+ * park which caused the historical strand.
  */
 
 const SCH = `(kicad_sch
@@ -73,16 +52,18 @@ const SCH = `(kicad_sch
 const SYMBOL_UUID = "dddd0000-0000-0000-0000-000000000002";
 
 type Mod = {
-  kicadOpenFile(p: string): unknown;
+  kicadOpenFile(p: string): Promise<unknown>;
   kicadOpenFileBusy(): boolean;
-  kicadCollabGetPos(id: string): string;
-  kicadCollabGetViewport(): string;
+  kicadCollabGetPos(id: string): Promise<string>;
+  kicadCollabGetViewport(): Promise<string>;
   kicadTestArmTimerPark(delayMs: number, parkMs: number): boolean;
   kicadTestTimerParkState(): string;
 };
 type FS = { mkdirTree(p: string): void; writeFile(p: string, d: string): void };
 
 type SchedulerBooks = {
+  enqueued: number;
+  delivered: number;
   waitsBegun: number;
   waitsResolved: number;
   pendingWaits(kind: string): number;
@@ -115,7 +96,7 @@ async function bootAndOpen(page: Page): Promise<void> {
     null,
     { timeout: 120000 },
   );
-  await page.evaluate((sch) => {
+  await page.evaluate(async (sch) => {
     const w = window as unknown as { FS: FS; Module: Mod };
     const dir = "/home/kicad/documents";
     try {
@@ -124,8 +105,11 @@ async function bootAndOpen(page: Page): Promise<void> {
       /* exists */
     }
     w.FS.writeFile(`${dir}/strand.kicad_sch`, sch);
-    w.Module.kicadOpenFile(`${dir}/strand.kicad_sch`);
+    const open = Promise.resolve(w.Module.kicadOpenFile(`${dir}/strand.kicad_sch`));
+    await open;
   }, SCH);
+  // Completion belongs to the exact open ticket. Busy is a state cross-check,
+  // not a substitute that can pass before the queued command starts.
   await expect
     .poll(() => page.evaluate(() => (window.Module as unknown as Mod).kicadOpenFileBusy()), {
       timeout: 120000,
@@ -162,17 +146,17 @@ async function symbolScreenPos(page: Page): Promise<{ x: number; y: number }> {
   const box = await page.locator(`#${glId}`).boundingBox();
   expect(box, "canvas bounding box").not.toBeNull();
 
-  const { vp, pos } = await page.evaluate((id) => {
+  const { vp, pos } = await page.evaluate(async (id) => {
     const m = window.Module as unknown as Mod;
     return {
-      vp: JSON.parse(m.kicadCollabGetViewport()) as {
+      vp: JSON.parse(await m.kicadCollabGetViewport()) as {
         cx: number;
         cy: number;
         scale: number;
         w: number;
         h: number;
       },
-      pos: m.kicadCollabGetPos(id),
+      pos: await m.kicadCollabGetPos(id),
     };
   }, SYMBOL_UUID);
   const [wx, wy] = pos.split(",").map(Number);
@@ -216,16 +200,13 @@ async function okButtonCenter(page: Page): Promise<{ x: number; y: number }> {
   return { x: rect!.x, y: rect!.y };
 }
 
-/** Open Symbol Properties via the real UI path (double-click the symbol) and
- *  run the parking-timer window across the dialog's parked fiber.
- *
- *  NOTE on what this returns: `done` (the timer's park completed) is NOT a
- *  staging invariant — whether a park survives the aliasing is part of the
- *  disease under test, so asserting it would make the harness fail for the
- *  bug's own reason. Only `fired` + `sawParked` prove the window existed. */
-async function openDialogAndEngageWindow(
+/** Open Symbol Properties and queue ownerless Ordinary timer work behind it. */
+async function openDialogAndQueueTimer(
   page: Page,
-): Promise<{ timer: { fired: boolean; sawParked: boolean; done: boolean } }> {
+): Promise<{
+  timer: { fired: number; done: number; parked: boolean };
+  transport: { enqueued: number; delivered: number };
+}> {
   const { x, y } = await symbolScreenPos(page);
 
   await page.mouse.dblclick(x, y);
@@ -236,76 +217,89 @@ async function openDialogAndEngageWindow(
     .poll(() => dialogCount(page), { timeout: 20000, intervals: [250] })
     .toBeGreaterThan(0);
 
-  // Arm only NOW. Because the fiber's park is open-ended (it ends when the
-  // dialog closes, which is what the red pin is about), a timer that fires
-  // while the dialog is up necessarily parks ON TOP of it — the overlap is
-  // deterministic by construction rather than a race won by luck. (The
-  // opener zeroes its interlock slot for the park's duration, so the mailbox
-  // delivers the timer instead of deferring it.)
+  const before = await page.evaluate(() => {
+    const scheduler = (globalThis as unknown as { __wxScheduler: SchedulerBooks })
+      .__wxScheduler;
+    return { enqueued: scheduler.enqueued, delivered: scheduler.delivered };
+  });
+
+  // ParkingTimer has no wxWindow owner. Its timeout is transported to the
+  // typed queue, but Ordinary admission must wait for the modal lease to end.
   const armed = await page.evaluate(() =>
     (window.Module as unknown as Mod).kicadTestArmTimerPark(30, 1500),
   );
   expect(armed, "parking timer armed while the dialog is open").toBe(true);
 
-  // Ride the window: fired → (parked) → done. `sawParked` is best-effort —
-  // a sample may simply miss a short park — so it is reported, never asserted.
-  const timer = await page.evaluate(async () => {
-    const m = window.Module as unknown as Mod;
-    const stats = { fired: false, sawParked: false, done: false };
-    const t0 = performance.now();
-    // Bounded ride: exits as soon as the park completes, and stops after the
-    // budget if it never does (a park that never completes is a legitimate
-    // outcome here — see the note on the caller).
-    while (performance.now() - t0 < 12000) {
-      const st = JSON.parse(m.kicadTestTimerParkState()) as {
-        fired: number;
-        done: number;
-        parked: boolean;
-      };
-      if (st.fired > 0) stats.fired = true;
-      if (st.parked) stats.sawParked = true;
-      if (st.done > 0) {
-        stats.done = true;
-        break;
-      }
-      await new Promise((r) => setTimeout(r, 100));
-    }
-    return stats;
+  await expect
+    .poll(
+      () =>
+        page.evaluate(
+          (baseline) => {
+            const scheduler = (
+              globalThis as unknown as { __wxScheduler: SchedulerBooks }
+            ).__wxScheduler;
+            return (
+              scheduler.enqueued > baseline.enqueued &&
+              scheduler.delivered > baseline.delivered
+            );
+          },
+          before,
+        ),
+      { timeout: 5000, intervals: [25] },
+    )
+    .toBe(true);
+
+  const current = await page.evaluate(() => {
+    const scheduler = (globalThis as unknown as { __wxScheduler: SchedulerBooks })
+      .__wxScheduler;
+    return {
+      timer: JSON.parse((window.Module as unknown as Mod).kicadTestTimerParkState()),
+      transport: {
+        enqueued: scheduler.enqueued,
+        delivered: scheduler.delivered,
+      },
+    };
   });
-  return { timer };
+  return {
+    timer: current.timer,
+    transport: current.transport,
+  };
 }
 
 test.describe("quasi-modal strand (doc 19)", () => {
   test.describe.configure({ mode: "serial" });
 
-  test("staging: Symbol Properties opens and the parked-timer window engages", async ({
+  test("ownerless timer waits for the Symbol Properties modal lease", async ({
     page,
     testLogger,
   }) => {
     test.setTimeout(240000);
     await bootAndOpen(page);
-    const { timer } = await openDialogAndEngageWindow(page);
-    console.log(`[STRAND] staging timer: ${JSON.stringify(timer)}`);
-
-    // Engagement proofs — without these the red pin below is vacuous.
-    // Asserted: the timer FIRED inside the window (monotonic counter, not a
-    // sampled state). Not asserted: `done` (whether a park survives is the
-    // disease under test) and `sawParked` (a 100 ms sampler can miss a short
-    // park); the beacon check below is the sampling-independent overlap proof.
-    expect(timer.fired, "parking timer fired while the dialog was open").toBe(true);
+    const { timer, transport } = await openDialogAndQueueTimer(page);
+    console.log(
+      `[STRAND] queued timer: state=${JSON.stringify(timer)} transport=${JSON.stringify(transport)}`,
+    );
+    expect(timer.fired, "ordinary timer body is blocked by the modal lease").toBe(0);
+    expect(timer.done).toBe(0);
 
     // The dialog is up and its OK button is a real, hittable DOM button.
     expect(await dialogCount(page)).toBeGreaterThan(0);
-    await okButtonCenter(page);
+    const ok = await okButtonCenter(page);
+    await page.mouse.click(ok.x, ok.y);
+    await expect.poll(() => dialogCount(page), { timeout: 15000 }).toBe(0);
+    await expect
+      .poll(
+        () =>
+          page.evaluate(() => {
+            const state = JSON.parse(
+              (window.Module as unknown as Mod).kicadTestTimerParkState(),
+            ) as { fired: number; done: number };
+            return { fired: state.fired, done: state.done };
+          }),
+        { timeout: 10000, intervals: [100] },
+      )
+      .toEqual({ fired: 1, done: 1 });
 
-    // RE-PINNED AT THE FLIP (docs/features/async/22 §10, 2026-08-08). The
-    // overlap this staging proved (a timer park on top of an open-ended park)
-    // required an in-place park for the timer to land on; post-flip every
-    // party is a scheduler context and D5 removed the main loop's in-place
-    // park, so the window is structurally impossible. The staging now pins
-    // the post-migration invariant: the dialog opens, the timer fires and its
-    // park survives (asserted above), and NO concurrent-park window is
-    // observable.
     const overlapBeacons = testLogger.consoleLogs.filter((l) =>
       /\[wx-asyncify\] (concurrent-park|aliased-wake-live|overlapped-wake)/.test(l),
     );
@@ -328,9 +322,9 @@ test.describe("quasi-modal strand (doc 19)", () => {
     // layer cannot see it. This test is now the regression pin for that.
     test.setTimeout(240000);
     await bootAndOpen(page);
-    const { timer } = await openDialogAndEngageWindow(page);
-    console.log(`[STRAND] red timer: ${JSON.stringify(timer)}`);
-    expect(timer.fired, "the doc-19 window was staged").toBe(true);
+    const { timer } = await openDialogAndQueueTimer(page);
+    console.log(`[STRAND] blocked timer before close: ${JSON.stringify(timer)}`);
+    expect(timer.fired, "unaffiliated Ordinary work stays blocked").toBe(0);
 
     const ok = await okButtonCenter(page);
     await page.mouse.click(ok.x, ok.y);
@@ -360,6 +354,19 @@ test.describe("quasi-modal strand (doc 19)", () => {
 
     // Desired end state 1: the dialog closes.
     expect(closed, "OK closed the quasi-modal dialog").toBe(true);
+
+    await expect
+      .poll(
+        () =>
+          page.evaluate(() => {
+            const state = JSON.parse(
+              (window.Module as unknown as Mod).kicadTestTimerParkState(),
+            ) as { fired: number; done: number };
+            return { fired: state.fired, done: state.done };
+          }),
+        { timeout: 10000, intervals: [100] },
+      )
+      .toEqual({ fired: 1, done: 1 });
 
     // Desired end state 2: no refused fiber resume anywhere in the run.
     const refused = testLogger.consoleLogs.filter((l) =>

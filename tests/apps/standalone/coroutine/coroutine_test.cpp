@@ -6,6 +6,17 @@
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten/emscripten.h>
+#include <wx/wasm/private/sched_context.h>
+
+// The production wx library normally supplies this export. Keep a weak,
+// standalone leaf in the reducer too: the injected scheduler must have its
+// readiness contract even when this small app is linked against a wx archive
+// that does not pull in the production admission layer.
+extern "C" int EMSCRIPTEN_KEEPALIVE __attribute__((weak)) wxWasmNativeEntryReady()
+{
+    return pcbjam_sched::current() == 0
+                   && !pcbjam_sched::transition_in_flight() ? 1 : 0;
+}
 #endif
 
 #include <array>
@@ -785,6 +796,75 @@ private:
                         "unexpected sequence after final parent resume: " + JoinVector( sequence ) );
         } ) );
 
+        m_results.push_back( RunCase( "nested_root_resume_releases_caller_once",
+                                      [this]( CaseContext& ctx ) {
+            std::vector<std::string> sequence;
+            std::vector<intptr_t> observedValues;
+
+            TestCoroutine target( [&]( TestCoroutine& self ) {
+                sequence.push_back( "target:start" );
+                self.Yield( 101 );
+                observedValues.push_back( self.CurrentValue() );
+                sequence.push_back( "target:after-first-resume" );
+                self.Yield( 102 );
+                observedValues.push_back( self.CurrentValue() );
+                sequence.push_back( "target:after-second-resume" );
+                self.Yield( 103 );
+                observedValues.push_back( self.CurrentValue() );
+                sequence.push_back( "target:end" );
+            } );
+
+            ctx.Expect( target.Call( 1 ), "target should suspend before nested dispatch" );
+            ctx.Expect( target.LastReturnValue() == 101,
+                        "target's initial yield should reach the root" );
+
+            TestCoroutine driver( [&]( TestCoroutine& self ) {
+                (void) self;
+                sequence.push_back( "driver:start" );
+
+                // TOOL_MANAGER has call sites with this shape: a method uses
+                // the no-argument (root-style) Resume() overload even though
+                // another coroutine is physically running.  Each local
+                // CallContext must retain and then release that physical
+                // caller exactly once.
+                bool targetRunning = target.Resume( 11 );
+                ctx.Expect( targetRunning,
+                            "target should suspend after the first nested root-style resume" );
+                ctx.Expect( target.LastReturnValue() == 102,
+                            "first nested yield should return to the driver" );
+                sequence.push_back( "driver:after-first-resume" );
+
+                targetRunning = target.Resume( 22 );
+                ctx.Expect( targetRunning,
+                            "target should suspend after the second nested root-style resume" );
+                ctx.Expect( target.LastReturnValue() == 103,
+                            "second nested yield should return to the driver" );
+                sequence.push_back( "driver:after-second-resume" );
+            } );
+
+            ctx.Expect( !driver.Call( 2 ), "driver should finish after both nested resumes" );
+            ctx.Expect( target.Running(), "target should remain suspended after the driver finishes" );
+
+            ctx.Expect( !target.Resume( 33 ), "target should finish from the real root" );
+
+            const std::vector<std::string> expectedSequence = {
+                "target:start",
+                "driver:start",
+                "target:after-first-resume",
+                "driver:after-first-resume",
+                "target:after-second-resume",
+                "driver:after-second-resume",
+                "target:end"
+            };
+            const std::vector<intptr_t> expectedValues = { 11, 22, 33 };
+
+            ctx.Expect( sequence == expectedSequence,
+                        "unexpected nested root-style resume sequence: " + JoinVector( sequence ) );
+            ctx.Expect( observedValues == expectedValues,
+                        "nested root-style resume values were not preserved: "
+                                + JoinVector( observedValues ) );
+        } ) );
+
         m_results.push_back( RunCase( "root_bounce_continue_after_root", [this]( CaseContext& ctx ) {
             std::vector<std::string> events;
             int rootRuns = 0;
@@ -837,6 +917,123 @@ private:
             ctx.Expect( !running, "resume on finished coroutine should stay false" );
             ctx.Expect( entryRuns == 1, "finished coroutine must not re-enter" );
         } ) );
+
+        m_results.push_back( RunCase( "finished_release_retires_handle", [this]( CaseContext& ctx ) {
+            libcontext::fcontext_t stale = nullptr;
+
+            {
+                auto completed = std::make_unique<TestCoroutine>( []( TestCoroutine& self ) {
+                    (void) self;
+                } );
+
+                ctx.Expect( !completed->Call(), "lifetime probe should finish immediately" );
+                stale = completed->ContextHandleForTest();
+                ctx.Expect( stale != nullptr, "finished coroutine should expose a live token before release" );
+            }
+
+            TestCoroutine replacement( []( TestCoroutine& self ) { (void) self; } );
+            ctx.Expect( !replacement.Call(), "replacement lifetime probe should finish immediately" );
+            ctx.Expect( replacement.ContextHandleForTest() != stale,
+                        "a retired token must never be reused for a replacement context" );
+
+            libcontext::fcontext_t savedCaller = nullptr;
+            const intptr_t result = libcontext::jump_fcontext( &savedCaller, stale, 0 );
+            ctx.Expect( result == 0, "a stale finished token must be refused" );
+            ctx.Expect( savedCaller == nullptr,
+                        "refusing a stale finished token must not capture the caller" );
+        } ) );
+
+        m_results.push_back( RunCase( "suspended_cancel_retires_handle", [this]( CaseContext& ctx ) {
+            libcontext::fcontext_t stale = nullptr;
+            int entryRuns = 0;
+            int afterYieldRuns = 0;
+
+            {
+                auto cancelled = std::make_unique<TestCoroutine>( [&]( TestCoroutine& self ) {
+                    ++entryRuns;
+                    self.Yield( 91 );
+                    ++afterYieldRuns;
+                } );
+
+                ctx.Expect( cancelled->Call(), "cancellation probe should suspend" );
+                stale = cancelled->ContextHandleForTest();
+                ctx.Expect( stale != nullptr, "suspended coroutine should expose a live token before release" );
+            }
+
+            TestCoroutine replacement( []( TestCoroutine& self ) { (void) self; } );
+            ctx.Expect( !replacement.Call(), "replacement cancellation probe should finish immediately" );
+            ctx.Expect( replacement.ContextHandleForTest() != stale,
+                        "a cancelled token must never be reused for a replacement context" );
+
+            libcontext::fcontext_t savedCaller = nullptr;
+            const intptr_t result = libcontext::jump_fcontext( &savedCaller, stale, 0 );
+            ctx.Expect( result == 0, "a stale cancelled token must be refused" );
+            ctx.Expect( savedCaller == nullptr,
+                        "refusing a stale cancelled token must not capture the caller" );
+            ctx.Expect( entryRuns == 1 && afterYieldRuns == 0,
+                        "cancelling a suspended context must not re-enter its body" );
+        } ) );
+
+#ifdef __EMSCRIPTEN__
+        m_results.push_back( RunCase( "registry_refusal_ghost_returns_without_swap",
+                                      [this]( CaseContext& ctx ) {
+            int entryRuns = 0;
+            int afterYieldRuns = 0;
+            const pcbjam_sched::ContextId firstNewId =
+                    pcbjam_sched::detail::reg().next_id;
+
+            TestCoroutine coroutine( [&]( TestCoroutine& self ) {
+                ++entryRuns;
+                self.Yield( 101 );
+                ++afterYieldRuns;
+            } );
+
+            ctx.Expect( coroutine.Call(), "reducer coroutine should establish a suspension" );
+
+            pcbjam_sched::ContextId target = 0;
+            pcbjam_sched::Status targetStatus = pcbjam_sched::Status::Finished;
+
+            for( const auto& [id, physical] : pcbjam_sched::detail::reg().contexts )
+            {
+                if( id >= firstNewId && physical->symmetric
+                    && pcbjam_sched::fiber_enterable( id ) )
+                {
+                    target = id;
+                    targetStatus = physical->status;
+                    break;
+                }
+            }
+
+            ctx.Expect( target != 0, "could not identify the coroutine's physical context" );
+
+            if( !target )
+                return;
+
+            // libcontext still records a valid symmetric suspension, but the
+            // authoritative registry now says an in-place wake owns the body.
+            // Resume must ghost-return before saving the caller or swapping.
+            pcbjam_sched::note_inplace_park( target, +1 );
+            const bool runningAfterRefusal = coroutine.Resume( 202 );
+            const bool targetStayedUnchanged =
+                    pcbjam_sched::status_of( target ) == targetStatus;
+            pcbjam_sched::note_inplace_park( target, -1 );
+
+            ctx.Expect( runningAfterRefusal,
+                        "a refused resume must leave the coroutine live" );
+            ctx.Expect( entryRuns == 1 && afterYieldRuns == 0,
+                        "registry/protocol disagreement physically entered the target" );
+            ctx.Expect( targetStayedUnchanged,
+                        "refusal changed the target's physical suspension" );
+
+            // The ghost return is non-destructive. Removing the exact registry
+            // refusal makes the same saved suspension legal again.
+            const bool runningAfterLegalResume = coroutine.Resume( 303 );
+            ctx.Expect( !runningAfterLegalResume,
+                        "legal resume should finish the reducer coroutine" );
+            ctx.Expect( entryRuns == 1 && afterYieldRuns == 1,
+                        "legal resume did not continue the preserved body once" );
+        } ) );
+#endif
 
         m_results.push_back( RunCase( "interleaving_multiple_coroutines", [this]( CaseContext& ctx ) {
             std::vector<std::string> sequence;

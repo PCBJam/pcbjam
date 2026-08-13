@@ -14,7 +14,8 @@ import { test, expect } from "./fixtures";
  * model-level (undo depth + positions); hasAbort pins crash-freedom, which is
  * the point of the stranded-entry cases.
  *
- * Skips (not fails) on a wasm build that predates the undo test hooks.
+ * The current CI build must carry the undo test hooks. A missing hook is a
+ * broken build/staging prerequisite and fails loudly.
  */
 
 const WIRE1 = "22222222-0000-0000-0000-000000000001";
@@ -56,14 +57,14 @@ const SAMPLE_PCB = `(kicad_pcb
 
 type FS = { mkdirTree(p: string): void; writeFile(p: string, d: string): void };
 type Mod = {
-  kicadOpenFile(p: string): unknown;
-  kicadCollabSnapshotItems(): string;
-  kicadCollabApplyItems(j: string): unknown;
-  kicadCollabTestMoveFirst(dx: number, dy: number): string;
-  kicadCollabTestRotateItem(id: string, deg: number): boolean;
-  kicadCollabGetPos(id: string): string;
-  kicadCollabTestUndo(): boolean;
-  kicadCollabTestUndoDepth(): number;
+  kicadOpenFile(p: string): Promise<unknown>;
+  kicadCollabSnapshotItems(): Promise<string>;
+  kicadCollabApplyItems(j: string): Promise<void>;
+  kicadCollabTestMoveFirst(dx: number, dy: number): Promise<string>;
+  kicadCollabTestRotateItem(id: string, deg: number): Promise<boolean>;
+  kicadCollabGetPos(id: string): Promise<string>;
+  kicadCollabTestUndo(): Promise<boolean>;
+  kicadCollabTestUndoDepth(): Promise<number>;
 };
 
 const BOOT_TIMEOUT = 150000;
@@ -72,7 +73,7 @@ function hasAbort(l: { consoleLogs: string[]; errors: string[] }): boolean {
   return [...l.consoleLogs, ...l.errors].some((s) => s.includes("Aborted("));
 }
 
-async function bootOpen(page: Page, url: string, content: string, file: string): Promise<boolean> {
+async function bootOpen(page: Page, url: string, content: string, file: string): Promise<void> {
   await page.goto(url);
   await expect(page.locator("#canvas")).toBeVisible({ timeout: BOOT_TIMEOUT });
   await page.waitForFunction(() => !!window.wxElementRegistry, null, { timeout: BOOT_TIMEOUT });
@@ -99,7 +100,7 @@ async function bootOpen(page: Page, url: string, content: string, file: string):
     { timeout: BOOT_TIMEOUT },
   );
   await page.evaluate(
-    ({ content, file }) => {
+    async ({ content, file }) => {
       const w = window as unknown as { FS: FS; Module: Mod };
       try {
         w.FS.mkdirTree("/home/kicad/documents");
@@ -108,16 +109,16 @@ async function bootOpen(page: Page, url: string, content: string, file: string):
       }
       const p = `/home/kicad/documents/${file}`;
       w.FS.writeFile(p, content);
-      w.Module.kicadOpenFile(p);
+      await w.Module.kicadOpenFile(p);
     },
     { content, file },
   );
 
-  // Hook-presence guard: false ⇒ the wasm build predates the undo test hooks.
-  return page.evaluate(() => {
+  const hooks = await page.evaluate(() => {
     const m = (window as unknown as { Module: Record<string, unknown> }).Module;
     return typeof m.kicadCollabTestUndo === "function" && typeof m.kicadCollabTestUndoDepth === "function";
   });
+  expect(hooks, "current wasm exposes both collab undo test hooks").toBe(true);
 }
 
 const getPos = (page: Page, id: string) =>
@@ -134,8 +135,7 @@ test.describe("eeschema collab undo (miss 09: local-ops-only)", () => {
     page,
     testLogger,
   }) => {
-    const hooked = await bootOpen(page, "/kicad/eeschema.html", SAMPLE_SCH, "undoA.kicad_sch");
-    test.skip(!hooked, "wasm build predates the undo test hooks");
+    await bootOpen(page, "/kicad/eeschema.html", SAMPLE_SCH, "undoA.kicad_sch");
 
     await page.evaluate(() => window.Module.kicadCollabSnapshotItems());
     expect(await undoDepth(page)).toBe(0);
@@ -175,8 +175,7 @@ test.describe("eeschema collab undo (miss 09: local-ops-only)", () => {
     page,
     testLogger,
   }) => {
-    const hooked = await bootOpen(page, "/kicad/eeschema.html", SAMPLE_SCH, "undoB.kicad_sch");
-    test.skip(!hooked, "wasm build predates the undo test hooks");
+    await bootOpen(page, "/kicad/eeschema.html", SAMPLE_SCH, "undoB.kicad_sch");
 
     // Original WIRE1 blob (pre-edit geometry) — the "peer's" replacement payload.
     const snap = JSON.parse(
@@ -188,7 +187,7 @@ test.describe("eeschema collab undo (miss 09: local-ops-only)", () => {
     // Local op referencing WIRE1 → undo entry holds a pointer to today's object.
     await page.evaluate(
       (id) =>
-        (window as unknown as { Module: { kicadCollabTestRotateItem(i: string, d: number): boolean } })
+        (window as unknown as { Module: { kicadCollabTestRotateItem(i: string, d: number): Promise<boolean> } })
           .Module.kicadCollabTestRotateItem(id, 90),
       WIRE1,
     );
@@ -217,14 +216,13 @@ test.describe("eeschema collab undo (miss 09: local-ops-only)", () => {
     page,
     testLogger,
   }) => {
-    const hooked = await bootOpen(page, "/kicad/eeschema.html", SAMPLE_SCH, "undoC.kicad_sch");
-    test.skip(!hooked, "wasm build predates the undo test hooks");
+    await bootOpen(page, "/kicad/eeschema.html", SAMPLE_SCH, "undoC.kicad_sch");
 
     await page.evaluate(() => window.Module.kicadCollabSnapshotItems());
 
     await page.evaluate(
       (id) =>
-        (window as unknown as { Module: { kicadCollabTestRotateItem(i: string, d: number): boolean } })
+        (window as unknown as { Module: { kicadCollabTestRotateItem(i: string, d: number): Promise<boolean> } })
           .Module.kicadCollabTestRotateItem(id, 90),
       WIRE1,
     );
@@ -248,8 +246,7 @@ test.describe("pcbnew collab undo (miss 09: local-ops-only)", () => {
     page,
     testLogger,
   }) => {
-    const hooked = await bootOpen(page, "/kicad/pcbnew-collab.html", SAMPLE_PCB, "undoA.kicad_pcb");
-    test.skip(!hooked, "wasm build predates the undo test hooks");
+    await bootOpen(page, "/kicad/pcbnew-collab.html", SAMPLE_PCB, "undoA.kicad_pcb");
 
     await page.evaluate(() => window.Module.kicadCollabSnapshotItems());
     expect(await undoDepth(page)).toBe(0);
@@ -285,8 +282,7 @@ test.describe("pcbnew collab undo (miss 09: local-ops-only)", () => {
     page,
     testLogger,
   }) => {
-    const hooked = await bootOpen(page, "/kicad/pcbnew-collab.html", SAMPLE_PCB, "undoB.kicad_pcb");
-    test.skip(!hooked, "wasm build predates the undo test hooks");
+    await bootOpen(page, "/kicad/pcbnew-collab.html", SAMPLE_PCB, "undoB.kicad_pcb");
 
     await page.evaluate(() => window.Module.kicadCollabSnapshotItems());
 

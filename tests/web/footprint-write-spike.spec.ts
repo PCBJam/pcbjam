@@ -31,10 +31,7 @@ async function bootFootprintEditor(page: Page): Promise<void> {
   await page.waitForFunction(() => !!(window as any).kicadLibs, null, { timeout: 60000 });
 }
 
-  // KNOWN-BROKEN: the fp/sym editor kicadLibs enumerate/save flows are dead
-  // (docs/features/web-e2e-rot/01-editor-lib-bridge-flows.md). fixme, not fail:
-  // on CI this dies in a 180s boot timeout per engine — running it buys no signal.
-test.fixme('footprint editor save routes through the pcbjam_fp write bridge (main thread)', async ({ page }) => {
+test('footprint editor save routes through the pcbjam_fp write bridge (main thread)', async ({ page }) => {
   const logs: string[] = [];
   page.on('console', (m) => logs.push(`[${m.type()}] ${m.text()}`));
   page.on('pageerror', (e) => logs.push(`[pageerror] ${e.message}`));

@@ -62,7 +62,7 @@ type EmscriptenFS = {
     mkdirTree(path: string): void;
     writeFile(path: string, data: string): void;
 };
-type KicadModule = { kicadOpenFile(path: string): unknown };
+type KicadModule = { kicadOpenFile(path: string): Promise<unknown> };
 
 test.describe('Eeschema schematic load', () => {
     test('opens a .kicad_sch via kicadOpenFile and finishes loading (fiber shim regression)', async ({
@@ -96,9 +96,9 @@ test.describe('Eeschema schematic load', () => {
         expect(await page.title()).toMatch(/untitled/i);
 
         // Write a minimal, version-compatible schematic into MEMFS and open it.
-        // kicadOpenFile runs OpenProjectFiles under Asyncify: it suspends and
-        // returns a placeholder, so we ignore the return and poll the title.
-        const openedPath = await page.evaluate((content) => {
+        // The owned-open Promise settles only after the exact open owner retires.
+        // Await it here; the title poll below remains the UI-render assertion.
+        const openedPath = await page.evaluate(async (content) => {
             const w = window as unknown as { FS: EmscriptenFS; Module: KicadModule };
             const dir = '/home/kicad/documents';
             try {
@@ -108,7 +108,7 @@ test.describe('Eeschema schematic load', () => {
             }
             const path = `${dir}/regression.kicad_sch`;
             w.FS.writeFile(path, content);
-            w.Module.kicadOpenFile(path);
+            await w.Module.kicadOpenFile(path);
             return path;
         }, SAMPLE_SCH);
         expect(openedPath).toContain('regression.kicad_sch');

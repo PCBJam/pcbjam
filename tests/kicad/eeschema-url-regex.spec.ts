@@ -54,7 +54,7 @@ type EmscriptenFS = {
     mkdirTree(path: string): void;
     writeFile(path: string, data: string): void;
 };
-type KicadModule = { kicadOpenFile(path: string): unknown };
+type KicadModule = { kicadOpenFile(path: string): Promise<unknown> };
 
 const REGEX_ERR = /invalid regular expression|0xd800|UTF-8 error|code points/i;
 
@@ -86,7 +86,7 @@ test.describe('Eeschema URL-detection regex', () => {
 
         expect(await page.title()).toMatch(/untitled/i);
 
-        const openedPath = await page.evaluate((content) => {
+        const openedPath = await page.evaluate(async (content) => {
             const w = window as unknown as { FS: EmscriptenFS; Module: KicadModule };
             const dir = '/home/kicad/documents';
             try {
@@ -96,7 +96,7 @@ test.describe('Eeschema URL-detection regex', () => {
             }
             const path = `${dir}/url.kicad_sch`;
             w.FS.writeFile(path, content);
-            w.Module.kicadOpenFile(path);
+            await w.Module.kicadOpenFile(path);
             return path;
         }, URL_SCH);
         expect(openedPath).toContain('url.kicad_sch');

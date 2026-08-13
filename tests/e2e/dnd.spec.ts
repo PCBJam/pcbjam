@@ -51,7 +51,7 @@ test.describe('wxDragDrop Tests', () => {
         });
         canvas.dispatchEvent(event);
       }
-    }, { x: box.x + 400, y: box.y + 200 });
+    }, { x: box!.x + 400, y: box!.y + 200 });
 
     await expect.poll(
       () => testLogger.consoleLogs.some(l => l.includes('[DND] dragenter')),
@@ -89,7 +89,7 @@ test.describe('wxDragDrop Tests', () => {
         });
         canvas.dispatchEvent(leaveEvent);
       }
-    }, { x: box.x + 400, y: box.y + 200 });
+    }, { x: box!.x + 400, y: box!.y + 200 });
 
     await expect.poll(
       () => testLogger.consoleLogs.some(l => l.includes('[DND] dragleave')),
@@ -127,7 +127,7 @@ test.describe('wxDragDrop Tests', () => {
         });
         canvas.dispatchEvent(event);
       }
-    }, { x: box.x + 400, y: box.y + 200, fileName: testFileName, content: testContent });
+    }, { x: box!.x + 400, y: box!.y + 200, fileName: testFileName, content: testContent });
 
     // Wait for async file processing (deterministic: poll for the drop log)
     await expect.poll(
@@ -165,7 +165,7 @@ test.describe('wxDragDrop Tests', () => {
         });
         canvas.dispatchEvent(event);
       }
-    }, { x: box.x + 400, y: box.y + 200, fileName: testFileName, content: testContent });
+    }, { x: box!.x + 400, y: box!.y + 200, fileName: testFileName, content: testContent });
 
     // Wait for file to be written (deterministic: poll for the write log)
     await expect.poll(
@@ -204,7 +204,7 @@ test.describe('wxDragDrop Tests', () => {
         });
         canvas.dispatchEvent(event);
       }
-    }, { x: box.x + 400, y: box.y + 200, fileName: testFileName, content: testContent });
+    }, { x: box!.x + 400, y: box!.y + 200, fileName: testFileName, content: testContent });
 
     // Wait for wxDropFilesEvent processing (deterministic: poll for the [DND_EVENT] log).
     // The app logs "=== wxDropFilesEvent received! ===" which includes DND_EVENT prefix.
@@ -244,7 +244,7 @@ test.describe('wxDragDrop Tests', () => {
         });
         canvas.dispatchEvent(event);
       }
-    }, { x: box.x + 400, y: box.y + 200 });
+    }, { x: box!.x + 400, y: box!.y + 200 });
 
     await expect.poll(
       () => testLogger.consoleLogs.some(l => l.includes('[DND] drop: 3 files')),
@@ -252,6 +252,200 @@ test.describe('wxDragDrop Tests', () => {
     ).toBe(true);
 
     await stableShot(page, 'dnd-08-multiple-files.png', { fullPage: true });
+  });
+
+  test('Overlapping asynchronous drops retain their exact file batches', async ({
+    page,
+    testLogger,
+  }) => {
+    await page.goto('/standalone/dnd/dnd_test.html');
+    await waitForCanvasApp(page);
+
+    const canvas = page.locator('#canvas');
+    const box = await canvas.boundingBox();
+    expect(box, 'Canvas should have bounding box').not.toBeNull();
+
+    await page.evaluate(({ x, y }) => {
+      type DelayedFile = { name: string; content: string; delay: number };
+      const target = document.getElementById('canvas');
+      if (!target) throw new Error('canvas is missing');
+
+      const dispatchDrop = (specs: DelayedFile[], offset: number) => {
+        const files = specs.map((spec) => {
+          const bytes = new TextEncoder().encode(spec.content);
+          return {
+            name: spec.name,
+            size: bytes.byteLength,
+            arrayBuffer: () =>
+              new Promise<ArrayBuffer>((resolve) => {
+                setTimeout(() => resolve(bytes.buffer.slice(0)), spec.delay);
+              }),
+          };
+        });
+        const event = new DragEvent('drop', {
+          bubbles: true,
+          cancelable: true,
+          clientX: x + offset,
+          clientY: y + offset,
+        });
+        Object.defineProperty(event, 'dataTransfer', { value: { files } });
+        target.dispatchEvent(event);
+      };
+
+      // A1 enters the old shared array, then B completes and clears it before
+      // A2 finishes. A shared pending-drop state therefore emits three
+      // one-file events. Immutable transactions emit B as [1], then A as [2].
+      dispatchDrop(
+        [
+          { name: 'overlap-a1.txt', content: 'a1', delay: 20 },
+          { name: 'overlap-a2.txt', content: 'a2', delay: 160 },
+        ],
+        0,
+      );
+      dispatchDrop([{ name: 'overlap-b.txt', content: 'b', delay: 80 }], 20);
+    }, { x: box!.x + 300, y: box!.y + 200 });
+
+    const deliveredBatchSizes = () =>
+      testLogger.consoleLogs
+        .map((line) => line.match(/\[DND_EVENT\] Number of files: (\d+)/)?.[1])
+        .filter((value): value is string => value !== undefined)
+        .map(Number);
+
+    await expect
+      .poll(deliveredBatchSizes, {
+        timeout: 10000,
+        message: 'overlapping file reads must deliver two intact drop transactions',
+      })
+      .toEqual([1, 2]);
+
+    const fileLines = testLogger.consoleLogs.filter((line) =>
+      line.includes('[DND_EVENT] File '),
+    );
+    expect(fileLines.some((line) => line.includes('overlap-a1.txt'))).toBe(true);
+    expect(fileLines.some((line) => line.includes('overlap-a2.txt'))).toBe(true);
+    expect(fileLines.some((line) => line.includes('overlap-b.txt'))).toBe(true);
+
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const runtime = globalThis as unknown as {
+            Module?: { wxFileDropPendingBytes?: () => number };
+          };
+          return runtime.Module?.wxFileDropPendingBytes?.() ?? -1;
+        }), {
+        message: 'each exact native release must return its retained-byte reservation',
+      })
+      .toBe(0);
+  });
+
+  test('oversized drop is rejected before reading and does not kill the runtime', async ({
+    page,
+  }) => {
+    await page.goto('/standalone/dnd/dnd_test.html');
+    await waitForCanvasApp(page);
+
+    const result = await page.evaluate(() => {
+      const target = document.getElementById('canvas');
+      if (!target) throw new Error('canvas is missing');
+
+      let readCalls = 0;
+      const file = {
+        name: 'too-large.kicad_pcb',
+        size: 256 * 1024 * 1024 + 1,
+        arrayBuffer: async () => {
+          readCalls++;
+          return new ArrayBuffer(0);
+        },
+      };
+      const event = new DragEvent('drop', { bubbles: true, cancelable: true });
+      Object.defineProperty(event, 'dataTransfer', { value: { files: [file] } });
+      target.dispatchEvent(event);
+
+      const runtime = globalThis as unknown as {
+        Module?: { wxFileDropPendingBytes?: () => number };
+        __wxScheduler?: { dead?: boolean };
+      };
+      return {
+        readCalls,
+        pendingBytes: runtime.Module?.wxFileDropPendingBytes?.() ?? -1,
+        schedulerDead: runtime.__wxScheduler?.dead ?? false,
+      };
+    });
+
+    expect(result.readCalls, 'capacity is checked before File.arrayBuffer()').toBe(0);
+    expect(result.pendingBytes, 'a refused transaction owns no byte reservation').toBe(0);
+    expect(result.schedulerDead, 'invalid user input is not a native integrity failure').toBe(false);
+  });
+
+  test('a failed batch stays reserved until every non-cancellable read settles', async ({
+    page,
+  }) => {
+    await page.goto('/standalone/dnd/dnd_test.html');
+    await waitForCanvasApp(page);
+
+    const result = await page.evaluate(async () => {
+      const target = document.getElementById('canvas');
+      if (!target) throw new Error('canvas is missing');
+      const runtime = globalThis as unknown as {
+        Module?: { wxFileDropPendingBytes?: () => number };
+        __wxScheduler?: { dead?: boolean };
+      };
+      const mib = 1024 * 1024;
+      let settleSlow!: (value: ArrayBuffer) => void;
+      const slowRead = new Promise<ArrayBuffer>((resolve) => {
+        settleSlow = resolve;
+      });
+      let bypassReadCalls = 0;
+      const dispatch = (files: unknown[]) => {
+        const event = new DragEvent('drop', { bubbles: true, cancelable: true });
+        Object.defineProperty(event, 'dataTransfer', { value: { files } });
+        target.dispatchEvent(event);
+      };
+
+      dispatch([
+        {
+          name: 'slow.bin',
+          size: 200 * mib,
+          arrayBuffer: () => slowRead,
+        },
+        {
+          name: 'failed.bin',
+          size: 1,
+          arrayBuffer: () => Promise.reject(new Error('deterministic read failure')),
+        },
+      ]);
+      for (let i = 0; i < 4; ++i) await Promise.resolve();
+      const pendingWhileSlow = runtime.Module?.wxFileDropPendingBytes?.() ?? -1;
+
+      dispatch([{
+        name: 'must-not-start.bin',
+        size: 100 * mib,
+        arrayBuffer: async () => {
+          bypassReadCalls++;
+          return new ArrayBuffer(0);
+        },
+      }]);
+      for (let i = 0; i < 4; ++i) await Promise.resolve();
+      const pendingAfterRefusal = runtime.Module?.wxFileDropPendingBytes?.() ?? -1;
+
+      settleSlow(new ArrayBuffer(0));
+      for (let i = 0; i < 8; ++i) await Promise.resolve();
+      return {
+        pendingWhileSlow,
+        pendingAfterRefusal,
+        pendingAfterSettlement: runtime.Module?.wxFileDropPendingBytes?.() ?? -1,
+        bypassReadCalls,
+        schedulerDead: runtime.__wxScheduler?.dead ?? false,
+      };
+    });
+
+    expect(result).toEqual({
+      pendingWhileSlow: 200 * 1024 * 1024 + 1,
+      pendingAfterRefusal: 200 * 1024 * 1024 + 1,
+      pendingAfterSettlement: 0,
+      bypassReadCalls: 0,
+      schedulerDead: false,
+    });
   });
 
   test('Clear files button exists in UI', async ({ page, testLogger }) => {
@@ -279,7 +473,7 @@ test.describe('wxDragDrop Tests', () => {
         });
         canvas.dispatchEvent(event);
       }
-    }, { x: box.x + 400, y: box.y + 200 });
+    }, { x: box!.x + 400, y: box!.y + 200 });
 
     // Verify file was dropped (from JS side) - deterministic poll for the write log
     await expect.poll(

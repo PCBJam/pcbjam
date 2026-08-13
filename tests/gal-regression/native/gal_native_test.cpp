@@ -14,6 +14,7 @@
 // KiCad GAL headers
 #include <gal/graphics_abstraction_layer.h>
 #include <gal/opengl/opengl_gal.h>
+#include <advanced_config.h>
 
 // stb_image_write for PNG output
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -304,9 +305,6 @@ public:
 
         std::cout << "GAL Native Test - OPENGL_GAL Baseline Generator\n";
         std::cout << "================================================\n\n";
-
-        // Initialize GLEW
-        glewExperimental = GL_TRUE;
 
         m_frame = new GALTestFrame();
         m_frame->Show(true);

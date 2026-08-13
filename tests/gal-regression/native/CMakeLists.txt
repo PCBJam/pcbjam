@@ -14,12 +14,14 @@ set(wxWidgets_CONFIG_EXECUTABLE "/opt/homebrew/bin/wx-config")
 find_package(wxWidgets REQUIRED COMPONENTS core base gl)
 include(${wxWidgets_USE_FILE})
 
-# Find other required packages
+# Find the platform OpenGL library. KiCad supplies its own GLAD loader.
 find_package(OpenGL REQUIRED)
-find_package(GLEW REQUIRED)
 
 # KiCad source root
 set(KICAD_ROOT ${CMAKE_SOURCE_DIR}/../../../kicad)
+
+# Use the same vendored OpenGL loader as the current KiCad sources.
+set(GLAD_SOURCES ${KICAD_ROOT}/thirdparty/glad/src/gl.c)
 
 # Generated shader files
 set(SHADER_SOURCES
@@ -33,12 +35,15 @@ set(SHADER_SOURCES
     ${CMAKE_SOURCE_DIR}/generated/glsl_smaa_pass_2_vert.cpp
     ${CMAKE_SOURCE_DIR}/generated/glsl_smaa_pass_3_frag.cpp
     ${CMAKE_SOURCE_DIR}/generated/glsl_smaa_pass_3_vert.cpp
+    ${CMAKE_SOURCE_DIR}/generated/glsl_xor_diff_frag.cpp
+    ${CMAKE_SOURCE_DIR}/generated/glsl_xor_diff_vert.cpp
 )
 
 # KiCad OpenGL GAL sources
 set(KICAD_GAL_SOURCES
     ${KICAD_ROOT}/common/gal/opengl/opengl_gal.cpp
-    ${KICAD_ROOT}/common/gal/opengl/gl_context_mgr.cpp
+    ${KICAD_ROOT}/common/kicad_gl/gl_context_mgr.cpp
+    ${KICAD_ROOT}/common/kicad_gl/gl_utils.cpp
     ${KICAD_ROOT}/common/gal/opengl/shader.cpp
     ${KICAD_ROOT}/common/gal/opengl/vertex_manager.cpp
     ${KICAD_ROOT}/common/gal/opengl/vertex_item.cpp
@@ -95,6 +100,7 @@ add_executable(gal_native_test
     ${SCENARIO_SOURCES}
     ${KICAD_GAL_SOURCES}
     ${SHADER_SOURCES}
+    ${GLAD_SOURCES}
 )
 
 # Include directories - our stubs first, then KiCad, then wxWidgets
@@ -118,10 +124,10 @@ target_include_directories(gal_native_test PRIVATE
 
     # KiCad thirdparty
     ${KICAD_ROOT}/thirdparty/thread-pool
+    ${KICAD_ROOT}/thirdparty/glad/include
 
     # System includes
     ${OPENGL_INCLUDE_DIR}
-    ${GLEW_INCLUDE_DIRS}
 
     # Homebrew dependencies
     /opt/homebrew/include   # nlohmann-json, clipper2
@@ -131,7 +137,6 @@ target_include_directories(gal_native_test PRIVATE
 target_link_libraries(gal_native_test
     ${wxWidgets_LIBRARIES}
     OpenGL::GL
-    GLEW::GLEW
 )
 
 # Compile definitions

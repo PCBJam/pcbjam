@@ -25,8 +25,8 @@ export type { CollabDelta, CollabItem };
  *   onDelta(cb): set window.kicadCollab = { onDelta: cb }
  */
 export interface CollabBridge {
-  snapshot(): string;
-  apply(deltaJson: string): void;
+  snapshot(isCurrent?: () => boolean): string | Promise<string>;
+  apply(deltaJson: string, isCurrent?: () => boolean): void | Promise<void>;
   onDelta(cb: (deltaJson: string) => void): void;
 }
 

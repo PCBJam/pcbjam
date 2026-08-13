@@ -22,14 +22,72 @@
  * lld::wasm::ImportSection::addImport.) On a pthread worker we fall back to
  * emscripten_thread_sleep (the real underlying blocking sleep — workers may block).
  *
- * SCOPE: only the main browser thread yields; only it must never block the event loop.
+ * ZERO-DURATION SLEEPS: mimalloc uses sleep(0) as a spin-politeness hint in
+ * mi_atomic_yield.  It must remain a no-op: turning it into an event-loop yield can
+ * suspend the main thread in the middle of malloc.  A zero-duration sleep does not
+ * promise an event-loop turn.  A 2026-08-10 module audit found mimalloc to be the only
+ * zero-duration caller; all other nanosleep callers request at least 1 ms.
+ *
+ * SCOPE: only positive sleeps on the main browser thread yield; only that thread must
+ * never block the event loop.
  */
 #include <emscripten/emscripten.h>
 #include <emscripten/threading.h>
+#include <errno.h>
+#include <limits.h>
+#include <math.h>
 #include <time.h>
 
+/*
+ * Browser timers use a signed 32-bit millisecond delay.  Values below one
+ * millisecond must round up (nanosleep may not return early), and larger waits
+ * must be split instead of letting setTimeout wrap/clamp them to a short wait.
+ */
+static int pcbjam_nanosleep_timer_chunk_ms( double ms )
+{
+    const double rounded = ceil( ms );
+
+    if( !( rounded >= 1.0 ) )
+        return 1;
+
+    if( rounded >= (double) INT_MAX )
+        return INT_MAX;
+
+    return (int) rounded;
+}
+
+#ifdef PCBJAM_NANOSLEEP_TEST_HOOK
+static unsigned g_zero_duration_sleep_calls;
+static unsigned g_main_thread_zero_duration_sleep_calls;
+
+#ifdef __cplusplus
+extern "C"
+#endif
+unsigned pcbjam_nanosleep_zero_duration_call_count( void )
+{
+    return __atomic_load_n( &g_zero_duration_sleep_calls, __ATOMIC_RELAXED );
+}
+
+#ifdef __cplusplus
+extern "C"
+#endif
+unsigned pcbjam_nanosleep_main_thread_zero_duration_call_count( void )
+{
+    return __atomic_load_n( &g_main_thread_zero_duration_sleep_calls,
+                            __ATOMIC_RELAXED );
+}
+
+#ifdef __cplusplus
+extern "C"
+#endif
+int pcbjam_nanosleep_timer_chunk_ms_for_test( double ms )
+{
+    return pcbjam_nanosleep_timer_chunk_ms( ms );
+}
+#endif
+
 /* EM_ASYNC_JS integrates with Asyncify automatically (binaryen instruments every caller). */
-EM_ASYNC_JS( void, __wasm_main_thread_yield_ms, ( double ms ), {
+EM_ASYNC_JS( void, __wasm_main_thread_yield_ms, ( int ms ), {
     await new Promise( function( resolve ) { setTimeout( resolve, ms ); } );
 } );
 
@@ -57,17 +115,61 @@ int pcbjam_context_sleep_ms( double ms ) __attribute__(( weak ));
 
 int nanosleep( const struct timespec* req, struct timespec* rem )
 {
-    if( req )
+    if( !req )
     {
-        double ms = (double) req->tv_sec * 1000.0 + (double) req->tv_nsec / 1.0e6;
+        errno = EFAULT;
+        return -1;
+    }
+
+    if( req->tv_sec < 0 || req->tv_nsec < 0 || req->tv_nsec >= 1000000000L )
+    {
+        errno = EINVAL;
+        return -1;
+    }
+
+    double ms = (double) req->tv_sec * 1000.0 + (double) req->tv_nsec / 1.0e6;
+
+#ifdef PCBJAM_NANOSLEEP_TEST_HOOK
+    if( ms == 0.0 )
+    {
+        __atomic_fetch_add( &g_zero_duration_sleep_calls, 1, __ATOMIC_RELAXED );
+
         if( emscripten_is_main_runtime_thread() )
         {
-            if( !pcbjam_context_sleep_ms || !pcbjam_context_sleep_ms( ms ) )
-                __wasm_main_thread_yield_ms( ms ); /* yield -> event loop runs -> Worker boots */
+            __atomic_fetch_add( &g_main_thread_zero_duration_sleep_calls, 1,
+                                __ATOMIC_RELAXED );
         }
-        else
-            emscripten_thread_sleep( ms );     /* worker: real blocking sleep */
     }
+#endif
+
+    if( ms > 0.0 )
+    {
+        double remaining = ms;
+
+        /*
+         * One chunk owns one timer/park.  Repeat after each exact wake so a
+         * large timespec cannot wrap a browser timer and return early.  An
+         * infinite duration intentionally remains asleep in INT_MAX chunks.
+         */
+        while( remaining > 0.0 )
+        {
+            const int delay = pcbjam_nanosleep_timer_chunk_ms( remaining );
+
+            if( emscripten_is_main_runtime_thread() )
+            {
+                if( !pcbjam_context_sleep_ms || !pcbjam_context_sleep_ms( delay ) )
+                    __wasm_main_thread_yield_ms( delay );
+            }
+            else
+            {
+                emscripten_thread_sleep( delay );
+            }
+
+            if( isfinite( remaining ) )
+                remaining -= (double) delay;
+        }
+    }
+
     if( rem )
     {
         rem->tv_sec = 0;

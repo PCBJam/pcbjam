@@ -209,7 +209,8 @@ compare_screenshots() {
 
         if [ "$is_match" -eq 1 ]; then
             matching=$((matching + 1))
-            if [ -n "$VERBOSE" ] || [ "$diff_pixels" -gt 0 ]; then
+            local has_diff=$(awk "BEGIN {print ($diff_pixels > 0) ? 1 : 0}")
+            if [ -n "$VERBOSE" ] || [ "$has_diff" -eq 1 ]; then
                 echo "  MATCH: $filename (${diff_pct}% different)"
             fi
         else

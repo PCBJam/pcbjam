@@ -25,8 +25,15 @@ if(EMSCRIPTEN)
     # Create imported target
     if(NOT TARGET ZLIB::ZLIB)
         add_library(ZLIB::ZLIB INTERFACE IMPORTED)
+
+        # The Emscripten compiler already searches its C sysroot.  Do not
+        # publish that directory as an explicit SYSTEM include.  Clang places
+        # an explicit system directory before libc++'s implicit C++ wrapper
+        # directory.  A forced C++ header can then resolve <stddef.h> (and the
+        # other C compatibility headers) to the raw C header instead of the
+        # libc++ wrapper.  The result is a target-dependent compile failure in
+        # consumers such as the static WASM VRML plug-in.
         set_target_properties(ZLIB::ZLIB PROPERTIES
-            INTERFACE_INCLUDE_DIRECTORIES "${ZLIB_INCLUDE_DIR}"
             INTERFACE_LINK_LIBRARIES "-sUSE_ZLIB=1"
         )
     endif()

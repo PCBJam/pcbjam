@@ -12,6 +12,7 @@ import {
   projectSource,
 } from "./project-source";
 import type { SourceDescriptor } from "./project-source-shared";
+import { SAVE_COMMITTED, type SaveOutcome } from "@/wasm/save-flow";
 
 /**
  * Project/file reads go through the active PROJECT SOURCE (lib/project-source.ts):
@@ -90,22 +91,31 @@ export async function uploadFileBytes(
   slug: string,
   relPath: string,
   bytes: Uint8Array,
-): Promise<void> {
+  signal?: AbortSignal,
+): Promise<SaveOutcome> {
   const source = projectSource();
   if (!source.uploadFileBytes) {
     downloadBytes(relPath, bytes);
-    return;
+    return SAVE_COMMITTED;
   }
   try {
-    await source.uploadFileBytes(slug, relPath, bytes);
+    return await source.uploadFileBytes(slug, relPath, bytes, signal);
   } catch (e) {
     // Composite write to a read-only (gallery) project → fall back to download.
     if (e instanceof ReadOnlyProjectError) {
       downloadBytes(relPath, bytes);
-      return;
+      return SAVE_COMMITTED;
     }
     throw e;
   }
+}
+
+/** Observe the server revision after an ambiguous save; never rebases this model. */
+export async function refreshFileRevision(
+  slug: string,
+  relPath: string,
+): Promise<void> {
+  await projectSource().refreshFileRevision?.(slug, relPath);
 }
 
 /**
@@ -126,7 +136,10 @@ export async function createProjectFileIfMissing(
   if (!source.uploadFileBytes) throw new ReadOnlyProjectError(slug);
   const { files } = await source.getProject(slug);
   if (files.some((file) => file.path === relPath)) return;
-  await source.uploadFileBytes(slug, relPath, bytes);
+  const outcome = await source.uploadFileBytes(slug, relPath, bytes);
+  if (outcome.kind !== "committed") {
+    throw new Error(outcome.message ?? `file creation did not commit: ${relPath}`);
+  }
 }
 
 // --- collaboration drift reporting (ysync; backend-only) ---

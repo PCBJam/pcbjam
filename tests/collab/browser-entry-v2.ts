@@ -32,6 +32,7 @@ import {
   type KicadItemsModule,
   type KicadItemsWindow,
 } from "../../web/standalone/src/wasm/collab/index";
+import { runOwnerJob } from "../../web/standalone/src/wasm/owner-job";
 
 interface StartOpts {
   room: string;
@@ -62,7 +63,7 @@ async function start(
     provider: { kind: "broadcastchannel", settleMs: opts.settleMs ?? 400 },
     room: opts.room,
   });
-  const h = attachKicadCollab(mod, win, session, {
+  const h = await attachKicadCollab(mod, win, session, {
     seedDoc: opts.seedText ? fileToDoc(opts.seedText) : undefined,
     editorMatchesDoc: opts.editorMatchesDoc,
   });
@@ -112,25 +113,31 @@ export interface DriftSummary {
  * compareSlots — order-only churn goes to reordered/layoutReordered and does
  * not make a report, matching ysync 0010); null means editor ≡ doc.
  */
-function driftReport(saveFn: string, scratchPath: string): DriftSummary | null {
+async function driftReport(saveFn: string, scratchPath: string): Promise<DriftSummary | null> {
   const w = window as unknown as {
-    Module: Record<string, (p: string) => void>;
+    Module: Record<string, (p: string) => Promise<void>>;
     FS: {
       readFile(p: string, o: { encoding: "utf8" }): string;
       unlink(p: string): void;
     };
   };
-  w.Module[saveFn]!(scratchPath);
-  let text: string;
-  try {
-    text = w.FS.readFile(scratchPath, { encoding: "utf8" });
-  } finally {
-    try {
-      w.FS.unlink(scratchPath);
-    } catch {
-      /* scratch cleanup is best-effort */
-    }
-  }
+  await w.Module[saveFn]!(scratchPath);
+  const text = await runOwnerJob(
+    window as ToolWindow,
+    "collab e2e drift scratch read",
+    [scratchPath] as const,
+    (path) => {
+      try {
+        return w.FS.readFile(path, { encoding: "utf8" });
+      } finally {
+        try {
+          w.FS.unlink(path);
+        } catch {
+          /* scratch cleanup is best-effort */
+        }
+      }
+    },
+  );
   const wasmDoc = fileToDoc(text);
   const ydocDoc = yToDoc(handle().doc);
   const diff = driftDocDelta(ydocDoc, wasmDoc);

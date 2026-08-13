@@ -91,4 +91,77 @@ test.describe('wxTimer Tests', () => {
       { message: 'Should log counters reset' }).toBe(true);
     await stableShot(page, 'timer-08-reset.png', { fullPage: true });
   });
+
+  test('Stop and restart release exact long-delay mailbox reservations', async ({
+    page,
+    testLogger,
+  }) => {
+    await page.goto('/standalone/timer/timer_test.html');
+    await waitForWxApp(page);
+
+    const result = await page.evaluate(() => new Promise<{
+      accepted: boolean;
+      nativeResult: number;
+      beforeReserved: number;
+      afterReserved: number;
+      beforeRecords: number;
+      afterRecords: number;
+      dead: boolean;
+    }>((resolve) => {
+      const runtime = window as unknown as {
+        Module: { _wx_timer_cancellation_probe(): number };
+        __wxScheduler: {
+          mailboxReserved: number;
+          mailboxReservations: Map<number, unknown>;
+          dead: boolean;
+          enqueueNativeEntry(
+            key: string | null,
+            site: string,
+            run: () => void,
+          ): boolean;
+        };
+      };
+      const scheduler = runtime.__wxScheduler;
+      const beforeReserved = scheduler.mailboxReserved;
+      const beforeRecords = scheduler.mailboxReservations.size;
+      const accepted = scheduler.enqueueNativeEntry(
+        null,
+        'wxTimer cancellation probe',
+        () => {
+          const nativeResult = runtime.Module._wx_timer_cancellation_probe();
+          resolve({
+            accepted: true,
+            nativeResult,
+            beforeReserved,
+            afterReserved: scheduler.mailboxReserved,
+            beforeRecords,
+            afterRecords: scheduler.mailboxReservations.size,
+            dead: scheduler.dead,
+          });
+        },
+      );
+      if (!accepted) {
+        resolve({
+          accepted: false,
+          nativeResult: 0,
+          beforeReserved,
+          afterReserved: scheduler.mailboxReserved,
+          beforeRecords,
+          afterRecords: scheduler.mailboxReservations.size,
+          dead: scheduler.dead,
+        });
+      }
+    }));
+
+    expect(result).toEqual({
+      accepted: true,
+      nativeResult: 1,
+      beforeReserved: result.beforeReserved,
+      afterReserved: result.beforeReserved,
+      beforeRecords: result.beforeRecords,
+      afterRecords: result.beforeRecords,
+      dead: false,
+    });
+    expect(testLogger.errors.filter(e => !e.includes('favicon'))).toHaveLength(0);
+  });
 });

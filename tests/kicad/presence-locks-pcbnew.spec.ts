@@ -56,17 +56,17 @@ const SAMPLE_PCB = `(kicad_pcb
 
 type FS = { mkdirTree(p: string): void; writeFile(p: string, d: string): void };
 type Mod = {
-  kicadOpenFile(p: string): unknown;
-  kicadCollabPresenceStart(): void;
-  kicadCollabSetRemote(j: string): void;
-  kicadCollabGetViewport(): string;
-  kicadCollabGetSelection(): string;
-  kicadCollabGetPos(id: string): string;
-  kicadCollabReleaseSelection(uuidsJson: string, holder: string): void;
-  kicadCollabTestGetLocked(): string;
-  kicadCollabTestSelectComponent(): string;
-  kicadCollabTestSelectFirst(): string;
-  kicadCollabTestClearSelection(): boolean;
+  kicadOpenFile(p: string): Promise<unknown>;
+  kicadCollabPresenceStart(): Promise<void>;
+  kicadCollabSetRemote(j: string): Promise<void>;
+  kicadCollabGetViewport(): Promise<string>;
+  kicadCollabGetSelection(): Promise<string>;
+  kicadCollabGetPos(id: string): Promise<string>;
+  kicadCollabReleaseSelection(uuidsJson: string, holder: string): Promise<void>;
+  kicadCollabTestGetLocked(): Promise<string>;
+  kicadCollabTestSelectComponent(): Promise<string>;
+  kicadCollabTestSelectFirst(): Promise<string>;
+  kicadCollabTestClearSelection(): Promise<boolean>;
 };
 type LocksWindow = {
   FS: FS;
@@ -104,7 +104,7 @@ async function bootAndOpen(page: Page): Promise<void> {
   );
 
   await page.evaluate(
-    ({ content }) => {
+    async ({ content }) => {
       const w = window as unknown as LocksWindow;
       const dir = "/home/kicad/documents";
       try {
@@ -114,7 +114,7 @@ async function bootAndOpen(page: Page): Promise<void> {
       }
       const p = `${dir}/locks.kicad_pcb`;
       w.FS.writeFile(p, content);
-      w.Module.kicadOpenFile(p);
+      await w.Module.kicadOpenFile(p);
     },
     { content: SAMPLE_PCB },
   );
@@ -123,17 +123,17 @@ async function bootAndOpen(page: Page): Promise<void> {
     .poll(() => page.title(), { timeout: 60000, intervals: [500] })
     .toMatch(/locks/i);
 
-  await page.evaluate(() => {
-    (window as unknown as LocksWindow).Module.kicadCollabPresenceStart();
+  await page.evaluate(async () => {
+    await (window as unknown as LocksWindow).Module.kicadCollabPresenceStart();
   });
 }
 
 /** Seed (or clear) the remote lock set for FP1. */
 function setLock(page: Page, locked: boolean): Promise<void> {
   return page.evaluate(
-    ({ fp, locked: isLocked }) => {
+    async ({ fp, locked: isLocked }) => {
       const w = window as unknown as LocksWindow;
-      w.Module.kicadCollabSetRemote(
+      await w.Module.kicadCollabSetRemote(
         JSON.stringify({
           peers: [],
           locks: isLocked ? [{ uuid: fp, name: "bob" }] : [],
@@ -160,11 +160,11 @@ async function fpScreenPos(page: Page): Promise<{ x: number; y: number }> {
   const box = await page.locator(`#${glId}`).boundingBox();
   expect(box).toBeTruthy();
 
-  const { vp, pos } = await page.evaluate(() => {
+  const { vp, pos } = await page.evaluate(async () => {
     const w = window as unknown as LocksWindow;
     return {
-      vp: JSON.parse(w.Module.kicadCollabGetViewport()),
-      pos: w.Module.kicadCollabGetPos("66666666-0000-0000-0000-000000000001"),
+      vp: JSON.parse(await w.Module.kicadCollabGetViewport()),
+      pos: await w.Module.kicadCollabGetPos("66666666-0000-0000-0000-000000000001"),
     };
   });
   const [wx, wy] = pos.split(",").map(Number);
@@ -200,8 +200,8 @@ async function moveViaHotkey(page: Page): Promise<void> {
     .poll(
       () =>
         page.evaluate(
-          () =>
-            JSON.parse((window as unknown as LocksWindow).Module.kicadCollabGetSelection())
+          async () =>
+            JSON.parse(await (window as unknown as LocksWindow).Module.kicadCollabGetSelection())
               .length,
         ),
       { timeout: 10000, message: "click never landed a selection" },
@@ -231,8 +231,8 @@ test("seeded locks are probeable and a locked footprint resists a real move", as
   await setLock(page, true);
   await expect
     .poll(() =>
-      page.evaluate(() =>
-        JSON.parse((window as unknown as LocksWindow).Module.kicadCollabTestGetLocked()),
+      page.evaluate(async () =>
+        JSON.parse(await (window as unknown as LocksWindow).Module.kicadCollabTestGetLocked()),
       ),
     )
     .toEqual([{ uuid: FP1, name: "bob" }]);
@@ -248,8 +248,8 @@ test("seeded locks are probeable and a locked footprint resists a real move", as
   await setLock(page, false);
   await expect
     .poll(() =>
-      page.evaluate(() =>
-        JSON.parse((window as unknown as LocksWindow).Module.kicadCollabTestGetLocked()),
+      page.evaluate(async () =>
+        JSON.parse(await (window as unknown as LocksWindow).Module.kicadCollabTestGetLocked()),
       ),
     )
     .toEqual([]);
@@ -276,8 +276,8 @@ test("a locked item stays selectable for inspection", async ({ page, testLogger 
   expect(id).toBe(FP1);
   await expect
     .poll(() =>
-      page.evaluate(() =>
-        JSON.parse((window as unknown as LocksWindow).Module.kicadCollabGetSelection()),
+      page.evaluate(async () =>
+        JSON.parse(await (window as unknown as LocksWindow).Module.kicadCollabGetSelection()),
       ),
     )
     .toContain(FP1);
@@ -295,20 +295,20 @@ test("ReleaseSelection unselects exactly the contested uuids", async ({
   // Select the footprint plus (if distinct) the first top-level item through
   // the real tool — TestSelectFirst may pick the footprint itself, so assert
   // set-minus semantics rather than counts.
-  await page.evaluate(() => {
+  await page.evaluate(async () => {
     const w = window as unknown as LocksWindow;
-    w.Module.kicadCollabTestSelectComponent();
-    w.Module.kicadCollabTestSelectFirst();
+    await w.Module.kicadCollabTestSelectComponent();
+    await w.Module.kicadCollabTestSelectFirst();
   });
   await expect
     .poll(() =>
-      page.evaluate(() =>
-        JSON.parse((window as unknown as LocksWindow).Module.kicadCollabGetSelection()),
+      page.evaluate(async () =>
+        JSON.parse(await (window as unknown as LocksWindow).Module.kicadCollabGetSelection()),
       ),
     )
     .toContain(FP1);
-  const preRelease: string[] = await page.evaluate(() =>
-    JSON.parse((window as unknown as LocksWindow).Module.kicadCollabGetSelection()),
+  const preRelease: string[] = await page.evaluate(async () =>
+    JSON.parse(await (window as unknown as LocksWindow).Module.kicadCollabGetSelection()),
   );
 
   // Lose the tiebreak on the footprint only.
@@ -324,8 +324,8 @@ test("ReleaseSelection unselects exactly the contested uuids", async ({
   // Exactly the contested uuid drops; anything else selected survives.
   await expect
     .poll(() =>
-      page.evaluate(() =>
-        JSON.parse((window as unknown as LocksWindow).Module.kicadCollabGetSelection()),
+      page.evaluate(async () =>
+        JSON.parse(await (window as unknown as LocksWindow).Module.kicadCollabGetSelection()),
       ),
     )
     .toEqual(preRelease.filter((u) => u !== FP1));

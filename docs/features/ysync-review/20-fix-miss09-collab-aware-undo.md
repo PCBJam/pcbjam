@@ -16,7 +16,7 @@ gone (adopt creates no undo entry at all — 09's option 3 history-barrier is mo
   `PutDataInPreviousState`, mirroring pcbnew's: every picker (except `DELETED`,
   `PAGESETTINGS`, `REPEAT_ITEM`, and the root sheet, which `ResolveItem` cannot see)
   is existence-checked via `SCHEMATIC::ResolveItem(uuid)`. Missing → picker dropped
-  (`not_found` → `wxLogWarning`, no modal). Present-but-different-pointer (a remote
+  (`not_found` → `wxLogStatus`, no modal). Present-but-different-pointer (a remote
   apply replaced the object, same uuid) → the picker is **re-anchored**
   (`SetPickedItem`) and the restore targets the current live item. Without this,
   undoing an entry whose item a remote apply freed dereferenced a dangling pointer.
@@ -25,8 +25,11 @@ gone (adopt creates no undo entry at all — 09's option 3 history-barrier is mo
   still changes the model, and remote applies rely on the recalc (it was the whole
   point of applying through real commits). `SaveCopyInUndoList` stays gated.
 - `pcbnew/undo_redo.cpp` — the "Incomplete undo/redo operation" `wxMessageBox`
-  downgraded to `wxLogWarning`: dropped entries are routine in a collab session,
-  and a blocking modal would hang the wasm modal pump.
+  downgraded to `wxLogStatus`: dropped entries are routine in a collab session,
+  and a blocking modal would hang the wasm modal pump. `wxLogWarning` is not a
+  non-modal substitute in GUI builds: `wxLogGui` flushes warnings through a
+  dialog. The status severity writes to the frame status bar and, on Wasm, the
+  browser console without entering a modal pump.
 
 ### wasm bindings
 

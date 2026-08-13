@@ -29,6 +29,7 @@ function makeElement(partial: Partial<WxElementInfo>): WxElementInfo {
 
 function makeWin(opts: {
   busy?: () => boolean;
+  open?: (path: string) => boolean | Promise<boolean>;
   elements?: () => WxElementInfo[];
   title?: () => string;
 }) {
@@ -44,7 +45,7 @@ function makeWin(opts: {
     Module: {
       kicadOpenFile: (p: string) => {
         opened.push(p);
-        return false; // asyncify placeholder return — callers must ignore it
+        return opts.open?.(p) ?? false; // legacy Asyncify placeholder by default
       },
       ...(opts.busy ? { kicadOpenFileBusy: opts.busy } : {}),
     },
@@ -92,6 +93,44 @@ describe("openFileInTool settle gate", () => {
       settleTimeoutMs: 5000,
     });
     expect(result).toBe("programmatic");
+  });
+
+  it("uses the exact owned-open Promise, not the legacy busy probe", async () => {
+    const elements = [makeElement({ typeName: "PCB_EDIT_FRAME" })];
+    let finish!: (value: boolean) => void;
+    const owned = new Promise<boolean>((resolve) => {
+      finish = resolve;
+    });
+    const visibility: boolean[] = [];
+    const { win } = makeWin({
+      busy: () => true,
+      elements: () => elements,
+      open: () => owned,
+    });
+
+    const pending = openFileInTool(win, "/p/board.kicad_pcb", {
+      log,
+      onInputDialog: (visible) => visibility.push(visible),
+    });
+    setTimeout(
+      () => elements.push(makeElement({ id: "d1", typeName: "wxRichMessageDialog" })),
+      50,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 180));
+
+    expect(visibility).toContain(true);
+    let completed = false;
+    void pending.then(() => {
+      completed = true;
+    });
+    await Promise.resolve();
+    expect(completed, "modal visibility is not native-owner completion").toBe(false);
+
+    finish(true);
+    await expect(pending).resolves.toBe("programmatic");
+    expect(visibility.at(-1)).toBe(false);
+    // The legacy probe deliberately remains true. A current owned-open ticket
+    // is authoritative and must not fall back to this TOCTOU poll.
   });
 
   it("does NOT treat the load's own progress dialog as an input dialog", async () => {

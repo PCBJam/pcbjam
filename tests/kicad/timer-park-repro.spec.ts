@@ -73,13 +73,13 @@ function board(): string {
 }
 
 type Mod = {
-  kicadOpenFile(p: string): unknown;
+  kicadOpenFile(p: string): Promise<unknown>;
   kicadOpenFileBusy(): boolean;
   kicadTestArmTimerPark(delayMs: number, parkMs: number): boolean;
   kicadTestTimerParkState(): string;
-  kicadCollabSnapshotItems(): string;
-  kicadCollabApply(j: string): unknown;
-  kicadCollabGetPos(id: string): string;
+  kicadCollabSnapshotItems(): Promise<string>;
+  kicadCollabApply(j: string): Promise<void>;
+  kicadCollabGetPos(id: string): Promise<string>;
 };
 
 interface CycleStats {
@@ -90,6 +90,8 @@ interface CycleStats {
   hammerIters: number;
   /** Bytes the wasm heap grew mid-park (growHeap cycles; 0 = no growth). */
   grewBytes: number;
+  /** Refused leaf probes while this deterministic in-place park was live. */
+  nativeEntryDeferred: number;
   errors: string[];
   elapsedMs: number;
 }
@@ -126,7 +128,7 @@ async function bootHarness(page: Page): Promise<void> {
 
 /** Open the board and poll until the open chain truly settles. */
 async function openAndSettle(page: Page, content: string): Promise<void> {
-  await page.evaluate((c) => {
+  await page.evaluate(async (c) => {
     const w = window as unknown as {
       FS: { mkdirTree(p: string): void; writeFile(p: string, d: string): void };
       Module: Mod;
@@ -138,8 +140,13 @@ async function openAndSettle(page: Page, content: string): Promise<void> {
       /* exists */
     }
     w.FS.writeFile(`${dir}/timerpark.kicad_pcb`, c);
-    w.Module.kicadOpenFile(`${dir}/timerpark.kicad_pcb`);
+    const open = Promise.resolve(
+      w.Module.kicadOpenFile(`${dir}/timerpark.kicad_pcb`),
+    );
+    await open;
   }, content);
+  // The exact command ticket is authoritative. Busy is only a state
+  // cross-check after that ticket reaches its retained-owner tail.
   await expect
     .poll(
       () => page.evaluate(() => (window.Module as unknown as Mod).kicadOpenFileBusy()),
@@ -161,7 +168,11 @@ async function armAndRide(
 ): Promise<CycleStats> {
   return page.evaluate(async ({ parkMs, hammer, growHeap }) => {
     const m = (window as unknown as { Module: Mod }).Module;
+    const scheduler = (globalThis as unknown as {
+      __wxScheduler: { nativeEntryDeferred: number };
+    }).__wxScheduler;
     const before = JSON.parse(m.kicadTestTimerParkState()) as { fired: number; done: number };
+    const deferredBefore = scheduler.nativeEntryDeferred;
     const stats = {
       armed: false,
       fired: false,
@@ -169,6 +180,7 @@ async function armAndRide(
       sawParked: false,
       hammerIters: 0,
       grewBytes: 0,
+      nativeEntryDeferred: 0,
       errors: [] as string[],
       elapsedMs: 0,
     };
@@ -220,7 +232,7 @@ async function armAndRide(
           ["getPos", () => m.kicadCollabGetPos("fa220000-0000-0000-0000-00000000cafe")],
         ] as const) {
           try {
-            fn();
+            await fn();
             stats.hammerIters++;
           } catch (e) {
             stats.errors.push(`${name} during park: ${String(e)}`);
@@ -230,6 +242,7 @@ async function armAndRide(
       await new Promise((r) => setTimeout(r, 10));
     }
     stats.elapsedMs = Math.round(performance.now() - t0);
+    stats.nativeEntryDeferred = scheduler.nativeEntryDeferred - deferredBefore;
     return stats;
   }, opts);
 }
@@ -257,6 +270,7 @@ test.describe("timer Notify() Asyncify-park during main-loop yield (concurrent c
       console.log(
         `[TEST] ${label}: fired=${stats.fired} done=${stats.done} parked=${stats.sawParked} ` +
           `hammerIters=${stats.hammerIters} grew=${stats.grewBytes} ` +
+          `nativeDeferred=${stats.nativeEntryDeferred} ` +
           `elapsed=${stats.elapsedMs}ms errors=${stats.errors.length}`,
       );
       expect(stats.armed, `${label}: timer armed`).toBe(true);
@@ -264,6 +278,14 @@ test.describe("timer Notify() Asyncify-park during main-loop yield (concurrent c
       expect(stats.sawParked, `${label}: the park window engaged`).toBe(true);
       expect(stats.done, `${label}: Notify() survived its park and rewound`).toBe(true);
       expect(stats.errors, `${label}: no embind entry trapped`).toEqual([]);
+      expect(
+        stats.nativeEntryDeferred,
+        `${label}: a real native entry was retained while the context was physically live`,
+      ).toBeGreaterThan(0);
+      expect(
+        stats.nativeEntryDeferred,
+        `${label}: retained native work waited for an edge instead of polling`,
+      ).toBeLessThanOrEqual(10);
       if (growHeap) {
         expect(stats.grewBytes, `${label}: the heap actually grew mid-park`).toBeGreaterThan(0);
       }
@@ -272,8 +294,8 @@ test.describe("timer Notify() Asyncify-park during main-loop yield (concurrent c
     // The runtime is still fully functional: snapshots walk the board and a
     // real apply lands (a poisoned Asyncify state fails one of these first).
     const itemCount = await page.evaluate(
-      () =>
-        JSON.parse((window.Module as unknown as Mod).kicadCollabSnapshotItems()).added.length,
+      async () =>
+        JSON.parse(await (window.Module as unknown as Mod).kicadCollabSnapshotItems()).added.length,
     );
     expect(itemCount, "post-cycle snapshot sees the board").toBeGreaterThan(2000);
     await page.evaluate(

@@ -1,10 +1,23 @@
 # 17 — Mailbox/scheduler implementation plan (Design B, post-August revision)
 
-> **Status: PLAN (2026-08-05), not started.** Supersedes the *phasing* of
+> **Status: HISTORICAL MIGRATION PLAN (2026-08-11).** The owner-token
+> implementation now supersedes this document's scalar interlock, 17 ms retry,
+> legacy modal-pump, and call-mailbox descriptions. The historical scenarios
+> and evidence remain useful, but they are not the current runtime contract.
+> Current code is centered on
+> `wx/wasm/private/execution_owner.h`, the typed queue in
+> `wxwidgets/src/wasm/evtloop.cpp`, and the stateful Embind gateway in
+> `scripts/common/shims/asyncify-scheduler.js`. Supersedes the *phasing* of
 > [`12`](12-design-b-asyncify-implementation-plan.md)/[`13`](13-design-b-engineering-spec.md)
 > with what we learned July–August; the architecture is unchanged from [`06`](06-design-b-fiber-first-runtime.md).
 > The mailbox = doc 12's `readyQueue + drain()`. Companion visual: the "context switches &
 > collisions" dossier artifact (fig 3 = target architecture).
+>
+> Historical references below which say to retain the public
+> `kicadCollabFiberBusy()` probe no longer describe current code. The exact
+> gateway Promise now settles only after its retained semantic owner and
+> `runOnFiber` tail retire. The TOCTOU busy probe had no remaining consumer and
+> was removed. Internal fiber queue state remains private to the drain.
 
 ## 1. Why reopen this — what changed since June
 
@@ -76,7 +89,7 @@ step that removes its mechanism*, never before.
 | Full `tests/kicad/` app e2e (~60 specs: `load-pcb`, `eeschema*`, `pcbnew*`, `*-collab`, `presence-*`, `drift-trio*`, `contextmenu-*`, `import-settings-modal-stack`, `3d-viewer*`, `gerbview*`, `roundtrip`, `save-hook`, perf + screenshot baselines) | Assert user-visible outcomes only. These are the gate for **every** step. |
 | Standalone wx app battery (~70 apps under `tests/apps/standalone/`: `dialog`, `menu`, `popup`, `contextmenu`, `timer`, `clipboard`, `fontenum`, `filedialog`, `wizard`, `raytrace-modal`, `raytrace-threads`, `threadpool*`, …) | Outcome-level wx behavior; the June regressions (coroutines vs menus, 13 §6d) were caught here — keep all. |
 | `coroutine` / `coroutine-nested` / `coroutine-pthread` | The historical red gate for exactly this work (12 §phase-0). |
-| `asyncify-races` scenarios asserting **semantics**: `modal_in_modal_in_modal` (LIFO nesting is a semantic — it outlives the resolver-stack mechanism), `out_of_order_sleep_resolution`, `sleep_inside_fiber_inside_modal`, `post_park_fiber_swap`, `long_parked_sleep_clobbered_by_swap`, `wakeup_during_transition`, `unwind_through_promise` | Scenario *intent* is architecture-independent. Harness internals may need touch-ups per step, but the pass criteria stand. |
+| `asyncify-races` scenarios asserting **semantics**: `modal_in_modal_in_modal` (LIFO nesting is a semantic — it outlives the resolver-stack mechanism), `queued_suspensions_preserve_fifo`, `sleep_inside_fiber_inside_modal`, `post_park_fiber_swap`, `long_parked_sleep_clobbered_by_swap`, `affiliated_close_unblocks_ordinary`, `unwind_through_promise` | Scenario *intent* is architecture-independent. The old `out_of_order_sleep_resolution` and `wakeup_during_transition` harnesses were replaced because they bypassed production ingress and created concurrent native parks. The replacements keep browser arrivals concurrent and prove owner-safe ordering. |
 | `tests/web/fatal-overlay.spec.ts`, web suite, `open-flow` outcome cases (settle wait, dialog escape) | Containment and UX-level behavior are orthogonal to the runtime rewrite. |
 
 ### 3b. KEEP, BUT REWRITE THE ASSERTION TARGET (drop→deliver flips)
@@ -113,8 +126,9 @@ loads) — note it in the release notes when S4 lands.
   in order after open completes, none lost, none duplicated. Gates S1/S4.
 - **N3 · No head-of-line blocking** — with an open/modal fiber parked, an input message is
   processed within a frame-budget bound (this is the regression test for constraint 1). Gates S4.
-- **N4 · Wake-never-rewinds** — a promise resolving during a live transition only enqueues;
-  generalization of `wakeup_during_transition` to fiber wakes. Gates S2.
+- **N4 · Wake-never-rewinds** — a deterministic scheduler unit forces a promise wake while
+  transition state is busy; the wake queues, drains once from a later clean task, and preserves
+  FIFO order. No raw stateful C++ ingress is used to create the transition. Gates S2.
 - **N5 · FIFO fairness under flood** — old parked context is not starved by a stimulus storm
   (06 §starvation). Gates S2.
 - **N6 · World-visibility reentrancy** — curated cases where C++ assumed "nothing changes while
@@ -323,13 +337,17 @@ first step with user-visible semantic changes.
 - **js-library vs post-link injection** for the scheduler (S2; lean js-library for durability).
 - **No-scheduler fast path** for plain wx test apps with no fibers (S2; likely yes, gated on
   "any non-main context registered", 13 §7).
-- **Sync embind policy** (S1 audit): pure reads that never dispatch/park stay synchronous;
-  everything else becomes a promise-returning message. The audit's deliverable is the exact
-  allowlist, checked by a lint or a dev-build assert.
+- **Sync embind policy** (S1 audit): scheduler/control probes which do not dereference mutable
+  wx/KiCad state stay synchronous; mutable-state reads and writes become promise-returning
+  owner messages. The audit's deliverable is the exact allowlist, checked by a lint or a
+  dev-build assert.
   > **DONE 2026-08-05 → [`18-embind-audit.md`](18-embind-audit.md):** 79 exports — 47 mutators
   > (14 production + 3 saves to wrap; 33 test-only stay direct), 20 pure-reads (the allowlist,
   > with the model-walk caveat), 9 park-capable. Asymmetries to fix listed there (ungated
   > pure-reads, pl_editor bare-stack applies, ungated `kicadLibsReload`).
+  > **AMENDED 2026-08-11:** doc 18's implementation amendment resolves the model-walk caveat:
+  > live model reads and `kicadLibsReload` now cross the owner gateway. Network requests and
+  > startup-only `kicadSetDarkChrome` remain direct.
 - **`kicadOpenFileBusy` compatibility**: `open-flow.ts` feature-detects it and legacy wasm
   builds rely on the fallback — keep the export, backed by scheduler state, until the web app
   drops support for pre-scheduler wasm.

@@ -1,7 +1,8 @@
 import { test, expect } from './fixtures';
 import { clickByTooltip, clickToolbarTool, shotPath } from '../e2e/utils/element-tracker';
 import { waitForPcbnew } from './utils/pcbnew-ready';
-import { countGlCanvases, loadBoard, logThreeDDiag, openThreeDViewer } from './utils/threed-viewer';
+import { countGlCanvases, loadBoard, logThreeDDiag, openThreeDViewer,
+    waitForThreeDViewerCanvas, waitForThreeDViewerWindow } from './utils/threed-viewer';
 
 /**
  * Regression for the camera-move-on-canvas raytrace DEADLOCK.
@@ -50,16 +51,14 @@ test.describe('3D viewer camera-move deadlock', () => {
     // on a real GPU.
     test.skip(!!process.env.CI, 'raytracer liveness assertions require a real GPU; deadlock '
         + 'mechanism is covered on CI by the standalone coroutine-pthread-ondemand/raytrace-threads harnesses');
-    // KNOWN ISSUE (2026-07-04, webgl-era wasm build): the "Use raytracing" toolbar toggle is
-    // INERT — the click lands and a scene reload fires ("Reload time" status updates), but the
-    // canvas pixels never change (sampled for 20s; this spec's engine-engagement guard below
-    // caught it). Suspects: EDA_3D_CANVAS::DoRePaint's silent catch(runtime_error) freezing
-    // the canvas after a raytracer Redraw throw, or the engine toggle writing
-    // m_boardAdapter.m_Cfg while RenderEngineChanged() reads GetAppSettings<…>() — possibly
-    // different instances in the merged kicad_editor bundle. Unskip once the toggle works:
-    // the engagement guard below then validates the engine flip loudly.
-    test.skip(true, 'KNOWN ISSUE: the raytracer engine toggle is inert on the webgl-era wasm '
-        + 'build — the deadlock mechanism cannot be driven until it works (see comment)');
+    // KNOWN ISSUE (verified 2026-08-12 on the current merged editor): the toolbar action does
+    // switch to the WASM RAM raytracer and its WebGL blit runs, but the viewer becomes a
+    // uniform black frame.  The renderer grows the wasm heap substantially and submits new
+    // shader, texture, and draw work, so this is not an input-dispatch or Asyncify ownership
+    // failure.  Keep the deadlock test skipped until the raytracer produces a valid frame;
+    // the engagement and non-blank guards below will then validate the prerequisite loudly.
+    test.skip(true, 'KNOWN ISSUE: the WASM RAM raytracer presents a uniform black frame, so '
+        + 'the camera-move deadlock path cannot yet be exercised');
     // One 187 MB wasm runtime is already heavy; keep this serial and generous.
     test.describe.configure({ mode: 'serial' });
     test.setTimeout(240000);
@@ -70,34 +69,26 @@ test.describe('3D viewer camera-move deadlock', () => {
         await waitForPcbnew(page);
         await loadBoard(page, testLogger);
 
-        const winsBefore = await page.evaluate(() =>
-            Array.from(document.querySelectorAll('#window-container [id^="window-"]')).map((e) => e.id));
         const glBefore = await countGlCanvases(page);
         await openThreeDViewer(page, glBefore);
-
-        const winId = await page.evaluate((before: string[]) => {
-            const all = Array.from(document.querySelectorAll('#window-container [id^="window-"]')).map((e) => e.id);
-            return all.find((id) => !before.includes(id)) ?? all[all.length - 1] ?? null;
-        }, winsBefore);
-        expect(winId, 'the 3D viewer should open a new top-level window').toBeTruthy();
+        await waitForThreeDViewerWindow(page);
+        const viewerCanvasId = await waitForThreeDViewerCanvas(page);
 
         // Let the INITIAL render settle through the safe per-frame pump (Workers boot here).
-        await page.waitForTimeout(5000);  // eslint-disable-line -- skipped known-issue spec (never runs)
+        await page.waitForTimeout(5000);  // eslint-disable-line -- documented initial-render settle
         await logThreeDDiag(page, 'deadlock: after open+settle');
 
-        // Read the newest glcanvas-* (the 3D viewer) client rect in viewport coords.
-        const canvasRect = () => page.evaluate(() => {
-            const list = document.querySelectorAll('canvas[id^="glcanvas-"]');
-            const el = list[list.length - 1] as HTMLCanvasElement;
+        // Read the identified 3D viewer canvas client rect in viewport coords.
+        const canvasRect = () => page.evaluate((canvasId) => {
+            const el = document.getElementById(canvasId) as HTMLCanvasElement;
             const r = el.getBoundingClientRect();
             return { x: r.x, y: r.y, w: r.width, h: r.height };
-        });
+        }, viewerCanvasId);
 
         // Sample the viewer canvas backing store: distinct colours (board rendered?) plus a
         // coarse pixel signature (did the render change after the camera moved?).
-        const sampleCanvas = () => page.evaluate(() => {
-            const list = document.querySelectorAll('canvas[id^="glcanvas-"]');
-            const el = list[list.length - 1] as HTMLCanvasElement;
+        const sampleCanvas = () => page.evaluate((canvasId) => {
+            const el = document.getElementById(canvasId) as HTMLCanvasElement;
             const tmp = document.createElement('canvas');
             tmp.width = el.width; tmp.height = el.height;
             // One full-frame read on a CPU-backed canvas, then sample in JS. This sampler is
@@ -118,7 +109,7 @@ test.describe('3D viewer camera-move deadlock', () => {
                 }
             }
             return { distinctColors: colors.size, sig };
-        });
+        }, viewerCanvasId);
 
         // Main-thread liveness probe. A pthread-join deadlock hangs the wasm main thread → the
         // browser main JS thread is blocked → in-page polling can't run → this times out.
@@ -165,7 +156,7 @@ test.describe('3D viewer camera-move deadlock', () => {
             let prev = '';
             const start = Date.now();
             while (Date.now() - start < maxMs) {
-                await page.waitForTimeout(1500);  // eslint-disable-line -- skipped known-issue spec (never runs)
+                await page.waitForTimeout(1500);  // eslint-disable-line -- documented render-sampling cadence
                 const s = (await sampleCanvas()).sig;
                 if (s === prev) return;
                 prev = s;
@@ -185,7 +176,7 @@ test.describe('3D viewer camera-move deadlock', () => {
         // flip the viewer to the raytracer via its toolbar toggle. Loud failure if the
         // toggle moved — a silent no-op would leave the fast GL renderer making every
         // liveness assertion below vacuously green.
-        const sigOnGl = (await sampleCanvas()).sig;
+        const frameOnGl = await sampleCanvas();
         const toggled = (await clickToolbarTool(page, 'Use raytracing'))
             || (await clickByTooltip(page, 'Render current view using Raytracing'));
         expect(toggled, 'the "Use raytracing" toolbar toggle must exist in the 3D viewer').toBe(true);
@@ -193,17 +184,21 @@ test.describe('3D viewer camera-move deadlock', () => {
         // Engine cross-check (guards the same false green): with NO input between the two
         // samples, only an engine change repaints the canvas differently — the raytraced
         // frame is lit/shadowed differently from the GL frame it replaces, a GL re-render
-        // reproduces the identical pixels, and a no-op leaves the canvas untouched. (Heap
-        // growth is NOT a usable signal here: mimalloc satisfies the raytracer's buffers
-        // from already-freed arena pages, so HEAPU8.length stays flat.)
+        // reproduces the identical pixels, and a no-op leaves the canvas untouched. Heap
+        // growth alone is not a usable signal: allocation does not prove a valid frame.
         let raytracerEngaged = false;
+        let frameOnRaytracer = frameOnGl;
         for (let i = 0; i < 20 && !raytracerEngaged; i++) {
-            await page.waitForTimeout(1000);  // eslint-disable-line -- skipped known-issue spec (never runs)
-            raytracerEngaged = (await sampleCanvas()).sig !== sigOnGl;
+            await page.waitForTimeout(1000);  // eslint-disable-line -- documented engine-engagement sampling cadence
+            frameOnRaytracer = await sampleCanvas();
+            raytracerEngaged = frameOnRaytracer.sig !== frameOnGl.sig;
         }
         expect(raytracerEngaged,
             'the canvas did not change after the engine toggle — the raytracer did not engage')
             .toBe(true);
+        expect(frameOnRaytracer.distinctColors,
+            'the raytracer engaged but presented a blank/uniform frame')
+            .toBeGreaterThan(8);
         // Let the first full raytrace converge before taking the interaction baseline.
         await settleRender(25000);
 

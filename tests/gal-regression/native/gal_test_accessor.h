@@ -8,7 +8,7 @@
 #ifndef GAL_TEST_ACCESSOR_H
 #define GAL_TEST_ACCESSOR_H
 
-#include <GL/glew.h>
+#include <kicad_gl/kiglad.h>
 #include <vector>
 
 // Forward declarations

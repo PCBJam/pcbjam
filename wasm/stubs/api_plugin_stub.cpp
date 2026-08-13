@@ -5,6 +5,8 @@
 
 #include <api/api_plugin_manager.h>
 #include <api/api_server.h>
+#include <wx/window.h>
+#include <wx/wasm/private/execution_owner.h>
 
 // Forward declare and provide minimal definition for KINNG_REQUEST_SERVER
 // This is needed because unique_ptr requires a complete type for deletion
@@ -91,9 +93,38 @@ void API_PLUGIN_MANAGER::ReloadPlugins( std::optional<wxString> aDirectoryToScan
     // No-op: plugins not available in WASM
 }
 
+void API_PLUGIN_MANAGER::ReloadPlugins( std::optional<wxString> aDirectoryToScan,
+                                        std::shared_ptr<REPORTER> aReporter,
+                                        wxWindow* aEventOwner )
+{
+    (void) aDirectoryToScan;
+    (void) aReporter;
+    // API plugin subprocesses are unavailable, but the initiating panel still
+    // needs its normal completion notification.  Deliver it to that exact
+    // window, not wxApp: a delegated wxApp command would also run unrelated
+    // global listeners (for example PCB_EDIT_FRAME::RecreateToolbars) while
+    // the main frame is parked behind this panel's modal lease.
+    if( !aEventOwner )
+        return;
+
+    const wx_wasm_execution::PendingEventDelegate delegate =
+            wxWasmExecutionCapturePendingEventDelegate( aEventOwner );
+    wxWasmExecutionQueueDelegatedPendingEvent(
+            static_cast<wxEvtHandler*>( aEventOwner ),
+            new wxCommandEvent( EDA_EVT_PLUGIN_AVAILABILITY_CHANGED, wxID_ANY ),
+            delegate );
+}
+
 void API_PLUGIN_MANAGER::RecreatePluginEnvironment( const wxString& aIdentifier )
 {
     (void)aIdentifier;
+}
+
+void API_PLUGIN_MANAGER::RecreatePluginEnvironment( const wxString& aIdentifier,
+                                                    wxWindow* aEventOwner )
+{
+    (void)aIdentifier;
+    (void)aEventOwner;
 }
 
 void API_PLUGIN_MANAGER::InvokeAction( const wxString& aIdentifier,

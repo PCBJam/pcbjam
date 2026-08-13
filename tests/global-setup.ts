@@ -10,12 +10,18 @@ function cleanDirectory(dir: string): number {
 
   for (const entry of fs.readdirSync(dir)) {
     const fullPath = path.join(dir, entry);
-    const stat = fs.statSync(fullPath);
-    if (stat.isFile()) {
-      fs.unlinkSync(fullPath);
-      count++;
-    } else if (stat.isDirectory()) {
-      count += cleanDirectory(fullPath);
+    try {
+      const stat = fs.statSync(fullPath);
+      if (stat.isFile()) {
+        fs.unlinkSync(fullPath);
+        count++;
+      } else if (stat.isDirectory()) {
+        count += cleanDirectory(fullPath);
+      }
+    } catch (error) {
+      // A second local Playwright invocation can clean the same entry between
+      // readdir/stat/unlink. Its successful removal satisfies this cleanup.
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
   }
   return count;

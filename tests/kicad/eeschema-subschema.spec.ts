@@ -16,8 +16,8 @@ import { test, expect } from "./fixtures";
  */
 
 type Mod = {
-  kicadOpenFile(p: string): unknown;
-  kicadCollabSnapshotItems(): string;
+  kicadOpenFile(p: string): Promise<unknown>;
+  kicadCollabSnapshotItems(): Promise<string>;
 } & Record<string, (...a: never[]) => unknown>;
 type FS = {
   mkdirTree(p: string): void;
@@ -91,7 +91,7 @@ async function bootOpenHierarchy(page: Page): Promise<void> {
     { timeout: BOOT_TIMEOUT },
   );
   await page.evaluate(
-    ({ root, child }) => {
+    async ({ root, child }) => {
       const w = window as unknown as { FS: FS; Module: Mod };
       try {
         w.FS.mkdirTree("/home/kicad/documents");
@@ -102,7 +102,7 @@ async function bootOpenHierarchy(page: Page): Promise<void> {
       // and eeschema loads the child screen alongside the root.
       w.FS.writeFile("/home/kicad/documents/child.kicad_sch", child);
       w.FS.writeFile("/home/kicad/documents/root.kicad_sch", root);
-      w.Module.kicadOpenFile("/home/kicad/documents/root.kicad_sch");
+      await w.Module.kicadOpenFile("/home/kicad/documents/root.kicad_sch");
     },
     { root: ROOT_SCH, child: CHILD_SCH },
   );

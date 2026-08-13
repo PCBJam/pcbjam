@@ -79,6 +79,122 @@ test.describe('ngspice_service probe', () => {
         expect(last, 'v(out) end value').toBeLessThanOrEqual(1.0);
     });
 
+    test('request receipts scan atomically and reject pre-checkpoint responses', async ({ page }) => {
+        await page.goto('/kicad/eeschema.html', { waitUntil: 'domcontentloaded' });
+        expect((await svcRequest(page, { kind: 'init' })).ret).toBe(0);
+
+        const evidence = await page.evaluate(async () => {
+            const runtime = globalThis as any;
+            const hooks = runtime.__ngspiceServiceTestHooks;
+            if (!hooks?.requestCheckpoint || !hooks?.waitForRequestAfter)
+                throw new Error('exact request receipt hooks are missing');
+
+            // Scan path: the response already exists before the waiter starts.
+            const scanCheckpoint = hooks.requestCheckpoint();
+            await runtime.ngspiceService.request({ kind: 'cur_plot' });
+            const scanned = await hooks.waitForRequestAfter(scanCheckpoint, {
+                kind: 'cur_plot',
+            });
+
+            // Subscribe path and issue-sequence rule: `old` owns a sequence
+            // before the checkpoint even though its response can arrive later.
+            // It must not satisfy the waiter; only the fresh request may do so.
+            const old = runtime.ngspiceService.request({ kind: 'running' });
+            const freshCheckpoint = hooks.requestCheckpoint();
+            let waiterSettled = false;
+            const waited = hooks.waitForRequestAfter(freshCheckpoint, {
+                kind: 'running',
+            }).then((entry: any) => {
+                waiterSettled = true;
+                return entry;
+            });
+            await old;
+            await Promise.resolve();
+            const ignoredOld = !waiterSettled;
+            const fresh = runtime.ngspiceService.request({ kind: 'running' });
+            const [subscribed] = await Promise.all([waited, fresh]);
+
+            return {
+                scanCheckpoint,
+                scanned,
+                freshCheckpoint,
+                subscribed,
+                ignoredOld,
+                state: hooks.snapshot(),
+            };
+        });
+
+        expect(evidence.scanned.sequence).toBeGreaterThan(evidence.scanCheckpoint);
+        expect(evidence.scanned.kind).toBe('cur_plot');
+        expect(evidence.ignoredOld,
+            'a late response issued before the checkpoint cannot satisfy the waiter').toBe(true);
+        expect(evidence.subscribed.sequence).toBeGreaterThan(evidence.freshCheckpoint);
+        expect(evidence.subscribed.kind).toBe('running');
+        expect(evidence.state.requestReceiptWaiters, 'all exact waiters settled').toBe(0);
+    });
+
+    test('boot and runtime worker decode faults settle exactly and recover', async ({ page }) => {
+        await page.goto('/kicad/eeschema.html', { waitUntil: 'domcontentloaded' });
+
+        await page.evaluate(() => {
+            (globalThis as any).__ngspiceServiceTestHooks.messageErrorDuringNextBoot();
+        });
+        const bootFailure = await svcRequest(page, { kind: 'init' });
+        expect(bootFailure.error, 'the first boot request must settle').toContain(
+            'message decode failed',
+        );
+        let state = await page.evaluate(
+            () => (globalThis as any).__ngspiceServiceTestHooks.snapshot(),
+        );
+        expect(state).toMatchObject({
+            activeGeneration: null,
+            pending: 0,
+            retiredGenerations: [1],
+            bootFaultArmed: false,
+        });
+
+        const recoveredBoot = await svcRequest(page, { kind: 'init' });
+        expect(recoveredBoot.error, 'generation 2 must boot normally').toBeUndefined();
+        expect(recoveredBoot.ret, 'generation 2 ngSpice_Init').toBe(0);
+
+        // Two calls share one live worker generation. Fault only after both
+        // real messages have been posted, proving the transport remains
+        // concurrent and fail-all settles every exact request.
+        const runtimeFailures = await page.evaluate(async () => {
+            const runtime = globalThis as any;
+            runtime.__ngspiceServiceTestHooks.messageErrorWhenPendingAtLeast(2);
+            return await Promise.all([
+                runtime.ngspiceService.request({ kind: 'running' }),
+                runtime.ngspiceService.request({ kind: 'cur_plot' }),
+            ]);
+        });
+        expect(runtimeFailures).toHaveLength(2);
+        for (const result of runtimeFailures) {
+            expect(result.error, 'every generation-2 request must settle').toContain(
+                'message decode failed',
+            );
+        }
+
+        state = await page.evaluate(
+            () => (globalThis as any).__ngspiceServiceTestHooks.snapshot(),
+        );
+        expect(state.maxPending, 'requests are posted concurrently').toBeGreaterThanOrEqual(2);
+        expect(state).toMatchObject({
+            activeGeneration: null,
+            pending: 0,
+            retiredGenerations: [1, 2],
+            runtimeFaultArmed: false,
+        });
+
+        const recoveredRuntime = await svcRequest(page, { kind: 'init' });
+        expect(recoveredRuntime.error, 'generation 3 must recover').toBeUndefined();
+        expect(recoveredRuntime.ret, 'generation 3 ngSpice_Init').toBe(0);
+        state = await page.evaluate(
+            () => (globalThis as any).__ngspiceServiceTestHooks.snapshot(),
+        );
+        expect(state).toMatchObject({ activeGeneration: 3, pending: 0 });
+    });
+
     test('XSPICE code model resolves through the static registry', async ({ page }) => {
         await page.goto('/kicad/eeschema.html', { waitUntil: 'domcontentloaded' });
 

@@ -14,9 +14,9 @@ import { test, expect } from "./fixtures";
  */
 
 type Mod = {
-  kicadOpenFile(p: string): unknown;
-  kicadCollabSnapshotItems(): string;
-  kicadCollabApplyItems(j: string): unknown;
+  kicadOpenFile(p: string): Promise<unknown>;
+  kicadCollabSnapshotItems(): Promise<string>;
+  kicadCollabApplyItems(j: string): Promise<unknown>;
 } & Record<string, (...a: never[]) => unknown>;
 type FS = {
   mkdirTree(p: string): void;
@@ -80,7 +80,7 @@ async function bootOpen(page: Page, cfg: ToolCfg): Promise<void> {
     { timeout: BOOT_TIMEOUT },
   );
   await page.evaluate(
-    ({ content, ext }) => {
+    async ({ content, ext }) => {
       const w = window as unknown as { FS: FS; Module: Mod };
       try {
         w.FS.mkdirTree("/home/kicad/documents");
@@ -89,7 +89,7 @@ async function bootOpen(page: Page, cfg: ToolCfg): Promise<void> {
       }
       const p = `/home/kicad/documents/rt.${ext}`;
       w.FS.writeFile(p, content);
-      w.Module.kicadOpenFile(p);
+      await w.Module.kicadOpenFile(p);
     },
     { content: cfg.fixture, ext: cfg.ext },
   );
@@ -97,24 +97,14 @@ async function bootOpen(page: Page, cfg: ToolCfg): Promise<void> {
 
 async function saveRead(page: Page, cfg: ToolCfg, name: string): Promise<string> {
   return page.evaluate(
-    ({ saveFn, ext, name }) => {
+    async ({ saveFn, ext, name }) => {
       const w = window as unknown as { FS: FS; Module: Mod };
       const out = `/home/kicad/documents/${name}.${ext}`;
-      (w.Module[saveFn] as (p: string) => unknown)(out);
+      await (w.Module[saveFn] as (p: string) => Promise<unknown>)(out);
       return w.FS.readFile(out, { encoding: "utf8" });
     },
     { saveFn: cfg.saveFn, ext: cfg.ext, name },
   );
-}
-
-/** Poll the saved model until `marker` is present (apply is async for ee/pcb). */
-async function pollSaved(page: Page, cfg: ToolCfg, marker: string, present = true): Promise<void> {
-  await expect
-    .poll(async () => (await saveRead(page, cfg, "probe")).includes(marker), {
-      timeout: 25000,
-      intervals: [400],
-    })
-    .toBe(present);
 }
 
 // ── Tool configurations ──────────────────────────────────────────────────────
@@ -300,17 +290,18 @@ for (const cfg of [PL, SCH, PCB]) {
         changedSexpr = cfg.changed.sexpr;
       }
       await page.evaluate(
-        ({ changed, added, removed }) => {
-          window.Module.kicadCollabApplyItems(
+        async ({ changed, added, removed }) => {
+          await window.Module.kicadCollabApplyItems(
             JSON.stringify({ added: [{ sexpr: added }], changed: [{ sexpr: changed }], removed: [removed] }),
           );
         },
         { changed: changedSexpr, added: cfg.added.sexpr, removed: cfg.removedUuid },
       );
 
-      await pollSaved(page, cfg, cfg.changed.marker);
-      await pollSaved(page, cfg, cfg.added.uuid);
-      await pollSaved(page, cfg, cfg.removedUuid, false);
+      const applied = await saveRead(page, cfg, "applied");
+      expect(applied).toContain(cfg.changed.marker);
+      expect(applied).toContain(cfg.added.uuid);
+      expect(applied).not.toContain(cfg.removedUuid);
 
       // Remote applies must not have echoed an onItems emit.
       const echoed = await page.evaluate(

@@ -66,12 +66,32 @@ bool acceptAnyCacheTag( const char*, void* )
 EM_JS( void, js_occLoadModelStart, ( int aToken, const char* aModelPath ),
 {
     const modelPath = UTF8ToString( aModelPath );
+    const scheduler = globalThis.__wxScheduler;
+    const complete = ( res ) => {
+        if( !scheduler || typeof scheduler.runWaitCompletion !== 'function' )
+            return;
+        scheduler.runWaitCompletion( 'OCC model completion', aToken, () => {
+            let cachePath = String();
 
-    const finish = ( cachePath ) => {
-        const n = lengthBytesUTF8( cachePath ) + 1;
-        const p = _malloc( n );
-        stringToUTF8( cachePath, p, n );
-        globalThis.__wxScheduler.resolveWait( aToken, p );
+            if( res && res.ok && res.bytes && res.bytes.length )
+            {
+                cachePath = '/tmp/pcbjam_occ_model_cache.3dc';
+                FS.writeFile( cachePath, res.bytes );
+            }
+            else if( res && res.report )
+            {
+                console.error( '[pcbjam-occ] loadModel failed:', res.report );
+            }
+
+            const n = lengthBytesUTF8( cachePath ) + 1;
+            const p = _malloc( n );
+
+            if( !p )
+                return 0;
+
+            stringToUTF8( cachePath, p, n );
+            return p;
+        } );
     };
 
     let req;
@@ -95,27 +115,20 @@ EM_JS( void, js_occLoadModelStart, ( int aToken, const char* aModelPath ),
     }
     catch( e )
     {
+        if( scheduler && typeof scheduler._terminalizeNativeTrap === 'function'
+            && scheduler._terminalizeNativeTrap(
+                'OCC model request setup trapped', e ) )
+            throw e;
         console.error( '[pcbjam-occ] loadModel request failed:', e );
         req = Promise.resolve( null );
     }
 
-    req.then( ( res ) => {
-        let cachePath = '';
-
-        if( res && res.ok && res.bytes && res.bytes.length )
-        {
-            cachePath = '/tmp/pcbjam_occ_model_cache.3dc';
-            FS.writeFile( cachePath, res.bytes );
-        }
-        else if( res && res.report )
-        {
-            console.error( '[pcbjam-occ] loadModel failed:', res.report );
-        }
-
-        finish( cachePath );
-    } ).catch( ( e ) => {
+    req.then( complete ).catch( ( e ) => {
         console.error( '[pcbjam-occ] loadModel request failed:', e );
-        finish( '' );
+        // If `complete` trapped, runWaitCompletion closed the native gate
+        // before this Promise catch. The fallback is therefore inert instead
+        // of retrying a write into a damaged instance.
+        complete( null );
     } );
 } )
 
@@ -225,6 +238,10 @@ SCENEGRAPH* oce3d_Load( char const* aFileName )
         return nullptr;
 
     const int token = wxWasmBeginWait( "occ" );
+
+    if( token <= 0 )
+        return nullptr;
+
     js_occLoadModelStart( token, aFileName );
 
     // The malloc'd path pointer rides the wait as an int32.

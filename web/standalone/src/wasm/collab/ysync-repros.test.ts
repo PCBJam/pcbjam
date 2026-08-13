@@ -115,7 +115,7 @@ const FILE = `(kicad_pcb
 // calls snapshotItems() and is fine.
 
 describe("bug 01 — first-ever tab (file-seed branch) never registers the C++ listener", () => {
-  function freshRoomFileSeed() {
+  async function freshRoomFileSeed() {
     const { a, b } = pair();
     const edA = new CppFaithfulEditor();
     const edB = new CppFaithfulEditor();
@@ -123,32 +123,32 @@ describe("bug 01 — first-ever tab (file-seed branch) never registers the C++ l
     const bindB = bindKicadCollab(b, edB);
     const seedDoc = fileToDoc(FILE);
     Object.assign(edA.store, seedDoc.items); // A's editor opened the same file
-    bindA.seed(seedDoc); // fresh room → the file-seed branch
-    bindB.seed(); // B joins → adopts the doc
+    await bindA.seed(seedDoc); // fresh room → the file-seed branch
+    await bindB.seed(); // B joins → adopts the doc
     return { edA, edB };
   }
 
-  it("the file-seed branch calls snapshotItems (the listener-registration contract)", () => {
-    const { edA } = freshRoomFileSeed();
+  it("the file-seed branch calls snapshotItems (the listener-registration contract)", async () => {
+    const { edA } = await freshRoomFileSeed();
     // The one-line fix's contract: like the editorMatchesDoc branch, the
     // file-seed branch must call snapshotItems() for its SIDE EFFECTS
     // (ensureBridge listener registration + differ baseline).
     expect(edA.snapshotCalls).toBeGreaterThan(0);
   });
 
-  it("a local edit on the seeding tab reaches the joining peer", () => {
-    const { edA, edB } = freshRoomFileSeed();
+  it("a local edit on the seeding tab reaches the joining peer", async () => {
+    const { edA, edB } = await freshRoomFileSeed();
     edA.localUpsert(`(segment (start 0 0) (end 1 1) (uuid "seg-new"))`, null, "added");
     // Regression cover for bug 01: without the listener registration the edit
     // was never emitted (the first-session "seeder can't send" hole).
-    expect(edB.store["seg-new"]).toBeDefined();
+    await vi.waitFor(() => expect(edB.store["seg-new"]).toBeDefined());
   });
 
-  it("control: the ADOPTING peer's edits flow back (the asymmetry IS the bug)", () => {
-    const { edA, edB } = freshRoomFileSeed();
+  it("control: the ADOPTING peer's edits flow back (the asymmetry IS the bug)", async () => {
+    const { edA, edB } = await freshRoomFileSeed();
     // B's adopt branch called snapshotItems() → B's listener exists → B→A works.
     edB.localUpsert(`(segment (start 2 2) (end 3 3) (uuid "seg-b"))`, null, "added");
-    expect(edA.store["seg-b"]).toBeDefined();
+    await vi.waitFor(() => expect(edA.store["seg-b"]).toBeDefined());
   });
 });
 
@@ -159,11 +159,11 @@ describe("bug 01 — first-ever tab (file-seed branch) never registers the C++ l
 // writes into the (now supposedly detached) doc.
 
 describe("bug 07a — destroy() leaves the DOWN hook (onItems) attached", () => {
-  it("an emit after destroy() must not write into the doc", () => {
+  it("an emit after destroy() must not write into the doc", async () => {
     const doc = new Y.Doc();
     const ed = new CppFaithfulEditor();
     const binding = bindKicadCollab(doc, ed);
-    binding.seed(); // empty room, empty editor — snapshot branch registers all hooks
+    await binding.seed(); // empty room, empty editor — snapshot branch registers all hooks
     binding.destroy();
 
     // The C++ side keeps emitting through the captured hook (in the real app:
@@ -207,8 +207,9 @@ describe("bug 07b — sheet-switch gap: stale onItems writes into the old sheet'
     const win: KicadItemsWindow = {};
     const mod: KicadItemsModule = {
       // The editor's model is empty — seed()'s snapshot branch stays a no-op.
-      kicadCollabSnapshotItems: () => JSON.stringify({ added: [], changed: [], removed: [] }),
-      kicadCollabApplyItems: () => {},
+      kicadCollabSnapshotItems: async () =>
+        JSON.stringify({ added: [], changed: [], removed: [] }),
+      kicadCollabApplyItems: async () => {},
     };
     const m = createSheetCollabManager({
       mod,

@@ -15,24 +15,23 @@ import { test, expect } from "./fixtures";
  *
  * Natural in-load parks are scheduler-dependent — on a fast idle machine the
  * whole open runs synchronously and NO window exists — so the deterministic
- * test arms `kicadTestSetOpenPark`: kicadOpenFile then Asyncify-parks for a
+ * test arms `kicadTestSetOpenPark`: kicadOpenFile then context-parks for a
  * fixed time on entry AND after OpenProjectFiles returns (model fully loaded,
- * gate still closed). Hammering the entries inside that window asserts the
- * guard contract sharply:
+ * owner still held). Calling the entries inside that window asserts the
+ * serialization contract sharply:
  *   - `kicadOpenFileBusy()` reads true during the parks, false after;
- *   - mid-load snapshots return the EMPTY delta (an unguarded build would
- *     return the full board — deterministic red);
- *   - mid-load applies are DROPPED (the probe segment must not move);
+ *   - legacy glue returns the EMPTY delta and DROPS applies at the open gate;
+ *   - scheduler glue defers reads and writes behind the open owner, so the
+ *     snapshots resolve with the loaded board and the applies land in order;
  *   - after settle the entries work normally (guard released).
  *
  * VARIANT CONTRACT (docs/features/async/17 §3b): on scheduler glue the
  * shim's embind lane queues busy-window mutators and delivers them after
- * settle, so the "applies are DROPPED" assertions flip to "applies are
- * DELIVERED in order" — assertSettledContract branches on the lane's
- * presence. The busy-window and release assertions hold for both variants.
+ * settle, so both the snapshot and apply assertions branch on the lane's
+ * presence.
  *
  * The second test is the scheduler-dependent stress fuzz (spinning-worker CPU
- * starvation to force real futex-wait parks, hammering throughout the load).
+ * starvation to force real futex-wait parks, issuing entries during the load).
  * It is skipped unless PCBJAM_FUZZ_STRESS=1: engagement of the window is not
  * guaranteed on a fast machine, so it cannot gate CI — it exists to hunt this
  * reentrancy class by hand (loop it on a loaded box).
@@ -112,24 +111,27 @@ function bigBoard(): string {
 
 type FS = { mkdirTree(p: string): void; writeFile(p: string, d: string): void };
 type Mod = {
-  kicadOpenFile(p: string): unknown;
+  kicadOpenFile(p: string): Promise<unknown>;
   kicadOpenFileBusy(): boolean;
   kicadTestSetOpenPark(ms: number): void;
-  kicadCollabSnapshot(): string;
-  kicadCollabSnapshotItems(): string;
-  kicadCollabApply(j: string): unknown;
-  kicadCollabApplyItems(j: string): unknown;
-  kicadCollabGetPos(id: string): string;
+  kicadCollabSnapshot(): Promise<string>;
+  kicadCollabSnapshotItems(): Promise<string>;
+  kicadCollabApply(j: string): Promise<void>;
+  kicadCollabApplyItems(j: string): Promise<void>;
+  kicadCollabGetPos(id: string): Promise<string>;
 };
 
 interface FuzzStats {
   busySamples: number;
   iterations: number;
   errors: string[];
-  /** Largest `added` length any mid-load snapshot returned (guard ⇒ 0). */
+  /** Largest `added` length from a snapshot requested while the open was busy. */
   maxBusySnapshotItems: number;
   settled: boolean;
   loadMs: number;
+  contextSleepsScheduledDelta: number;
+  contextSleepsDeliveredDelta: number;
+  inPlaceFiberParksDelta: number;
 }
 
 function hasAbort(l: { consoleLogs: string[]; errors: string[] }): boolean {
@@ -166,9 +168,9 @@ async function bootHarness(page: Page): Promise<void> {
 /**
  * In-page: write the board, open it, and hammer every collab entry for as long
  * as `kicadOpenFileBusy()` reports the open in flight. Mid-load applies try to
- * MOVE the probe segment — the guard must drop them (asserted by the caller via
- * the probe's position). `starve` additionally saturates every core with
- * spinning workers so natural thread-pool waits park too (stress mode).
+ * MOVE the probe segment: the legacy gate drops them, while the scheduler
+ * gateway defers them behind the open owner. `starve` additionally saturates
+ * every core with spinning workers so natural thread-pool waits park too.
  */
 async function openAndHammer(
   page: Page,
@@ -178,6 +180,11 @@ async function openAndHammer(
     const w = window as unknown as {
       FS: FS;
       Module: Mod & { kicadTestSetOpenPark?: (ms: number) => void };
+      __wxScheduler?: {
+        contextSleepsScheduled: number;
+        contextSleepsDelivered: number;
+        inplaceParksOnFiberStack: number;
+      };
     };
     const dir = "/home/kicad/documents";
     try {
@@ -188,6 +195,12 @@ async function openAndHammer(
     const path = `${dir}/fuzz.kicad_pcb`;
     w.FS.writeFile(path, content);
     if (parkMs > 0) w.Module.kicadTestSetOpenPark!(parkMs);
+
+    const schedulerBefore = {
+      contextSleepsScheduled: w.__wxScheduler?.contextSleepsScheduled ?? 0,
+      contextSleepsDelivered: w.__wxScheduler?.contextSleepsDelivered ?? 0,
+      inPlaceFiberParks: w.__wxScheduler?.inplaceParksOnFiberStack ?? 0,
+    };
 
     // Mid-load applies try to move the probe AWAY from home; both wire families.
     const wireDelta = JSON.stringify({
@@ -228,35 +241,50 @@ async function openAndHammer(
       for (let i = 0; i < cores * 2; i++) burners.push(new Worker(burnUrl));
     }
 
-    w.Module.kicadOpenFile(path);
-
     const t0 = performance.now();
     let busySamples = 0;
     let iterations = 0;
     let maxBusySnapshotItems = 0;
     const errors: string[] = [];
-    // Scheduler glue QUEUES busy-window entries for post-settle delivery
-    // (doc 17 §3b) — an unbounded hammer would replay hundreds of heavy
-    // applies/snapshots afterwards (each Push walks connectivity across the
-    // fixture's 800 vias; on a debug build every via prints an assert — a
-    // 170k-line console flood that drowns the drain). The deterministic
-    // contract needs delivery + order, not volume: cap the queued calls and
-    // keep observing the busy window. Legacy glue keeps the full hammer
-    // (drop semantics make it free). Volume lives in the STRESS test.
-    const lane =
-      ((globalThis as unknown as { __wxScheduler?: { mutatorsWrapped: number } }).__wxScheduler
-        ?.mutatorsWrapped ?? 0) > 0;
-    const maxEntryIters = lane ? 6 : Infinity;
+
+    // Owned opens start on a fresh execution-owner task and return an exact-tail
+    // Promise. Do not sample Busy synchronously: the shallow starter has only
+    // queued the native body at that point. Attach rejection handling before
+    // yielding, then wait for either real activation or exact completion.
+    let openDone = false;
+    let openError: unknown;
+    const openCompletion = Promise.resolve(w.Module.kicadOpenFile(path)).then(
+      () => {
+        openDone = true;
+      },
+      (error) => {
+        openDone = true;
+        openError = error;
+      },
+    );
+    const activationStart = performance.now();
+    while (
+      !w.Module.kicadOpenFileBusy() &&
+      !openDone &&
+      performance.now() - activationStart < 30000
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    // On scheduler glue, awaiting the first gateway read queues it behind the
+    // open owner and resumes this callback after settle. One pass therefore
+    // proves deferred read/write delivery without building a replay backlog.
+    // Legacy glue remains synchronous and continues hammering the guarded path.
     // Every Asyncify park of the open chain hands the event loop to this
     // timer — exactly how the prod shell's collab attach interleaved.
     while (performance.now() - t0 < 120000) {
       if (!w.Module.kicadOpenFileBusy()) break;
       busySamples++;
       iterations++;
-      if (iterations > maxEntryIters) {
-        await new Promise((r) => setTimeout(r, 10));
-        continue;
-      }
+      // Submit the whole batch before awaiting any ticket. On scheduler glue,
+      // all four entries are therefore admitted while the open owner is still
+      // parked; awaiting the first one then waits for the ordered batch.
+      const calls: Array<[string, Promise<unknown>]> = [];
       for (const [name, fn] of [
         ["snapshotItems", () => w.Module.kicadCollabSnapshotItems()],
         ["snapshot", () => w.Module.kicadCollabSnapshot()],
@@ -264,7 +292,14 @@ async function openAndHammer(
         ["apply", () => w.Module.kicadCollabApply(scalarDelta)],
       ] as const) {
         try {
-          const out = fn();
+          calls.push([name, Promise.resolve(fn())]);
+        } catch (e) {
+          errors.push(`${name} during load: ${String(e)}`);
+        }
+      }
+      for (const [name, pending] of calls) {
+        try {
+          const out = await pending;
           if (typeof out === "string" && name.startsWith("snapshot")) {
             const added = (JSON.parse(out) as { added: unknown[] }).added.length;
             if (added > maxBusySnapshotItems) maxBusySnapshotItems = added;
@@ -275,9 +310,16 @@ async function openAndHammer(
       }
       await new Promise((r) => setTimeout(r, 10));
     }
+    await openCompletion;
+    if (openError !== undefined) errors.push(`open: ${String(openError)}`);
     for (const b of burners) b.terminate();
     if (burnUrl) URL.revokeObjectURL(burnUrl);
     if (parkMs > 0) w.Module.kicadTestSetOpenPark!(0);
+    const schedulerAfter = {
+      contextSleepsScheduled: w.__wxScheduler?.contextSleepsScheduled ?? 0,
+      contextSleepsDelivered: w.__wxScheduler?.contextSleepsDelivered ?? 0,
+      inPlaceFiberParks: w.__wxScheduler?.inplaceParksOnFiberStack ?? 0,
+    };
     return {
       busySamples,
       iterations,
@@ -285,46 +327,40 @@ async function openAndHammer(
       maxBusySnapshotItems,
       settled: !w.Module.kicadOpenFileBusy(),
       loadMs: Math.round(performance.now() - t0),
+      contextSleepsScheduledDelta:
+        schedulerAfter.contextSleepsScheduled - schedulerBefore.contextSleepsScheduled,
+      contextSleepsDeliveredDelta:
+        schedulerAfter.contextSleepsDelivered - schedulerBefore.contextSleepsDelivered,
+      inPlaceFiberParksDelta:
+        schedulerAfter.inPlaceFiberParks - schedulerBefore.inPlaceFiberParks,
     };
   }, opts);
 }
 
-/** Post-settle asserts shared by both tests: guard dropped applies + released. */
+/** Post-settle assertions shared by the legacy-gate and scheduler-gateway variants. */
 async function assertSettledContract(page: Page, stats: FuzzStats): Promise<void> {
   expect(stats.settled, "kicadOpenFileBusy cleared after the load").toBe(true);
   expect(stats.errors, "no traps while hammering entries mid-load").toEqual([]);
-  // Guard held: no mid-load snapshot ever saw the model. On scheduler glue a
-  // busy-window snapshot returns a Promise (typeof !== "string" — the hammer
-  // skips it), so this assertion holds for both variants.
-  expect(stats.maxBusySnapshotItems, "mid-load snapshots returned the empty delta").toBe(0);
-  await expect.poll(() => page.title(), { timeout: 30000 }).toMatch(/fuzz/i);
-
-  // Variant contract (docs/features/async/17 §3b). Legacy glue: the gate
-  // DROPPED the mid-load applies — the probe never moved. Scheduler glue
-  // (scheduler shim embind lane, doc 18): the same applies were QUEUED
-  // and DELIVERED after settle, in order — the probe sits where the hammer's
-  // deltas moved it. Same stimulus, the drop→deliver flip is the assertion.
   const schedulerLane = await page.evaluate(
     () =>
       ((globalThis as unknown as { __wxScheduler?: { mutatorsWrapped: number } }).__wxScheduler
         ?.mutatorsWrapped ?? 0) > 0,
   );
-  if (schedulerLane) {
-    // The hammer queued hundreds of calls (each mid-load snapshot delivers as
-    // a FULL board walk now, not the gate's empty delta) — wait for the
-    // time-boxed pump to drain the backlog before asserting final state.
-    await expect
-      .poll(
-        () =>
-          page.evaluate(
-            () =>
-              (globalThis as unknown as { __wxScheduler: { mutatorQueue: unknown[] } })
-                .__wxScheduler.mutatorQueue.length,
-          ),
-        { timeout: 240000, intervals: [1000] },
-      )
-      .toBe(0);
+  if (schedulerLane && stats.busySamples > 0) {
+    expect(
+      stats.maxBusySnapshotItems,
+      "a busy-window scheduler read resolved after the open owner with the loaded board",
+    ).toBeGreaterThan(12000);
+  } else {
+    expect(
+      stats.maxBusySnapshotItems,
+      "legacy busy-window reads stayed gated (or the stress run saw no busy window)",
+    ).toBe(0);
   }
+  await expect.poll(() => page.title(), { timeout: 30000 }).toMatch(/fuzz/i);
+
+  // Variant contract (docs/features/async/17 §3b). Legacy glue drops the
+  // mid-load applies; scheduler glue delivers them after the open owner.
   const HAMMER_TARGET = "55000000,55000000"; // both hammer deltas move the probe here
   await expect
     .poll(
@@ -332,11 +368,12 @@ async function assertSettledContract(page: Page, stats: FuzzStats): Promise<void
         page.evaluate((id) => (window.Module as unknown as Mod).kicadCollabGetPos(id), SEG_TARGET),
       { timeout: 10000, intervals: [200] },
     )
-    .toBe(schedulerLane ? HAMMER_TARGET : PROBE_HOME);
+    .toBe(schedulerLane && stats.busySamples > 0 ? HAMMER_TARGET : PROBE_HOME);
 
   // Guard released: the snapshot now walks the real, fully-loaded board…
   const itemCount = await page.evaluate(
-    () => JSON.parse((window.Module as unknown as Mod).kicadCollabSnapshotItems()).added.length,
+    async () =>
+      JSON.parse(await (window.Module as unknown as Mod).kicadCollabSnapshotItems()).added.length,
   );
   expect(itemCount, "post-load snapshot sees the board").toBeGreaterThan(12000);
 
@@ -372,12 +409,11 @@ async function assertSettledContract(page: Page, stats: FuzzStats): Promise<void
 }
 
 test.describe("collab entries during a parked board load (open_gate)", () => {
-  test("deterministic park window: gate engages, entries no-op, gate releases", async ({
+  test("deterministic park window: entries serialize behind the open owner", async ({
     page,
     testLogger,
   }) => {
-    // Scheduler-glue runs replay the whole hammer backlog after settle (the
-    // drain-wait in assertSettledContract) — budget for it on top of the load.
+    // Budget for the large board load plus the deterministic parked window.
     test.setTimeout(420000);
     await bootHarness(page);
 
@@ -400,11 +436,25 @@ test.describe("collab entries during a parked board load (open_gate)", () => {
     console.log(
       `[TEST] gate: ${stats.iterations} iterations over ${stats.loadMs}ms, ` +
         `${stats.busySamples} busy samples, maxBusySnap=${stats.maxBusySnapshotItems}, ` +
-        `${stats.errors.length} errors`,
+        `contextSleeps=${stats.contextSleepsDeliveredDelta}/` +
+        `${stats.contextSleepsScheduledDelta}, ` +
+        `inPlaceFiberParks=${stats.inPlaceFiberParksDelta}, ${stats.errors.length} errors`,
     );
 
     // The armed parks make the window unconditional on any machine.
     expect(stats.busySamples, "the busy window was observed").toBeGreaterThan(0);
+    expect(
+      stats.contextSleepsScheduledDelta,
+      "both deterministic waits used scheduler-owned context parks",
+    ).toBeGreaterThanOrEqual(2);
+    expect(
+      stats.contextSleepsDeliveredDelta,
+      "every scheduled deterministic context park received its exact wake",
+    ).toBe(stats.contextSleepsScheduledDelta);
+    expect(
+      stats.inPlaceFiberParksDelta,
+      "the owned open never bypassed suspension centralization",
+    ).toBe(0);
     await assertSettledContract(page, stats);
     expect(hasAbort(testLogger), "no WASM abort").toBe(false);
   });

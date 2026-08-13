@@ -53,13 +53,10 @@ inline State& state()
 }
 
 /**
- * The timer under test. Notify() runs as a fresh JS→wasm entry under
- * TimerCallbackFunc::Run's wxWasmDispatchGuard (src/wasm/timer.cpp), exactly
- * like the GAL refresh timer — then parks, which is what the GAL handler is
- * suspected of doing (paint → lib bridge / GAL init) on the crashing loads.
- * While it is parked, wxWasmDispatchParked() reads true, so every OTHER due
- * timer spins the 17 ms retry loop — the [wx-timer] storm diagnostic should
- * report the window, validating that channel too.
+ * The timer under test. Notify() enters through the typed timer envelope and
+ * execution-owner coordinator, exactly like the GAL refresh timer, and then
+ * parks. Other due timers remain queued without polling until this owner
+ * retires; a modal-scoped timer can run only through its exact child lease.
  */
 class ParkingTimer : public wxTimer
 {

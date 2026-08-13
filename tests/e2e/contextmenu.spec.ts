@@ -91,4 +91,51 @@ test.describe('DOM-port context menu', () => {
     const after = testLogger.consoleLogs.filter((l) => l.includes('chosen')).length;
     expect(after, 'no command should fire on cancel').toBe(before);
   });
+
+  test('discarding the browser lifetime cancels the exact context-menu lease', async ({
+    page,
+    testLogger,
+  }) => {
+    await page.evaluate(() => {
+      type PopupModule = {
+        _wx_popup_lease_request_close(scope: number, result: number): number;
+        wxDiscardDomBrowserLifetime(): boolean;
+      };
+      const state = window as unknown as {
+        Module: PopupModule;
+        __contextCloseCalls?: Array<{ scope: number; result: number }>;
+      };
+      const original = state.Module._wx_popup_lease_request_close;
+      if (typeof original !== 'function' ||
+          typeof state.Module.wxDiscardDomBrowserLifetime !== 'function') {
+        throw new Error('context-menu lifetime hooks are missing');
+      }
+      state.__contextCloseCalls = [];
+      state.Module._wx_popup_lease_request_close = (scope, result) => {
+        state.__contextCloseCalls!.push({ scope, result });
+        return original(scope, result);
+      };
+    });
+
+    await rightClickCanvasCentre(page);
+    await expect.poll(() => popupItemCount(page), { timeout: 8000 }).toBeGreaterThanOrEqual(4);
+
+    const discarded = await page.evaluate(() => (
+      window as unknown as {
+        Module: { wxDiscardDomBrowserLifetime(): boolean };
+      }
+    ).Module.wxDiscardDomBrowserLifetime());
+    expect(discarded).toBe(true);
+    await expect(page.locator('.wx-menu-popup')).toHaveCount(0);
+
+    const calls = await page.evaluate(() => (
+      window as unknown as {
+        __contextCloseCalls?: Array<{ scope: number; result: number }>;
+      }
+    ).__contextCloseCalls ?? []);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.scope).toBeGreaterThan(0);
+    expect(calls[0]!.result).toBe(-1);
+    expect(testLogger.consoleLogs.filter((l) => l.includes('chosen'))).toHaveLength(0);
+  });
 });

@@ -14,7 +14,8 @@ const SCOPE = 'default';
  * → PUT /api/libs/:lib/items/footprint/:name on the example backend. Verify the
  * backend persisted a fork-native .kicad_mod.
  *
- * Requires the example backend (:3060) running with USER_LIBS_DIR set.
+ * Requires the example backend (:3060). It uses USER_LIBS_DIR when set and
+ * otherwise the backend's owner-namespaced `.user-libs` default.
  */
 
 const BACKEND = process.env.BACKEND_URL ?? 'http://localhost:3060';
@@ -40,10 +41,7 @@ async function clickTreeRow(page: Page, label: string): Promise<boolean> {
   return true;
 }
 
-  // KNOWN-BROKEN: the fp/sym editor kicadLibs enumerate/save flows are dead
-  // (docs/features/web-e2e-rot/01-editor-lib-bridge-flows.md). fixme, not fail:
-  // on CI this dies in a 180s boot timeout per engine — running it buys no signal.
-test.fixme('footprint editor save persists to the backend (remote write round-trip)', async ({ page }) => {
+test('footprint editor save persists to the backend (remote write round-trip)', async ({ page }) => {
   const owner = `e2e-fp-${Date.now()}`;
   const logs: string[] = [];
   page.on('console', (m) => logs.push(`[${m.type()}] ${m.text()}`));

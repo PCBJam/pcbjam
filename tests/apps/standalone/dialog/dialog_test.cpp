@@ -31,6 +31,7 @@ private:
     void OnYesNoDialog(wxCommandEvent& evt);
     void OnErrorDialog(wxCommandEvent& evt);
     void OnCustomDialog(wxCommandEvent& evt);
+    void OnCallbackDialog(wxCommandEvent& evt);
     void OnInputDialog(wxCommandEvent& evt);
 
     wxDECLARE_EVENT_TABLE();
@@ -53,6 +54,7 @@ enum {
     ID_YESNO_DIALOG,
     ID_ERROR_DIALOG,
     ID_CUSTOM_DIALOG,
+    ID_CALLBACK_DIALOG,
     ID_INPUT_DIALOG
 };
 
@@ -61,6 +63,7 @@ wxBEGIN_EVENT_TABLE(DialogTestFrame, wxFrame)
     EVT_BUTTON(ID_YESNO_DIALOG, DialogTestFrame::OnYesNoDialog)
     EVT_BUTTON(ID_ERROR_DIALOG, DialogTestFrame::OnErrorDialog)
     EVT_BUTTON(ID_CUSTOM_DIALOG, DialogTestFrame::OnCustomDialog)
+    EVT_BUTTON(ID_CALLBACK_DIALOG, DialogTestFrame::OnCallbackDialog)
     EVT_BUTTON(ID_INPUT_DIALOG, DialogTestFrame::OnInputDialog)
 wxEND_EVENT_TABLE()
 
@@ -101,6 +104,7 @@ DialogTestFrame::DialogTestFrame()
     wxStaticBoxSizer* dlgSizer = new wxStaticBoxSizer(wxVERTICAL, this, "wxDialog");
     wxBoxSizer* dlgBtnSizer = new wxBoxSizer(wxHORIZONTAL);
     dlgBtnSizer->Add(new wxButton(this, ID_CUSTOM_DIALOG, "Custom Dialog"), 0, wxALL, 5);
+    dlgBtnSizer->Add(new wxButton(this, ID_CALLBACK_DIALOG, "Callback Dialog"), 0, wxALL, 5);
     dlgBtnSizer->Add(new wxButton(this, ID_INPUT_DIALOG, "Input Dialog"), 0, wxALL, 5);
     dlgSizer->Add(dlgBtnSizer, 0, wxALIGN_CENTER);
     mainSizer->Add(dlgSizer, 0, wxEXPAND | wxALL, 10);
@@ -186,6 +190,46 @@ void DialogTestFrame::OnCustomDialog(wxCommandEvent& WXUNUSED(evt))
     } else {
         LogEvent("Custom dialog cancelled");
     }
+}
+
+void DialogTestFrame::OnCallbackDialog(wxCommandEvent& WXUNUSED(evt))
+{
+    LogEvent("Opening Callback dialog...");
+
+    CustomTestDialog dlg(this);
+    int callbackRuns = 0;
+    dlg.ShowModal([this, &dlg, &callbackRuns](int result) {
+        ++callbackRuns;
+        LogEvent(wxString::Format("Callback dialog callback: %d", result));
+#ifdef __EMSCRIPTEN__
+        EM_ASM({
+            var state = {};
+            state.phase = 'first-complete';
+            state.runs = $0;
+            state.result = $1;
+            window.__dialogCallbackResult = state;
+        }, callbackRuns, result);
+#endif
+
+        // A completion callback must run only after the first lease has
+        // closed. Reusing the same dialog here is the strongest public-API
+        // reducer: an EndModal-time callback would try to nest beneath a
+        // half-closed lease and wedge or fail-stop.
+        const int reuseResult = dlg.ShowModal();
+        LogEvent(wxString::Format("Callback dialog reused with result: %d",
+                                  reuseResult));
+#ifdef __EMSCRIPTEN__
+        EM_ASM({
+            var state = {};
+            state.phase = 'reuse-complete';
+            state.runs = $0;
+            state.result = $1;
+            state.reuseResult = $2;
+            window.__dialogCallbackResult = state;
+        }, callbackRuns, result, reuseResult);
+#endif
+    });
+    LogEvent(wxString::Format("Callback dialog returned; callbacks: %d", callbackRuns));
 }
 
 void DialogTestFrame::OnInputDialog(wxCommandEvent& WXUNUSED(evt))

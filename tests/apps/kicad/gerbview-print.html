@@ -62,7 +62,7 @@
     };
 
     // KiCad config dir baked into the WASM build (see boot.js / constants.ts).
-    var KICAD_CONFIG_DIR = '/home/kicad/.config/kicad/kicad/9.99';
+    var KICAD_CONFIG_DIR = '/home/kicad/.config/kicad/kicad/10.0';
 
     // A lightweight subset of the tiny_tapeout demo board: enough layers/drill
     // files to enable the Print action and populate the dialog's layer list,
@@ -166,6 +166,10 @@
       };
       seed(KICAD_CONFIG_DIR + '/kicad_common.json', JSON.stringify({
         do_not_show_again: { update_check_prompt: true, data_collection_prompt: true }
+      }, null, 2));
+      seed(KICAD_CONFIG_DIR + '/kicad.json', JSON.stringify({
+        meta: { version: 0 },
+        pcm: { check_for_updates: false, lib_auto_add: false, lib_auto_remove: false }
       }, null, 2));
       seed(KICAD_CONFIG_DIR + '/sym-lib-table', '(sym_lib_table\n  (version 7)\n)\n');
       seed(KICAD_CONFIG_DIR + '/fp-lib-table', '(fp_lib_table\n  (version 7)\n)\n');

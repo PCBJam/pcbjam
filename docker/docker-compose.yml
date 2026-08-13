@@ -31,6 +31,13 @@ services:
       # Output directory for easy access to final WASM files
       - ../output:/workspace/output
 
+    environment:
+      # Emscripten downloads pinned ports (zlib, SDL, and others) on demand.
+      # Keep that cache in the existing per-worktree build volume so stopping
+      # or recreating this disposable container does not turn every retry into
+      # another network-dependent toolchain bootstrap.
+      EM_CACHE: /workspace/build-wasm/emscripten-cache
+
     # Keep the container alive so build.sh can `exec` its stages into it.
     # build.sh STOPS it when the build exits (idle builders keep the Docker
     # Desktop VM ballooned — 32G cap per per-worktree compose project); set

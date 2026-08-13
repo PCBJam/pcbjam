@@ -7,6 +7,8 @@
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten/emscripten.h>
+#include <wx/wasm/private/execution_owner.h>
+#include <wx/wasm/private/sched_context.h>
 #endif
 
 #include <array>
@@ -134,14 +136,23 @@ public:
             m_tag( aTag.ToStdString() ),
             m_delayMs( aDelayMs ),
             m_timer( this, ID_MODAL_CLOSE_TIMER ),
+            m_scenarioTimer( this, ID_SCENARIO_TIMER ),
             m_externalClose( false )
     {
         Bind( wxEVT_SHOW, &AutoClosingDialog::OnShow, this );
         Bind( wxEVT_TIMER, &AutoClosingDialog::OnTimer, this, ID_MODAL_CLOSE_TIMER );
+        Bind( wxEVT_TIMER, &AutoClosingDialog::OnScenarioTimer,
+              this, ID_SCENARIO_TIMER );
     }
 
     // If set, the dialog will not self-close; an external caller must call EndModalExternal.
     void UseExternalClose() { m_externalClose = true; }
+
+    void RunScenarioAfterShow( std::function<void()> aScenario, int aDelayMs )
+    {
+        m_scenario = std::move( aScenario );
+        m_scenarioDelayMs = aDelayMs;
+    }
 
     void EndModalExternal( int aCode )
     {
@@ -159,6 +170,12 @@ private:
 
             if( !m_externalClose )
                 m_timer.StartOnce( m_delayMs );
+
+            // ShowModal() opens the execution lease before Show(true). Starting
+            // here gives this dialog-owned timer both the exact target scope and
+            // the exact active lease generation.
+            if( m_scenario )
+                m_scenarioTimer.StartOnce( m_scenarioDelayMs );
         }
 
         aEvent.Skip();
@@ -171,9 +188,22 @@ private:
         EndModal( wxID_OK );
     }
 
+    void OnScenarioTimer( wxTimerEvent& )
+    {
+        if( m_scenario )
+        {
+            auto scenario = std::move( m_scenario );
+            m_scenario = nullptr;
+            scenario();
+        }
+    }
+
     std::string m_tag;
     int         m_delayMs;
     wxTimer     m_timer;
+    wxTimer     m_scenarioTimer;
+    std::function<void()> m_scenario;
+    int         m_scenarioDelayMs = 0;
     bool        m_externalClose;
 };
 
@@ -183,8 +213,7 @@ class NestedTestFrame : public wxFrame
 public:
     NestedTestFrame() :
             wxFrame( nullptr, wxID_ANY, "Nested Coroutine+Modal Test",
-                     wxDefaultPosition, wxSize( 1000, 760 ) ),
-            m_scenarioTimer( this, ID_SCENARIO_TIMER )
+                     wxDefaultPosition, wxSize( 1000, 760 ) )
     {
         wxPanel* panel = new wxPanel( this );
         wxBoxSizer* sizer = new wxBoxSizer( wxVERTICAL );
@@ -215,8 +244,6 @@ public:
         panel->SetSizer( sizer );
         CreateStatusBar();
         SetStatusText( "Nested coroutine+modal test harness starting" );
-
-        Bind( wxEVT_TIMER, &NestedTestFrame::OnScenarioTimer, this, ID_SCENARIO_TIMER );
 
         CallAfter( [this]() { RunSuite(); } );
     }
@@ -328,9 +355,11 @@ private:
         auto dlg = std::make_unique<AutoClosingDialog>( this, "S3", 0 );
         dlg->UseExternalClose();
 
-        // Arm a scenario timer that will fire INSIDE the modal's event loop
-        m_pendingScenario = [this]() { RunScenario3FiberWork(); };
-        m_scenarioTimer.StartOnce( 30 );
+        // Modal work must carry the modal's exact target scope and lease. A
+        // frame-owned timer is deliberately not allowed to borrow a dialog
+        // lease merely because it expires while that dialog is open.
+        dlg->RunScenarioAfterShow(
+                [this]() { RunScenario3FiberWork(); }, 30 );
 
         // Show the modal (this blocks under EM_ASYNC_JS)
         m_activeDialog = dlg.get();
@@ -390,8 +419,8 @@ private:
         auto dlg = std::make_unique<AutoClosingDialog>( this, "S4", 0 );
         dlg->UseExternalClose();
 
-        m_pendingScenario = [this]() { RunScenario4MultiSwap(); };
-        m_scenarioTimer.StartOnce( 30 );
+        dlg->RunScenarioAfterShow(
+                [this]() { RunScenario4MultiSwap(); }, 30 );
 
         m_activeDialog = dlg.get();
         int result = dlg->ShowModal();
@@ -459,8 +488,8 @@ private:
         auto dlg = std::make_unique<AutoClosingDialog>( this, "S5", 0 );
         dlg->UseExternalClose();
 
-        m_pendingScenario = [this]() { RunScenario5Yield(); };
-        m_scenarioTimer.StartOnce( 30 );
+        dlg->RunScenarioAfterShow(
+                [this]() { RunScenario5Yield(); }, 30 );
 
         m_activeDialog = dlg.get();
         int result = dlg->ShowModal();
@@ -517,8 +546,8 @@ private:
         auto dlg = std::make_unique<AutoClosingDialog>( this, "S6", 0 );
         dlg->UseExternalClose();
 
-        m_pendingScenario = [this]() { RunScenario6DeepYield(); };
-        m_scenarioTimer.StartOnce( 30 );
+        dlg->RunScenarioAfterShow(
+                [this]() { RunScenario6DeepYield(); }, 30 );
 
         m_activeDialog = dlg.get();
         int result = dlg->ShowModal();
@@ -639,8 +668,8 @@ private:
         auto dlg = std::make_unique<AutoClosingDialog>( this, "S8", 0 );
         dlg->UseExternalClose();
 
-        m_pendingScenario = [this]() { RunScenario8NestedFibers(); };
-        m_scenarioTimer.StartOnce( 30 );
+        dlg->RunScenarioAfterShow(
+                [this]() { RunScenario8NestedFibers(); }, 30 );
 
         m_activeDialog = dlg.get();
         int result = dlg->ShowModal();
@@ -652,8 +681,7 @@ private:
         FinalizeCase( caseName, std::move( *m_currentCtx ) );
         m_currentCtx.reset();
 
-        // Done with all cases
-        CallAfter( [this]() { FinalizeSuite(); } );
+        CallAfter( [this]() { StartCase_NestedDispatchRoots(); } );
     }
 
     void RunScenario8NestedFibers()
@@ -698,18 +726,291 @@ private:
             m_activeDialog->EndModalExternal( wxID_OK );
     }
 
-    // --- Scenario timer handler (runs inside modal event loops) ---
-    void OnScenarioTimer( wxTimerEvent& aEvent )
+    // --- Case 9: nested_dispatch_roots_preserve_fiber_identity ---
+    //
+    // Exact production topology, and deliberately stronger than the older
+    // stale-source reducer:
+    //
+    //   dispatch root A -> tool fiber F1 -> modal exact wait
+    //   modal child dispatch root B -> tool fiber F2 -> yield -> finish
+    //   modal close -> exact wake of F1 -> terminal handoff to root A
+    //
+    // The stale-source reducer proves only that B cannot overwrite a parked
+    // F1 capture.  This case also proves that B is not needlessly blocked: it
+    // receives its own immutable libcontext root identity and can run F2 while
+    // A/F1 remain parked.  A later task verifies that both semantic owners and
+    // both tool-fiber contexts retired rather than surviving as ghost state.
+    void StartCase_NestedDispatchRoots()
     {
-        if( aEvent.GetId() != ID_SCENARIO_TIMER )
-            return;
+        const std::string caseName =
+                "nested_dispatch_roots_preserve_fiber_identity";
+        Log( wxString::Format( "[COROUTINE_TEST] CASE %s", caseName ) );
 
-        if( m_pendingScenario )
+        m_currentCaseName = caseName;
+        m_currentCtx = std::make_unique<CaseContext>();
+        m_nestedSequence.clear();
+
+#ifdef __EMSCRIPTEN__
+        m_nestedRootA = pcbjam_sched::current();
+        m_nestedOwnerA = wxWasmExecutionCurrentOwner();
+        m_nestedFiberReleasedBefore =
+                pcbjam_sched::reg().fiber_released;
+        m_currentCtx->Expect( m_nestedRootA != 0,
+                              "S9: root A must be a scheduler context" );
+        m_currentCtx->Expect( static_cast<bool>( m_nestedOwnerA ),
+                              "S9: root A must carry a semantic owner" );
+#endif
+        m_nestedSequence.push_back( "A-call" );
+
+        m_nestedF1 = std::make_unique<TestCoroutine>(
+                [this]( TestCoroutine& ) {
+                    m_nestedSequence.push_back( "F1-open" );
+#ifdef __EMSCRIPTEN__
+                    m_nestedF1Id = pcbjam_sched::current();
+                    m_currentCtx->Expect( m_nestedF1Id != 0
+                                                  && m_nestedF1Id
+                                                             != m_nestedRootA,
+                                          "S9: F1 must have its own physical context" );
+                    m_currentCtx->Expect(
+                            wxWasmExecutionCurrentOwner() == m_nestedOwnerA,
+                            "S9: F1 must retain root A's semantic owner" );
+#endif
+
+                    AutoClosingDialog dialog( this, "S9", 0 );
+                    dialog.UseExternalClose();
+                    dialog.RunScenarioAfterShow(
+                            [this]() { RunScenario9ChildRoot(); }, 30 );
+
+                    m_activeDialog = &dialog;
+                    const int result = dialog.ShowModal();
+                    m_activeDialog = nullptr;
+
+                    m_nestedSequence.push_back( "F1-resume" );
+#ifdef __EMSCRIPTEN__
+                    m_nestedF1ResumeId = pcbjam_sched::current();
+                    m_currentCtx->Expect(
+                            m_nestedF1ResumeId == m_nestedF1Id,
+                            "S9: modal close must resume the exact F1 context" );
+                    m_currentCtx->Expect(
+                            wxWasmExecutionCurrentOwner() == m_nestedOwnerA,
+                            "S9: resumed F1 must recover root A's semantic owner" );
+                    m_nestedF2ReturnAfterF1Wake =
+                            libcontext::wasm_return_context_id_for_test(
+                                    m_nestedF2
+                                            ? m_nestedF2->ContextHandleForTest()
+                                            : nullptr );
+                    m_currentCtx->Expect(
+                            m_nestedF2ReturnAfterF1Wake == m_nestedRootBProtocol,
+                            "S9: F1 wake must not rewrite F2's saved root-B return handle" );
+#endif
+                    m_currentCtx->Expect( result == wxID_OK,
+                                          "S9: modal must return wxID_OK" );
+                } );
+
+        const bool f1Running = m_nestedF1->Call( 1 );
+        m_nestedSequence.push_back( "A-return" );
+        m_currentCtx->Expect( !f1Running,
+                              "S9: F1 must finish after its exact modal wake" );
+
+#ifdef __EMSCRIPTEN__
+        m_nestedRootAResume = pcbjam_sched::current();
+        m_currentCtx->Expect( m_nestedRootAResume == m_nestedRootA,
+                              "S9: F1 must hand off to its original root A" );
+#endif
+
+        m_nestedF1.reset();
+        m_nestedF2.reset();
+
+#ifdef __EMSCRIPTEN__
+        m_currentCtx->Expect( pcbjam_sched::find( m_nestedF1Id ) == nullptr,
+                              "S9: F1 physical context must retire" );
+        m_currentCtx->Expect( pcbjam_sched::find( m_nestedF2Id ) == nullptr,
+                              "S9: F2 physical context must retire" );
+        m_nestedFiberReleasedAfter =
+                pcbjam_sched::reg().fiber_released;
+        m_currentCtx->Expect(
+                m_nestedFiberReleasedAfter
+                                == m_nestedFiberReleasedBefore + 2,
+                "S9: exactly F1 and F2 must retire during the reducer" );
+#endif
+
+        const std::vector<std::string> expected = {
+            "A-call", "F1-open", "B-enter", "F2-enter", "B-yield",
+            "F2-resume", "B-finish", "B-close", "F1-resume", "A-return"
+        };
+        m_currentCtx->Expect(
+                m_nestedSequence == expected,
+                "S9: unexpected nested-root sequence: "
+                        + JoinVector( m_nestedSequence ) );
+
+        // QueueOrdinary guarantees a fresh task and a fresh root admission
+        // after the current root-A handler returns.  A CallAfter posted here
+        // is intentionally affiliated with A and would therefore be the wrong
+        // observation point for A's retirement.
+#ifdef __EMSCRIPTEN__
+        if( !wxWasmExecutionQueueOrdinary(
+                    &NestedTestFrame::FinishNestedDispatchRootsThunk, this ) )
         {
-            auto scenario = std::move( m_pendingScenario );
-            m_pendingScenario = nullptr;
-            scenario();
+            m_currentCtx->Expect(
+                    false, "S9: retirement oracle could not be queued" );
+            FinishCase_NestedDispatchRoots();
         }
+#else
+        CallAfter( [this]() { FinishCase_NestedDispatchRoots(); } );
+#endif
+    }
+
+    void RunScenario9ChildRoot()
+    {
+        m_nestedSequence.push_back( "B-enter" );
+
+#ifdef __EMSCRIPTEN__
+        m_nestedRootB = pcbjam_sched::current();
+        m_nestedOwnerB = wxWasmExecutionCurrentOwner();
+        m_currentCtx->Expect( m_nestedRootB != 0
+                                      && m_nestedRootB != m_nestedRootA,
+                              "S9: modal child must use a distinct dispatch root B" );
+        m_currentCtx->Expect( static_cast<bool>( m_nestedOwnerB )
+                                      && m_nestedOwnerB != m_nestedOwnerA,
+                              "S9: modal child must carry a distinct child owner" );
+        m_currentCtx->Expect(
+                pcbjam_sched::status_of( m_nestedRootA )
+                                == pcbjam_sched::Status::Parked,
+                "S9: root A must remain transfer-parked while B runs" );
+        m_currentCtx->Expect(
+                pcbjam_sched::status_of( m_nestedF1Id )
+                                == pcbjam_sched::Status::Parked,
+                "S9: F1 must remain exact-wait parked while B runs" );
+#endif
+
+        {
+#ifdef __EMSCRIPTEN__
+            m_nestedRootBProtocol =
+                    libcontext::wasm_current_context_id_for_test();
+#endif
+            m_nestedF2 = std::make_unique<TestCoroutine>(
+                    [this]( TestCoroutine& self ) {
+                m_nestedSequence.push_back( "F2-enter" );
+#ifdef __EMSCRIPTEN__
+                m_nestedF2Id = pcbjam_sched::current();
+                m_currentCtx->Expect(
+                        m_nestedF2Id != 0 && m_nestedF2Id != m_nestedF1Id
+                                && m_nestedF2Id != m_nestedRootA
+                                && m_nestedF2Id != m_nestedRootB,
+                        "S9: F2 must have a distinct physical context" );
+                m_currentCtx->Expect(
+                        wxWasmExecutionCurrentOwner() == m_nestedOwnerB,
+                        "S9: F2 must retain root B's modal-child owner" );
+#endif
+                self.Yield( 902 );
+                m_nestedSequence.push_back( "F2-resume" );
+#ifdef __EMSCRIPTEN__
+                m_nestedF2ResumeId = pcbjam_sched::current();
+                m_currentCtx->Expect(
+                        m_nestedF2ResumeId == m_nestedF2Id,
+                        "S9: F2 must resume on its exact physical context" );
+                m_currentCtx->Expect(
+                        wxWasmExecutionCurrentOwner() == m_nestedOwnerB,
+                        "S9: resumed F2 must keep root B's child owner" );
+#endif
+            } );
+
+            bool running = m_nestedF2->Call( 1 );
+            m_nestedSequence.push_back( "B-yield" );
+            m_currentCtx->Expect( running,
+                                  "S9: F2 must yield once to root B" );
+            m_currentCtx->Expect( m_nestedF2->LastReturnValue() == 902,
+                                  "S9: F2 yield value must reach root B" );
+#ifdef __EMSCRIPTEN__
+            m_nestedF2ReturnBeforeClose =
+                    libcontext::wasm_return_context_id_for_test(
+                            m_nestedF2->ContextHandleForTest() );
+            m_currentCtx->Expect(
+                    m_nestedF2ReturnBeforeClose == m_nestedRootBProtocol,
+                    "S9: F2's saved return handle must name root B" );
+            m_currentCtx->Expect( pcbjam_sched::current() == m_nestedRootB,
+                                  "S9: F2 yield must return to root B" );
+#endif
+
+            running = m_nestedF2->Resume( 2 );
+            m_nestedSequence.push_back( "B-finish" );
+            m_currentCtx->Expect( !running,
+                                  "S9: F2 must finish on its one resume" );
+#ifdef __EMSCRIPTEN__
+            m_currentCtx->Expect( pcbjam_sched::current() == m_nestedRootB,
+                                  "S9: F2 finish must return to root B" );
+#endif
+        }
+
+        m_nestedSequence.push_back( "B-close" );
+        if( m_activeDialog )
+            m_activeDialog->EndModalExternal( wxID_OK );
+    }
+
+    void FinishCase_NestedDispatchRoots()
+    {
+#ifdef __EMSCRIPTEN__
+        bool ownerAStillLive = wxWasmExecutionRetainOwner( m_nestedOwnerA );
+        bool ownerBStillLive = wxWasmExecutionRetainOwner( m_nestedOwnerB );
+        const libcontext::wasm_root_proxy_stats rootStats =
+                libcontext::wasm_root_proxy_stats_for_test();
+
+        m_currentCtx->Expect( !ownerAStillLive,
+                              "S9: semantic root owner A must retire once its handler returns" );
+        m_currentCtx->Expect( !ownerBStillLive,
+                              "S9: semantic child owner B must retire once its handler returns" );
+
+        // Keep a failed assertion from perturbing later cases with the probe's
+        // extra reference.
+        if( ownerAStillLive )
+            wxWasmExecutionReleaseOwner( m_nestedOwnerA );
+        if( ownerBStillLive )
+            wxWasmExecutionReleaseOwner( m_nestedOwnerB );
+
+        m_currentCtx->Expect( rootStats.live <= rootStats.capacity,
+                              "S9: root proxies stay within the dispatch-root bound" );
+        m_currentCtx->Expect( rootStats.peak <= rootStats.capacity,
+                              "S9: root proxy high-water stays bounded" );
+        m_currentCtx->Expect( rootStats.capacity == 16,
+                              "S9: root proxy capacity matches dispatch depth" );
+        m_currentCtx->Expect(
+                libcontext::wasm_root_proxy_capacity_accepts_for_test( 15 ),
+                "S9: the 16th live root proxy is accepted" );
+        m_currentCtx->Expect(
+                !libcontext::wasm_root_proxy_capacity_accepts_for_test( 16 ),
+                "S9: a 17th live root proxy is rejected" );
+        m_currentCtx->Expect( rootStats.scheduler_release_attempts == 0,
+                              "S9: a root proxy never releases a scheduler-owned stack" );
+        m_currentCtx->Expect( rootStats.unsafe_sweeps == 0,
+                              "S9: a live physical root proxy is never swept" );
+
+        Log( wxString::Format(
+                "[COROUTINE_TEST] NESTED-ROOTS rootA=%u rootB=%u "
+                "f1=%u f1Resume=%u f2=%u f2Resume=%u rootAResume=%u "
+                "f2ReturnBefore=%u f2ReturnAfter=%u rootBProtocol=%u "
+                "fiberReleasedDelta=%u rootProxyLive=%zu rootProxyPeak=%zu "
+                "rootProxyCapacity=%zu rootProxyCreated=%u rootProxyReleased=%u "
+                "rootProxySchedulerReleases=%u rootProxyUnsafeSweeps=%u sequence=%s",
+                m_nestedRootA, m_nestedRootB, m_nestedF1Id,
+                m_nestedF1ResumeId, m_nestedF2Id, m_nestedF2ResumeId,
+                m_nestedRootAResume, m_nestedF2ReturnBeforeClose,
+                m_nestedF2ReturnAfterF1Wake, m_nestedRootBProtocol,
+                m_nestedFiberReleasedAfter - m_nestedFiberReleasedBefore,
+                rootStats.live, rootStats.peak, rootStats.capacity,
+                rootStats.created, rootStats.released,
+                rootStats.scheduler_release_attempts, rootStats.unsafe_sweeps,
+                JoinVector( m_nestedSequence ) ) );
+#endif
+
+        FinalizeCase( m_currentCaseName, std::move( *m_currentCtx ) );
+        m_currentCtx.reset();
+        CallAfter( [this]() { FinalizeSuite(); } );
+    }
+
+    static void FinishNestedDispatchRootsThunk( void* aArg )
+    {
+        static_cast<NestedTestFrame*>( aArg )
+                ->FinishCase_NestedDispatchRoots();
     }
 
     // --- RunSuite: kicks off the synchronous cases, then chains async ones ---
@@ -727,12 +1028,29 @@ private:
 
 private:
     std::vector<CaseResult>             m_results;
-    wxTimer                             m_scenarioTimer;
-    std::function<void()>               m_pendingScenario;
     std::string                         m_currentCaseName;
     std::unique_ptr<CaseContext>        m_currentCtx;
     AutoClosingDialog*                  m_activeDialog = nullptr;
     std::unique_ptr<TestCoroutine>      m_s5Fiber;
+    std::unique_ptr<TestCoroutine>      m_nestedF1;
+    std::unique_ptr<TestCoroutine>      m_nestedF2;
+    std::vector<std::string>            m_nestedSequence;
+#ifdef __EMSCRIPTEN__
+    pcbjam_sched::ContextId             m_nestedRootA = 0;
+    pcbjam_sched::ContextId             m_nestedRootB = 0;
+    pcbjam_sched::ContextId             m_nestedF1Id = 0;
+    pcbjam_sched::ContextId             m_nestedF1ResumeId = 0;
+    pcbjam_sched::ContextId             m_nestedF2Id = 0;
+    pcbjam_sched::ContextId             m_nestedF2ResumeId = 0;
+    pcbjam_sched::ContextId             m_nestedRootAResume = 0;
+    uint32_t                            m_nestedRootBProtocol = 0;
+    uint32_t                            m_nestedF2ReturnBeforeClose = 0;
+    uint32_t                            m_nestedF2ReturnAfterF1Wake = 0;
+    wx_wasm_execution::OwnerToken       m_nestedOwnerA;
+    wx_wasm_execution::OwnerToken       m_nestedOwnerB;
+    unsigned                            m_nestedFiberReleasedBefore = 0;
+    unsigned                            m_nestedFiberReleasedAfter = 0;
+#endif
     wxStaticText*                       m_summary = nullptr;
     wxTextCtrl*                         m_log = nullptr;
 };

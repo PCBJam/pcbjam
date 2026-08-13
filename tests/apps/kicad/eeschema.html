@@ -129,7 +129,7 @@
     // wizard's "use defaults" path — and it never opens. Settings dir matches
     // PATHS::GetUserSettingsPath() for this build.
     var seedKicadConfig = function() {
-      var cfgDir = '/home/kicad/.config/kicad/kicad/9.99';
+      var cfgDir = '/home/kicad/.config/kicad/kicad/10.0';
       FS.mkdirTree(cfgDir);
 
       var writeIfAbsent = function(path, contents) {
@@ -142,6 +142,10 @@
       // PRIVACY provider: both prompts must be flagged do-not-show-again.
       writeIfAbsent(cfgDir + '/kicad_common.json', JSON.stringify({
         do_not_show_again: { update_check_prompt: true, data_collection_prompt: true }
+      }, null, 2));
+      writeIfAbsent(cfgDir + '/kicad.json', JSON.stringify({
+        meta: { version: 0 },
+        pcm: { check_for_updates: false, lib_auto_add: false, lib_auto_remove: false }
       }, null, 2));
 
       // LIBRARIES provider: needs valid global symbol/footprint/design-block

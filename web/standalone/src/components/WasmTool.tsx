@@ -62,19 +62,28 @@ import {
 import { memfsFilePath, memfsProjectDir, TOOL_BUNDLE, TOOL_FRAME } from "@/wasm/constants";
 import {
   driveProjectIntoTool,
-  readStagedFile,
+  readStagedFileAsOwner,
   usedLibNicknames,
   type ToolFile,
 } from "@/wasm/kicad-runner";
 import { dump as dumpTrace, mark } from "@/wasm/load-trace";
 import { errorMessage, isTerminalError } from "@/wasm/terminal-error";
-import { registerSaveHook, type SaveBytes } from "@/wasm/save-flow";
+import {
+  registerSaveHook,
+  type SaveBlock,
+  type SaveBytes,
+  type SaveHookWindow,
+} from "@/wasm/save-flow";
 import type {
   KicadCollabHandle,
   KicadDocSession,
   KicadItemsWindow,
   YjsProvider,
 } from "@/wasm/collab";
+import {
+  createKicadDocSessionOwner,
+  destroyKicadDocSession,
+} from "@/wasm/collab/doc-session-owner";
 import {
   createPresence,
   type PresenceHandle,
@@ -97,6 +106,13 @@ import {
   type SiblingRestageHandle,
 } from "@/wasm/collab/sibling-restage";
 import { DOC_REVERTED_EVENT } from "@/wasm/collab/kicad-binding";
+import {
+  observeOwnerJob,
+  isStaleOwnerJobError,
+  runGuardedOwnerExport,
+  type GuardedOwnerExport,
+} from "@/wasm/owner-job";
+import { createLatestOwnerProjection } from "@/wasm/latest-owner-projection";
 import {
   createComments,
   hasCommentsBridge,
@@ -133,6 +149,11 @@ import {
   useChromeHidden,
 } from "@/lib/chrome-visibility";
 import { recordFatalLog, showFatalScreen } from "@/wasm/fatal-screen";
+import {
+  createChromeVisibilityProjection,
+  type ChromeSetter,
+  type ChromeVisibilityProjection,
+} from "@/wasm/chrome-visibility-owner";
 
 // Tools with the v2 items bridge (kicadCollabSnapshotItems/ApplyItems embind exports).
 const COLLAB_TOOLS = new Set<Tool>(["pl_editor", "eeschema", "pcbnew"]);
@@ -140,10 +161,10 @@ const COLLAB_TOOLS = new Set<Tool>(["pl_editor", "eeschema", "pcbnew"]);
 // Chrome (editor UI) toggle: only the merged kicad_editor bundle exports
 // kicadSetChrome (gerbview/calculator/pl_editor don't) — everything about the
 // toggle is feature-gated on the export being there.
-function chromeSetter(win: Window): ((show: boolean) => boolean) | null {
+function chromeSetter(win: Window): ChromeSetter | null {
   const fn = (win as { Module?: { kicadSetChrome?: unknown } }).Module
     ?.kicadSetChrome;
-  return typeof fn === "function" ? (fn as (show: boolean) => boolean) : null;
+  return typeof fn === "function" ? (fn as ChromeSetter) : null;
 }
 
 // Tooltip only — the matcher accepts both chords on any platform.
@@ -591,6 +612,7 @@ async function maybeConnectDocSession(
     scopeId: string;
     projectId: string;
     targetPath?: string;
+    signal?: AbortSignal;
     log: (m: string) => void;
   },
 ): Promise<{ session?: KicadDocSession; targetBytes?: Uint8Array }> {
@@ -599,7 +621,11 @@ async function maybeConnectDocSession(
 
   const { connectKicadDoc } = await import("@/wasm/collab");
   const room = collabRoomId(opts.scopeId, opts.projectId, opts.targetPath);
-  const session = await connectKicadDoc({ provider: yjsProviderConfig(), room });
+  const session = await connectKicadDoc({
+    provider: yjsProviderConfig(),
+    room,
+    signal: opts.signal,
+  });
 
   // Use the full doc state (meta + layout + items), NOT just item count: a
   // populated drawing sheet (pl_editor `.kicad_wks`) has zero uuid items, so an
@@ -641,76 +667,99 @@ async function maybeStartCollab(
     editorMatchesDoc?: boolean;
     /** Read-only viewer (read-only-viewer): see `bindKicadCollab`. */
     readOnly?: boolean;
+    signal?: AbortSignal;
     log: (m: string) => void;
     onStatus: (t: string) => void;
   },
 ): Promise<KicadCollabHandle | undefined> {
-  const collabParam = new URLSearchParams(win.location.search).get("collab");
-  const mod = win.Module;
-  clog("maybeStartCollab gate:", {
-    collabParam,
-    tool: opts.tool,
-    hasModule: !!mod,
-    hasSnapshotItems: typeof mod?.kicadCollabSnapshotItems,
-    hasApplyItems: typeof mod?.kicadCollabApplyItems,
-    url: win.location.href,
-  });
-
-  // On by default; only an explicit opt-out disables it. A pre-connected doc
-  // session (Y.Doc-load path) ignores the opt-out: the doc IS the data source,
-  // so detaching would silently drop every edit.
-  if (!opts.collabSession && (collabParam === "0" || collabParam === "false")) {
-    clog("disabled (?collab=0) — skipping");
-    return undefined;
-  }
-  if (!COLLAB_TOOLS.has(opts.tool)) {
-    clog(`tool ${opts.tool} has no collab bridge — skipping`);
-    return undefined;
-  }
-  if (typeof mod?.kicadCollabSnapshotItems !== "function") {
-    cwarn(
-      "BRIDGE NOT PRESENT: Module.kicadCollabSnapshotItems is",
-      typeof mod?.kicadCollabSnapshotItems,
-      `— the loaded ${opts.tool}.wasm predates the v2 items bridge (ysync 0008 Stage C). Rebuild + \`npm run setup:kicad\` and restart the dev server.`,
-    );
-    return undefined;
-  }
-
-  const { startKicadCollab, attachKicadCollab } = await import("@/wasm/collab");
-  const seedDoc = seedDocFromMemfs(win, opts.slug, opts.targetPath);
-
-  if (opts.collabSession) {
-    // docSource "ydoc": the provider is already connected. When the editor
-    // opened the file materialized from this very doc, attach + baseline only;
-    // when the room was empty (API fallback), seed() file-seeds it as usual.
-    clog("attaching to pre-connected doc session; editorMatchesDoc:", !!opts.editorMatchesDoc);
-    const handle = attachKicadCollab(mod, win as unknown as KicadItemsWindow, opts.collabSession, {
-      seedDoc,
-      editorMatchesDoc: opts.editorMatchesDoc,
-      readOnly: opts.readOnly,
+  // Passing a pre-connected session transfers ownership to this function.
+  // It transfers again only when attachKicadCollab is entered.
+  let sessionTransferred = false;
+  try {
+    const collabParam = new URLSearchParams(win.location.search).get("collab");
+    const mod = win.Module;
+    clog("maybeStartCollab gate:", {
+      collabParam,
+      tool: opts.tool,
+      hasModule: !!mod,
+      hasSnapshotItems: typeof mod?.kicadCollabSnapshotItems,
+      hasApplyItems: typeof mod?.kicadCollabApplyItems,
+      url: win.location.href,
     });
-    opts.log(`[collab] attached to Y.Doc session`);
+
+    // On by default; only an explicit opt-out disables it. A pre-connected doc
+    // session (Y.Doc-load path) ignores the opt-out: the doc IS the data source,
+    // so detaching would silently drop every edit.
+    if (!opts.collabSession && (collabParam === "0" || collabParam === "false")) {
+      clog("disabled (?collab=0) — skipping");
+      return undefined;
+    }
+    if (!COLLAB_TOOLS.has(opts.tool)) {
+      clog(`tool ${opts.tool} has no collab bridge — skipping`);
+      return undefined;
+    }
+    if (typeof mod?.kicadCollabSnapshotItems !== "function") {
+      cwarn(
+        "BRIDGE NOT PRESENT: Module.kicadCollabSnapshotItems is",
+        typeof mod?.kicadCollabSnapshotItems,
+        `— the loaded ${opts.tool}.wasm predates the v2 items bridge (ysync 0008 Stage C). Rebuild + \`npm run setup:kicad\` and restart the dev server.`,
+      );
+      return undefined;
+    }
+
+    const { startKicadCollab, attachKicadCollab } = await import("@/wasm/collab");
+    const seedDoc = seedDocFromMemfs(win, opts.slug, opts.targetPath);
+
+    if (opts.collabSession) {
+      // docSource "ydoc": the provider is already connected. When the editor
+      // opened the file materialized from this very doc, attach + baseline only;
+      // when the room was empty (API fallback), seed() file-seeds it as usual.
+      clog(
+        "attaching to pre-connected doc session; editorMatchesDoc:",
+        !!opts.editorMatchesDoc,
+      );
+      sessionTransferred = true;
+      const handle = await attachKicadCollab(
+        mod,
+        win as unknown as KicadItemsWindow,
+        opts.collabSession,
+        {
+          seedDoc,
+          editorMatchesDoc: opts.editorMatchesDoc,
+          readOnly: opts.readOnly,
+          signal: opts.signal,
+        },
+      );
+      opts.log(`[collab] attached to Y.Doc session`);
+      opts.onStatus("Collab: connected");
+      clog("connected ✓");
+      return handle;
+    }
+
+    const provider = yjsProviderConfig();
+    // One room per (project, document). Two tabs of the same build compute the
+    // same id, so cross-tab BroadcastChannel still works; network providers use it
+    // verbatim to namespace + persist (see @pcbjam/shared collabRoomId).
+    const room = collabRoomId(opts.scopeId, opts.projectId, opts.targetPath ?? opts.tool);
+    clog("starting collab", provider.kind, "room", room, "seedDoc:", !!seedDoc);
+    const handle = await startKicadCollab(mod, win as unknown as KicadItemsWindow, {
+      provider,
+      room,
+      seedDoc,
+      readOnly: opts.readOnly,
+      signal: opts.signal,
+    });
+    opts.log(`[collab] ${provider.kind} connected on ${room}`);
     opts.onStatus("Collab: connected");
     clog("connected ✓");
     return handle;
+  } finally {
+    // Covers every pre-attach gate/import failure. Once attach is entered its
+    // own retire closure is the sole owner, including its rejection paths.
+    if (opts.collabSession && !sessionTransferred) {
+      destroyKicadDocSession(opts.collabSession);
+    }
   }
-
-  const provider = yjsProviderConfig();
-  // One room per (project, document). Two tabs of the same build compute the
-  // same id, so cross-tab BroadcastChannel still works; network providers use it
-  // verbatim to namespace + persist (see @pcbjam/shared collabRoomId).
-  const room = collabRoomId(opts.scopeId, opts.projectId, opts.targetPath ?? opts.tool);
-  clog("starting collab", provider.kind, "room", room, "seedDoc:", !!seedDoc);
-  const handle = await startKicadCollab(mod, win as unknown as KicadItemsWindow, {
-    provider,
-    room,
-    seedDoc,
-    readOnly: opts.readOnly,
-  });
-  opts.log(`[collab] ${provider.kind} connected on ${room}`);
-  opts.onStatus("Collab: connected");
-  clog("connected ✓");
-  return handle;
 }
 
 /**
@@ -737,81 +786,102 @@ async function startSheetCollab(
     /** The entry file was materialized from `session`'s doc (baseline-only first seed). */
     editorMatchesDoc?: boolean;
     onActiveChange: (active: ActiveSheet | null) => void;
-    /** Upload sink (project-backed sessions) — used to register a just-created subsheet. */
-    saveBytes?: SaveBytes;
     /** Read-only viewer (read-only-viewer): see `createSheetCollabManager`. */
     readOnly?: boolean;
+    signal?: AbortSignal;
     log: (m: string) => void;
     onStatus: (t: string) => void;
   },
 ): Promise<SheetCollabManager | undefined> {
-  const collabParam = new URLSearchParams(win.location.search).get("collab");
-  const mod = win.Module;
+  // A supplied entry session transfers at function entry, then to the manager
+  // only after its constructor succeeds.
+  let sessionTransferred = false;
+  let manager: SheetCollabManager | undefined;
+  try {
+    const collabParam = new URLSearchParams(win.location.search).get("collab");
+    const mod = win.Module;
 
-  if (!opts.session && (collabParam === "0" || collabParam === "false")) {
-    clog("[sheet] collab disabled (?collab=0) — skipping");
-    return undefined;
-  }
-  if (typeof mod?.kicadCollabSnapshotItems !== "function") {
-    cwarn(
-      "[sheet] BRIDGE NOT PRESENT: Module.kicadCollabSnapshotItems is",
-      typeof mod?.kicadCollabSnapshotItems,
-      "— the loaded eeschema.wasm predates the items+sheet bridge (subschema Phase 0). Rebuild + `npm run setup:kicad` and restart the dev server.",
-    );
-    return undefined;
-  }
-
-  const manager = createSheetCollabManager({
-    mod,
-    win: win as unknown as KicadItemsWindow,
-    scopeId: opts.scopeId,
-    projectId: opts.projectId,
-    provider: yjsProviderConfig(),
-    seedDocForPath: (sheet) => seedDocFromMemfs(win, opts.slug, sheet),
-    onActiveChange: opts.onActiveChange,
-    // Parked rooms carry a skeleton presence ("this user is on sheet X") so
-    // any sheet's roster shows the whole schematic's crew (0003). Read-only
-    // viewers publish none (invisible observer) — skeletons are broadcasts.
-    presenceUser: opts.readOnly ? undefined : presenceUser(),
-    readOnly: opts.readOnly,
-    log: opts.log,
-    initial:
-      opts.session && opts.targetPath
-        ? {
-            sheetPath: opts.targetPath,
-            session: opts.session,
-            editorMatchesDoc: !!opts.editorMatchesDoc,
-          }
-        : undefined,
-  });
-
-  const sheetPaths = opts.files
-    .filter((f) => f.path.endsWith(".kicad_sch"))
-    .map((f) => f.path);
-
-  // C++ navigation → rebind the active room to the now-shown sheet.
-  registerSheetChangedHook(win as unknown as SheetChangedWindow, (abs) => {
-    const rel = relativeProjectPath(opts.slug, abs);
-    if (rel) void manager.switchTo(rel);
-  });
-
-  // C++ sheet creation ("Add Sheet") → the child .kicad_sch was just written to MEMFS by
-  // the hook; register it with the backend + warm its room, so a subsheet placed but never
-  // entered or saved still persists (the file-list snapshot can't contain it).
-  registerSheetCreatedHook(win as unknown as SheetCreatedWindow, (abs) => {
-    const rel = relativeProjectPath(opts.slug, abs);
-    if (rel && rel.endsWith(".kicad_sch")) {
-      persistCreatedSheet(win, opts.slug, rel, opts.saveBytes, manager, opts.log);
+    if (!opts.session && (collabParam === "0" || collabParam === "false")) {
+      clog("[sheet] collab disabled (?collab=0) — skipping");
+      return undefined;
     }
-  });
+    if (typeof mod?.kicadCollabSnapshotItems !== "function") {
+      cwarn(
+        "[sheet] BRIDGE NOT PRESENT: Module.kicadCollabSnapshotItems is",
+        typeof mod?.kicadCollabSnapshotItems,
+        "— the loaded eeschema.wasm predates the items+sheet bridge (subschema Phase 0). Rebuild + `npm run setup:kicad` and restart the dev server.",
+      );
+      return undefined;
+    }
 
-  // Warm every schematic file in the project so later sheet switches are instant.
-  void manager.connectAll(sheetPaths);
+    const startedManager = createSheetCollabManager({
+      mod,
+      win: win as unknown as KicadItemsWindow,
+      scopeId: opts.scopeId,
+      projectId: opts.projectId,
+      provider: yjsProviderConfig(),
+      signal: opts.signal,
+      seedDocForPath: (sheet) => seedDocFromMemfs(win, opts.slug, sheet),
+      onActiveChange: opts.onActiveChange,
+      // Parked rooms carry a skeleton presence ("this user is on sheet X") so
+      // any sheet's roster shows the whole schematic's crew (0003). Read-only
+      // viewers publish none (invisible observer) — skeletons are broadcasts.
+      presenceUser: opts.readOnly ? undefined : presenceUser(),
+      readOnly: opts.readOnly,
+      log: opts.log,
+      initial:
+        opts.session && opts.targetPath
+          ? {
+              sheetPath: opts.targetPath,
+              session: opts.session,
+              editorMatchesDoc: !!opts.editorMatchesDoc,
+            }
+          : undefined,
+    });
+    manager = startedManager;
+    sessionTransferred = !!(opts.session && opts.targetPath);
 
-  if (opts.targetPath) await manager.switchTo(opts.targetPath);
-  opts.log(`[sheet] multi-room collab active (${sheetPaths.length} sheet(s) warmed)`);
-  opts.onStatus("Collab: connected");
-  return manager;
+    const sheetPaths = opts.files
+      .filter((f) => f.path.endsWith(".kicad_sch"))
+      .map((f) => f.path);
+
+    // C++ navigation → rebind the active room to the now-shown sheet.
+    registerSheetChangedHook(win as unknown as SheetChangedWindow, (abs) => {
+      const rel = relativeProjectPath(opts.slug, abs);
+      if (rel) {
+        void startedManager.switchTo(rel).catch((err) => {
+          opts.log(`[sheet] switch to ${rel} stopped: ${String(err)}`);
+        });
+      }
+    });
+
+    // C++ sheet creation ("Add Sheet") → the child .kicad_sch was just written to MEMFS by
+    // the hook; register it with the backend + warm its room, so a subsheet placed but never
+    // entered or saved still persists (the file-list snapshot can't contain it).
+    registerSheetCreatedHook(win as unknown as SheetCreatedWindow, (abs) => {
+      const rel = relativeProjectPath(opts.slug, abs);
+      if (rel && rel.endsWith(".kicad_sch")) {
+        persistCreatedSheet(win, abs, rel, startedManager);
+      }
+    });
+
+    // Warm every schematic file in the project so later sheet switches are instant.
+    void startedManager.connectAll(sheetPaths);
+
+    if (opts.targetPath) await startedManager.switchTo(opts.targetPath);
+    opts.log(`[sheet] multi-room collab active (${sheetPaths.length} sheet(s) warmed)`);
+    opts.onStatus("Collab: connected");
+    return startedManager;
+  } catch (err) {
+    // Once constructed, the manager owns the initial session and every warm
+    // room. A failed initial bind must not leave any of them behind.
+    manager?.destroy();
+    throw err;
+  } finally {
+    if (opts.session && !sessionTransferred) {
+      destroyKicadDocSession(opts.session);
+    }
+  }
 }
 
 /**
@@ -822,23 +892,19 @@ async function startSheetCollab(
  */
 function persistCreatedSheet(
   win: ToolWindow,
-  slug: string,
+  absPath: string,
   relPath: string,
-  saveBytes: SaveBytes | undefined,
   manager: SheetCollabManager,
-  log: (m: string) => void,
 ): void {
-  void manager.onboard(relPath);
-  if (!saveBytes) return;
-  try {
-    const bytes = win.FS?.readFile(memfsFilePath(slug, relPath));
-    if (!(bytes instanceof Uint8Array)) return;
-    void saveBytes(relPath, bytes)
-      .then(() => log(`[sheet] registered created subsheet ${relPath} (${bytes.length} bytes)`))
-      .catch((err) => cwarn(`[sheet] upload of created subsheet ${relPath} failed`, err));
-  } catch (err) {
-    cwarn(`[sheet] read of created subsheet ${relPath} failed`, err);
-  }
+  // Sheet creation is a save event, not a second persistence channel. Route it
+  // through the installed hook so it shares the file's snapshot lane, CAS base
+  // revision, cancellation lifetime and durable failure block with Ctrl+S.
+  // The hook reads the already-written bytes from MEMFS and its `onSaved`
+  // callback onboards the room before persistence. The fallback keeps the room
+  // usable on an older host which did not install a save hook.
+  const onSave = (win as SaveHookWindow).kicadCollab?.onSave;
+  if (onSave) onSave(absPath);
+  else void manager.onboard(relPath);
 }
 
 /**
@@ -997,6 +1063,10 @@ export function WasmTool({
   // equivalent lives inside sheetManagerRef.
   const collabHandleRef = React.useRef<KicadCollabHandle | null>(null);
   const [status, setStatus] = React.useState("Loading tool…");
+  // A conflict or ambiguous transport result poisons that file's write
+  // ancestry for this editor lifetime. Keep this separate from the transient
+  // status toast so later activity cannot hide the recovery instructions.
+  const [saveBlocks, setSaveBlocks] = React.useState<SaveBlock[]>([]);
   const [logs, setLogs] = React.useState<string[]>([]);
   const [showLog, setShowLog] = React.useState(false);
   const [oomExhausted, setOomExhausted] = React.useState(false);
@@ -1008,6 +1078,10 @@ export function WasmTool({
   // Editor lifecycle for the loading chrome: false until the tool has booted +
   // opened (covers the big WASM-compile freeze with a full-screen overlay).
   const [ready, setReady] = React.useState(false);
+  // An owned open remains pending while KiCad waits for a modal answer. Keep
+  // lifecycle readiness false, but uncover the native UI so the user can
+  // answer it; owner-gated initialization still waits for the exact tail.
+  const [openInputDialog, setOpenInputDialog] = React.useState(false);
   // Download progress for the (large) wasm, and a "this is taking too long" flag
   // the overlay raises after a while so a stuck load doesn't read as a silent hang.
   const [progress, setProgress] = React.useState<{
@@ -1089,8 +1163,13 @@ export function WasmTool({
   const theme = useThemeValue();
   React.useEffect(() => {
     if (!ready) return;
-    const mod = (window as { Module?: { kicadSetColorTheme?: (name: string) => void } }).Module;
-    mod?.kicadSetColorTheme?.(theme === "dark" ? "pcbjam-dark" : "_builtin_default");
+    const mod = (
+      window as { Module?: { kicadSetColorTheme?: (name: string) => Promise<void> } }
+    ).Module;
+    if (!mod?.kicadSetColorTheme) return;
+    observeOwnerJob("set color theme", () =>
+      mod.kicadSetColorTheme!(theme === "dark" ? "pcbjam-dark" : "_builtin_default"),
+    );
   }, [theme, ready]);
   // Dev-time presence style tuner (VITE_PRESENCE_TUNER=1) — set once the wasm
   // exposes the style bridge, mounts the floating panel.
@@ -1347,8 +1426,61 @@ export function WasmTool({
 
     // Fresh mount (or StrictMode re-run): re-arm the deferred starters.
     disposedRef.current = false;
+    // Exact generation for browser work started by this effect. The ref is the
+    // broad component-lifetime guard; this local token also stays false if a
+    // future implementation permits another boot generation on one instance.
+    let projectSourceCurrent = true;
 
     const win = window as ToolWindow;
+    let activeCanvasGeneration = 0;
+    let remoteSnapshot = JSON.stringify({ peers: [] });
+    let remoteProjection:
+      | ReturnType<typeof createLatestOwnerProjection<string>>
+      | undefined;
+    let pinSnapshot = JSON.stringify({ pins: [] });
+    let pinProjection:
+      | ReturnType<typeof createLatestOwnerProjection<string>>
+      | undefined;
+    const ensureRemoteProjection = () => {
+      if (remoteProjection) return remoteProjection;
+      const setRemote = win.Module?.kicadCollabSetRemote as
+        | GuardedOwnerExport<readonly [string], void>
+        | undefined;
+      if (!setRemote) return undefined;
+      remoteProjection = createLatestOwnerProjection({
+        label: "project remote presence",
+        snapshot: () => remoteSnapshot,
+        submit: (json, isCurrent) =>
+          runGuardedOwnerExport(setRemote, [json] as const, isCurrent),
+        report: append,
+      });
+      return remoteProjection;
+    };
+    const projectRemote = async (json: string, isCurrent: () => boolean) => {
+      if (!isCurrent()) return;
+      remoteSnapshot = json;
+      ensureRemoteProjection()?.request();
+    };
+    const ensurePinProjection = () => {
+      if (pinProjection) return pinProjection;
+      const setPins = win.Module?.kicadCollabSetPins as
+        | GuardedOwnerExport<readonly [string], void>
+        | undefined;
+      if (!setPins) return undefined;
+      pinProjection = createLatestOwnerProjection({
+        label: "project comment pins",
+        snapshot: () => pinSnapshot,
+        submit: (json, isCurrent) =>
+          runGuardedOwnerExport(setPins, [json] as const, isCurrent),
+        report: append,
+      });
+      return pinProjection;
+    };
+    const projectPins = async (json: string, isCurrent: () => boolean) => {
+      if (!isCurrent()) return;
+      pinSnapshot = json;
+      ensurePinProjection()?.request();
+    };
 
     // OOM recovery (feature 0002): watch for soft aborts + a stale hard-kill
     // sentinel, respawning a fresh tab (capped). If the chain is already
@@ -1370,6 +1502,7 @@ export function WasmTool({
       sheetPath?: string,
       doc?: import("yjs").Doc,
     ) => {
+      const generation = ++activeCanvasGeneration;
       // Invisible observer (read-only-viewer): never bind presence — no roster,
       // no cursor/selection emit, no awareness state (peers stays empty).
       if (readOnly) return;
@@ -1383,6 +1516,8 @@ export function WasmTool({
       const awareness = provider?.awareness;
       if (!awareness) {
         setPeers([]);
+        remoteSnapshot = JSON.stringify({ peers: [] });
+        ensureRemoteProjection()?.request();
         return;
       }
       const presence = createPresence({
@@ -1407,18 +1542,26 @@ export function WasmTool({
         if (fitFn) {
           const follow = createFollow({
             presence,
-            fit: (cx, cy, halfW, halfH) => fitFn.call(win.Module, cx, cy, halfW, halfH),
+            // Keep the scheduler wrapper object itself. Function.bind() would
+            // drop its __wxGuardedCall admission hook and reduce this to an
+            // enqueue-time check instead of an exact owner-admission check.
+            fit: fitFn as GuardedOwnerExport<
+              readonly [number, number, number, number],
+              void
+            >,
             ownSheetPath: () => sheetPath,
           });
           follow.subscribe(setFollowingTarget);
           followRef.current = follow;
         }
-        presenceBridgeRef.current = bindKicadPresence({
+        const binding = bindKicadPresence({
           mod: win.Module,
           win: win as unknown as PresenceKicadWindow,
           presence,
           // Cross-app selection (0006): the project presence room, if joined.
           crossApp: crossAppRef.current ?? undefined,
+          isCurrent: () => activeCanvasGeneration === generation,
+          projectRemote,
           // Live world↔screen transform for the DOM comment layer (0005) +
           // the follow controller's echo/break detection (0008).
           onViewport: (vp) => {
@@ -1426,6 +1569,8 @@ export function WasmTool({
             followRef.current?.noteLocalViewport(vp);
           },
         });
+        presenceBridgeRef.current = binding;
+        observeOwnerJob("initialize canvas presence", () => binding.ready, append);
       }
     };
 
@@ -1433,6 +1578,7 @@ export function WasmTool({
     // GAL pin dots + the DOM layer's thread data. Follows the same lifecycle as
     // presence — eeschema rebinds per active sheet.
     const startComments = (doc: import("yjs").Doc | undefined) => {
+      const generation = activeCanvasGeneration;
       // Comments are hidden entirely for read-only viewers (read-only-viewer):
       // no pins, no panel, no thread reads — commentsCtl stays null.
       if (readOnly) return;
@@ -1440,6 +1586,8 @@ export function WasmTool({
       commentsRef.current = null;
       setCommentsCtl(null);
       if (!doc || (tool !== "pcbnew" && tool !== "eeschema") || !hasCommentsBridge(win.Module)) {
+        pinSnapshot = JSON.stringify({ pins: [] });
+        ensurePinProjection()?.request();
         return;
       }
       const ctl = createComments({
@@ -1450,6 +1598,8 @@ export function WasmTool({
         // Author colors follow the live nth-in-room assignment when the
         // author is present; offline authors fall back to the name hash.
         colorFor: (id) => presenceRef.current?.colorOf(id),
+        isCurrent: () => activeCanvasGeneration === generation,
+        projectPins,
       });
       commentsRef.current = ctl;
       setCommentsCtl(ctl);
@@ -1460,12 +1610,25 @@ export function WasmTool({
         setTunerMod(win.Module);
       }
       // Seed the transform (pushes only happen on input events after this).
-      try {
-        const vp = JSON.parse(win.Module.kicadCollabGetViewport() || "null");
-        if (vp && vp.w > 0) setViewportState(vp);
-      } catch {
-        /* frame not up yet — the first input push seeds it */
-      }
+      observeOwnerJob(
+        "read initial comment viewport",
+        async () => {
+          try {
+            const getViewport = win.Module.kicadCollabGetViewport as GuardedOwnerExport<
+              readonly [],
+              string
+            >;
+            const json = await runGuardedOwnerExport(getViewport, [] as const, () =>
+              commentsRef.current === ctl && activeCanvasGeneration === generation,
+            );
+            const vp = JSON.parse(json || "null");
+            if (commentsRef.current === ctl && vp && vp.w > 0) setViewportState(vp);
+          } catch (error) {
+            if (!isStaleOwnerJobError(error)) throw error;
+          }
+        },
+        append,
+      );
     };
 
     // Cmd/Ctrl+S belongs to the editor: preventDefault suppresses ONLY the
@@ -1491,12 +1654,14 @@ export function WasmTool({
     };
     win.addEventListener("keydown", chromeHotkey, true);
 
-    // The background lib pre-sync outlives the boot IIFE (it keeps warming IDB
-    // long after the editor is interactive), so unmount has to be able to stop
-    // it: `presync` checks this signal between libs. Declared out here — the
-    // cleanup below closes over it — and never rejected, so aborting mid-sync
-    // leaks nothing and throws nothing.
-    const presyncAbort = new AbortController();
+    // Exact lifetime for every asynchronous resource created by this boot.
+    // Library pre-sync checks it between libs; collab room handshakes observe it
+    // directly so an unmount cannot strand a reconnecting hidden provider.
+    const bootAbort = new AbortController();
+    // A docSource=ydoc room exists before there is an editor binding. Keep one
+    // explicit owner for that gap; attachment performs the only release.
+    const docSessionOwner = createKicadDocSessionOwner();
+    let saveHook: ReturnType<typeof registerSaveHook> | undefined;
     // The libs source THIS boot created (vs. one injected via props, which the
     // caller owns) — cleanup disposes it so its SyncStack sockets don't outlive
     // the editor.
@@ -1569,9 +1734,9 @@ export function WasmTool({
           return source
             .presync({
               kind: libKind,
-              signal: presyncAbort.signal,
+              signal: bootAbort.signal,
               onProgress: ({ done, total }) => {
-                if (presyncAbort.signal.aborted) return;
+                if (bootAbort.signal.aborted) return;
                 setLibSync(done >= total ? null : { kind: libKind, done, total });
               },
             })
@@ -1584,10 +1749,10 @@ export function WasmTool({
         const presyncSettled = startLibPresync();
         void presyncSettled.then(() => append(mark("presync:settled")));
         // Lib editors (fileless): their frame eagerly enumerates EVERY lib of
-        // its kind at boot, one mutex-serialized bridge crossing at a time
-        // (g_pcbjamProxyMutex in the plugins) — a cold lib would network-fetch
-        // inside its serial crossing. Hold enumerates until the 8-wide presync
-        // settles so the crossings read warm IDB. pcbnew/eeschema are NOT
+        // its kind at boot. Provider fetches can overlap, so hold enumerates
+        // until the deliberately 8-wide presync settles; the demand burst then
+        // reads warm IDB instead of starting an unbounded cold-fetch burst.
+        // pcbnew/eeschema are NOT
         // gated: their choosers open on demand, and a mid-session park with no
         // overlay would read as a hang.
         const enumerateGate =
@@ -1618,14 +1783,22 @@ export function WasmTool({
           }
           try {
             await identityReady;
-            return await maybeConnectDocSession(win, {
+            const result = await maybeConnectDocSession(win, {
               docSource,
               tool,
               scopeId,
               projectId,
               targetPath,
+              signal: bootAbort.signal,
               log: append,
             });
+            if (result.session && !docSessionOwner.adopt(result.session)) {
+              throw (
+                bootAbort.signal.reason ??
+                new DOMException("The editor boot no longer owns the document", "AbortError")
+              );
+            }
+            return result;
           } catch (error) {
             return { error };
           }
@@ -1650,6 +1823,7 @@ export function WasmTool({
                     provider: yjsProviderConfig(),
                     user: presenceUser(),
                     tool,
+                    signal: bootAbort.signal,
                     // Announce the open document (the active sheet for
                     // eeschema, re-published on navigation below) — peers'
                     // sibling-restage scopes its sockets to announced files.
@@ -1666,7 +1840,7 @@ export function WasmTool({
         // only tears down what reached crossAppRef.
         void crossAppReady.then((h) => {
           if (!h) return;
-          if (presyncAbort.signal.aborted) h.destroy(); // unmounted mid-connect
+          if (bootAbort.signal.aborted) h.destroy(); // unmounted mid-connect
           else crossAppRef.current = h;
         });
         await bootKicadTool({
@@ -1702,11 +1876,18 @@ export function WasmTool({
         // Read-only sessions register neither upload nor the save-driven room
         // writers (onSaved onboarding, onSavedText layout sync) — saves, were
         // any reachable past the wasm lock, stay MEMFS-only.
-        registerSaveHook(win, {
+        if (bootAbort.signal.aborted) return;
+        saveHook = registerSaveHook(win, {
           slug,
           saveBytes: readOnly ? undefined : saveBytes,
           log: append,
           onStatus: setStatus,
+          onBlocked: (block) => {
+            setSaveBlocks((current) => [
+              ...current.filter((candidate) => candidate.relPath !== block.relPath),
+              block,
+            ]);
+          },
           ...(readOnly
             ? {}
             : {
@@ -1750,8 +1931,10 @@ export function WasmTool({
               ? (relPath) =>
                   relPath === targetPath ? Promise.resolve(targetBytes) : fetchBytes(relPath)
               : fetchBytes,
+          isCurrent: () => projectSourceCurrent && !disposedRef.current,
           log: append,
           onStatus: setStatus,
+          onOpenInputDialog: setOpenInputDialog,
           onFileProgress: (done, total) =>
             setFileSync(done >= total ? null : { done, total }),
         });
@@ -1763,11 +1946,11 @@ export function WasmTool({
         // they proceed (saves are already MEMFS-only above).
         if (readOnly) {
           const setRo = (
-            win.Module as { kicadSetReadOnly?: (v: boolean) => boolean } | undefined
+            win.Module as { kicadSetReadOnly?: (v: boolean) => Promise<boolean> } | undefined
           )?.kicadSetReadOnly;
           if (typeof setRo === "function") {
             const t0 = Date.now();
-            while (setRo(true) !== true) {
+            while ((await setRo(true)) !== true) {
               if (Date.now() - t0 > 30_000) {
                 throw new Error("read-only lock did not apply");
               }
@@ -1780,11 +1963,10 @@ export function WasmTool({
             );
           }
         }
-        // Everything below drives BARE embind entries that walk the loaded
-        // model (collab snapshot/adopt, presence bind, drift). Deferred until
-        // the open chain settled (openResult) — calling them while the
-        // kicadOpenFile Asyncify chain is still parked mid-load walks a
-        // half-built model and traps ("indirect call signature mismatch").
+        // Everything below submits owner-gated entries that walk the loaded
+        // model (collab snapshot/adopt, presence bind, drift). Waiting for the
+        // open result preserves the document-generation handoff as well as
+        // avoiding needless queueing behind the open owner.
         const attachCollabAndPresence = async () => {
         // Drift detection: while a sheet is collaboratively edited, periodically (every N
         // edits + at session end) compare the WASM serialization to the Y.Doc and report
@@ -1803,6 +1985,17 @@ export function WasmTool({
         (win as { __pcbjamCrossApp?: CrossAppHandle | null }).__pcbjamCrossApp =
           crossAppRef.current;
 
+        // From this line onward the attach function (single room) or sheet
+        // manager owns the raw session. If the boot was retired while the file
+        // opened, release fails and the already-destroyed session is never used.
+        const attachedSession = session ? docSessionOwner.release(session) : undefined;
+        if (session && !attachedSession) {
+          throw (
+            bootAbort.signal.reason ??
+            new DOMException("The editor boot no longer owns the document", "AbortError")
+          );
+        }
+
         if (tool === "eeschema") {
           // Multi-room (subschema) collab: every .kicad_sch is its own warm room; the
           // active sheet is bound, navigation re-routes it (C++ onSheetChanged hook).
@@ -1813,10 +2006,10 @@ export function WasmTool({
               projectId,
               targetPath,
               files,
-              session,
-              saveBytes: readOnly ? undefined : saveBytes,
+              session: attachedSession,
               editorMatchesDoc: !!targetBytes,
               readOnly,
+              signal: bootAbort.signal,
               // Re-point drift detection + presence at whichever sheet is bound.
               onActiveChange: (activeRoom) => {
                 driftRef.current?.stop();
@@ -1849,9 +2042,10 @@ export function WasmTool({
             scopeId,
             projectId,
             targetPath,
-            collabSession: session,
+            collabSession: attachedSession,
             editorMatchesDoc: !!targetBytes,
             readOnly,
+            signal: bootAbort.signal,
             log: append,
             onStatus: setStatus,
           });
@@ -1890,6 +2084,7 @@ export function WasmTool({
                 // (provider "none" / connect failed) ⇒ eager fallback.
                 presence: crossAppRef.current ?? undefined,
                 provider: yjsProviderConfig(),
+                signal: bootAbort.signal,
                 log: append,
               }).then((handle) => {
                 if (disposedRef.current) {
@@ -1926,11 +2121,15 @@ export function WasmTool({
           // The load never settled (or a legacy-wasm open timed out): entering
           // the wasm now would race the parked open chain. Boot on without
           // collab/presence — the board stays viewable, saves still route.
+          docSessionOwner.destroy();
           append("[collab] file open never settled — collab/presence disabled for this session");
         } else {
           try {
             await attachCollabAndPresence();
           } catch (err) {
+            // No-op after a successful release. Before release (for example a
+            // failed import/cross-app settle), this closes the raw room now.
+            docSessionOwner.destroy();
             // Version-skew refusal must still surface as the boot error.
             if ((err as { name?: string } | undefined)?.name === "SexprVersionError") throw err;
             // Degrade, don't die: a residual wasm trap here (reentrancy during
@@ -1944,7 +2143,7 @@ export function WasmTool({
         // reach this session live (lib-update toast); everything else syncs
         // on the next load. Fire-and-forget: boot never waits on sockets.
         if (targetPath && source?.enableRealtime) {
-          const staged = readStagedFile(win, slug, targetPath);
+          const staged = await readStagedFileAsOwner(win, slug, targetPath);
           const nicks = staged
             ? usedLibNicknames(new TextDecoder().decode(staged))
             : [];
@@ -1973,6 +2172,10 @@ export function WasmTool({
         setStatus("");
         setReady(true);
       } catch (err) {
+        if (bootAbort.signal.aborted) return;
+        // Covers boot/open failures before the attachment block. A session
+        // which resolves after this point sees a closed owner and self-retires.
+        docSessionOwner.destroy();
         append(`[fatal] ${String(err)}`);
         append(dumpTrace());
         setStatus(`Error: ${String(err)}`);
@@ -1983,6 +2186,7 @@ export function WasmTool({
     return () => {
       // Deferred starters (the sibling-restage idle stagger) check this
       // before creating anything after unmount.
+      projectSourceCurrent = false;
       disposedRef.current = true;
       // A consent dialog pending at unmount resolves false — the boot IIFE
       // bails without ever starting the download.
@@ -1991,7 +2195,10 @@ export function WasmTool({
       // Stop the background lib warm-up: presync checks the signal between libs,
       // so in-flight bundle fetches finish (their IDB writes are still useful for
       // the next mount) and no further ones start.
-      presyncAbort.abort();
+      bootAbort.abort(new DOMException("The editor boot was unmounted", "AbortError"));
+      docSessionOwner.destroy();
+      saveHook?.stop();
+      saveHook = undefined;
       win.removeEventListener("keydown", swallowBrowserSave, true);
       win.removeEventListener("keydown", chromeHotkey, true);
       commentsRef.current?.destroy();
@@ -2018,6 +2225,10 @@ export function WasmTool({
       collabHandleRef.current?.destroy();
       collabHandleRef.current = null;
       collabDocRef.current = null;
+      remoteProjection?.stop();
+      remoteProjection = undefined;
+      pinProjection?.stop();
+      pinProjection = undefined;
       // Close the lib SyncStacks this boot opened (mirror mux + any dedicated
       // sockets); IDB caches stay. Injected sources belong to the caller.
       ownedLibsSource?.dispose?.();
@@ -2035,42 +2246,28 @@ export function WasmTool({
     [ready],
   );
 
-  // Apply the chrome-visibility state to the wasm frame. A LAYOUT effect with
-  // a synchronous first attempt: `ready` unmounts the opaque boot overlay in
-  // this same commit, and a passive effect would let one frame of full chrome
-  // paint on mobile. appliedRef skips the initial "shown" apply — never
-  // relayout a frame this component never hid.
-  const appliedRef = React.useRef<boolean | null>(null);
+  // Own one latest-intent projection for this Module export. The first layout
+  // effect controls its lifetime; the second submits the current intent before
+  // paint without replacing the controller when that intent changes.
+  const chromeProjectionRef = React.useRef<ChromeVisibilityProjection | null>(null);
   React.useLayoutEffect(() => {
     if (!setChromeFn) return;
-    if (appliedRef.current === effectiveChromeHidden) return;
-    if (appliedRef.current === null && !effectiveChromeHidden) return;
-
-    const apply = () => {
-      try {
-        return setChromeFn(!effectiveChromeHidden) === true;
-      } catch (err) {
-        append(`[chrome] kicadSetChrome failed: ${String(err)}`);
-        return true; // don't retry a throwing binding
+    const projection = createChromeVisibilityProjection({
+      setChrome: setChromeFn,
+      report: append,
+    });
+    chromeProjectionRef.current = projection;
+    return () => {
+      projection.stop();
+      if (chromeProjectionRef.current === projection) {
+        chromeProjectionRef.current = null;
       }
     };
-    if (apply()) {
-      appliedRef.current = effectiveChromeHidden;
-      return;
-    }
-    // The editor frame can lag `ready` (waitForWxUi falls through after 25 s)
-    // — retry briefly rather than dropping the toggle.
-    const t0 = Date.now();
-    const tick = window.setInterval(() => {
-      if (apply()) {
-        appliedRef.current = effectiveChromeHidden;
-        window.clearInterval(tick);
-      } else if (Date.now() - t0 > 30_000) {
-        window.clearInterval(tick);
-      }
-    }, 300);
-    return () => window.clearInterval(tick);
-  }, [setChromeFn, effectiveChromeHidden, append]);
+  }, [setChromeFn, append]);
+
+  React.useLayoutEffect(() => {
+    chromeProjectionRef.current?.setHidden(effectiveChromeHidden);
+  }, [setChromeFn, effectiveChromeHidden]);
 
   return (
     <div className="relative h-screen w-screen overflow-hidden bg-[#1a1a2e]">
@@ -2105,7 +2302,7 @@ export function WasmTool({
 
       {/* Boot overlay — covers the big WASM download/compile freeze until the
           tool has booted + opened. */}
-      {!ready && (
+      {!ready && !openInputDialog && (
         <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-3 bg-[#1a1a2e] text-white">
           {status.startsWith("Error") ? (
             <>
@@ -2218,6 +2415,36 @@ export function WasmTool({
       {ready && status && (
         <div className="pointer-events-none absolute left-3 top-3 z-20 rounded bg-black/70 px-3 py-2 font-mono text-xs text-white">
           {status}
+        </div>
+      )}
+
+      {ready && saveBlocks.length > 0 && (
+        <div
+          data-testid="save-blocked-banner"
+          role="alert"
+          className="absolute bottom-3 left-1/2 z-30 w-[min(42rem,calc(100vw-1.5rem))] -translate-x-1/2 rounded border border-red-300/40 bg-red-950/95 px-4 py-3 text-sm text-white shadow-xl"
+        >
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="font-semibold">Saving is blocked for this editor session.</p>
+              <ul className="mt-1 list-disc pl-5 font-mono text-xs text-red-100">
+                {saveBlocks.map((block) => (
+                  <li key={block.relPath}>{block.message}</li>
+                ))}
+              </ul>
+              <p className="mt-2 text-xs text-red-100/90">
+                Reload the project, merge the remote changes, or save a copy before you
+                continue. More Save commands will not upload these files.
+              </p>
+            </div>
+            <button
+              type="button"
+              className="shrink-0 rounded border border-white/30 px-3 py-1 text-xs font-medium hover:bg-white/10"
+              onClick={() => window.location.reload()}
+            >
+              Reload
+            </button>
+          </div>
         </div>
       )}
 

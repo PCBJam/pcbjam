@@ -2,6 +2,7 @@ import {
   DEMO_SCOPE,
   docToFile,
   isYdocResponse,
+  PROJECT_FILE_REVISION_HEADER,
   type Project,
   type ProjectFile,
   type ProjectWithFiles,
@@ -22,6 +23,7 @@ import {
   type SourceDescriptor,
   deterministicUuid,
 } from "./project-source-shared";
+import { SAVE_COMMITTED, type SaveOutcome } from "../wasm/save-flow";
 
 /**
  * Where the standalone gets its PROJECTS. Every source implements this one
@@ -48,7 +50,14 @@ export interface ProjectSource {
     slug: string,
     relPath: string,
     bytes: Uint8Array,
-  ): Promise<void>;
+    signal?: AbortSignal,
+  ): Promise<SaveOutcome>;
+  /**
+   * Observe one path's latest server revision without downloading its body.
+   * This is diagnostic metadata only: it never rebases the in-memory model or
+   * becomes a legal write precondition. Optional for non-CAS sources.
+   */
+  refreshFileRevision?(slug: string, relPath: string): Promise<void>;
 }
 
 // --- remote (REST backend over the shared contract) ---------------------------
@@ -67,6 +76,41 @@ function remoteProjectSource(): ProjectSource {
     `${API_BASE_URL}/api/scopes/${encodeURIComponent(currentScope())}/projects`;
   const fileUrl = (slug: string, relPath: string) =>
     `${projectsBase()}/${encodeURIComponent(slug)}/files/${encodePath(relPath)}`;
+  // `baseRevisions`: revision whose BODY the current model was built from.
+  // `observedRevisions`: latest metadata seen without necessarily loading it.
+  // Only the base map is a legal write precondition.
+  const baseRevisions = new Map<string, number>();
+  const observedRevisions = new Map<string, number>();
+  const revisionKey = (slug: string, relPath: string) =>
+    `${currentScope()}\u0000${slug}\u0000${relPath}`;
+  const rememberObservedRevision = (
+    slug: string,
+    relPath: string,
+    revision: number | undefined,
+  ): void => {
+    if (revision !== undefined && Number.isSafeInteger(revision) && revision >= 0) {
+      observedRevisions.set(revisionKey(slug, relPath), revision);
+    }
+  };
+  const rememberFiles = (slug: string, files: ProjectFile[]): void => {
+    for (const file of files) {
+      rememberObservedRevision(slug, file.path, file.revision);
+    }
+  };
+  const rememberResponseRevision = (
+    slug: string,
+    relPath: string,
+    response: Response,
+  ): number | undefined => {
+    const text = response.headers.get(PROJECT_FILE_REVISION_HEADER);
+    if (text === null || !/^\d+$/.test(text)) return undefined;
+    const value = Number(text);
+    if (Number.isSafeInteger(value)) {
+      observedRevisions.set(revisionKey(slug, relPath), value);
+      return value;
+    }
+    return undefined;
+  };
   return {
     descriptor: SOURCE_DESCRIPTORS["remote-rw"],
     readOnly: false,
@@ -81,6 +125,7 @@ function remoteProjectSource(): ProjectSource {
       });
       if (res.status === 404) throw new Error("project not found");
       if (res.status !== 200) throw new Error("failed to load project");
+      rememberFiles(slug, res.body.files);
       return res.body;
     },
     async fetchFileBytes(slug, relPath) {
@@ -100,10 +145,22 @@ function remoteProjectSource(): ProjectSource {
         headers: { accept: `${YDOC_CONTENT_TYPE}, */*` },
       });
       if (!res.ok) throw new Error(`download failed (${res.status}): ${relPath}`);
+      const responseRevision = rememberResponseRevision(slug, relPath, res);
       const bytes = new Uint8Array(await res.arrayBuffer());
-      if (!isYdocResponse(res)) return bytes;
+      if (!isYdocResponse(res)) {
+        if (responseRevision !== undefined) {
+          baseRevisions.set(revisionKey(slug, relPath), responseRevision);
+        }
+        return bytes;
+      }
       try {
-        return new TextEncoder().encode(docToFile(ydocUpdateToKicadDoc(bytes)));
+        const materialized = new TextEncoder().encode(
+          docToFile(ydocUpdateToKicadDoc(bytes)),
+        );
+        if (responseRevision !== undefined) {
+          baseRevisions.set(revisionKey(slug, relPath), responseRevision);
+        }
+        return materialized;
       } catch (err) {
         // A ydoc we can't convert must not make the file undownloadable: retry
         // without negotiating and let the backend materialize it as before.
@@ -111,21 +168,121 @@ function remoteProjectSource(): ProjectSource {
         if (!plain.ok) {
           throw new Error(`download failed (${plain.status}): ${relPath} (${String(err)})`);
         }
-        return new Uint8Array(await plain.arrayBuffer());
+        const plainRevision = rememberResponseRevision(slug, relPath, plain);
+        const plainBytes = new Uint8Array(await plain.arrayBuffer());
+        if (plainRevision !== undefined) {
+          baseRevisions.set(revisionKey(slug, relPath), plainRevision);
+        }
+        return plainBytes;
       }
     },
-    async uploadFileBytes(slug, relPath, bytes) {
-      const name = relPath.split("/").pop() ?? relPath;
-      const form = new FormData();
-      // The form FIELD NAME carries the project-relative path (upsert by
-      // (project, path)) — same convention as the management app's folder upload.
-      form.append(relPath, new File([bytes as BlobPart], name));
-      const res = await fetch(`${projectsBase()}/${encodeURIComponent(slug)}/files`, {
-        method: "POST",
-        body: form,
-        credentials: "include",
+    async refreshFileRevision(slug, relPath) {
+      const res = await client.listFiles({
+        params: { scope: currentScope(), project: slug },
       });
-      if (!res.ok) throw new Error(`upload failed (${res.status}): ${relPath}`);
+      if (res.status !== 200) throw new Error("failed to refresh file revision");
+      const file = res.body.find((candidate) => candidate.path === relPath);
+      rememberObservedRevision(slug, relPath, file?.revision);
+    },
+    async uploadFileBytes(slug, relPath, bytes, signal) {
+      const key = revisionKey(slug, relPath);
+      const expectedRevision = baseRevisions.get(key) ?? 0;
+      let res: Response;
+      try {
+        res = await fetch(fileUrl(slug, relPath), {
+          method: "PUT",
+          body: bytes as BodyInit,
+          credentials: "include",
+          signal,
+          headers: {
+            "content-type": "application/octet-stream",
+            [PROJECT_FILE_REVISION_HEADER]: String(expectedRevision),
+          },
+        });
+      } catch {
+        // Even an AbortError can arrive after the server published the CAS but
+        // before this client received its acknowledgement. Hook retirement
+        // ignores the result; a live caller must treat it as ambiguous.
+        return {
+          kind: "unknown",
+          message: `Save state unknown: ${relPath} — reload or save a copy`,
+        };
+      }
+      const responseRevision = rememberResponseRevision(slug, relPath, res);
+      if (res.status === 409) {
+        const conflict = (await res.json().catch(() => null)) as {
+          current?: ProjectFile | null;
+        } | null;
+        rememberObservedRevision(slug, relPath, conflict?.current?.revision);
+        const headerText = res.headers.get(PROJECT_FILE_REVISION_HEADER);
+        const headerRevision =
+          headerText !== null && /^\d+$/.test(headerText)
+            ? Number(headerText)
+            : NaN;
+        const currentRevision =
+          conflict?.current?.revision ??
+          (Number.isSafeInteger(headerRevision) && headerRevision >= 0
+            ? headerRevision
+            : 0);
+        return {
+          kind: "conflict",
+          message: `Save conflict: ${relPath} (local base ${expectedRevision}, server ${currentRevision}) — reload or merge, or save a copy`,
+        };
+      }
+      if (!res.ok) {
+        // These answers are produced before body publication. A generic 5xx
+        // can happen after publication but before the response is encoded, so
+        // its commit state is unknown and the hook must block the path.
+        const prePublish = new Set([400, 401, 403, 404, 413, 415, 428]);
+        return prePublish.has(res.status)
+          ? {
+              kind: "not-committed",
+              message: `Save failed (${res.status}): ${relPath}`,
+            }
+          : {
+              kind: "unknown",
+              message: `Save state unknown (${res.status}): ${relPath} — reload or save a copy`,
+            };
+      }
+      let savedRevision: number | undefined;
+      try {
+        const saved = (await res.json()) as Partial<ProjectFile>;
+        if (
+          Number.isSafeInteger(saved.revision) &&
+          (saved.revision as number) >= 0
+        ) {
+          savedRevision = saved.revision;
+          rememberObservedRevision(slug, relPath, savedRevision);
+        }
+      } catch {
+        // A conforming response also carries the revision header, so malformed
+        // JSON need not make an otherwise acknowledged commit ambiguous.
+      }
+      if (
+        savedRevision !== undefined &&
+        responseRevision !== undefined &&
+        savedRevision !== responseRevision
+      ) {
+        return {
+          kind: "unknown",
+          message: `Save returned inconsistent revisions for ${relPath} — reload or save a copy`,
+        };
+      }
+      const committedRevision = savedRevision ?? responseRevision;
+      if (committedRevision === undefined) {
+        return {
+          kind: "unknown",
+          message: `Save committed without a revision: ${relPath} — reload or save a copy`,
+        };
+      }
+      if (committedRevision <= expectedRevision) {
+        return {
+          kind: "unknown",
+          message: `Save returned a non-advancing revision for ${relPath} — reload or save a copy`,
+        };
+      }
+      baseRevisions.set(key, committedRevision);
+      return SAVE_COMMITTED;
     },
   };
 }
@@ -247,9 +404,13 @@ function compositeProjectSource(
     },
     getProject: (slug) => route(slug).then((s) => s.getProject(slug)),
     fetchFileBytes: (slug, p) => route(slug).then((s) => s.fetchFileBytes(slug, p)),
-    uploadFileBytes: async (slug, p, bytes) => {
+    refreshFileRevision: async (slug, p) => {
+      const source = await route(slug);
+      await source.refreshFileRevision?.(slug, p);
+    },
+    uploadFileBytes: async (slug, p, bytes, signal) => {
       const s = await route(slug);
-      if (s.uploadFileBytes) return s.uploadFileBytes(slug, p, bytes);
+      if (s.uploadFileBytes) return s.uploadFileBytes(slug, p, bytes, signal);
       // Read-only gallery project being edited → download (api.ts also guards).
       throw new ReadOnlyProjectError(slug);
     },

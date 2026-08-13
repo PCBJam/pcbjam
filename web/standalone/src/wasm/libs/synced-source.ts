@@ -21,6 +21,46 @@ import {
   type LibsSource,
   type LibsSyncState,
 } from "./source";
+import {
+  isRetryableOwnerBackpressure,
+  isStaleOwnerJobError,
+  isTerminalOwnerJobError,
+  runGuardedOwnerExport,
+  type GuardedOwnerExport,
+} from "../owner-job";
+
+interface LibsEditorModule {
+  kicadLibsReload?(kind: string, nickname: string): Promise<void>;
+  kicadLibsSymbolUsage?(lib: string, name: string): Promise<number>;
+}
+
+interface ReloadLane {
+  info: LibInfo;
+  generation: number;
+  /** Exact pending names, until `namesOverflowed` becomes whole-kind dirty. */
+  names: Set<string>;
+  namesOverflowed: boolean;
+  /** A quiet or max-latency timer fired; the pending level may now drain. */
+  ready: boolean;
+  running: boolean;
+  debounce?: ReturnType<typeof setTimeout>;
+  maxLatency?: ReturnType<typeof setTimeout>;
+  retry?: ReturnType<typeof setTimeout>;
+  backpressureReported: boolean;
+  paused: boolean;
+}
+
+const RELOAD_DEBOUNCE_MS = 400;
+const RELOAD_MAX_LATENCY_MS = 2_000;
+const RELOAD_BACKPRESSURE_RETRY_MS = 1_000;
+/**
+ * A reload always invalidates the entire kind/library. Names are retained only
+ * for the optional placed-symbol notification. Keep that diagnostic side data
+ * finite under an untrusted realtime name flood. Crossing this limit changes
+ * the lane to `namesOverflowed` (whole-kind dirty) and discards the partial
+ * list; a partial list must never be presented as every changed item.
+ */
+export const RELOAD_CHANGED_NAMES_MAX = 64;
 
 /**
  * A one-lib `LibsSource` backed by the r2-idb-sync bridge
@@ -64,17 +104,22 @@ export function syncedLibsSource(
 ): LibsSource {
   const log = opts.log ?? (() => {});
   let opened: Promise<{ stack: SyncStack; info: LibInfo }> | null = null;
+  // Identifies the current open lifetime. A source can be disposed while its
+  // stack is still resolving/opening; that old async result must close itself
+  // instead of installing a subscription into the next lifetime.
+  let openGeneration = 0;
 
-  // Paths with a local save in flight: the stack echoes our own push as a
-  // change event, but the plugin already invalidated its cache on save — a
-  // reload would just re-fat-load the lib for nothing (and race the save flow).
-  const selfPushed = new Set<string>();
-  // Trailing per-kind debounce: a burst of remote changes (a peer saving
-  // several items, a reconnect resync diff) becomes ONE reload per kind.
-  const reloadTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  // Item names accumulated per kind while the debounce runs — drives the
-  // post-reload "is this symbol placed here?" check + the update event.
-  const pendingNames = new Map<string, Set<string>>();
+  // One active owner ticket and one accumulated pending level per item kind.
+  // The pending set is a bounded LEVEL signal, not one job per WebSocket
+  // message. The quiet and max-latency timers are two triggers for that same
+  // level, so sustained traffic cannot postpone its owner ticket forever.
+  const reloadLanes = new Map<string, ReloadLane>();
+  // A terminal owner failure retires native reload work for exactly the Wasm
+  // Module that failed. Realtime synchronization remains useful: remote data
+  // can continue to update IDB, but no later WebSocket message may resurrect a
+  // ticket storm against an owner whose native integrity is lost. Replacing
+  // Module starts a new native lifetime and permits a fresh lane.
+  let terminalReloadModule: LibsEditorModule | undefined;
 
   /**
    * A REMOTE change landed in the stack (IDB is already fresh). Tell the
@@ -86,68 +131,254 @@ export function syncedLibsSource(
    * (`kicadLibsSymbolUsage`) and announced via LIB_ITEM_UPDATED_EVENT so the
    * chrome can warn when a PLACED symbol changed under the user.
    */
+  const laneIsCurrent = (kind: string, lane: ReloadLane): boolean =>
+    lane.generation === openGeneration && reloadLanes.get(kind) === lane;
+
+  const laneHasPending = (lane: ReloadLane): boolean =>
+    lane.namesOverflowed || lane.names.size > 0;
+
+  const clearSettleTimers = (lane: ReloadLane): void => {
+    if (lane.debounce) clearTimeout(lane.debounce);
+    if (lane.maxLatency) clearTimeout(lane.maxLatency);
+    lane.debounce = undefined;
+    lane.maxLatency = undefined;
+  };
+
+  const retireTerminalReloadModule = (
+    mod: LibsEditorModule | undefined,
+  ): void => {
+    terminalReloadModule = mod;
+    for (const lane of reloadLanes.values()) {
+      clearSettleTimers(lane);
+      if (lane.retry) clearTimeout(lane.retry);
+      lane.retry = undefined;
+      lane.names.clear();
+      lane.namesOverflowed = false;
+      lane.ready = false;
+      lane.paused = true;
+    }
+    reloadLanes.clear();
+  };
+
+  /** Add an exact name, or collapse to the bounded whole-kind representation. */
+  const addPendingName = (lane: ReloadLane, name: string): void => {
+    if (lane.namesOverflowed || lane.names.has(name)) return;
+    if (lane.names.size >= RELOAD_CHANGED_NAMES_MAX) {
+      lane.names.clear();
+      lane.namesOverflowed = true;
+      return;
+    }
+    lane.names.add(name);
+  };
+
+  const markReloadReady = (kind: string, lane: ReloadLane): void => {
+    if (!laneIsCurrent(kind, lane)) return;
+    clearSettleTimers(lane);
+    lane.ready = true;
+    drainEditorReload(kind, lane);
+  };
+
+  const drainEditorReload = (kind: string, lane: ReloadLane): void => {
+    if (
+      !laneIsCurrent(kind, lane) ||
+      lane.running ||
+      lane.retry ||
+      lane.paused ||
+      !lane.ready ||
+      !laneHasPending(lane)
+    ) {
+      return;
+    }
+
+    const mod = (globalThis as { Module?: LibsEditorModule }).Module;
+    const reload = mod?.kicadLibsReload;
+    if (typeof reload !== "function") {
+      lane.names.clear();
+      lane.namesOverflowed = false;
+      lane.ready = false;
+      clearSettleTimers(lane);
+      reloadLanes.delete(kind);
+      return;
+    }
+
+    const namesOverflowed = lane.namesOverflowed;
+    const names = namesOverflowed ? [] : [...lane.names];
+    lane.names.clear();
+    lane.namesOverflowed = false;
+    lane.ready = false;
+    clearSettleTimers(lane);
+    lane.running = true;
+    const isCurrent = () => laneIsCurrent(kind, lane);
+    log(`[synced] remote change → reload ${kind} lib "${lane.info.name}"`);
+
+    const guardedReload = reload as GuardedOwnerExport<
+      readonly [string, string],
+      void
+    >;
+    void runGuardedOwnerExport(
+      guardedReload,
+      [kind, lane.info.name] as const,
+      isCurrent,
+    )
+      .then(() => {
+        if (namesOverflowed) {
+          // The native operation above already reloaded the whole kind/lib.
+          // Do not emit a partial name array under an event whose contract says
+          // it contains every changed item.
+          log(
+            `[synced] more than ${RELOAD_CHANGED_NAMES_MAX} ${kind} names changed; ` +
+              "per-item update notice omitted",
+          );
+          return;
+        }
+        return emitItemUpdated(lane.info, kind, names, mod, isCurrent);
+      })
+      .then(() => {
+        lane.backpressureReported = false;
+      })
+      .catch((error: unknown) => {
+        if (!isCurrent() || isStaleOwnerJobError(error)) return;
+        if (namesOverflowed) {
+          lane.names.clear();
+          lane.namesOverflowed = true;
+        } else {
+          for (const name of names) addPendingName(lane, name);
+        }
+        lane.ready = true;
+
+        if (isRetryableOwnerBackpressure(error)) {
+          if (!lane.backpressureReported) {
+            lane.backpressureReported = true;
+            log(`[synced] owner queue full; delaying ${kind} reload`);
+          }
+          if (!lane.retry) {
+            lane.retry = setTimeout(() => {
+              lane.retry = undefined;
+              drainEditorReload(kind, lane);
+            }, RELOAD_BACKPRESSURE_RETRY_MS);
+          }
+          return;
+        }
+
+        if (isTerminalOwnerJobError(error)) {
+          log(`[synced] editor reload retired: ${String(error)}`);
+          retireTerminalReloadModule(mod);
+          return;
+        }
+
+        log(`[synced] editor reload failed: ${String(error)}`);
+        lane.paused = true;
+      })
+      .finally(() => {
+        lane.running = false;
+        if (!laneIsCurrent(kind, lane)) return;
+        if (laneHasPending(lane)) drainEditorReload(kind, lane);
+        else if (!lane.debounce && !lane.maxLatency && !lane.retry)
+          reloadLanes.delete(kind);
+      });
+  };
+
   function scheduleEditorReload(info: LibInfo, path: string): void {
+    const currentModule = (globalThis as { Module?: LibsEditorModule }).Module;
+    if (terminalReloadModule === currentModule) return;
+    if (terminalReloadModule && terminalReloadModule !== currentModule) {
+      terminalReloadModule = undefined;
+    }
     const kind = path.slice(0, Math.max(path.indexOf("/"), 0));
     if (kind !== "symbol" && kind !== "footprint") return;
     const name = path.slice(kind.length + 1);
-    (pendingNames.get(kind) ?? pendingNames.set(kind, new Set()).get(kind)!).add(
-      name,
-    );
-    clearTimeout(reloadTimers.get(kind));
-    reloadTimers.set(
-      kind,
-      setTimeout(() => {
-        reloadTimers.delete(kind);
-        const names = [...(pendingNames.get(kind) ?? [])];
-        pendingNames.delete(kind);
-        const mod = (globalThis as { Module?: Record<string, unknown> }).Module;
-        const reload = mod?.kicadLibsReload;
-        if (typeof reload !== "function") return;
-        log(`[synced] remote change → reload ${kind} lib "${info.name}"`);
-        try {
-          (reload as (kind: string, nickname: string) => void)(kind, info.name);
-        } catch (e) {
-          log(`[synced] editor reload failed: ${String(e)}`);
-          return;
-        }
-        emitItemUpdated(info, kind, names, mod);
-      }, 400),
-    );
+    let lane = reloadLanes.get(kind);
+    if (!lane || lane.generation !== openGeneration) {
+      lane = {
+        info,
+        generation: openGeneration,
+        names: new Set(),
+        namesOverflowed: false,
+        ready: false,
+        running: false,
+        backpressureReported: false,
+        paused: false,
+      };
+      reloadLanes.set(kind, lane);
+    }
+
+    const wasPending = laneHasPending(lane);
+    addPendingName(lane, name);
+    lane.paused = false;
+    // Once a pending level is ready, later messages join that same level; they
+    // cannot make it unready and restart its age. If an owner ticket is active,
+    // its `finally` drains this level as soon as that ticket retires.
+    if (lane.ready) {
+      drainEditorReload(kind, lane);
+      return;
+    }
+
+    if (lane.debounce) clearTimeout(lane.debounce);
+    const scheduledLane = lane;
+    lane.debounce = setTimeout(() => {
+      markReloadReady(kind, scheduledLane);
+    }, RELOAD_DEBOUNCE_MS);
+    // Set only for the first event in this pending level. Unlike the quiet
+    // timer above, later events never move this deadline.
+    if (!wasPending && !lane.maxLatency) {
+      lane.maxLatency = setTimeout(() => {
+        markReloadReady(kind, scheduledLane);
+      }, RELOAD_MAX_LATENCY_MS);
+    }
   }
 
   /** Announce the applied update, flagging names placed in the open document. */
-  function emitItemUpdated(
+  async function emitItemUpdated(
     info: LibInfo,
     kind: string,
     names: string[],
-    mod: Record<string, unknown> | undefined,
-  ): void {
-    if (typeof window === "undefined" || names.length === 0) return;
+    mod: LibsEditorModule | undefined,
+    isCurrent: () => boolean,
+  ): Promise<void> {
+    if (!isCurrent() || typeof window === "undefined" || names.length === 0)
+      return;
     const usage = mod?.kicadLibsSymbolUsage;
-    const usedNames =
-      kind === "symbol" && typeof usage === "function"
-        ? names.filter((n) => {
-            try {
-              return (
-                (usage as (lib: string, name: string) => number)(info.name, n) >
-                0
-              );
-            } catch {
-              return false;
-            }
-          })
-        : [];
+    const usedNames: string[] = [];
+    if (kind === "symbol" && typeof usage === "function") {
+      const guardedUsage = usage as GuardedOwnerExport<
+        readonly [string, string],
+        number
+      >;
+      for (const name of names) {
+        try {
+          const count = await runGuardedOwnerExport(
+            guardedUsage,
+            [info.name, name] as const,
+            isCurrent,
+          );
+          if (count > 0) usedNames.push(name);
+        } catch (error) {
+          if (isCurrent())
+            log(`[synced] editor symbol-usage read failed: ${String(error)}`);
+        }
+      }
+    }
+    if (!isCurrent()) return;
     const detail: LibItemUpdatedDetail = { lib: info.name, kind, names, usedNames };
     window.dispatchEvent(new CustomEvent(LIB_ITEM_UPDATED_EVENT, { detail }));
   }
 
   async function ensure(): Promise<{ stack: SyncStack; info: LibInfo }> {
     if (!opened) {
+      const generation = ++openGeneration;
       opened = resolveAndOpen(libId, opts, log).then((r) => {
+        if (generation !== openGeneration) {
+          r.stack.close();
+          throw new Error(`library source disposed while opening ${libId}`);
+        }
         r.stack.subscribe((c) => {
-          // Consume our own save's echo (exactly one change event per push);
-          // everything else is a peer's edit.
-          if (selfPushed.delete(c.path)) return;
+          // Closing a realtime channel does not synchronously retract messages
+          // already delivered by the transport. Do not let an old source
+          // lifetime schedule editor work after dispose/reopen.
+          if (generation !== openGeneration) return;
+          // Local receipts already invalidate the plugin through the save
+          // flow. Only authoritative remote changes require a WASM reload.
+          if (c.origin === "local") return;
           scheduleEditorReload(r.info, c.path);
         });
         return r;
@@ -197,23 +428,25 @@ export function syncedLibsSource(
     async saveItemBody(_id, kind, name, body): Promise<boolean> {
       const { stack } = await ensure();
       const path = pathOf(kind, name);
-      // A successful push fires exactly one change event (the WS self-echo is
-      // hash-deduped inside the layer), and the stack delivers it AFTER an
-      // async merged read — so the flag must outlive this call; the subscriber
-      // consumes it. A failed push fires none: clear the flag ourselves.
-      selfPushed.add(path);
       try {
         await stack.push(path, new TextEncoder().encode(body));
         return true;
       } catch (e) {
-        selfPushed.delete(path);
         log(`[synced] save failed for ${kind}/${name}: ${String(e)}`);
         return false;
       }
     },
     dispose(): void {
-      for (const t of reloadTimers.values()) clearTimeout(t);
-      reloadTimers.clear();
+      openGeneration++;
+      for (const lane of reloadLanes.values()) {
+        clearSettleTimers(lane);
+        if (lane.retry) clearTimeout(lane.retry);
+        lane.names.clear();
+        lane.namesOverflowed = false;
+        lane.ready = false;
+        lane.retry = undefined;
+      }
+      reloadLanes.clear();
       // Close the stack once its open settles (sockets + channel refcounts);
       // the IDB cache stays for the next session. A failed open has nothing
       // to close.
@@ -326,6 +559,11 @@ export function syncedScopeLibsSource(
   },
 ): LibsSource {
   const perLib = new Map<string, LibsSource>();
+  // Source-local sequencing for overlapping batch resolves. Requests remain
+  // concurrent; only their descriptor-cache commit is latest-wins per lib.
+  let sourceGeneration = 0;
+  let stackRequestSequence = 0;
+  const latestStackRequest = new Map<string, number>();
   // Stacks resolved in bulk by `prefetchStacks`. A hit means the per-lib source
   // makes NO resolve request; `null` records "backend says unresolvable" so a
   // stale pin isn't retried one-by-one. Misses simply fall back per-lib, which
@@ -336,13 +574,12 @@ export function syncedScopeLibsSource(
     if (!src) {
       src = syncedLibsSource(libId, {
         ...opts,
-        // Bulk context: only mux-keyed layers (the one shared mirror room
-        // socket) get realtime. Without this, every org/mirror-direct lib in
-        // the scope dials a dedicated WebSocket — a board load held 60+ idle
-        // sockets, each pinning a DO and costing an authorize per reconnect.
-        // Trade-off: peer edits to those libs reach this session on the next
-        // load (or lazy sync) instead of live; origin libs keep live updates
-        // via the muxed team mirror channel.
+        // Bulk context: only mux-keyed layers get realtime. During the
+        // single-writer cutover, origin overlays also stay on their per-lib
+        // rooms, so bulk-opened stacks remain HTTP-only until enableRealtime()
+        // promotes the few libraries the document actually uses. This avoids
+        // dozens of idle dedicated sockets without enabling the second room
+        // topology as a concurrent writer.
         realtime: "shared-only",
         stackFor: (id) => (batchedStacks.has(id) ? batchedStacks.get(id) : undefined),
       });
@@ -364,6 +601,11 @@ export function syncedScopeLibsSource(
   async function prefetchStacks(libs: LibInfo[]): Promise<void> {
     const missing = libs.map((l) => l.id).filter((id) => !batchedStacks.has(id));
     if (missing.length === 0) return;
+    const generation = sourceGeneration;
+    const sequence = ++stackRequestSequence;
+    // Assign before the fetch. If two presync calls overlap, an older response
+    // that arrives last cannot overwrite the newer stack descriptor.
+    for (const id of missing) latestStackRequest.set(id, sequence);
     const headers: Record<string, string> = {
       [SCOPE_HEADER]: opts.scope,
       ...(opts.user ? { [USER_HEADER]: opts.user } : {}),
@@ -376,7 +618,10 @@ export function syncedScopeLibsSource(
         ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
         headers,
       });
-      for (const [id, stack] of resolved) batchedStacks.set(id, stack);
+      if (generation !== sourceGeneration) return;
+      for (const [id, stack] of resolved) {
+        if (latestStackRequest.get(id) === sequence) batchedStacks.set(id, stack);
+      }
       opts.log?.(
         `[synced] batch-resolved ${resolved.size} lib stack(s) in ` +
           `${Math.ceil(missing.length / SYNC_STACKS_BATCH_MAX)} request(s)`,
@@ -435,18 +680,21 @@ export function syncedScopeLibsSource(
     saveItemBody: (libId, kind, name, body) =>
       forLib(libId).saveItemBody!(libId, kind, name, body),
     async presync(presyncOpts): Promise<void> {
+      const generation = sourceGeneration;
       const libs = await remote.listLibs(presyncOpts?.kind);
+      if (generation !== sourceGeneration) return;
       const total = libs.length;
       let done = 0;
       presyncOpts?.onProgress?.({ done, total, current: "libraries" });
       // One batched resolve for the whole set before the per-lib fan-out, so
       // the workers below open stacks without a request each.
       if (!presyncOpts?.signal?.aborted) await prefetchStacks(libs);
+      if (generation !== sourceGeneration) return;
       const concurrency = presyncOpts?.concurrency ?? 8;
       const queue = [...libs];
       const worker = async (): Promise<void> => {
         for (let lib = queue.shift(); lib; lib = queue.shift()) {
-          if (presyncOpts?.signal?.aborted) return;
+          if (presyncOpts?.signal?.aborted || generation !== sourceGeneration) return;
           try {
             // Opening the stack (via any op) hydrates the lib's IDB cache.
             await forLib(lib.id).listItems(lib.id);
@@ -462,16 +710,20 @@ export function syncedScopeLibsSource(
       );
     },
     dispose(): void {
+      sourceGeneration++;
+      latestStackRequest.clear();
       for (const src of perLib.values()) src.dispose?.();
       perLib.clear();
     },
     async enableRealtime(libNames): Promise<void> {
       if (libNames.length === 0) return;
+      const generation = sourceGeneration;
       // Nickname → lib id via the backend listing (one request; the wasm boot
       // has usually made the same call already). Names that don't resolve —
       // project-local table rows, stale nicknames — are simply not ours.
       const wanted = new Set(libNames);
       const libs = (await remote.listLibs()).filter((l) => wanted.has(l.name));
+      if (generation !== sourceGeneration) return;
       opts.log?.(
         `[synced] realtime upgrade for ${libs.length}/${libNames.length} referenced lib(s)`,
       );

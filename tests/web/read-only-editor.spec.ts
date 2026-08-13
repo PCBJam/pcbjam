@@ -27,12 +27,12 @@ const SCOPE = 'default';
 const FRONTEND_URL = process.env.WEB_APP_URL ?? 'http://localhost:3048';
 
 type Mod = {
-  kicadCollabGetSelection(): string;
-  kicadCollabGetViewport(): string;
-  kicadCollabTestSelectFirst(): string;
-  kicadCollabTestClearSelection(): boolean;
-  kicadCollabGetPos(id: string): string;
-  kicadCollabTestMoveFirst(dx: number, dy: number): string;
+  kicadCollabGetSelection(): Promise<string>;
+  kicadCollabGetViewport(): Promise<string>;
+  kicadCollabTestSelectFirst(): Promise<string>;
+  kicadCollabTestClearSelection(): Promise<boolean>;
+  kicadCollabGetPos(id: string): Promise<string>;
+  kicadCollabTestMoveFirst(dx: number, dy: number): Promise<string>;
 };
 type W = { Module: Mod };
 
@@ -71,10 +71,10 @@ async function visibleMenuTitles(pg: Page): Promise<number> {
  * render through (comments-viewport-resize.spec.ts).
  */
 async function screenPosOf(pg: Page, worldCsv: string): Promise<{ x: number; y: number }> {
-  return pg.evaluate((csv: string) => {
+  return pg.evaluate(async (csv: string) => {
     const win = window as unknown as W;
     const [wx, wy] = csv.split(',').map(Number);
-    const vp = JSON.parse(win.Module.kicadCollabGetViewport()) as {
+    const vp = JSON.parse(await win.Module.kicadCollabGetViewport()) as {
       cx: number; cy: number; scale: number; w: number; h: number;
     };
     const gl = Array.from(document.querySelectorAll('[id^="glcanvas-"]')).find((c) => {
@@ -91,14 +91,16 @@ async function screenPosOf(pg: Page, worldCsv: string): Promise<{ x: number; y: 
 }
 
 const selection = (pg: Page) =>
-  pg.evaluate(() => JSON.parse((window as unknown as W).Module.kicadCollabGetSelection()));
+  pg.evaluate(async () =>
+    JSON.parse(await (window as unknown as W).Module.kicadCollabGetSelection()),
+  );
 const posOf = (pg: Page, id: string) =>
   pg.evaluate((i: string) => (window as unknown as W).Module.kicadCollabGetPos(i), id);
 // Zoom probe: w/h are the fixed canvas pixel size — zoom moves `scale`.
 const viewportScale = (pg: Page) =>
   pg.evaluate(
-    () =>
-      (JSON.parse((window as unknown as W).Module.kicadCollabGetViewport()) as { scale: number })
+    async () =>
+      (JSON.parse(await (window as unknown as W).Module.kicadCollabGetViewport()) as { scale: number })
         .scale,
   );
 
@@ -225,14 +227,6 @@ test('viewer boots locked: chrome-less, nothing selectable, hotkey edits inert, 
 });
 
 test("a writer's edits stream into the viewer live (and never the reverse)", async () => {
-  // Blocked by a PRE-EXISTING applyItems regression at kicad 8364527: the
-  // board-envelope wrap trips "1 is not a valid layer count" in the clipboard
-  // parser, so NO cross-tab item apply lands — verified failing identically
-  // for two fully WRITABLE tabs on a fresh kicad_editor build (the previous
-  // CI artifacts were built at an older kicad rev). Un-fixme once the
-  // envelope/parser mismatch is fixed on main.
-  test.fixme();
-
   const itemId = await writer.evaluate(() =>
     (window as unknown as W).Module.kicadCollabTestSelectFirst(),
   );

@@ -32,11 +32,11 @@ const SHEET = `(kicad_wks (version 20220228) (generator "pl_editor") (generator_
 type FS = { mkdirTree(p: string): void; writeFile(p: string, d: string): void;
   readFile(p: string, o: { encoding: "utf8" }): string };
 type Mod = {
-  kicadOpenFile(p: string): unknown;
-  kicadSaveDrawingSheet(p: string): unknown;
-  kicadCollabSnapshot(): string;
-  kicadCollabApply(j: string): unknown;
-  kicadCollabTestAddText(text: string, x: number, y: number): string;
+  kicadOpenFile(p: string): Promise<unknown>;
+  kicadSaveDrawingSheet(p: string): Promise<void>;
+  kicadCollabSnapshot(): Promise<string>;
+  kicadCollabApply(j: string): Promise<unknown>;
+  kicadCollabTestAddText(text: string, x: number, y: number): Promise<string>;
 };
 
 function hasAbort(l: { consoleLogs: string[]; errors: string[] }): boolean {
@@ -72,7 +72,7 @@ async function bootAndOpen(page: Page, name: string): Promise<void> {
   );
 
   await page.evaluate(
-    ({ content, name }) => {
+    async ({ content, name }) => {
       const w = window as unknown as { FS: FS; Module: Mod };
       const dir = "/home/kicad/documents";
       try {
@@ -82,7 +82,7 @@ async function bootAndOpen(page: Page, name: string): Promise<void> {
       }
       const p = `${dir}/${name}.kicad_wks`;
       w.FS.writeFile(p, content);
-      w.Module.kicadOpenFile(p);
+      await w.Module.kicadOpenFile(p);
     },
     { content: SHEET, name },
   );
@@ -92,10 +92,10 @@ async function bootAndOpen(page: Page, name: string): Promise<void> {
 
 /** Read the tab's current model back as text via save-to-MEMFS. */
 async function modelText(page: Page): Promise<string> {
-  return page.evaluate(() => {
+  return page.evaluate(async () => {
     const w = window as unknown as { FS: FS; Module: Mod };
     const out = "/home/kicad/documents/_dump.kicad_wks";
-    w.Module.kicadSaveDrawingSheet(out);
+    await w.Module.kicadSaveDrawingSheet(out);
     return w.FS.readFile(out, { encoding: "utf8" });
   });
 }
@@ -116,7 +116,9 @@ test.describe("pl_editor collab bridge — single page (C++ contract)", () => {
     await bootAndOpen(page, "single");
 
     // snapshot: both seeded items present, with decomposed fields.
-    const snap = await page.evaluate(() => JSON.parse(window.Module.kicadCollabSnapshot()));
+    const snap = await page.evaluate(async () =>
+      JSON.parse(await window.Module.kicadCollabSnapshot()),
+    );
     const ids: string[] = snap.added.map((i: { id: string }) => i.id);
     expect(ids).toContain(U_TITLE);
     const title = snap.added.find((i: { id: string }) => i.id === U_TITLE);
@@ -132,8 +134,8 @@ test.describe("pl_editor collab bridge — single page (C++ contract)", () => {
     });
 
     // changed: move the title text. added (scalar): a new line. removed: the border rect.
-    await page.evaluate((titleId) => {
-      window.Module.kicadCollabApply(
+    await page.evaluate(async (titleId) => {
+      await window.Module.kicadCollabApply(
         JSON.stringify({
           changed: [{ id: titleId, type: "text", x: 123, y: 45 }],
           added: [

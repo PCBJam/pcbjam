@@ -1,5 +1,8 @@
 import { asyncMap } from "@/lib/async-map";
-import { handleModel3dRequest } from "./models-bridge";
+import {
+  handleModel3dRequest,
+  type PreparedModel3d,
+} from "./models-bridge";
 import { libIdFromUri, libUri } from "./uri";
 
 /**
@@ -169,8 +172,9 @@ export type KicadLibsRequest = (
   arg: string,
   kind?: string,
   // "bodies" returns a framed Uint8Array (raw item bytes, copied as-is across the
-  // bridge); every other op returns a string (or null).
-) => Promise<string | Uint8Array | null>;
+  // bridge). model3d/ensure returns a same-realm prepared apply consumed by the
+  // C++ bridge's final native edge; other operations return string or null.
+) => Promise<string | Uint8Array | PreparedModel3d | null>;
 
 declare global {
   interface Window {
@@ -336,10 +340,9 @@ export interface LibsProviderOptions {
    * name list also opens the lib's sync stack, i.e. cold-fetches its bundle)
    * for the given kind until the returned promise resolves. The lib editors
    * pass their presync-settled promise: their frame eagerly enumerates EVERY
-   * lib of its kind at boot, one mutex-serialized bridge crossing at a time
-   * (see g_pcbjamProxyMutex in the plugins), so a cold lib would network-fetch
-   * inside its serial crossing — the gate lets the 8-wide parallel presync
-   * warm IndexedDB first and the crossings become local read + parse.
+   * lib of its kind at boot. Those provider requests can overlap; the gate
+   * first lets the deliberately 8-wide presync warm IndexedDB, so the later
+   * demand burst becomes local reads instead of an unbounded cold-fetch burst.
    * MUST always resolve (the presync is best-effort and never rejects);
    * "get"/"save"/"index" are user-triggered and never gated.
    */
@@ -354,9 +357,9 @@ export function installLibsProvider(
   if (window.kicadLibs) return;
   const delay = artificialDelayMs();
 
-  // Per-burst fat-load progress. The plugin fat-loads every library of a kind
-  // one bridge crossing at a time, so counting `bodies` requests gives real
-  // per-lib progress; `total` comes from listLibs(kind) (cached). A trailing
+  // Per-burst fat-load progress. The plugin fat-loads every library of a kind;
+  // requests can overlap, but counting completed `bodies` requests still gives
+  // real per-lib progress. `total` comes from listLibs(kind) (cached). A trailing
   // timer resets the counter once a burst goes quiet, so a later open starts
   // fresh (mirrors the overlay's own hide debounce).
   let fatDone = 0;

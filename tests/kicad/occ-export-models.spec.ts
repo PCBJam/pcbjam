@@ -4,7 +4,7 @@ import type { Page } from '@playwright/test';
 import { test, expect } from './fixtures';
 import { clickMenuBarItem, clickMenuItem, waitForEditorReady, waitForRenderedByLabel, waitUntil } from '../e2e/utils/element-tracker';
 import { injectFromSubmodule } from './utils/fs-inject';
-import { waitForBoardLoaded } from './utils/board-ready';
+import { openBoardProgrammatically } from './utils/board-ready';
 
 /**
  * STEP export × 3D model delivery (docs/features/3d-models, 0007): File →
@@ -118,43 +118,13 @@ async function loadBoard(page: Page, testLogger: { consoleLogs: string[]; errors
     await injectFromSubmodule(page, `kicad/demos/${DEMO.dir}/libs/3d_shapes/adjustable_rx2v4.wrl`,
         `${PROJECT_DIR_MEMFS}/libs/3d_shapes/adjustable_rx2v4.wrl`);
 
-    expect(await clickMenuBarItem(page, 'File'), 'File menu should be findable').toBe(true);
-    await waitForMenuItems(page);
-    // Items register progressively while the popup paints — wait for the one
-    // we click (clickMenuItem is single-shot; the >3-items gate isn't enough).
-    await waitForRenderedByLabel(page, 'Open...', { elementType: 'menuitem' });
-    expect(await clickMenuItem(page, 'Open...'), 'Open… menu item should be findable').toBe(true);
-
-    await page.waitForFunction(() => {
-        const registry = window.wxElementRegistry;
-        return !!registry && registry.findAll({ visible: true })
-            .some((el) => el.typeName === 'wxFileDialog');
-    }, null, { timeout: 15000 });
-    // Wait for the filename text input to paint (the dialog object exists before its
-    // inner controls register; replaces a fixed 1000ms).
-    await waitUntil(page, () => {
-        const r = window.wxElementRegistry;
-        return !!r && r.findAll({ visible: true }).some((el) => el.typeName === 'wxTextCtrl' && el.name === 'text');
-    }, 'file dialog filename input');
-
-    const filenameInput = await page.evaluate(() => {
-        const registry = window.wxElementRegistry;
-        if (!registry) return null;
-        const text = registry.findAll({ visible: true })
-            .find((el) => el.typeName === 'wxTextCtrl' && el.name === 'text');
-        return text ? { x: text.centerX, y: text.centerY } : null;
-    });
-    expect(filenameInput, 'filename text input should be visible').not.toBeNull();
-    if (!filenameInput) throw new Error('filename text input not found');
-
-    await page.mouse.click(filenameInput.x, filenameInput.y);
-    // Documented interaction dwells: focus + typed-text registration have no observable signal.
-    await page.waitForTimeout(200); // eslint-disable-line -- documented interaction dwell
-    await page.keyboard.type(pcbFilename);
-    await page.waitForTimeout(300); // eslint-disable-line -- documented interaction dwell
-    await page.keyboard.press('Enter');
-
-    const result = await waitForBoardLoaded(page, testLogger, 60000);
+    const result = await openBoardProgrammatically(
+        page,
+        `${PROJECT_DIR_MEMFS}/${pcbFilename}`,
+        DEMO.stem,
+        testLogger,
+        60000,
+    );
     console.log(`[TEST] ${DEMO.name} board-ready result: ${result}`);
 }
 

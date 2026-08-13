@@ -65,12 +65,12 @@ type FS = {
   readFile(p: string, o: { encoding: "utf8" }): string;
 };
 type Mod = {
-  kicadOpenFile(p: string): unknown;
-  kicadCollabSnapshotItems(): string;
-  kicadCollabApplyItems(j: string): unknown;
-  kicadCollabTestMoveFirst(dx: number, dy: number): string;
-  kicadCollabGetPos(id: string): string;
-  kicadSaveSchematic(p: string): unknown;
+  kicadOpenFile(p: string): Promise<unknown>;
+  kicadCollabSnapshotItems(): Promise<string>;
+  kicadCollabApplyItems(j: string): Promise<unknown>;
+  kicadCollabTestMoveFirst(dx: number, dy: number): Promise<string>;
+  kicadCollabGetPos(id: string): Promise<string>;
+  kicadSaveSchematic(p: string): Promise<void>;
 };
 
 const BOOT_TIMEOUT = 150000;
@@ -106,7 +106,7 @@ async function bootOpen(page: Page): Promise<void> {
     null,
     { timeout: BOOT_TIMEOUT },
   );
-  await page.evaluate((content) => {
+  await page.evaluate(async (content) => {
     const w = window as unknown as { FS: FS; Module: Mod };
     try {
       w.FS.mkdirTree("/home/kicad/documents");
@@ -115,7 +115,7 @@ async function bootOpen(page: Page): Promise<void> {
     }
     const p = "/home/kicad/documents/rt.kicad_sch";
     w.FS.writeFile(p, content);
-    w.Module.kicadOpenFile(p);
+    await w.Module.kicadOpenFile(p);
   }, SAMPLE_SCH);
 }
 
@@ -163,10 +163,10 @@ test.describe("eeschema ysync repros (v2 items wire, single tab)", () => {
   // fail that it EMITTED. Gated on the wasm build carrying the hooks.
 
   function saveRead(page: Page): Promise<string> {
-    return page.evaluate(() => {
+    return page.evaluate(async () => {
       const w = window as unknown as { FS: FS; Module: Mod };
       const out = "/home/kicad/documents/probe.kicad_sch";
-      w.Module.kicadSaveSchematic(out);
+      await w.Module.kicadSaveSchematic(out);
       return w.FS.readFile(out, { encoding: "utf8" });
     });
   }
@@ -177,14 +177,14 @@ test.describe("eeschema ysync repros (v2 items wire, single tab)", () => {
     );
   }
 
-  /** Baseline + capture + hook-presence guard (returns false on stale wasm). */
-  async function armed(page: Page, hook: string): Promise<boolean> {
+  /** Baseline + capture; the current wasm must expose the requested hook. */
+  async function armed(page: Page, hook: string): Promise<void> {
     await bootOpen(page);
     const has = await page.evaluate(
       (h) => typeof (window as unknown as { Module: Record<string, unknown> }).Module[h] === "function",
       hook,
     );
-    if (!has) return false;
+    expect(has, `current wasm exposes ${hook}`).toBe(true);
     await page.evaluate(() => window.Module.kicadCollabSnapshotItems());
     await page.evaluate(() => {
       (window as unknown as { __items: string[] }).__items = [];
@@ -192,16 +192,14 @@ test.describe("eeschema ysync repros (v2 items wire, single tab)", () => {
         onItems: (j: string) => (window as unknown as { __items: string[] }).__items.push(j),
       };
     });
-    return true;
   }
 
   test("an in-place symbol rotation reaches the wire", async ({ page, testLogger }) => {
-    const ok = await armed(page, "kicadCollabTestRotateItem");
-    test.skip(!ok, "wasm build predates the ysync repro hooks");
+    await armed(page, "kicadCollabTestRotateItem");
 
     const queued = await page.evaluate(
       (id) =>
-        (window as unknown as { Module: { kicadCollabTestRotateItem(i: string, d: number): boolean } })
+        (window as unknown as { Module: { kicadCollabTestRotateItem(i: string, d: number): Promise<boolean> } })
           .Module.kicadCollabTestRotateItem(id, 90),
       SYM1,
     );
@@ -224,12 +222,11 @@ test.describe("eeschema ysync repros (v2 items wire, single tab)", () => {
   });
 
   test("a symbol Value field edit reaches the wire", async ({ page, testLogger }) => {
-    const ok = await armed(page, "kicadCollabTestSetFieldText");
-    test.skip(!ok, "wasm build predates the ysync repro hooks");
+    await armed(page, "kicadCollabTestSetFieldText");
 
     const queued = await page.evaluate(
       (id) =>
-        (window as unknown as { Module: { kicadCollabTestSetFieldText(i: string, t: string): boolean } })
+        (window as unknown as { Module: { kicadCollabTestSetFieldText(i: string, t: string): Promise<boolean> } })
           .Module.kicadCollabTestSetFieldText(id, "22k"),
       SYM1,
     );

@@ -37,10 +37,29 @@ if [ "${BINARYEN_TRUST_PREBUILT:-0}" = "1" ] \
     exit 0
 fi
 
-# Configure once (mirrors scripts/common/get-wasm-opt.sh's from-source flags).
-if [ ! -f "${BUILD}/build.ninja" ]; then
+# Binaryen is a HOST tool. scripts/common/env.sh deliberately exports
+# CC="ccache emcc" and CXX="ccache em++" for the surrounding Wasm build; if
+# those leak into this one-time CMake configure, every object is compiled for
+# Wasm and the host libbinaryen link later fails at `em++ -shared`. Select the
+# host compilers explicitly, and repair an old cache which recorded the
+# Emscripten compiler as ccache's first argument.
+HOST_CC="$(command -v cc)"
+HOST_CXX="$(command -v c++)"
+POISONED_CACHE=0
+if [ -f "${BUILD}/CMakeCache.txt" ] \
+   && grep -Eq '^CMAKE_CXX_COMPILER_ARG1:STRING=.*em\+\+' \
+        "${BUILD}/CMakeCache.txt"; then
+    POISONED_CACHE=1
+fi
+
+# Configure once (mirrors scripts/common/get-wasm-opt.sh's from-source flags),
+# or reconfigure a cache created before the host/compiler boundary was made
+# explicit. CMake invalidates the affected objects when the compiler changes.
+if [ ! -f "${BUILD}/build.ninja" ] || [ "${POISONED_CACHE}" = "1" ]; then
     echo "Configuring Binaryen submodule build (one-time, ~5 min to build)..." >&2
     cmake -S "${SRC}" -B "${BUILD}" -G Ninja \
+        -DCMAKE_C_COMPILER="${HOST_CC}" \
+        -DCMAKE_CXX_COMPILER="${HOST_CXX}" \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_CXX_FLAGS="-Wno-maybe-uninitialized" \
         -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON -DBUILD_TESTS=OFF >&2

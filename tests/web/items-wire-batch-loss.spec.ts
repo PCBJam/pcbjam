@@ -46,8 +46,8 @@ const BOARD = `/${SCOPE}/projects/demo/demo.kicad_pcb`;
 /** Wire entries are `{sexpr, parent}`; the emit side sends parent null for roots. */
 type WireItem = { sexpr: string; parent: string | null };
 type Mod = {
-  kicadCollabSnapshotItems(): string;
-  kicadCollabTestItemBlob(uuid: string): string;
+  kicadCollabSnapshotItems(): Promise<string>;
+  kicadCollabTestItemBlob(uuid: string): Promise<string>;
 };
 type W = { Module: Mod; kicadCollab: { onItems?: (json: string) => void } };
 
@@ -77,9 +77,9 @@ async function bootBoard(page: Page, user: string): Promise<void> {
 
 /** That footprint's own `(at …)` as this tab currently holds it. */
 async function positionOf(page: Page, uuid: string): Promise<string> {
-  return page.evaluate((id) => {
+  return page.evaluate(async (id) => {
     const snap = JSON.parse(
-      (window as unknown as W).Module.kicadCollabSnapshotItems(),
+      await (window as unknown as W).Module.kicadCollabSnapshotItems(),
     ) as { added: WireItem[] };
     const blob = snap.added.find((w) => w.sexpr.includes(id));
     // The footprint's own `(at …)` is the first in its blob — layer and uuid
@@ -136,9 +136,9 @@ test('a single un-unwrappable entry must not discard the rest of the batch', asy
 
   // ── the payloads, all straight out of the editor ──────────────────────────
   // Two footprints; the second one's field supplies the poisoned entry.
-  const picked = await alice.evaluate(() => {
+  const picked = await alice.evaluate(async () => {
     const M = (window as unknown as W).Module;
-    const snap = JSON.parse(M.kicadCollabSnapshotItems()) as { added: WireItem[] };
+    const snap = JSON.parse(await M.kicadCollabSnapshotItems()) as { added: WireItem[] };
     const fps: Array<{ uuid: string; sexpr: string; field?: string }> = [];
     for (const w of snap.added) {
       if (!/^\s*\(footprint\b/.test(w.sexpr)) continue;
@@ -150,7 +150,7 @@ test('a single un-unwrappable entry must not discard the rest of the batch', asy
     const fp1 = fps[0];
     const fp2 = fps.find((f, i) => i > 0 && !!f.field);
     if (!fp1 || !fp2) return null;
-    return { fp1, fp2, fieldBlob: M.kicadCollabTestItemBlob(fp2.field!) };
+    return { fp1, fp2, fieldBlob: await M.kicadCollabTestItemBlob(fp2.field!) };
   });
   expect(picked, 'demo board should have two footprints, the second with a field').toBeTruthy();
   const { fp1, fp2, fieldBlob } = picked!;

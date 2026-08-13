@@ -11,10 +11,12 @@ import { test, expect, tryLoadApp } from '../e2e/utils/fixtures';
  * The meta-test INTRODUCES a stray writer and expects the tripwire to fire —
  * proving the alarm works, not merely that nobody tripped it.
  *
- * N4 — wake-never-rewinds-mid-transition: across the races battery (which
- * stages overlapping parks, nested modals, out-of-order wakes) the
- * scheduler's books must be coherent at settle: no queued wake left, every
- * deferral drained, zero unplanned strays, battery green.
+ * N4 — wake-never-rewinds-mid-transition: across the owner-safe races battery
+ * (nested modals, FIFO suspendable owners, terminal fibers, and exact
+ * affiliated close tails), the scheduler's books must be coherent at settle:
+ * no queued wake left, every deferral drained, zero unplanned strays, battery
+ * green. A deterministic unit below forces the deferred-wake transition; this
+ * E2E assertion is the integration/quiescence gate.
  */
 
 type SchedulerState = {
@@ -33,7 +35,7 @@ function findSummary(logs: string[]) {
 async function bootAndSettle(
   page: import('@playwright/test').Page,
   testLogger: { consoleLogs: string[] },
-): Promise<boolean> {
+): Promise<void> {
   await page.goto('/standalone/asyncify-races/races_test.html');
   const loaded = await tryLoadApp(page, 30000);
   expect(loaded, 'races harness should load').toBe(true);
@@ -43,9 +45,13 @@ async function bootAndSettle(
       message: 'battery should emit its SUMMARY line',
     })
     .not.toBeNull();
-  return page.evaluate(
+  const scheduler = await page.evaluate(
     () => !!(globalThis as unknown as { __wxScheduler?: unknown }).__wxScheduler,
   );
+  expect(
+    scheduler,
+    'the scheduler core is mandatory; shim-less glue is a stale or incorrectly linked artifact',
+  ).toBe(true);
 }
 
 test.describe('S2 scheduler core (scheduler glue)', () => {
@@ -54,8 +60,7 @@ test.describe('S2 scheduler core (scheduler glue)', () => {
     testLogger,
   }) => {
     test.setTimeout(180000);
-    const scheduler = await bootAndSettle(page, testLogger);
-    test.skip(!scheduler, 'legacy glue — scheduler core absent');
+    await bootAndSettle(page, testLogger);
 
     await expect
       .poll(
@@ -93,8 +98,7 @@ test.describe('S2 scheduler core (scheduler glue)', () => {
     testLogger,
   }) => {
     test.setTimeout(180000);
-    const scheduler = await bootAndSettle(page, testLogger);
-    test.skip(!scheduler, 'legacy glue — scheduler core absent');
+    await bootAndSettle(page, testLogger);
 
     const result = await page.evaluate(() => {
       const S = (globalThis as unknown as { __wxScheduler: SchedulerState }).__wxScheduler;

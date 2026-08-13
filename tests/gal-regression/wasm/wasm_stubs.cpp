@@ -312,6 +312,10 @@ PGM_BASE& Pgm() {
     return *s_pgmInstance;
 }
 
+PGM_BASE* PgmOrNull() {
+    return s_pgmInstance;
+}
+
 const ADVANCED_CFG& ADVANCED_CFG::GetCfg() {
     static ADVANCED_CFG instance;
     return instance;

@@ -10,6 +10,7 @@ const EXPECTED_CASES = [
   'fiber_deep_yield_loop_inside_modal',
   'modal_fiber_modal_sequence',
   'nested_fibers_inside_modal',
+  'nested_dispatch_roots_preserve_fiber_identity',
 ];
 
 function findSummary(logs: string[]) {
@@ -70,6 +71,42 @@ test.describe('Nested Coroutine+Modal Tests', () => {
     expect(failed).toBe(0);
     expect(failLogs).toHaveLength(0);
     expect(passLogs).toHaveLength(EXPECTED_CASES.length);
+
+    const topology = testLogger.consoleLogs.find((line) =>
+      line.includes('[COROUTINE_TEST] NESTED-ROOTS ')
+    );
+    expect(topology, 'exact A/F1 -> B/F2 -> F1/A topology should be reported').toBeTruthy();
+    const ids = topology!.match(
+      /rootA=(\d+)\s+rootB=(\d+)\s+f1=(\d+)\s+f1Resume=(\d+)\s+f2=(\d+)\s+f2Resume=(\d+)\s+rootAResume=(\d+)\s+f2ReturnBefore=(\d+)\s+f2ReturnAfter=(\d+)\s+rootBProtocol=(\d+)\s+fiberReleasedDelta=(\d+)\s+rootProxyLive=(\d+)\s+rootProxyPeak=(\d+)\s+rootProxyCapacity=(\d+)\s+rootProxyCreated=(\d+)\s+rootProxyReleased=(\d+)\s+rootProxySchedulerReleases=(\d+)\s+rootProxyUnsafeSweeps=(\d+)/
+    );
+    expect(ids, 'nested-root identity report should be parseable').not.toBeNull();
+    const [
+      rootA, rootB, f1, f1Resume, f2, f2Resume, rootAResume,
+      f2ReturnBefore, f2ReturnAfter, rootBProtocol, released,
+      rootProxyLive, rootProxyPeak, rootProxyCapacity, rootProxyCreated,
+      rootProxyReleased, rootProxySchedulerReleases, rootProxyUnsafeSweeps,
+    ] = ids!
+      .slice(1)
+      .map(Number);
+    expect(new Set([rootA, rootB, f1, f2]).size, 'A, B, F1 and F2 are physically distinct').toBe(4);
+    expect(f1Resume, 'F1 exact wake returns to F1').toBe(f1);
+    expect(f2Resume, 'F2 resumes on F2').toBe(f2);
+    expect(rootAResume, 'F1 terminal handoff returns to root A').toBe(rootA);
+    expect(f2ReturnBefore, 'F2 initially stores root B as its return target').toBe(rootBProtocol);
+    expect(f2ReturnAfter, 'F1 wake cannot rewrite F2’s root-B return target').toBe(rootBProtocol);
+    expect(released, 'exactly F1 and F2 retire').toBe(2);
+    expect(rootProxyLive, 'live root proxies stay within capacity').toBeLessThanOrEqual(rootProxyCapacity);
+    expect(rootProxyPeak, 'root-proxy high-water stays within capacity').toBeLessThanOrEqual(rootProxyCapacity);
+    expect(rootProxyCapacity, 'root proxy capacity matches dispatch depth').toBe(16);
+    expect(rootProxyCreated, 'both physical dispatch roots received proxies').toBeGreaterThanOrEqual(2);
+    expect(rootProxyReleased, 'release count is non-negative').toBeGreaterThanOrEqual(0);
+    expect(rootProxySchedulerReleases, 'proxies never release scheduler-owned stacks').toBe(0);
+    expect(rootProxyUnsafeSweeps, 'proxies sweep only after physical retirement').toBe(0);
+
+    const integrityErrors = [...testLogger.consoleLogs, ...testLogger.errors].filter((line) =>
+      /sched-divergence|jump-ghost|swap-lost|hot-main-swap-refused|root-proxy-capacity/i.test(line)
+    );
+    expect(integrityErrors, 'no stale capture, divergence, ghost return or lost swap').toEqual([]);
 
     // Critical: catch the nested-asyncify crash
     const indexOobErrors = testLogger.errors.filter((e) =>

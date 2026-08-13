@@ -30,7 +30,7 @@ type EmscriptenFS = {
     mkdirTree(path: string): void;
     writeFile(path: string, data: string): void;
 };
-type KicadModule = { kicadOpenFile(path: string): unknown };
+type KicadModule = { kicadOpenFile(path: string): Promise<unknown> };
 
 function hasAbort(testLogger: { consoleLogs: string[]; errors: string[] }): boolean {
     return [...testLogger.consoleLogs, ...testLogger.errors].some((l) => l.includes('Aborted('));
@@ -72,7 +72,7 @@ test.describe('pl_editor drawing-sheet load', () => {
         expect(wizardVisible, 'no setup wizard/dialog should be visible (seed skipped it)').toBe(0);
 
         // Write a minimal drawing sheet into MEMFS and open it via the hook.
-        const openedPath = await page.evaluate((content) => {
+        const openedPath = await page.evaluate(async (content) => {
             const w = window as unknown as { FS: EmscriptenFS; Module: KicadModule };
             const dir = '/home/kicad/documents';
             try {
@@ -82,7 +82,7 @@ test.describe('pl_editor drawing-sheet load', () => {
             }
             const path = `${dir}/load-test.kicad_wks`;
             w.FS.writeFile(path, content);
-            w.Module.kicadOpenFile(path);
+            await w.Module.kicadOpenFile(path);
             return path;
         }, SAMPLE_WKS);
         expect(openedPath).toContain('load-test.kicad_wks');

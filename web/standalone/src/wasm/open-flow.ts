@@ -23,7 +23,13 @@ export interface OpenFlowOptions {
    * settle gate, the no-UI-automation-while-parked rule. GerbView uses this to
    * open a whole fabrication set through `kicadOpenFiles`.
    */
-  open?: () => void;
+  open?: () => unknown;
+  /**
+   * A current owned-open Promise can correctly remain pending while KiCad asks
+   * the user a modal question. The shell uses this signal to uncover the wx UI
+   * without pretending that the native owner has completed.
+   */
+  onInputDialog?: (visible: boolean) => void;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -98,20 +104,58 @@ function hasProgrammaticHook(win: ToolWindow): boolean {
 }
 
 /**
- * Invoke the programmatic hook. NOTE: kicadOpenFile runs OpenProjectFiles under
- * Asyncify, so the call SUSPENDS and unwinds back to JS before the load finishes
- * — its synchronous return is a falsy placeholder, not the real bool. So we fire
- * it and ignore the return; the caller polls for the loaded schematic instead.
+ * Invoke the programmatic hook. Current binaries return a Promise tied to the
+ * exact native owner tail. Older binaries return an Asyncify unwind placeholder;
+ * the caller retains the busy-probe fallback for those builds.
  */
 function invokeProgrammaticOpen(
   win: ToolWindow,
   absPath: string,
   log: (m: string) => void,
-): void {
+): unknown {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const mod = win.Module as any;
-  mod.kicadOpenFile(absPath);
-  log(`[open] invoked Module.kicadOpenFile(${absPath}) (async; polling for load)`);
+  const result = mod.kicadOpenFile(absPath);
+  log(`[open] invoked Module.kicadOpenFile(${absPath})`);
+  return result;
+}
+
+function isThenable(value: unknown): value is PromiseLike<boolean> {
+  return (
+    (typeof value === "object" || typeof value === "function") &&
+    value !== null &&
+    typeof (value as { then?: unknown }).then === "function"
+  );
+}
+
+async function awaitOwnedOpen(
+  win: ToolWindow,
+  result: PromiseLike<boolean>,
+  onInputDialog?: (visible: boolean) => void,
+): Promise<boolean> {
+  let settled = false;
+  let lastVisible = false;
+
+  const watcher = onInputDialog
+    ? (async () => {
+        while (!settled) {
+          const visible = inputDialogVisible(win);
+          if (visible !== lastVisible) {
+            lastVisible = visible;
+            onInputDialog(visible);
+          }
+          await sleep(100);
+        }
+      })()
+    : null;
+
+  try {
+    return await result;
+  } finally {
+    settled = true;
+    if (lastVisible) onInputDialog?.(false);
+    await watcher;
+  }
 }
 
 /** Heuristic: the editor frame title drops "untitled" once a real file is open. */
@@ -222,14 +266,29 @@ export async function openFileInTool(
   }
 
   // Strategy 1: programmatic hook (preferred — deterministic, no UI automation).
-  // Because the call is Asyncify-async we can't trust its return value; instead
-  // we invoke it and wait for the open chain to settle (kicadOpenFileBusy — see
-  // waitForOpenSettled). We must NOT fall back to UI automation while the hook
-  // is in flight — synthesizing input would re-enter the suspended Asyncify
-  // call and corrupt it.
+  // Current builds expose the owner transaction's exact completion Promise.
+  // The Promise is the completion contract; do not add a second TOCTOU busy
+  // poll after it. Keep the busy-probe path only for older binaries whose
+  // direct Asyncify export returns an unwind placeholder.
   if (opts.open || hasProgrammaticHook(win)) {
-    if (opts.open) opts.open();
-    else invokeProgrammaticOpen(win, absPath, log);
+    const result = opts.open
+      ? opts.open()
+      : invokeProgrammaticOpen(win, absPath, log);
+
+    if (isThenable(result)) {
+      try {
+        if (!(await awaitOwnedOpen(win, result, opts.onInputDialog))) {
+          log("[open] owned open completed with failure");
+          return "failed";
+        }
+      } catch (error) {
+        log(`[open] owned open rejected: ${String(error)}`);
+        return "failed";
+      }
+
+      return "programmatic";
+    }
+
     const settled = await waitForOpenSettled(win, log, timeoutMs, opts.settleTimeoutMs);
     return settled ? "programmatic" : "failed";
   }

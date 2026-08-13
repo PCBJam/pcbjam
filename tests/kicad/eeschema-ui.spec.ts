@@ -30,7 +30,7 @@ const SAMPLE_SCH = `(kicad_sch
 `;
 
 type FS = { mkdirTree(p: string): void; writeFile(p: string, d: string): void };
-type Mod = { kicadOpenFile(p: string): unknown; kicadCollabSnapshot(): string };
+type Mod = { kicadOpenFile(p: string): Promise<unknown>; kicadCollabSnapshot(): Promise<string> };
 
 function hasAbort(l: { consoleLogs: string[]; errors: string[] }): boolean {
   return [...l.consoleLogs, ...l.errors].some((s) => s.includes("Aborted("));
@@ -45,7 +45,7 @@ async function bootAndOpen(page: Page): Promise<void> {
     null,
     { timeout: 90000 },
   );
-  await page.evaluate((content) => {
+  await page.evaluate(async (content) => {
     const w = window as unknown as { FS: FS; Module: Mod };
     try {
       w.FS.mkdirTree("/home/kicad/documents");
@@ -54,7 +54,7 @@ async function bootAndOpen(page: Page): Promise<void> {
     }
     const p = "/home/kicad/documents/ui.kicad_sch";
     w.FS.writeFile(p, content);
-    w.Module.kicadOpenFile(p);
+    await w.Module.kicadOpenFile(p);
   }, SAMPLE_SCH);
   // Wait for the async open to land the 2 fixture wires (deterministic — replaces a
   // fixed "let OpenProjectFiles settle" sleep).
@@ -62,7 +62,9 @@ async function bootAndOpen(page: Page): Promise<void> {
 }
 
 function count(page: Page): Promise<number> {
-  return page.evaluate(() => JSON.parse(window.Module.kicadCollabSnapshot()).added.length);
+  return page.evaluate(async () =>
+    JSON.parse(await window.Module.kicadCollabSnapshot()).added.length,
+  );
 }
 
 async function focusCanvas(page: Page): Promise<void> {
@@ -95,21 +97,29 @@ test.describe("eeschema core UI (wasm)", () => {
   test("text tool opens its properties dialog and closes without freezing", async ({ page, testLogger }) => {
     await bootAndOpen(page);
 
-    expect(await clickByTooltip(page, "Draw Text")).toBe(true);
-    // Wait for the tool to latch selected (replaces a fixed 600ms).
-    await expect.poll(async () => {
-      const t = await findByTooltip(page, "Draw Text", { elementType: "tool" });
-      return (t?.label ?? "").includes("[checked]");
-    }, { timeout: 5000, intervals: [200] }).toBe(true);
-
-    const box = await page.locator("#canvas").boundingBox();
-    expect(box, "#canvas has a bounding box").not.toBeNull();
-    await page.mouse.click(box!.x + box!.width / 2, box!.y + box!.height / 2);
-
     const dialogsOpen = () =>
       page.evaluate(() =>
         window.wxElementRegistry.findAll({ visible: true }).filter((e) => /Dialog/i.test(e.typeName)).length,
       );
+
+    expect(await clickByTooltip(page, "Draw Text")).toBe(true);
+    // Depending on where the synthetic click lands, wxWidgets can either latch
+    // the tool first or immediately dispatch the canvas click and open the
+    // properties dialog.  Both are valid observable states.
+    await expect.poll(async () => {
+      if (await dialogsOpen() > 0) {
+        return true;
+      }
+
+      const t = await findByTooltip(page, "Draw Text", { elementType: "tool" });
+      return (t?.label ?? "").includes("[checked]");
+    }, { timeout: 5000, intervals: [200] }).toBe(true);
+
+    if (await dialogsOpen() === 0) {
+      const box = await page.locator("#canvas").boundingBox();
+      expect(box, "#canvas has a bounding box").not.toBeNull();
+      await page.mouse.click(box!.x + box!.width / 2, box!.y + box!.height / 2);
+    }
 
     // The quasi-modal dialog must appear (previously the nested event loop threw "unwind").
     // Poll for it instead of a fixed 1500ms "let the dialog open" sleep.

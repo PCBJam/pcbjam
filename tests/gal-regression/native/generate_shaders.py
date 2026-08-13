@@ -71,6 +71,8 @@ def main():
         ('smaa_pass_2_vert.glsl', 'glsl_smaa_pass_2_vert'),
         ('smaa_pass_3_frag.glsl', 'glsl_smaa_pass_3_frag'),
         ('smaa_pass_3_vert.glsl', 'glsl_smaa_pass_3_vert'),
+        ('xor_diff_frag.glsl', 'glsl_xor_diff_frag'),
+        ('xor_diff_vert.glsl', 'glsl_xor_diff_vert'),
     ]
 
     generated_cpp_files = []

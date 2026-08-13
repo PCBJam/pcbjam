@@ -1,7 +1,8 @@
 import { test, expect } from './fixtures';
 import { shotPath } from '../e2e/utils/element-tracker';
 import { waitForPcbnew } from './utils/pcbnew-ready';
-import { DEMO, loadBoard, countGlCanvases, logThreeDDiag, openThreeDViewer, waitForThreeDRender }
+import { DEMO, loadBoard, countGlCanvases, logThreeDDiag, openThreeDViewer,
+    waitForThreeDRender, waitForThreeDViewerCanvas, waitForThreeDViewerWindow }
     from './utils/threed-viewer';
 
 /**
@@ -36,6 +37,7 @@ test.describe('3D viewer from pcbnew', () => {
         console.log(`[TEST] glcanvas count before opening 3D viewer: ${glBefore}`);
 
         await openThreeDViewer(page, glBefore);
+        const viewerCanvasId = await waitForThreeDViewerCanvas(page);
 
         // Gate on the scene actually being ON the canvas, not a fixed sleep: the first frame
         // can lag the canvas creation (CI software WebGL under parallel load), and sampling
@@ -45,15 +47,14 @@ test.describe('3D viewer from pcbnew', () => {
 
         await page.screenshot({ path: shotPath(page, `3d-viewer-${DEMO.name}.png`), scale: 'css' });
 
-        // Read the 3D viewer canvas (the newest glcanvas) directly from its backing
+        // Read the identified 3D viewer canvas directly from its backing
         // store: copy it onto a 2D canvas with drawImage and sample pixels. This is
         // reliable thanks to preserveDrawingBuffer=true, whereas Playwright's CDP
         // screenshot of a WebGL canvas on swiftshader comes back blank. We save the
         // copy as a PNG (the real visual artifact) and assert the board rendered by
         // checking the canvas is not a single uniform colour.
-        const render = await page.evaluate(() => {
-            const list = document.querySelectorAll('canvas[id^="glcanvas-"]');
-            const el = list[list.length - 1] as HTMLCanvasElement;
+        const render = await page.evaluate((canvasId) => {
+            const el = document.getElementById(canvasId) as HTMLCanvasElement;
             const tmp = document.createElement('canvas');
             tmp.width = el.width;
             tmp.height = el.height;
@@ -75,7 +76,7 @@ test.describe('3D viewer from pcbnew', () => {
             }
             return { id: el.id, w: el.width, h: el.height, distinctColors: colors.size,
                      dataUrl: tmp.toDataURL('image/png') };
-        });
+        }, viewerCanvasId);
         console.log(`[TEST] 3D canvas ${render.id} ${render.w}x${render.h}, distinct colours: ${render.distinctColors}`);
 
         const b64 = render.dataUrl.replace(/^data:image\/png;base64,/, '');
@@ -122,9 +123,12 @@ test.describe('3D viewer from pcbnew', () => {
      * opaque one on top. (The main editor escapes this because its window keeps
      * `#canvas` transparent over the GAL region; a secondary frame's region is opaque.)
      *
-     * The fix (wx.js `createGLCanvas`): a GL canvas created while another GL canvas is
-     * already visible belongs to a secondary window → lift it to z-index 2147483647 so
-     * it stacks above the chrome.
+     * The fix assigns the role where it is known: `wxGLCanvas::Create` asks the
+     * owning top-level window whether it is the main frame and passes that boolean
+     * to wx.js `createGLCanvas`. Main-frame GAL surfaces stay at z-index 100;
+     * secondary-frame surfaces use z-index 2147483647 above the chrome. This also
+     * prevents a main GAL replacement from being misclassified during recovery,
+     * when the failed and replacement canvases briefly coexist.
      *
      * This asserts the stacking straight from the DOM/computed-style — no pixels or
      * screenshots — so it is independent of the slow raytrace and CI-safe on swiftshader
@@ -145,45 +149,53 @@ test.describe('3D viewer from pcbnew', () => {
 
         const glBefore = await countGlCanvases(page);
         await openThreeDViewer(page, glBefore);
+        const viewerCanvasId = await waitForThreeDViewerCanvas(page);
 
         // The z-index is assigned synchronously when the canvas is created, but wait
-        // until the newest glcanvas is actually on-screen (setGLCanvasRect ran →
+        // until the identified viewer canvas is actually on-screen (setGLCanvasRect ran →
         // display:block, non-zero box) so its secondary frame's window-N div has been
         // raised by raiseWindow() and the DOM stacking has settled.
-        await page.waitForFunction((before: number) => {
-            const list = document.querySelectorAll<HTMLCanvasElement>('canvas[id^="glcanvas-"]');
-            if (list.length <= before) return false;
-            const viewer = list[list.length - 1];
+        await page.waitForFunction((id: string) => {
+            const viewer = document.getElementById(id) as HTMLCanvasElement | null;
+            if (!viewer) return false;
             return getComputedStyle(viewer).display !== 'none'
                 && viewer.getBoundingClientRect().width > 0;
-        }, glBefore, { timeout: 60000 });
+        }, viewerCanvasId, { timeout: 60000 });
 
         // Stacking order inside #window-container (a single z-index:1 stacking context).
-        // The 3D viewer canvas is the newest glcanvas-*; it must out-stack every other
+        // The identified 3D viewer canvas must out-stack every other
         // GL canvas and every secondary window-N chrome div, or the opaque chrome occludes it.
-        const stacking = await page.evaluate(() => {
+        const stacking = await page.evaluate((viewerId) => {
             const z = (el: Element) => parseInt(getComputedStyle(el).zIndex, 10) || 0;
             const gls = Array.from(document.querySelectorAll('#window-container canvas[id^="glcanvas-"]'));
             const windows = Array.from(document.querySelectorAll('#window-container [id^="window-"]'));
-            const viewer = gls[gls.length - 1];
+            const viewer = document.getElementById(viewerId);
+            const otherGls = gls.filter((canvas) => canvas.id !== viewerId);
             return {
                 glCount: gls.length,
                 viewerId: viewer ? viewer.id : null,
                 viewerZ: viewer ? z(viewer) : 0,
-                maxOtherGlZ: Math.max(0, ...gls.slice(0, -1).map(z)),
+                maxOtherGlZ: Math.max(0, ...otherGls.map(z)),
                 maxWindowZ: Math.max(0, ...windows.map(z)),
                 glZ: gls.map((c) => ({ id: c.id, z: z(c) })),
                 windowZ: windows.map((w) => ({ id: w.id, z: z(w) })),
             };
-        });
+        }, viewerCanvasId);
         console.log(`[TEST] stacking: ${JSON.stringify(stacking)}`);
 
         // Precondition: the viewer actually opened (main GAL canvas + viewer canvas).
         expect(stacking.glCount,
             'the 3D viewer should add a second WebGL canvas').toBeGreaterThanOrEqual(2);
 
-        // THE regression assertion. Pre-fix every glcanvas-* shares z-index 100, so the
-        // viewer canvas is not strictly above the main GAL canvas and the chrome occludes it.
+        // The semantic secondary-frame role is exact and independent of canvas
+        // construction or visibility order.
+        expect(stacking.viewerZ,
+            'the 3D viewer canvas uses the stable secondary-frame z-layer')
+            .toBe(2147483647);
+
+        // The compositing regression assertion. Pre-fix every glcanvas-* shares
+        // z-index 100, so the viewer canvas is not strictly above the main GAL
+        // canvas and the chrome occludes it.
         expect(stacking.viewerZ,
             `3D viewer canvas ${stacking.viewerId} (z=${stacking.viewerZ}) must stack strictly above `
             + `the other GL canvases (max z=${stacking.maxOtherGlZ}); an equal z-index means the `
@@ -220,21 +232,9 @@ test.describe('3D viewer from pcbnew', () => {
         await waitForPcbnew(page);
         await loadBoard(page, testLogger);
 
-        const winsBefore = await page.evaluate(() =>
-            Array.from(document.querySelectorAll('#window-container [id^="window-"]')).map((e) => e.id));
         const glBefore = await countGlCanvases(page);
         await openThreeDViewer(page, glBefore);
-
-        // Wait for the new top-level window div to appear (replaces a fixed 1500ms).
-        await expect.poll(async () => page.evaluate((before: string[]) => {
-            const all = Array.from(document.querySelectorAll('#window-container [id^="window-"]')).map((e) => e.id);
-            return all.find((id) => !before.includes(id)) ?? null;
-        }, winsBefore), { timeout: 60000, intervals: [300] }).not.toBeNull();
-        const winId = await page.evaluate((before: string[]) => {
-            const all = Array.from(document.querySelectorAll('#window-container [id^="window-"]')).map((e) => e.id);
-            return all.find((id) => !before.includes(id)) ?? all[all.length - 1] ?? null;
-        }, winsBefore);
-        expect(winId, 'the 3D viewer should open a new top-level window').toBeTruthy();
+        const winId = await waitForThreeDViewerWindow(page);
         await page.screenshot({ path: shotPath(page, '3d-viewer-titlebar.png'), scale: 'css' });
 
         // It must have a real DOM title bar (the frames-only fix covers the viewer).
@@ -266,21 +266,26 @@ test.describe('3D viewer from pcbnew', () => {
         await page.mouse.down();
         await page.mouse.move(cx, cy + 80, { steps: 10 });
         await page.mouse.up();
-        // Let the frame-move op (wx_window_move → wxWindow::Move) fully settle before the
-        // next interaction: the DOM style.top updates before the wx-side op completes, so
-        // polling the outcome races the following close click (documented interaction dwell).
-        await page.waitForTimeout(300); // eslint-disable-line -- documented interaction dwell
-        const afterTop = await styleTop(winId as string);
-        expect(afterTop, 'dragging the title bar should move the 3D viewer frame').not.toBe(beforeTop);
+        // Opening the viewer can still own a parked 3D model-resolution job.
+        // Pointer-move receipts are deliberately queued behind that owner and
+        // coalesced to the latest geometry, so wait for the committed wx move
+        // instead of assuming it may interrupt within a fixed 300 ms.
+        await expect.poll(() => styleTop(winId), {
+            timeout: 30000,
+            intervals: [100, 200, 500],
+            message: 'the queued title-bar move should eventually commit',
+        }).not.toBe(beforeTop);
 
         // Close via the × (wx_window_close → wx Close() → OnCloseWindow).
         await page.locator(`#${winId} .window-titlebar-close`).click();
-        await page.waitForTimeout(600); // eslint-disable-line -- documented interaction dwell
-        const gone = await page.evaluate((wid) => {
+        await expect.poll(() => page.evaluate((wid) => {
             const el = document.getElementById(wid);
             return !el || getComputedStyle(el).display === 'none';
-        }, winId);
-        expect(gone, 'the × should close the 3D viewer').toBe(true);
+        }, winId), {
+            timeout: 30000,
+            intervals: [100, 200, 500],
+            message: 'the queued title-bar close should eventually commit',
+        }).toBe(true);
 
         // Opening/dragging/closing didn't blow up the runtime.
         const aborts = [...testLogger.consoleLogs, ...testLogger.errors].filter((l) => l.includes('Aborted('));
@@ -302,38 +307,26 @@ test.describe('3D viewer from pcbnew', () => {
         await waitForPcbnew(page);
         await loadBoard(page, testLogger);
 
-        const winsBefore = await page.evaluate(() =>
-            Array.from(document.querySelectorAll('#window-container [id^="window-"]')).map((e) => e.id));
         const glBefore = await countGlCanvases(page);
         await openThreeDViewer(page, glBefore);
-
-        // Wait for the new top-level window div to appear (replaces a fixed 1500ms).
-        await expect.poll(async () => page.evaluate((before: string[]) => {
-            const all = Array.from(document.querySelectorAll('#window-container [id^="window-"]')).map((e) => e.id);
-            return all.find((id) => !before.includes(id)) ?? null;
-        }, winsBefore), { timeout: 60000, intervals: [300] }).not.toBeNull();
-        const winId = await page.evaluate((before: string[]) => {
-            const all = Array.from(document.querySelectorAll('#window-container [id^="window-"]')).map((e) => e.id);
-            return all.find((id) => !before.includes(id)) ?? all[all.length - 1] ?? null;
-        }, winsBefore);
-        expect(winId, 'the 3D viewer should open a new top-level window').toBeTruthy();
+        const winId = await waitForThreeDViewerWindow(page);
+        const viewerCanvasId = await waitForThreeDViewerCanvas(page);
 
         // It is wxRESIZE_BORDER → exactly the 5 edge/corner handles.
         const handles = await page.locator(`#${winId} .window-resize-handle`).count();
         expect(handles, 'the 3D viewer (wxRESIZE_BORDER) should have edge-resize handles').toBe(5);
 
-        // Frame width from its style; GL canvas width from the newest glcanvas-*.
+        // Frame width from its style; GL width from the identified viewer canvas.
         const frameWidth = (wid: string) =>
             page.evaluate((id) => {
                 const el = document.getElementById(id) as HTMLElement | null;
                 return el ? (parseInt(el.style.width || '0', 10) || 0) : 0;
             }, wid);
         const glWidth = () =>
-            page.evaluate(() => {
-                const all = Array.from(document.querySelectorAll('canvas[id^="glcanvas-"]')) as HTMLCanvasElement[];
-                const c = all[all.length - 1];
+            page.evaluate((canvasId) => {
+                const c = document.getElementById(canvasId) as HTMLCanvasElement | null;
                 return c ? (parseInt(c.style.width || '0', 10) || 0) : 0;
-            });
+            }, viewerCanvasId);
 
         const beforeFrame = await frameWidth(winId as string);
         const beforeGl = await glWidth();
@@ -350,16 +343,16 @@ test.describe('3D viewer from pcbnew', () => {
         await page.mouse.down();
         await page.mouse.move(sx - 220, sy, { steps: 12 });
         await page.mouse.up();
-        // Let the resize op (wx_window_resize → SetSize → relayout + GL canvas resize)
-        // settle before reading widths (documented interaction dwell).
-        await page.waitForTimeout(500); // eslint-disable-line -- documented interaction dwell
-
-        const afterFrame = await frameWidth(winId as string);
-        const afterGl = await glWidth();
-        expect(afterFrame, `frame width should shrink (was ${beforeFrame}, now ${afterFrame})`)
-            .toBeLessThan(beforeFrame - 100);
-        expect(afterGl, `3D viewer GL canvas should shrink with the frame (was ${beforeGl}, now ${afterGl})`)
-            .toBeLessThan(beforeGl);
+        await expect.poll(() => frameWidth(winId), {
+            timeout: 30000,
+            intervals: [100, 200, 500],
+            message: `queued frame resize should shrink width from ${beforeFrame}`,
+        }).toBeLessThan(beforeFrame - 100);
+        await expect.poll(glWidth, {
+            timeout: 30000,
+            intervals: [100, 200, 500],
+            message: `the GL canvas should track the resized frame from ${beforeGl}`,
+        }).toBeLessThan(beforeGl);
 
         const aborts = [...testLogger.consoleLogs, ...testLogger.errors].filter((l) => l.includes('Aborted('));
         expect(aborts, `WASM aborted during the resize test:\n${aborts.join('\n\n')}`).toEqual([]);

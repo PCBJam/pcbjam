@@ -6,8 +6,10 @@
  */
 
 import { test, expect } from './utils/fixtures';
+import type { Page } from '@playwright/test';
 import * as path from 'path';
 import * as fs from 'fs';
+import { PNG } from 'pngjs';
 
 // Scenario names (must match native test)
 const SCENARIO_NAMES = [
@@ -44,6 +46,72 @@ const SCENARIO_NAMES = [
 // Output directory for WebGL screenshots
 const OUTPUT_DIR = path.join(__dirname, '../gal-regression/output/webgl');
 
+const RUNTIME_FAILURE = /Aborted\(|missing function|unreachable|mainWindow is not defined|assert .*GetTopWindow/i;
+
+type GalLogger = { consoleLogs: string[]; errors: string[] };
+
+async function waitForGalReady(page: Page): Promise<void> {
+  await page.waitForFunction(() => {
+    return (window as any).galTest?.isReady() === true;
+  }, { timeout: 60000 });
+
+  await expect(page.locator('.gl-canvas')).toHaveCount(1);
+  await expect(page.locator('.gl-canvas')).toBeVisible();
+}
+
+async function assertGalOverlayGeometry(page: Page): Promise<void> {
+  const geometry = await page.evaluate(() => {
+    const host = document.getElementById('main-window')!.getBoundingClientRect();
+    const overlay = document.getElementById('window-container')!.getBoundingClientRect();
+    const canvas = document.querySelector('.gl-canvas')!.getBoundingClientRect();
+
+    return {
+      host: { left: host.left, top: host.top, right: host.right, bottom: host.bottom },
+      overlay: {
+        left: overlay.left,
+        top: overlay.top,
+        right: overlay.right,
+        bottom: overlay.bottom,
+        position: getComputedStyle(document.getElementById('window-container')!).position,
+      },
+      canvas: { left: canvas.left, top: canvas.top, right: canvas.right, bottom: canvas.bottom },
+    };
+  });
+
+  expect(geometry.overlay.position).toBe('absolute');
+  expect(Math.abs(geometry.overlay.left - geometry.host.left)).toBeLessThanOrEqual(1);
+  expect(Math.abs(geometry.overlay.top - geometry.host.top)).toBeLessThanOrEqual(1);
+  expect(geometry.canvas.right).toBeGreaterThan(geometry.host.left);
+  expect(geometry.canvas.left).toBeLessThan(geometry.host.right);
+  expect(geometry.canvas.bottom).toBeGreaterThan(geometry.host.top);
+  expect(geometry.canvas.top).toBeLessThan(geometry.host.bottom);
+}
+
+function assertHealthyRuntime(testLogger: GalLogger): void {
+  const failures = [...testLogger.consoleLogs, ...testLogger.errors]
+    .filter((line) => RUNTIME_FAILURE.test(line));
+  expect(failures, 'GAL runtime must not abort or use an undefined symbol').toEqual([]);
+  expect(testLogger.errors.filter((line) => !line.includes('favicon')), 'no page errors').toEqual([]);
+}
+
+function assertRenderedPixels(screenshot: Buffer, scenarioName: string): void {
+  const png = PNG.sync.read(screenshot);
+  const first = png.data.subarray(0, 4);
+  let differs = false;
+
+  for (let offset = 4; offset < png.data.length; offset += 4) {
+    if (png.data[offset] !== first[0]
+        || png.data[offset + 1] !== first[1]
+        || png.data[offset + 2] !== first[2]
+        || png.data[offset + 3] !== first[3]) {
+      differs = true;
+      break;
+    }
+  }
+
+  expect(differs, `${scenarioName} must render more than one pixel color`).toBe(true);
+}
+
 test.describe('GAL WebGL Regression Tests', () => {
   test.beforeAll(async () => {
     // Ensure output directory exists
@@ -55,10 +123,8 @@ test.describe('GAL WebGL Regression Tests', () => {
   test('Load GAL WebGL test module', async ({ page, testLogger }) => {
     await page.goto('/gal-webgl/gal_webgl_test.html');
 
-    // Wait for the custom event indicating module is ready
-    await page.waitForFunction(() => {
-      return (window as any).galTest !== undefined;
-    }, { timeout: 60000 });
+    await waitForGalReady(page);
+    await assertGalOverlayGeometry(page);
 
     // Verify module loaded
     const totalScenarios = await page.evaluate(() => {
@@ -66,6 +132,13 @@ test.describe('GAL WebGL Regression Tests', () => {
     });
 
     expect(totalScenarios).toBe(28);
+
+    const canvasSize = await page.locator('.gl-canvas').evaluate((canvas: HTMLCanvasElement) => ({
+      width: canvas.width,
+      height: canvas.height,
+    }));
+    expect(canvasSize).toEqual({ width: 1600, height: 1200 });
+    assertHealthyRuntime(testLogger);
 
     await page.screenshot({
       path: path.join(OUTPUT_DIR, 'gal-module-loaded.png'),
@@ -75,79 +148,56 @@ test.describe('GAL WebGL Regression Tests', () => {
     console.log(`GAL WebGL test module loaded with ${totalScenarios} scenarios`);
   });
 
+  test('same-tab reload retires the old paint pump cleanly', async ({ page, testLogger }) => {
+    await page.goto('/gal-webgl/gal_webgl_test.html');
+    await waitForGalReady(page);
+
+    // Keep the same Page so console output from the outgoing document remains
+    // observable.  A fresh Page per test used to miss the last admitted rAF
+    // paint after the old document had removed its top-level window.
+    await page.goto('/gal-webgl/gal_webgl_test.html');
+    await waitForGalReady(page);
+
+    assertHealthyRuntime(testLogger);
+  });
+
   // Generate a test for each scenario
   for (let i = 0; i < SCENARIO_NAMES.length; i++) {
     const scenarioName = SCENARIO_NAMES[i];
     const scenarioIndex = i;
 
     test(`Scenario ${scenarioIndex}: ${scenarioName}`, async ({ page, testLogger }) => {
-      // Capture console output for debugging
-      const consoleLogs: string[] = [];
-      page.on('console', msg => {
-        consoleLogs.push(`[${msg.type()}] ${msg.text()}`);
-      });
-      page.on('pageerror', err => {
-        consoleLogs.push(`[ERROR] ${err.message}`);
-      });
-
       await page.goto('/gal-webgl/gal_webgl_test.html');
 
-      // Wait for module to be ready
-      await page.waitForFunction(() => {
-        return (window as any).galTest !== undefined && (window as any).galTest.isReady();
-      }, { timeout: 60000 });
+      await waitForGalReady(page);
 
       // Run the scenario
-      await page.evaluate((index) => {
-        (window as any).galTest.runScenario(index);
+      const result = await page.evaluate((index) => {
+        return (window as any).galTest.runScenario(index);
       }, scenarioIndex);
+      expect(result).toBe(0);
 
       // Wait deterministically for rendering to complete: runScenario reports
       // success by logging `[GAL Test] Rendered: <name>` (setStatus).
       await expect.poll(
-        () => consoleLogs.some(l => l.includes(`Rendered: ${scenarioName}`)),
+        () => page.locator('#status').textContent(),
         { message: `scenario ${scenarioName} did not report render completion` }
-      ).toBe(true);
+      ).toContain(`Rendered: ${scenarioName}`);
 
-      // Debug: list all canvases on the page
-      const canvasInfo = await page.evaluate(() => {
-        const canvases = document.querySelectorAll('canvas');
-        const windowContainer = document.getElementById('window-container');
-        return {
-          canvases: Array.from(canvases).map(c => ({
-            id: c.id,
-            className: c.className,
-            width: c.width,
-            height: c.height,
-            display: window.getComputedStyle(c).display,
-            parentId: c.parentElement?.id
-          })),
-          windowContainerChildren: windowContainer?.children.length || 0,
-          allElements: document.querySelectorAll('#window-container *').length
-        };
-      });
-      console.log('Canvas debug:', JSON.stringify(canvasInfo, null, 2));
-
-      // wxGLCanvas renders as class 'gl-canvas' (per the harness); target it directly.
-      const canvas = page.locator('canvas').first();
-      await expect(canvas).toBeVisible({ timeout: 5000 });
+      const canvas = page.locator('.gl-canvas');
 
       // Hide controls overlay before screenshot (it sits on top of canvas)
       await page.locator('#controls-overlay').evaluate(el => el.style.visibility = 'hidden');
 
       // Screenshot the canvas (matching native 800x600 output)
       const screenshotPath = path.join(OUTPUT_DIR, `gal-${scenarioName}.png`);
-      await canvas.screenshot({ path: screenshotPath });
+      const screenshot = await canvas.screenshot({ path: screenshotPath });
+      assertRenderedPixels(screenshot, scenarioName);
 
       // Restore overlay for manual debugging
       await page.locator('#controls-overlay').evaluate(el => el.style.visibility = 'visible');
 
-      // Print console logs for first scenario (debugging)
-      if (scenarioIndex === 0) {
-        console.log('\n=== Console logs ===');
-        consoleLogs.forEach(log => console.log(log));
-        console.log('===================\n');
-      }
+      assertHealthyRuntime(testLogger);
 
       console.log(`Saved: ${screenshotPath}`);
     });
@@ -156,23 +206,20 @@ test.describe('GAL WebGL Regression Tests', () => {
   test('Run all scenarios sequentially', async ({ page, testLogger }) => {
     await page.goto('/gal-webgl/gal_webgl_test.html');
 
-    // Wait for module to be fully ready (not just defined)
-    await page.waitForFunction(() => {
-      return (window as any).galTest !== undefined && (window as any).galTest.isReady();
-    }, { timeout: 60000 });
+    await waitForGalReady(page);
 
     console.log('Running all 28 scenarios...');
 
-    // Find the GL canvas (same logic as individual tests)
-    const canvas = page.locator('canvas').first(); // wxGLCanvas renders as class 'gl-canvas'
+    const canvas = page.locator('.gl-canvas');
 
     for (let i = 0; i < SCENARIO_NAMES.length; i++) {
       const scenarioName = SCENARIO_NAMES[i];
 
       // Run scenario
-      await page.evaluate((index) => {
-        (window as any).galTest.runScenario(index);
+      const result = await page.evaluate((index) => {
+        return (window as any).galTest.runScenario(index);
       }, i);
+      expect(result).toBe(0);
 
       // Wait deterministically for rendering to complete: on success runScenario
       // sets the status element to `Rendered: <name>` (setStatus).
@@ -186,7 +233,8 @@ test.describe('GAL WebGL Regression Tests', () => {
 
       // Screenshot the GL canvas
       const screenshotPath = path.join(OUTPUT_DIR, `gal-${scenarioName}.png`);
-      await canvas.screenshot({ path: screenshotPath });
+      const screenshot = await canvas.screenshot({ path: screenshotPath });
+      assertRenderedPixels(screenshot, scenarioName);
 
       // Restore overlay
       await page.locator('#controls-overlay').evaluate(el => el.style.visibility = 'visible');
@@ -194,6 +242,7 @@ test.describe('GAL WebGL Regression Tests', () => {
       console.log(`[${i + 1}/28] ${scenarioName}`);
     }
 
+    assertHealthyRuntime(testLogger);
     console.log('All scenarios completed');
   });
 });

@@ -3,6 +3,7 @@ import { parseToolParam, toolForFile, type Tool } from "@pcbjam/shared";
 import {
   createProjectFileIfMissing,
   fetchFileBytes,
+  refreshFileRevision,
   uploadFileBytes,
   useProject,
   useSourceDescriptor,
@@ -83,7 +84,31 @@ export function ToolPage() {
         saveBytes={
           readOnly
             ? undefined
-            : (relPath, bytes) => uploadFileBytes(slug, relPath, bytes)
+            : async (relPath, bytes, signal) => {
+                try {
+                  const outcome = await uploadFileBytes(
+                    slug,
+                    relPath,
+                    bytes,
+                    signal,
+                  );
+                  if (outcome.kind === "unknown") {
+                    // Observation is diagnostic only. It cannot rebase this
+                    // in-memory model or authorize another write, and it must
+                    // not delay the hook's absorbing safety block.
+                    void refreshFileRevision(slug, relPath).catch(() => {});
+                  }
+                  return outcome;
+                } catch (error) {
+                  // The server can commit before a response is lost. Refresh
+                  // only for diagnostics and a future remount; save-flow treats
+                  // this unexpected exception as unknown and blocks this path.
+                  if (!signal?.aborted) {
+                    void refreshFileRevision(slug, relPath).catch(() => {});
+                  }
+                  throw error;
+                }
+              }
         }
         createFile={
           readOnly

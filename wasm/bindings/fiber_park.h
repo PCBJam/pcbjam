@@ -47,12 +47,11 @@ struct State
     int phase  = 0;
     int parkMs = 0;
     int pokes  = 0;
-    // Second coroutine (poisoned-attribution scenario): 0 idle · 1 yielded ·
-    // 2 completed. Starting it while the FIRST body is asyncify-parked makes
-    // libcontext attribute the jump's old side to that parked fiber
-    // (g_current_context is stale), writing a fresh suspension into its
-    // struct — the exact laundering that let the prod resume bypass the
-    // swap_suspended guard.
+    // Second coroutine (independent-source scenario): 0 idle · 1 yielded ·
+    // 2 completed. Starting it while the FIRST body is asyncify-parked proves
+    // that libcontext resolves the browser receipt's real physical root. It
+    // must not use the deliberately stale g_current_context as the source or
+    // write a foreign suspension into the first fiber's record.
     int phase2 = 0;
 };
 
@@ -136,12 +135,13 @@ inline int fiberBody2( int )
 }
 
 /**
- * Start a SECOND coroutine while the first body is asyncify-parked. Because
- * g_current_context still points at the parked fiber, libcontext attributes
- * this jump's old side to it: the swap writes a fresh (foreign) suspension
- * into the PARKED fiber's struct and re-marks it swap_suspended — the
- * laundering that lets a later Resume bypass the C++ guard. The JS
- * stale-rewind guard (handlesleep.js) must still quarantine it.
+ * Start a SECOND coroutine while the first body is asyncify-parked. The
+ * execution-owner runtime sees this later browser receipt on its registered
+ * physical root, separate from the sleeping fiber. libcontext must therefore
+ * resolve that exact stack as the old side of the swap, despite
+ * g_current_context still naming the sleeping first fiber. The second body
+ * may yield normally; the first fiber's sleep capture and exact wake must
+ * remain unchanged.
  */
 inline bool startSecond()
 {

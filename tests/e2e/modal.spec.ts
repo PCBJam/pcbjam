@@ -88,6 +88,96 @@ async function sampleModalCanvas(page: import('@playwright/test').Page) {
 }
 
 test.describe('Modal dialog border + drag (pcbjam #22)', () => {
+  test('callback runs after lease close and can reuse the same dialog', async ({ page }) => {
+    await page.goto(DIALOG_APP);
+    await waitForWxApp(page);
+    await clickByLabel(page, 'Callback Dialog');
+    await waitForModalRect(page);
+    await clickByLabel(page, 'OK');
+
+    await expect.poll(
+      () => page.evaluate(() => (window as typeof window & {
+        __dialogCallbackResult?: { phase: string; runs: number; result: number };
+      }).__dialogCallbackResult),
+      { message: 'ShowModal(callback) did not run after first completion' }
+    ).toEqual({ phase: 'first-complete', runs: 1, result: 5100 });
+
+    // The callback immediately reopens the SAME C++ dialog object. This is
+    // possible only after the first modal lease and wait are fully retired.
+    await waitForModalRect(page);
+    await clickByLabel(page, 'Cancel');
+
+    await expect.poll(
+      () => page.evaluate(() => (window as typeof window & {
+        __dialogCallbackResult?: {
+          phase: string;
+          runs: number;
+          result: number;
+          reuseResult?: number;
+        };
+      }).__dialogCallbackResult),
+      { message: 'reused callback dialog did not complete exactly once' }
+    ).toEqual({
+      phase: 'reuse-complete',
+      runs: 1,
+      result: 5100,
+      reuseResult: 5101,
+    });
+  });
+
+  test('true modal disables native and browser parent state exactly', async ({ page }) => {
+    await page.goto(DIALOG_APP);
+    await waitForWxApp(page);
+
+    const readState = () => page.evaluate(() => {
+      const registry = window.wxElementRegistry;
+      const frames = registry?.findByType('wxFrame') ?? [];
+      const dialogs = registry?.findByType('wxDialog') ?? [];
+      const visibleDialog = dialogs.find((dialog) => dialog.visible);
+      const main = document.getElementById('main-window');
+      const modal = Array.from(
+        document.querySelectorAll('#window-container .window.toplevel')
+      ).find((element) => (element as HTMLElement).style.display !== 'none');
+      return {
+        frameEnabled: frames[0]?.enabled ?? null,
+        dialogEnabled: visibleDialog?.enabled ?? null,
+        mainInert: main?.classList.contains('wx-inert') ?? null,
+        mainInertProperty: (main as HTMLElement | null)?.inert ?? null,
+        modalInert: modal?.classList.contains('wx-inert') ?? null,
+      };
+    });
+
+    await expect.poll(readState).toEqual({
+      frameEnabled: true,
+      dialogEnabled: null,
+      mainInert: false,
+      mainInertProperty: false,
+      modalInert: null,
+    });
+
+    await clickByLabel(page, 'Custom Dialog');
+    await waitForModalRect(page);
+
+    await expect.poll(readState, {
+      message: 'wxWindowDisabler and the DOM barrier must describe one modal state',
+    }).toEqual({
+      frameEnabled: false,
+      dialogEnabled: true,
+      mainInert: true,
+      mainInertProperty: true,
+      modalInert: false,
+    });
+
+    await clickByLabel(page, 'Cancel');
+    await expect.poll(readState).toEqual({
+      frameEnabled: true,
+      dialogEnabled: null,
+      mainInert: false,
+      mainInertProperty: false,
+      modalInert: null,
+    });
+  });
+
   test('modal has a visible border and shadow', async ({ page, testLogger }) => {
     await page.goto(DIALOG_APP);
     await waitForWxApp(page);
@@ -122,6 +212,32 @@ test.describe('Modal dialog border + drag (pcbjam #22)', () => {
     expect(hasShadow, `expected a box-shadow, got ${JSON.stringify(style)}`).toBe(true);
   });
 
+  test('modal paints its first frame after the opening handler parks', async ({ page, testLogger }) => {
+    await page.goto(DIALOG_APP);
+    await waitForWxApp(page);
+
+    await page.evaluate(() => {
+      const wc = document.getElementById('window-container');
+      if (wc) {
+        wc.style.position = 'absolute';
+        wc.style.top = '0';
+        wc.style.left = '0';
+      }
+    });
+
+    await clickByLabel(page, 'Custom Dialog');
+    await waitForModalRect(page);
+
+    await expect.poll(
+      async () => (await sampleModalCanvas(page))?.opaqueFrac ?? 0,
+      { message: 'the exact modal lifecycle must paint without a second input event' }
+    ).toBeGreaterThan(0.8);
+
+    const stats = await sampleModalCanvas(page);
+    testLogger.consoleLogs.push(`[MODAL_FIRST_FRAME] ${JSON.stringify(stats)}`);
+    await stableShot(page, 'modal-01b-first-frame.png', { fullPage: true });
+  });
+
   test('modal background stays painted (not black) after drag', async ({ page, testLogger }) => {
     await page.goto(DIALOG_APP);
     await waitForWxApp(page);
@@ -152,6 +268,10 @@ test.describe('Modal dialog border + drag (pcbjam #22)', () => {
     expect(dlgBefore, 'dialog should be in the registry').toBeTruthy();
 
     // Sanity: the freshly painted modal canvas is opaque.
+    await expect.poll(
+      async () => (await sampleModalCanvas(page))?.opaqueFrac ?? 0,
+      { message: 'modal must paint before the drag begins' }
+    ).toBeGreaterThan(0.8);
     const beforeStats = await sampleModalCanvas(page);
     testLogger.consoleLogs.push(
       `[MODAL_DRAG] before=${JSON.stringify(beforeStats)} dlg=${JSON.stringify(dlgBefore)}`
@@ -159,7 +279,7 @@ test.describe('Modal dialog border + drag (pcbjam #22)', () => {
     await stableShot(page, 'modal-02-before-drag.png', { fullPage: true });
 
     // The dialog now drags via its real DOM title bar (`.window-titlebar`):
-    // pointer events on it → wx_window_move → wxWindow::Move. So grab the element
+    // pointer events on it → wx_window_move_stage → wxWindow::Move. So grab the element
     // at its actual on-screen position (getBoundingClientRect), NOT the registry
     // coords the old canvas title bar needed. Center is over the title text, clear
     // of the close × at the right.
@@ -284,7 +404,7 @@ test.describe('Modal dialog border + drag (pcbjam #22)', () => {
 
     // With the bug: the canvas is cleared on each resize and shows black until the
     // deferred modal repaint flushes (only on the next click) → minOpaque ≈ 0.
-    // After the fix (wx_window_resize forces a synchronous repaint): it stays painted.
+    // After the fix (wx_window_resize_stage forces a synchronous repaint): it stays painted.
     expect(
       minOpaque,
       `modal canvas went transparent/black during resize (minOpaque=${minOpaque}, lowFrames=${lowFrames})`

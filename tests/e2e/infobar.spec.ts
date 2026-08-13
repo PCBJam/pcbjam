@@ -12,6 +12,7 @@ test.describe('wxInfoBar Tests', () => {
 
     const hasStartup = testLogger.consoleLogs.some(l => l.includes('INFOBAR_TEST'));
 
+    expect(hasStartup, 'the native InfoBar app must reach its startup marker').toBe(true);
     expect(testLogger.errors.filter(e => !e.includes('favicon'))).toHaveLength(0);
   });
 
@@ -25,7 +26,7 @@ test.describe('wxInfoBar Tests', () => {
 
     await expect.poll(
       () => testLogger.consoleLogs.some(l =>
-        l.includes('Showed info message') || l.includes('INFOBAR_EVENT')),
+        l.includes('[INFOBAR_EVENT] Showed info message')),
       { message: 'Info message should show' }
     ).toBe(true);
 
@@ -42,7 +43,7 @@ test.describe('wxInfoBar Tests', () => {
 
     await expect.poll(
       () => testLogger.consoleLogs.some(l =>
-        l.includes('Showed warning message') || l.includes('warning')),
+        l.includes('[INFOBAR_EVENT] Showed warning message')),
       { message: 'Warning message should show' }
     ).toBe(true);
 
@@ -59,7 +60,7 @@ test.describe('wxInfoBar Tests', () => {
 
     await expect.poll(
       () => testLogger.consoleLogs.some(l =>
-        l.includes('Showed error message') || l.includes('error')),
+        l.includes('[INFOBAR_EVENT] Showed error message')),
       { message: 'Error message should show' }
     ).toBe(true);
 
@@ -76,7 +77,7 @@ test.describe('wxInfoBar Tests', () => {
 
     await expect.poll(
       () => testLogger.consoleLogs.some(l =>
-        l.includes('Showed info message') || l.includes('INFOBAR_EVENT')),
+        l.includes('[INFOBAR_EVENT] Showed info message')),
       { message: 'Info message should show before dismiss' }
     ).toBe(true);
 
@@ -86,11 +87,51 @@ test.describe('wxInfoBar Tests', () => {
 
     await expect.poll(
       () => testLogger.consoleLogs.some(l =>
-        l.includes('dismissed') || l.includes('Dismiss')),
+        l.includes('[INFOBAR_EVENT] Info bar dismissed')),
       { message: 'Dismiss should work' }
     ).toBe(true);
 
     await stableShot(page, 'infobar-05-dismiss.png', { fullPage: true });
+  });
+
+  test('DOM-backed click keeps control identity across stale registry geometry', async ({ page, testLogger }) => {
+    await page.goto('/standalone/infobar/infobar_test.html');
+    await waitForWxApp(page);
+
+    expect(await clickByLabel(page, 'Show Info Message')).toBe(true);
+    await expect.poll(
+      () => testLogger.consoleLogs.some((line) =>
+        line.includes('[INFOBAR_EVENT] Showed info message')),
+      { message: 'the show event must be applied before constructing stale geometry' }
+    ).toBe(true);
+
+    const setup = await page.evaluate(() => {
+      const registry = window.wxElementRegistry;
+      const dismiss = registry?.findByLabel('Dismiss', { exact: true })[0];
+      const wrongTarget = registry?.findByLabel('Show With Action Button', { exact: true })[0];
+      if (!dismiss || !wrongTarget) return null;
+
+      // Model the real failure deterministically: a queued relayout made this
+      // cached point belong to a different control before the pointer action.
+      // The DOM identity remains valid and is the authoritative click target.
+      dismiss.screenX = wrongTarget.screenX;
+      dismiss.screenY = wrongTarget.screenY;
+      dismiss.centerX = wrongTarget.centerX;
+      dismiss.centerY = wrongTarget.centerY;
+      return { domId: dismiss.domId };
+    });
+
+    expect(setup?.domId, 'tracked DOM controls must publish stable browser identity')
+      .toBeGreaterThan(0);
+    expect(await clickByLabel(page, 'Dismiss', { exact: true })).toBe(true);
+
+    await expect.poll(
+      () => testLogger.consoleLogs.some((line) =>
+        line.includes('[INFOBAR_EVENT] Info bar dismissed')),
+      { message: 'semantic click must follow the Dismiss control, not its stale point' }
+    ).toBe(true);
+    expect(testLogger.consoleLogs.some((line) =>
+      line.includes('[INFOBAR_EVENT] Showed message with action button'))).toBe(false);
   });
 
 });

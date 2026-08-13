@@ -19,10 +19,10 @@ import { test, expect, type Page } from '@playwright/test';
 const SCOPE = 'default';
 
 type Mod = {
-  kicadCollabTestSelectComponent(): string;
-  kicadCollabTestClearSelection(): boolean;
-  kicadCollabTestGetCrossMapped(): string;
-  kicadCollabGetSelectionFull(): string;
+  kicadCollabTestSelectComponent(): Promise<string>;
+  kicadCollabTestClearSelection(): Promise<boolean>;
+  kicadCollabTestGetCrossMapped(): Promise<string>;
+  kicadCollabGetSelectionFull(): Promise<string>;
 };
 type W = { Module: Mod };
 
@@ -55,8 +55,8 @@ async function bootTool(
 }
 
 const crossMapped = (page: Page) =>
-  page.evaluate(() =>
-    JSON.parse((window as unknown as W).Module.kicadCollabTestGetCrossMapped()),
+  page.evaluate(async () =>
+    JSON.parse(await (window as unknown as W).Module.kicadCollabTestGetCrossMapped()),
   );
 
 test('selecting a symbol in eeschema ghost-highlights the footprint in pcbnew, and back', async ({
@@ -85,8 +85,8 @@ test('selecting a symbol in eeschema ghost-highlights the footprint in pcbnew, a
     .not.toEqual([]);
 
   // The selection emit carried the symbol uuid across (sanity on the wire).
-  const schSel = await sch.evaluate(() =>
-    JSON.parse((window as unknown as W).Module.kicadCollabGetSelectionFull()),
+  const schSel = await sch.evaluate(async () =>
+    JSON.parse(await (window as unknown as W).Module.kicadCollabGetSelectionFull()),
   );
   expect(schSel.uuids).toContain(symId);
 
@@ -113,8 +113,8 @@ test('selecting a symbol in eeschema ghost-highlights the footprint in pcbnew, a
     .not.toEqual([]);
 
   // …and the emit carried the footprint's schematic path.
-  const pcbSel = await pcb.evaluate(() =>
-    JSON.parse((window as unknown as W).Module.kicadCollabGetSelectionFull()),
+  const pcbSel = await pcb.evaluate(async () =>
+    JSON.parse(await (window as unknown as W).Module.kicadCollabGetSelectionFull()),
   );
   expect(pcbSel.uuids).toContain(fpId);
   expect(pcbSel.fpPaths.length).toBeGreaterThan(0);

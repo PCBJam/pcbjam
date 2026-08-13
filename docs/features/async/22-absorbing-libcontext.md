@@ -799,14 +799,16 @@ pump-ownership guard kept (inert at D-off, verified 139/1).
 The increment the section above ordered, built and measured: **every entry that can
 reach a tool coroutine now goes through the scheduler.**
 
-- `wxWasmRunOnDispatchContext(fn, arg)` (evtloop.cpp) hands work to a dispatch context
-  and pumps. It is SYNCHRONOUS in the common case — `drain_all` returns once the
+- `wxWasmRunOnDispatchContextScoped(fn, arg, class, scope, ...)` (evtloop.cpp)
+  hands typed, target-scoped work to a dispatch context and pumps. It is SYNCHRONOUS
+  in the common case — `drain_all` returns once the
   context parks at idle, i.e. after the job completed — so callers that need an answer
   still get one. It falls back to running inline when already on a dispatch context
   (same-stack recursion, as `wxYield` does) or when the registry says another context
   is running, which is the in-place-parked-bridge window Phase E closes.
 - All four DOM callbacks (`MouseCallback`, `WheelCallback`, `TouchCallback`,
-  `KeyCallback`) and the **mailbox tick** now route through it. Jobs are heap-owned
+  `KeyCallback`) route through it. The **mailbox tick** stages its already-typed
+  envelopes in the same central owner queue. Jobs are heap-owned
   with ownership going to *whoever finishes last*, because a job may park for a
   dialog's lifetime: the job deletes itself if the caller has given up, else the caller
   deletes it and reads its result. Keys keep their synchronous `preventDefault` (the
@@ -1278,7 +1280,7 @@ loads via `Module.kicadOpenFile` and caught it: **`kicadOpenFile` resolved
 `false` and the shim logged `waitPromise(0): unknown token`.**
 
 **Root cause: the token was RETURNED across a fiber swap.** `kicadOpenFileStart`
-returned its `int` wait token, but `wxWasmRunOnDispatchContext` Asyncify-suspends
+returned its `int` wait token, but `wxWasmRunOnDispatchContextScoped` Asyncify-suspends
 that embind frame while the load parks on the dispatch context — so the return
 arrived as an unwind PLACEHOLDER (0), the documented embind-across-swap gotcha.
 The shell then awaited token 0, resolved `false`, and proceeded (collab attach,

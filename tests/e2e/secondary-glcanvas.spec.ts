@@ -10,8 +10,9 @@ import { clickByLabel, waitForRegistry } from './utils/element-tracker';
  * hard-coded to z-index 100, but showing the secondary frame raises its
  * `#window-N` chrome div to z-index 101 (`raiseWindow` → maxZ+1 over the visible
  * main canvas at 100), so the chrome painted over the GL canvas. The fix
- * (`wx.js` `createGLCanvas`) lifts a GL canvas created while another GL canvas is
- * already visible to z-index 2147483647, above the chrome.
+ * passes the owning top-level window's role from `wxGLCanvas::Create` to
+ * `wx.js` `createGLCanvas`: main-frame surfaces remain at z-index 100 and
+ * secondary-frame surfaces use z-index 2147483647, above the chrome.
  *
  * This drives the minimal pure-wx repro app (a main frame with a wxGLCanvas + a
  * button that opens a second top-level frame with its own wxGLCanvas) and asserts
@@ -30,12 +31,22 @@ test.describe('secondary-window wxGLCanvas compositing', () => {
         await waitForRegistry(page);
 
         // The main frame's GL canvas must be present and on-screen before we open
-        // the second window — that visible-canvas state is what the fix keys on.
+        // the second window.  Its exact z-index is the main-frame role contract.
         await page.waitForFunction(() => {
             const c = document.querySelector('#window-container canvas[id^="glcanvas-"]');
             return !!c && getComputedStyle(c).display !== 'none'
                 && (c as HTMLElement).getBoundingClientRect().width > 0;
         }, undefined, { timeout: 30000 });
+
+        const main = await page.evaluate(() => {
+            const canvas = document.querySelector<HTMLCanvasElement>(
+                '#window-container canvas[id^="glcanvas-"]');
+            return canvas
+                ? { id: canvas.id, z: Number.parseInt(getComputedStyle(canvas).zIndex, 10) }
+                : null;
+        });
+        expect(main, 'the main frame should own a GL canvas').not.toBeNull();
+        expect(main!.z, 'the main-frame GL role is the stable z-index 100').toBe(100);
 
         const before = await page.evaluate(
             () => document.querySelectorAll('canvas[id^="glcanvas-"]').length);
@@ -77,8 +88,14 @@ test.describe('secondary-window wxGLCanvas compositing', () => {
         expect(stacking.glCount,
             'opening the second window should add a second WebGL canvas').toBeGreaterThanOrEqual(2);
 
-        // THE regression assertion. Pre-fix every glcanvas-* shares z-index 100, so the
-        // secondary canvas is not strictly above the main one and the chrome occludes it.
+        // The role assignment is exact, not inferred from creation/visibility order.
+        expect(stacking.viewerZ,
+            'a secondary-frame GL canvas uses the stable raised role')
+            .toBe(2147483647);
+
+        // The compositing regression assertion. Pre-fix every glcanvas-* shares
+        // z-index 100, so the secondary canvas is not strictly above the main one
+        // and the chrome occludes it.
         expect(stacking.viewerZ,
             `secondary GL canvas ${stacking.viewerId} (z=${stacking.viewerZ}) must stack strictly above `
             + `the other GL canvases (max z=${stacking.maxOtherGlZ}); an equal z-index means the window `

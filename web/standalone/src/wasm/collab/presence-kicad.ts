@@ -3,6 +3,11 @@ import { clog } from "./debug";
 import type { PresenceHandle, PresencePeer } from "./presence";
 import type { CrossAppHandle } from "./cross-app";
 import { contestedReleases, remoteLocks, type LockClient } from "./lock-tiebreak";
+import {
+  observeOwnerJob,
+  runGuardedOwnerExport,
+  type GuardedOwnerExport,
+} from "../owner-job";
 
 /**
  * Wire the C++ presence bridge (collab-presence 0002) to the awareness layer:
@@ -22,19 +27,24 @@ import { contestedReleases, remoteLocks, type LockClient } from "./lock-tiebreak
  */
 
 export interface PresenceKicadModule {
-  kicadCollabPresenceStart(): void;
-  kicadCollabSetRemote(json: string): void;
-  kicadCollabGetViewport(): string;
-  kicadCollabGetSelection(): string;
+  kicadCollabPresenceStart(): Promise<void>;
+  kicadCollabSetRemote(json: string): Promise<void>;
+  kicadCollabGetViewport(): Promise<string>;
+  kicadCollabGetSelection(): Promise<string>;
   /** 0006 (pcbnew builds): `{uuids, fpPaths}` — uuids plus the selected
    *  footprints' schematic paths. Absent on older wasm. */
-  kicadCollabGetSelectionFull?(): string;
+  kicadCollabGetSelectionFull?(): Promise<string>;
   /** 0007: tiebreak release — the local client lost an overlapping hold;
    *  the wasm side cancels an in-flight move and unselects exactly these. */
-  kicadCollabReleaseSelection?(uuidsJson: string, holder: string): void;
+  kicadCollabReleaseSelection?(uuidsJson: string, holder: string): Promise<void>;
   /** 0008: fit a leader's world rect (center + half-extents, IU) into this
    *  canvas — contain semantics. Absent on older wasm builds. */
-  kicadCollabFitViewport?(cx: number, cy: number, halfW: number, halfH: number): void;
+  kicadCollabFitViewport?(
+    cx: number,
+    cy: number,
+    halfW: number,
+    halfH: number,
+  ): Promise<void>;
 }
 
 export interface PresenceKicadWindow {
@@ -133,6 +143,12 @@ export function xselFromPeerState(state: {
 
 const TOOL_TAG: Record<string, string> = { pcbnew: "pcb", eeschema: "sch" };
 
+export interface PresenceKicadBinding {
+  /** Initial reads, native hook installation, and first overlay projection. */
+  ready: Promise<void>;
+  destroy(): void;
+}
+
 export function bindKicadPresence(opts: {
   mod: PresenceKicadModule;
   win: PresenceKicadWindow;
@@ -140,8 +156,28 @@ export function bindKicadPresence(opts: {
   /** 0006: the project presence room — cross-app selection in/out. */
   crossApp?: CrossAppHandle;
   onViewport?: (vp: ViewportState) => void;
-}): { destroy(): void } {
+  /** Exact active-sheet generation; false makes every queued native call inert. */
+  isCurrent?: () => boolean;
+  /** Host-owned authoritative overlay projection. Includes teardown clears. */
+  projectRemote: (json: string, isCurrent: () => boolean) => Promise<unknown>;
+}): PresenceKicadBinding {
   const { mod, win, presence, crossApp } = opts;
+  let destroyed = false;
+  let generation = 0;
+  const generationGuard = (value = generation) => () =>
+    !destroyed && generation === value && (opts.isCurrent?.() ?? true);
+  const guarded = <Args extends readonly (string | number | boolean | null | undefined | bigint)[], Result>(
+    fn: GuardedOwnerExport<Args, Result>,
+    args: Args,
+    isCurrent = generationGuard(),
+  ) => runGuardedOwnerExport(fn, args, isCurrent);
+  const projectRemote = opts.projectRemote;
+  const clearRemote = () => {
+    const json = JSON.stringify({ peers: [] });
+    observeOwnerJob("clear remote presence", () =>
+      opts.projectRemote(json, () => opts.isCurrent?.() ?? true),
+    );
+  };
 
   // The local selection as last emitted by C++ — the tiebreak (0007) compares
   // it against every other client's published selection.
@@ -183,32 +219,8 @@ export function bindKicadPresence(opts: {
     }, VIEWPORT_PUBLISH_MS);
   };
 
-  // Seed the published viewport (pushes only happen on input events after
-  // this) — same pull the comment layer uses.
-  try {
-    const vp = JSON.parse(mod.kicadCollabGetViewport() || "null") as ViewportState | null;
-    if (vp && vp.w > 0) scheduleViewportPublish(vp);
-  } catch {
-    /* frame not up yet — the first input push seeds it */
-  }
-
-  // Seed: the tab may attach with a selection already made (e.g. rebind). The
-  // Full variant (pcbnew 0006) also carries footprint paths for cross-app.
-  try {
-    const seed = parseSelectionEmit(
-      (mod.kicadCollabGetSelectionFull?.() ?? mod.kicadCollabGetSelection()) || "[]",
-    );
-    if (seed?.uuids.length) {
-      ownSelection = seed.uuids;
-      presence.setSelection(seed.uuids);
-      crossApp?.setSelection(seed.uuids, seed.fpPaths);
-    }
-  } catch {
-    /* bridge present but frame not up yet — the first emit will seed */
-  }
-
   // awareness → C++ ------------------------------------------------------------
-  const pushRemote = () => {
+  const pushRemote = async (): Promise<void> => {
     const peers = presence.peers();
     const snapshot: {
       peers: Array<{
@@ -243,7 +255,15 @@ export function bindKicadPresence(opts: {
     const release = contestedReleases(self, lockClients);
     if (release && mod.kicadCollabReleaseSelection) {
       clog("presence-kicad: lost selection tiebreak to", release.holder, "—", release.uuids);
-      mod.kicadCollabReleaseSelection(JSON.stringify(release.uuids), release.holder);
+      const releaseSelection = mod.kicadCollabReleaseSelection as GuardedOwnerExport<
+        readonly [string, string],
+        void
+      >;
+      await guarded(
+        releaseSelection,
+        [JSON.stringify(release.uuids), release.holder] as const,
+      );
+      if (destroyed) return;
     }
     // Cross-app peers (0006): rendered as ghost outlines on the mapped items.
     // One entry per awareness CLIENT (own other tabs included — that's the
@@ -260,27 +280,95 @@ export function bindKicadPresence(opts: {
         xsel,
       });
     }
-    mod.kicadCollabSetRemote(JSON.stringify(snapshot));
+    await projectRemote(JSON.stringify(snapshot), generationGuard());
   };
 
   let pushTimer: ReturnType<typeof setTimeout> | undefined;
+  let pushRunning = false;
+  let pushPending = false;
+  let started = false;
+  const flushPush = async (): Promise<void> => {
+    if (destroyed || !started) {
+      pushPending = true;
+      return;
+    }
+    if (pushRunning) {
+      pushPending = true;
+      return;
+    }
+    pushRunning = true;
+    pushPending = false;
+    try {
+      await pushRemote();
+    } finally {
+      pushRunning = false;
+      if (pushPending && !destroyed) schedulePush();
+    }
+  };
   const schedulePush = () => {
-    if (pushTimer) return;
+    pushPending = true;
+    if (pushTimer || pushRunning || !started || destroyed) return;
     pushTimer = setTimeout(() => {
       pushTimer = undefined;
-      pushRemote();
+      observeOwnerJob("project remote presence", flushPush);
     }, PUSH_THROTTLE_MS);
   };
 
   const unsubscribe = presence.subscribe(schedulePush);
   const unsubscribeCross = crossApp?.subscribe(schedulePush);
 
-  mod.kicadCollabPresenceStart();
-  pushRemote();
-  clog("presence-kicad: bridge bound (cursor/selection emit + remote overlay)");
+  const ready = (async () => {
+    // These are live model reads, so they use the same owner gateway as writes.
+    // A missing frame is benign: the first native input emit seeds the value.
+    try {
+      const vp = JSON.parse((await guarded(
+        mod.kicadCollabGetViewport as GuardedOwnerExport<readonly [], string>,
+        [] as const,
+      )) || "null") as
+        | ViewportState
+        | null;
+      if (!destroyed && vp && vp.w > 0) scheduleViewportPublish(vp);
+    } catch {
+      /* frame not up yet — the first input push seeds it */
+    }
+
+    try {
+      const selectionJson = mod.kicadCollabGetSelectionFull
+        ? await guarded(
+            mod.kicadCollabGetSelectionFull as GuardedOwnerExport<readonly [], string>,
+            [] as const,
+          )
+        : await guarded(
+            mod.kicadCollabGetSelection as GuardedOwnerExport<readonly [], string>,
+            [] as const,
+          );
+      const seed = parseSelectionEmit(selectionJson || "[]");
+      if (!destroyed && seed?.uuids.length) {
+        ownSelection = seed.uuids;
+        presence.setSelection(seed.uuids);
+        crossApp?.setSelection(seed.uuids, seed.fpPaths);
+      }
+    } catch {
+      /* frame not up yet — the first selection emit seeds it */
+    }
+
+    if (destroyed) return;
+    await guarded(
+      mod.kicadCollabPresenceStart as GuardedOwnerExport<readonly [], void>,
+      [] as const,
+    );
+    if (destroyed) return;
+    started = true;
+    await flushPush();
+    clog("presence-kicad: bridge bound (cursor/selection emit + remote overlay)");
+  })();
 
   return {
+    ready,
     destroy() {
+      if (destroyed) return;
+      destroyed = true;
+      ++generation;
       unsubscribe();
       unsubscribeCross?.();
       if (pushTimer) clearTimeout(pushTimer);
@@ -293,11 +381,7 @@ export function bindKicadPresence(opts: {
         delete win.kicadCollab.onViewport;
       }
       // Clear the remote overlay so a dead session leaves no ghost cursors.
-      try {
-        mod.kicadCollabSetRemote(JSON.stringify({ peers: [] }));
-      } catch {
-        /* wasm may already be gone on page teardown */
-      }
+      clearRemote();
     },
   };
 }

@@ -44,6 +44,10 @@ declare global {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     Module?: any;
     FS?: EmscriptenFS;
+    /** Explicit Emscripten phase edge. False/absent means pre-native: MEMFS is
+     *  available but native owner admission is not. Set true only at the end
+     *  of Module.onRuntimeInitialized, before main starts. */
+    __pcbjamNativeRuntimeReady?: boolean;
     wxElementRegistry?: WxElementRegistry;
     kicadWebOpenTool?: (toolName: string, fileName: string) => boolean;
     /** wx wasm port → page: the app's main frame was destroyed (File→Quit). */

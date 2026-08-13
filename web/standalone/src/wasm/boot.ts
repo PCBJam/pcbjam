@@ -99,8 +99,8 @@ export interface BootOptions {
   libsSource?: LibsSource | null;
   /** Hold provider enumerates for a kind until this resolves — the lib editors
    *  pass their presync-settled promise so the boot-time whole-set hydrate
-   *  reads a warm IndexedDB instead of cold-fetching one lib at a time inside
-   *  the serialized bridge crossings. See `LibsProviderOptions.enumerateGate`.
+   *  reads a warm IndexedDB instead of starting an unbounded burst of parallel
+   *  cold fetches. See `LibsProviderOptions.enumerateGate`.
    *  Never gates boot's own `listLibs` table seeding (a direct source call). */
   enumerateGate?: (kind: string) => Promise<void>;
   /** 3D model source (lazy, per-board). Null/omitted ⇒ the viewer renders the
@@ -323,6 +323,11 @@ async function doBoot(opts: BootOptions): Promise<void> {
   // parent's; `tool` still drives identity (thisProgram), config-seed and lib-kind.
   const bundle = TOOL_BUNDLE[tool];
   const w = window as ToolWindow;
+  // Explicit phase boundary for project staging. FS and the scheduler object
+  // both exist while the glue is still instantiating, but the scheduler cannot
+  // enter native code until its exports are installed. Pre-native staging may
+  // write MEMFS directly; onRuntimeInitialized closes that phase before main.
+  w.__pcbjamNativeRuntimeReady = false;
 
   // The wasm reads the top-level frame geometry from a GLOBAL `mainWindow`
   // (mainWindow.offsetWidth/offsetHeight/offsetTop — see <tool>.js). The harness
@@ -526,6 +531,25 @@ async function doBoot(opts: BootOptions): Promise<void> {
         2,
       ),
     );
+    // The Plugin and Content Manager is not available in the browser build.
+    // Its native defaults auto-add/remove package libraries.  Leaving those
+    // defaults enabled makes a single-face editor walk table kinds it did not
+    // load and emit library_manager assertions during every WASM boot.
+    writeIfAbsent(
+      `${KICAD_CONFIG_DIR}/kicad.json`,
+      JSON.stringify(
+        {
+          meta: { version: 0 },
+          pcm: {
+            check_for_updates: false,
+            lib_auto_add: false,
+            lib_auto_remove: false,
+          },
+        },
+        null,
+        2,
+      ),
+    );
     // libs: rows generated in doBoot from the lib source; the PCBJAM / PCBJAM_FP
     // plugins resolve each via window.kicadLibs.
     writeIfAbsent(`${KICAD_CONFIG_DIR}/sym-lib-table`, symLibTable);
@@ -615,6 +639,10 @@ async function doBoot(opts: BootOptions): Promise<void> {
       // The runtime is up; main() is booting the wx UI next (the open-flow's
       // own "Opening…" statuses take over from there).
       onStatus("Starting the editor…");
+      // Keep this as the final operation in the hook. Emscripten calls main()
+      // only after the hook returns, and JavaScript run-to-completion means an
+      // early direct MEMFS publication cannot overlap this transition.
+      w.__pcbjamNativeRuntimeReady = true;
     },
     // Resolve wasm + pthread worker against the asset base, not the SPA route.
     locateFile: (path: string) => `${base}/${path}`,

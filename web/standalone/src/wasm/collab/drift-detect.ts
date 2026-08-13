@@ -26,6 +26,7 @@ import {
 import * as Y from "yjs";
 import { reportDrift, reportDriftBeacon } from "@/lib/api";
 import { memfsFilePath } from "../constants";
+import { runOwnerJob } from "../owner-job";
 
 /** The embind serialize fn per collab-capable tool (see module header). */
 const SAVE_FN = {
@@ -37,15 +38,15 @@ const SAVE_FN = {
 type CollabTool = keyof typeof SAVE_FN;
 
 interface DriftModule {
-  kicadSaveBoard?(path: string): void;
-  kicadSaveSchematic?(path: string): void;
-  kicadSaveDrawingSheet?(path: string): void;
+  kicadSaveBoard?(path: string): Promise<void>;
+  kicadSaveSchematic?(path: string): Promise<void>;
+  kicadSaveDrawingSheet?(path: string): Promise<void>;
 }
 
 export interface DriftDetectOptions {
   doc: Y.Doc;
   mod: DriftModule;
-  win: { FS?: EmscriptenFS };
+  win: ToolWindow;
   tool: Tool;
   slug: string;
   targetPath: string;
@@ -105,7 +106,7 @@ export function startDriftDetection(opts: DriftDetectOptions): DriftDetector {
     return { stop() {} };
   }
   // Bind to a non-optional type so the nested computeDrift closure can invoke it.
-  const save = rawSave as (path: string) => void;
+  const save = rawSave as (path: string) => Promise<void>;
 
   const everyN = opts.everyN && opts.everyN > 0 ? opts.everyN : DEFAULT_EVERY_N;
   const scratchPath = `${memfsFilePath(opts.slug, opts.targetPath)}.drift`;
@@ -119,28 +120,34 @@ export function startDriftDetection(opts: DriftDetectOptions): DriftDetector {
   // against its latest stored row too, so a lost report is acceptable).
   let lastKey: string | null = null;
   let reported = 0;
+  let lastBeaconBody: DriftReportBody | null = null;
 
-  // Synchronous on purpose: serialize the live model, diff it against the Y.Doc,
-  // and return the report body (or null when there's no drift, the drift is
-  // unchanged since the last report, or the session cap is spent). Being fully
-  // synchronous is what lets the session-end check finish during page unload.
-  function computeDrift(): DriftReportBody | null {
-    // Defer while collab fiber work is in flight (0008 finding #10b): a save
-    // on the bare embind stack during a parked apply fiber mis-dispatches
-    // (table index OOB). The next Y-update trigger retries.
-    const busy = (opts.mod as { kicadCollabFiberBusy?: () => boolean }).kicadCollabFiberBusy;
-    if (busy?.()) return null;
-    save(scratchPath);
-    let text: unknown;
-    try {
-      text = opts.win.FS?.readFile(scratchPath, { encoding: "utf8" });
-    } finally {
-      try {
-        opts.win.FS?.unlink(scratchPath);
-      } catch {
-        /* scratch cleanup is best-effort */
-      }
-    }
+  // Serialize through the owner gateway, then read MEMFS only after the save
+  // ticket completes. This orders the read with every preceding model write.
+  async function computeDrift(): Promise<DriftReportBody | null> {
+    await save(scratchPath);
+    // The save ticket and this read ticket are two ordered owner operations.
+    // Reading MEMFS in the Promise continuation itself would only prove that
+    // the module is alive; it would not acquire the next execution owner.
+    const text = await runOwnerJob(
+      opts.win,
+      `drift scratch read: ${opts.targetPath}`,
+      [scratchPath] as const,
+      (path) => {
+        let contents: unknown;
+        try {
+          contents = opts.win.FS?.readFile(path, { encoding: "utf8" });
+        } finally {
+          try {
+            opts.win.FS?.unlink(path);
+          } catch {
+            /* scratch cleanup is best-effort */
+          }
+        }
+        return contents;
+      },
+      () => !stopped,
+    );
     if (typeof text !== "string") return null;
 
     const wasmDoc = fileToDoc(text);
@@ -172,6 +179,7 @@ export function startDriftDetection(opts: DriftDetectOptions): DriftDetector {
     if (reported >= MAX_REPORTS_PER_SESSION) return null;
     lastKey = key;
     reported++;
+    lastBeaconBody = body;
     return body;
   }
 
@@ -179,7 +187,7 @@ export function startDriftDetection(opts: DriftDetectOptions): DriftDetector {
     if (stopped || inFlight) return;
     inFlight = true;
     try {
-      const body = computeDrift();
+      const body = await computeDrift();
       if (body) {
         log(
           `[drift] ${opts.targetPath}: +${body.diff.added.length} ~${body.diff.updated.length} -${body.diff.removed.length}` +
@@ -206,16 +214,14 @@ export function startDriftDetection(opts: DriftDetectOptions): DriftDetector {
   opts.doc.on("update", onUpdate);
 
   const onBeforeUnload = (): void => {
-    try {
-      const body = computeDrift();
-      if (body) reportDriftBeacon(opts.slug, body);
-    } catch {
-      /* best-effort at page close */
-    }
+    // beforeunload cannot wait for an owner ticket without deadlocking the
+    // browser task that must run it. Send only the last complete immutable
+    // report; never traverse live Wasm state during unload.
+    if (lastBeaconBody) reportDriftBeacon(opts.slug, lastBeaconBody);
   };
   window.addEventListener("beforeunload", onBeforeUnload);
 
-  log(`[drift] on for ${opts.targetPath} (every ${everyN} edits + at session end)`);
+  log(`[drift] on for ${opts.targetPath} (every ${everyN} edits; cached beacon at session end)`);
   return {
     stop(): void {
       stopped = true;

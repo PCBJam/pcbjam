@@ -172,6 +172,18 @@ if [[ "$PHASE" != "postprocess" ]]; then
 # (build-arg from versions.sh) changes; Docker layer-caches it to a near no-op when unchanged.
 docker compose -f docker/docker-compose.yml up -d --build
 
+# The entrypoint also initializes the named source volume. Compose returns as
+# soon as the container starts, so wait for that exact container start's first
+# sync before running the checksum sync below. The marker contains PID 1's
+# start tick because /tmp survives a restart and may contain the previous
+# start's marker. Without this handshake the two rsync processes can overwrite
+# generated autotools files while wxWidgets is configuring.
+docker compose -f docker/docker-compose.yml exec -T kicad-wasm-builder \
+    timeout 120 bash -c \
+    'read -r -a pid_stat < /proc/1/stat; start=${pid_stat[21]}; \
+     until [ "$(cat /tmp/kicad-source-sync-ready 2>/dev/null)" = "$start" ]; \
+     do sleep 0.1; done'
+
 # Sync source code to container volume (fixes macOS Docker VirtioFS issues)
 # Use --checksum to only transfer files with different CONTENT, not timestamps.
 # This avoids the timestamp mismatch cycle that caused full rebuilds every time.

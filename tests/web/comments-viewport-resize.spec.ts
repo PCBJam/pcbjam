@@ -52,12 +52,12 @@ async function deleteAllThreads(page: Page): Promise<void> {
 
 /** First pin's DOM center minus its GAL-truth CSS position (fresh transform). */
 async function pinDelta(page: Page): Promise<{ dx: number; dy: number }> {
-  return page.evaluate(() => {
+  return page.evaluate(async () => {
     const win = window as unknown as {
-      Module: { kicadCollabGetViewport(): string };
+      Module: { kicadCollabGetViewport(): Promise<string> };
       __pcbjamComments: { threads(): Array<{ world: { x: number; y: number } }> };
     };
-    const vp = JSON.parse(win.Module.kicadCollabGetViewport()) as {
+    const vp = JSON.parse(await win.Module.kicadCollabGetViewport()) as {
       cx: number; cy: number; scale: number; w: number; h: number;
     };
     const gl = Array.from(document.querySelectorAll('[id^="glcanvas-"]')).find((c) => {

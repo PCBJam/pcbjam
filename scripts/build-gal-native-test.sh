@@ -26,11 +26,10 @@ echo "  Log file: $LOG_FILE"
 mkdir -p "$BUILD_DIR"
 cd "$BUILD_DIR"
 
-# Generate shader headers if needed
-if [ ! -d "$TEST_DIR/generated" ] || [ -z "$(ls -A $TEST_DIR/generated 2>/dev/null)" ]; then
-    echo "Generating shader headers..."
-    python3 "$TEST_DIR/generate_shaders.py" >> "$LOG_FILE" 2>&1
-fi
+# Regenerate the small checked-in shader wrappers on every build. This keeps the
+# harness in sync when KiCad adds or changes a built-in shader.
+echo "Generating shader headers..."
+python3 "$TEST_DIR/generate_shaders.py" >> "$LOG_FILE" 2>&1
 
 # Configure
 echo "Running CMake..."

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { colorForUser, type PresenceState } from "@pcbjam/shared";
 import {
-  bindKicadPresence,
+  bindKicadPresence as bindKicadPresenceRaw,
   hasPresenceBridge,
   parseSelectionEmit,
   xselFromPeerState,
@@ -9,6 +9,16 @@ import {
 } from "./presence-kicad";
 import type { PresenceHandle, PresencePeer } from "./presence";
 import type { CrossAppHandle, CrossAppPeer } from "./cross-app";
+
+function bindKicadPresence(
+  opts: Omit<Parameters<typeof bindKicadPresenceRaw>[0], "projectRemote">,
+) {
+  return bindKicadPresenceRaw({
+    ...opts,
+    projectRemote: (json, isCurrent) =>
+      isCurrent() ? opts.mod.kicadCollabSetRemote(json) : Promise.resolve(),
+  });
+}
 
 /**
  * presence-kicad bridge unit tests (collab-presence 0002): a fake Module +
@@ -18,10 +28,12 @@ import type { CrossAppHandle, CrossAppPeer } from "./cross-app";
 
 function fakeModule() {
   return {
-    kicadCollabPresenceStart: vi.fn(),
-    kicadCollabSetRemote: vi.fn(),
-    kicadCollabGetViewport: vi.fn(() => '{"cx":0,"cy":0,"scale":1,"w":800,"h":600}'),
-    kicadCollabGetSelection: vi.fn(() => "[]"),
+    kicadCollabPresenceStart: vi.fn(async () => undefined),
+    kicadCollabSetRemote: vi.fn(async (_json: string) => undefined),
+    kicadCollabGetViewport: vi.fn(async () =>
+      '{"cx":0,"cy":0,"scale":1,"w":800,"h":600}',
+    ),
+    kicadCollabGetSelection: vi.fn(async () => "[]"),
   };
 }
 
@@ -70,11 +82,12 @@ function peer(id: string, over: Partial<PresencePeer> = {}): PresencePeer {
 }
 
 describe("bindKicadPresence", () => {
-  it("routes C++ emits into the presence setters", () => {
+  it("routes C++ emits into the presence setters", async () => {
     const mod = fakeModule();
     const win: PresenceKicadWindow = {};
     const presence = stubPresence();
-    bindKicadPresence({ mod, win, presence });
+    const binding = bindKicadPresence({ mod, win, presence });
+    await binding.ready;
 
     expect(mod.kicadCollabPresenceStart).toHaveBeenCalled();
 
@@ -87,18 +100,18 @@ describe("bindKicadPresence", () => {
     expect(presence.setCursor).toHaveBeenCalledWith(null);
   });
 
-  it("seeds an existing selection from the wasm at attach", () => {
+  it("seeds an existing selection from the wasm at attach", async () => {
     const mod = fakeModule();
-    mod.kicadCollabGetSelection.mockReturnValue('["pre-selected"]');
+    mod.kicadCollabGetSelection.mockResolvedValue('["pre-selected"]');
     const presence = stubPresence();
-    bindKicadPresence({ mod, win: {}, presence });
+    await bindKicadPresence({ mod, win: {}, presence }).ready;
     expect(presence.setSelection).toHaveBeenCalledWith(["pre-selected"]);
   });
 
   it("pushes a throttled remote snapshot on peers change", async () => {
     const mod = fakeModule();
     const presence = stubPresence();
-    bindKicadPresence({ mod, win: {}, presence });
+    await bindKicadPresence({ mod, win: {}, presence }).ready;
     expect(mod.kicadCollabSetRemote).toHaveBeenCalledTimes(1); // initial push
 
     presence.firePeers([
@@ -123,17 +136,53 @@ describe("bindKicadPresence", () => {
     ]);
   });
 
-  it("destroy unhooks the window and clears the remote overlay", () => {
+  it("destroy unhooks the window and clears the remote overlay", async () => {
     const mod = fakeModule();
     const win: PresenceKicadWindow = {};
     const presence = stubPresence();
     const binding = bindKicadPresence({ mod, win, presence });
 
+    await binding.ready;
     binding.destroy();
+    await Promise.resolve();
     expect(win.kicadCollab?.onSelection).toBeUndefined();
     expect(win.kicadCollab?.onCursor).toBeUndefined();
     const last = JSON.parse(mod.kicadCollabSetRemote.mock.calls.at(-1)![0]);
     expect(last.peers).toEqual([]);
+  });
+
+  it("cannot let an old controller clear a newer sheet's overlay", async () => {
+    const mod = fakeModule();
+    let generation = 1;
+    const published: string[] = [];
+    const projectRemote = async (json: string, isCurrent: () => boolean) => {
+      if (isCurrent()) published.push(json);
+    };
+    const oldBinding = bindKicadPresenceRaw({
+      mod,
+      win: {},
+      presence: stubPresence([peer("old")]),
+      isCurrent: () => generation === 1,
+      projectRemote,
+    });
+    await oldBinding.ready;
+
+    generation = 2;
+    const newBinding = bindKicadPresenceRaw({
+      mod,
+      win: {},
+      presence: stubPresence([peer("new")]),
+      isCurrent: () => generation === 2,
+      projectRemote,
+    });
+    await newBinding.ready;
+    const beforeOldDestroy = published.length;
+    oldBinding.destroy();
+    await Promise.resolve();
+
+    expect(published).toHaveLength(beforeOldDestroy);
+    expect(JSON.parse(published.at(-1)!).peers[0].id).toBe("new");
+    newBinding.destroy();
   });
 
   it("hasPresenceBridge gates on the 0002 exports", () => {
@@ -212,7 +261,7 @@ describe("bindKicadPresence × soft-locks (0007)", () => {
   it("pushes the locks set derived from ALL other clients", async () => {
     const mod = fakeModule();
     const presence = stubPresence();
-    bindKicadPresence({ mod, win: {}, presence });
+    await bindKicadPresence({ mod, win: {}, presence }).ready;
 
     presence.fireClients([
       peer("bob", { clientId: 7, selection: ["u1"] }),
@@ -229,11 +278,11 @@ describe("bindKicadPresence × soft-locks (0007)", () => {
   });
 
   it("releases contested holds when the local client loses the tiebreak", async () => {
-    const release = vi.fn();
+    const release = vi.fn(async () => undefined);
     const mod = { ...fakeModule(), kicadCollabReleaseSelection: release };
     const win: PresenceKicadWindow = {};
     const presence = stubPresence(); // self = (local, 100)
-    bindKicadPresence({ mod, win, presence });
+    await bindKicadPresence({ mod, win, presence }).ready;
 
     win.kicadCollab!.onSelection!('["contested","mine"]');
     // alice (wins: "alice" < "local") also holds "contested".
@@ -247,11 +296,11 @@ describe("bindKicadPresence × soft-locks (0007)", () => {
   });
 
   it("does NOT release when the local client wins, and unlocks the won uuid", async () => {
-    const release = vi.fn();
+    const release = vi.fn(async () => undefined);
     const mod = { ...fakeModule(), kicadCollabReleaseSelection: release };
     const win: PresenceKicadWindow = {};
     const presence = stubPresence(); // self = (local, 100)
-    bindKicadPresence({ mod, win, presence });
+    await bindKicadPresence({ mod, win, presence }).ready;
 
     win.kicadCollab!.onSelection!('["contested"]');
     // zed loses ("local" < "zed") — we keep the item and it must not be
@@ -266,12 +315,12 @@ describe("bindKicadPresence × soft-locks (0007)", () => {
 });
 
 describe("bindKicadPresence × crossApp", () => {
-  it("forwards selection emits (uuids + fpPaths) into the cross-app room", () => {
+  it("forwards selection emits (uuids + fpPaths) into the cross-app room", async () => {
     const mod = fakeModule();
     const win: PresenceKicadWindow = {};
     const presence = stubPresence();
     const crossApp = stubCrossApp();
-    bindKicadPresence({ mod, win, presence, crossApp });
+    await bindKicadPresence({ mod, win, presence, crossApp }).ready;
 
     win.kicadCollab!.onSelection!('{"uuids":["u1"],"fpPaths":["/p1"]}');
     expect(presence.setSelection).toHaveBeenCalledWith(["u1"]);
@@ -281,13 +330,15 @@ describe("bindKicadPresence × crossApp", () => {
     expect(crossApp.setSelection).toHaveBeenCalledWith(["u2"], undefined);
   });
 
-  it("seeds cross-app from kicadCollabGetSelectionFull when present", () => {
+  it("seeds cross-app from kicadCollabGetSelectionFull when present", async () => {
     const mod = {
       ...fakeModule(),
-      kicadCollabGetSelectionFull: vi.fn(() => '{"uuids":["pre"],"fpPaths":["/pp"]}'),
+      kicadCollabGetSelectionFull: vi.fn(async () =>
+        '{"uuids":["pre"],"fpPaths":["/pp"]}',
+      ),
     };
     const crossApp = stubCrossApp();
-    bindKicadPresence({ mod, win: {}, presence: stubPresence(), crossApp });
+    await bindKicadPresence({ mod, win: {}, presence: stubPresence(), crossApp }).ready;
     expect(crossApp.setSelection).toHaveBeenCalledWith(["pre"], ["/pp"]);
   });
 
@@ -295,7 +346,7 @@ describe("bindKicadPresence × crossApp", () => {
     const mod = fakeModule();
     const presence = stubPresence();
     const crossApp = stubCrossApp();
-    bindKicadPresence({ mod, win: {}, presence, crossApp });
+    await bindKicadPresence({ mod, win: {}, presence, crossApp }).ready;
 
     crossApp.firePeers([
       { clientId: 7, state: crossState("eeschema", { selection: ["sym-1"] }) },

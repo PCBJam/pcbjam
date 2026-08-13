@@ -1,4 +1,5 @@
 import { test, expect, tryLoadApp } from '../e2e/utils/fixtures';
+import { clickByLabel } from '../e2e/utils/element-tracker';
 
 // Red-green specs for the Asyncify race-condition harness
 // (tests/apps/standalone/asyncify-races/races_test.cpp — see docs/features/async/).
@@ -12,8 +13,10 @@ import { test, expect, tryLoadApp } from '../e2e/utils/fixtures';
 const BATTERY = [
   'post_park_fiber_swap',
   'sleep_inside_fiber_inside_modal',
-  'out_of_order_sleep_resolution',
+  'queued_suspensions_preserve_fifo',
   'long_parked_sleep_clobbered_by_swap',
+  'modal_child_yield_skips_ineligible_pending',
+  'retained_child_delays_modal_close',
 ];
 
 const CRASH_SIGNATURES = [
@@ -112,11 +115,13 @@ test.describe('Asyncify races — green targets (full shims)', () => {
     expect(crashLines(testLogger), 'no crash signatures in console').toHaveLength(0);
   });
 
-  test('wakeup_during_transition: modal teardown over parked sleeps stays clean', async ({
+  test('affiliated close passes blocked ordinary work and preserves the owner tail', async ({
     page,
     testLogger,
   }) => {
-    await page.goto('/standalone/asyncify-races/races_test.html#only=wakeup_during_transition');
+    await page.goto(
+      '/standalone/asyncify-races/races_test.html#only=affiliated_close_unblocks_ordinary',
+    );
     await tryLoadApp(page, 30000);
 
     await expect
@@ -130,12 +135,12 @@ test.describe('Asyncify races — green targets (full shims)', () => {
     expect(realErrors(testLogger), 'no page errors').toHaveLength(0);
   });
 
-  test('nested_quasi_modal_pump_error: pump rejection must not leak the parked DoRun', async ({
+  test('retained modal child: EndModal waits for the exact affiliated tail', async ({
     page,
     testLogger,
   }) => {
     await page.goto(
-      '/standalone/asyncify-races/races_test.html#only=nested_quasi_modal_pump_error'
+      '/standalone/asyncify-races/races_test.html#only=retained_child_delays_modal_close'
     );
     await tryLoadApp(page, 30000);
 
@@ -143,16 +148,66 @@ test.describe('Asyncify races — green targets (full shims)', () => {
       .poll(() => findSummary(testLogger.consoleLogs) ?? null, {
         timeout: 45000,
         message:
-          'nested loop must exit after a pump error (silent stall = the c27fe8bf bug, fixed in wx evtloop.cpp)',
+          'ShowModal must stay parked until the retained child releases, then resume exactly once',
       })
       .not.toBeNull();
 
-    const { passed, failed } = parseSummary(findSummary(testLogger.consoleLogs)!);
+    const { total, passed, failed } = parseSummary(findSummary(testLogger.consoleLogs)!);
+    expect(total).toBe(1);
     expect(passed).toBe(1);
     expect(failed).toBe(0);
+    expect(crashLines(testLogger), 'no crash signatures in console').toHaveLength(0);
+    expect(realErrors(testLogger), 'no page errors').toHaveLength(0);
   });
 
-  test('sleep-park mode: park throw must not escape as an unhandled "unwind" rejection', async ({
+  test('nested modal close hands browser receipt back to the accepting parent', async ({
+    page,
+    testLogger,
+  }) => {
+    await page.goto(
+      '/standalone/asyncify-races/races_test.html#only=nested_modal_receipt_handback'
+    );
+    await tryLoadApp(page, 30000);
+
+    await page.waitForFunction(() => window.wxElementRegistry
+      ?.findByLabel('Close child', { exact: true })
+      .some((element) => element.visible));
+    expect(await clickByLabel(page, 'Close child', { exact: true })).toBe(true);
+
+    await page.waitForFunction(() => {
+      const registry = window.wxElementRegistry;
+      const childVisible = registry?.findByLabel('Close child', { exact: true })
+        .some((element) => element.visible) ?? false;
+      const parentVisible = registry?.findByLabel('Parent action', { exact: true })
+        .some((element) => element.visible) ?? false;
+      return !childVisible && parentVisible;
+    });
+
+    // L2 is deliberately held in BeginClose here. The real parent DOM event
+    // must be receipted for L1, but cannot execute until the retained L2 child
+    // is released through its exact affiliated owner.
+    expect(await clickByLabel(page, 'Parent action', { exact: true })).toBe(true);
+    await page.evaluate(() => {
+      const module = (window as any).Module;
+      module.ccall('races_release_handback_child', null, [], []);
+    });
+
+    await expect
+      .poll(() => findSummary(testLogger.consoleLogs) ?? null, {
+        timeout: 30000,
+        message: 'queued parent input must run after L2 closes',
+      })
+      .not.toBeNull();
+
+    const { total, passed, failed } = parseSummary(findSummary(testLogger.consoleLogs)!);
+    expect(total).toBe(1);
+    expect(passed).toBe(1);
+    expect(failed).toBe(0);
+    expect(crashLines(testLogger), 'no crash signatures in console').toHaveLength(0);
+    expect(realErrors(testLogger), 'no page errors').toHaveLength(0);
+  });
+
+  test('startup sleep: the internal unwind sentinel never escapes its Promise reaction', async ({
     page,
     testLogger,
   }) => {

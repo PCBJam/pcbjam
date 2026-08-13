@@ -49,8 +49,8 @@ type EmscriptenFS = {
     readFile(path: string, opts: { encoding: 'utf8' }): string;
 };
 type KicadModule = {
-    kicadOpenFile(path: string): unknown;
-    kicadSaveDrawingSheet(path: string): unknown;
+    kicadOpenFile(path: string): Promise<unknown>;
+    kicadSaveDrawingSheet(path: string): Promise<void>;
 };
 
 function hasAbort(testLogger: { consoleLogs: string[]; errors: string[] }): boolean {
@@ -65,7 +65,7 @@ async function openThenSave(
 ): Promise<string> {
     const inPath = `/home/kicad/documents/${name}.kicad_wks`;
     await page.evaluate(
-        ({ inPath, content }) => {
+        async ({ inPath, content }) => {
             const w = window as unknown as { FS: EmscriptenFS; Module: KicadModule };
             const dir = '/home/kicad/documents';
             try {
@@ -74,7 +74,7 @@ async function openThenSave(
                 /* already exists */
             }
             w.FS.writeFile(inPath, content);
-            w.Module.kicadOpenFile(inPath);
+            await w.Module.kicadOpenFile(inPath);
         },
         { inPath, content },
     );
@@ -84,10 +84,10 @@ async function openThenSave(
         .poll(async () => page.title(), { timeout: 30000, intervals: [500] })
         .toMatch(new RegExp(name, 'i'));
 
-    return page.evaluate((name) => {
+    return page.evaluate(async (name) => {
         const w = window as unknown as { FS: EmscriptenFS; Module: KicadModule };
         const outPath = `/home/kicad/documents/${name}-out.kicad_wks`;
-        w.Module.kicadSaveDrawingSheet(outPath);
+        await w.Module.kicadSaveDrawingSheet(outPath);
         return w.FS.readFile(outPath, { encoding: 'utf8' });
     }, name);
 }

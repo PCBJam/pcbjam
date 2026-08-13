@@ -1,5 +1,5 @@
 #!/bin/bash
-w# Build ngspice for WebAssembly: sharedspice STATIC library + statically
+# Build ngspice for WebAssembly: sharedspice STATIC library + statically
 # registered XSPICE code models. Consumed by the ngspice_service worker that
 # backs KiCad eeschema's simulator.
 #

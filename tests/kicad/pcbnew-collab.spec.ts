@@ -13,8 +13,7 @@ import { test, expect } from "./fixtures";
  *   - snapshot (read): kicadCollabSnapshot reflects items by uuid/type/position.
  *   - apply (single page): kicadCollabApply moves/removes/adds tracks by uuid (deferred via
  *     CallAfter + coroutine, so poll for the result).
- *   - two-tab: a real local move propagates A→B over BroadcastChannel (skipped headless — the
- *     harness can't PAINT; verified in the real web app).
+ *   - two-tab: a real local move propagates A→B over BroadcastChannel.
  *
  * pcbnew internal units are nanometres (1 mm = 1e6 IU), unlike eeschema (1e4 IU/mm).
  */
@@ -93,12 +92,13 @@ const SAMPLE_PCB = `(kicad_pcb
 
 type FS = { mkdirTree(p: string): void; writeFile(p: string, d: string): void };
 type Mod = {
-  kicadOpenFile(p: string): unknown;
-  kicadCollabSnapshot(): string;
-  kicadCollabApply(j: string): unknown;
-  kicadCollabTestMoveFirst(dx: number, dy: number): string;
-  kicadCollabGetPos(id: string): string;
-  kicadCollabTestItemBlob(id: string): string;
+  kicadOpenFile(p: string): Promise<unknown>;
+  kicadCollabSnapshot(): Promise<string>;
+  kicadCollabApply(j: string): Promise<void>;
+  kicadCollabTestMoveFirst(dx: number, dy: number): Promise<string>;
+  kicadCollabTestMoveBoardItem(id: string, dx: number, dy: number): Promise<boolean>;
+  kicadCollabGetPos(id: string): Promise<string>;
+  kicadCollabTestItemBlob(id: string): Promise<string>;
 };
 
 function hasAbort(l: { consoleLogs: string[]; errors: string[] }): boolean {
@@ -119,7 +119,8 @@ async function bootAndOpen(page: Page, name: string): Promise<void> {
         typeof m?.kicadOpenFile === "function" &&
         typeof m?.kicadCollabSnapshot === "function" &&
         typeof m?.kicadCollabApply === "function" &&
-        typeof m?.kicadCollabTestMoveFirst === "function"
+        typeof m?.kicadCollabTestMoveFirst === "function" &&
+        typeof m?.kicadCollabTestMoveBoardItem === "function"
       );
     },
     null,
@@ -136,7 +137,7 @@ async function bootAndOpen(page: Page, name: string): Promise<void> {
   );
 
   await page.evaluate(
-    ({ content, name }) => {
+    async ({ content, name }) => {
       const w = window as unknown as { FS: FS; Module: Mod };
       const dir = "/home/kicad/documents";
       try {
@@ -146,7 +147,7 @@ async function bootAndOpen(page: Page, name: string): Promise<void> {
       }
       const p = `${dir}/${name}.kicad_pcb`;
       w.FS.writeFile(p, content);
-      w.Module.kicadOpenFile(p);
+      await w.Module.kicadOpenFile(p);
     },
     { content: SAMPLE_PCB, name },
   );
@@ -161,7 +162,9 @@ test.beforeAll(() => {
 test.describe("pcbnew collab bridge — single page", () => {
   test("snapshot reflects board by uuid/type/position", async ({ page, testLogger }) => {
     await bootAndOpen(page, "snap");
-    const snap = await page.evaluate(() => JSON.parse(window.Module.kicadCollabSnapshot()));
+    const snap = await page.evaluate(async () =>
+      JSON.parse(await window.Module.kicadCollabSnapshot()),
+    );
     const byId = new Map<string, { type: string; x: number; y: number }>(
       snap.added.map((i: { id: string; type: string; x: number; y: number }) => [i.id, i]),
     );
@@ -214,10 +217,10 @@ test.describe("pcbnew collab bridge — single page", () => {
       await bootAndOpen(page, `add-${label}`);
 
       // Full emit-equivalent payload: snapshot item (native geometry fields) + the clipboard blob.
-      const payload = await page.evaluate((i) => {
-        const snap = JSON.parse(window.Module.kicadCollabSnapshot());
+      const payload = await page.evaluate(async (i) => {
+        const snap = JSON.parse(await window.Module.kicadCollabSnapshot());
         const item = snap.added.find((it: { id: string }) => it.id === i);
-        return { ...item, sexpr: window.Module.kicadCollabTestItemBlob(i) };
+        return { ...item, sexpr: await window.Module.kicadCollabTestItemBlob(i) };
       }, id);
       expect(payload.id, `${label} in snapshot`).toBe(id);
       const posBefore = await page.evaluate((i) => window.Module.kicadCollabGetPos(i), id);
@@ -250,8 +253,8 @@ test.describe("pcbnew collab bridge — single page", () => {
       // Fidelity beyond the anchor: a text's justification anchors its glyphs, so a peer that
       // dropped it would render the text visibly offset even though GetPosition matches. Confirm
       // the reconstructed item round-trips its type-defining fields.
-      const after = await page.evaluate((i) => {
-        const snap = JSON.parse(window.Module.kicadCollabSnapshot());
+      const after = await page.evaluate(async (i) => {
+        const snap = JSON.parse(await window.Module.kicadCollabSnapshot());
         return snap.added.find((it: { id: string }) => it.id === i);
       }, id);
       // The item's own layer travels in the delta and is applied explicitly by makeItem — it does
@@ -435,9 +438,11 @@ test.describe("pcbnew collab bridge — single page", () => {
 });
 
 test.describe("pcbnew collab bridge — two tabs (BroadcastChannel)", () => {
-  // SKIP headless for the same reason as the single-page apply test (harness can't PAINT).
-  // Verified working in the real web app.
-  test.skip("a local move propagates A→B", async ({ context, testLogger }) => {
+  test("a local move propagates A→B", async ({ context, testLogger }) => {
+    test.skip(
+      test.info().project.name.includes("firefox"),
+      "two KiCad editor tabs exceed Firefox's per-process WASM budget",
+    );
     const channel = `pcb-collab-e2e-${test.info().workerIndex}`;
     const bundle = path.resolve(__dirname, "../apps/kicad/collab-bundle.js");
 
@@ -458,20 +463,23 @@ test.describe("pcbnew collab bridge — two tabs (BroadcastChannel)", () => {
     await startCollab(tabA);
     await startCollab(tabB);
 
-    const uuid = await tabA.evaluate(() => window.Module.kicadCollabTestMoveFirst(2_000_000, 0));
-    expect(uuid).toMatch(/[0-9a-f-]{36}/);
-    const orig = await tabA.evaluate((id) => window.Module.kicadCollabGetPos(id), uuid);
+    const origA = await tabA.evaluate((id) => window.Module.kicadCollabGetPos(id), SEG1);
+    const origB = await tabB.evaluate((id) => window.Module.kicadCollabGetPos(id), SEG1);
+    expect(origA, "fixture segment exists in tab A").not.toBe("");
+    expect(origB, "both tabs start from the same fixture position").toBe(origA);
+
+    // Use a stable UUID and the exact owner-backed ticket. Its Promise covers
+    // the deferred BOARD_COMMIT tail, so the post-await position is definitive.
+    const moved = await tabA.evaluate(
+      (id) => window.Module.kicadCollabTestMoveBoardItem(id, 2_000_000, 0),
+      SEG1,
+    );
+    expect(moved, "the exact fixture segment was accepted for movement").toBe(true);
+    const posA = await tabA.evaluate((id) => window.Module.kicadCollabGetPos(id), SEG1);
+    expect(posA, "the exact-tail move changed tab A").not.toBe(origA);
 
     await expect
-      .poll(() => tabA.evaluate((id) => window.Module.kicadCollabGetPos(id), uuid), {
-        timeout: 15000,
-        intervals: [300],
-      })
-      .not.toBe(orig);
-    const posA = await tabA.evaluate((id) => window.Module.kicadCollabGetPos(id), uuid);
-
-    await expect
-      .poll(() => tabB.evaluate((id) => window.Module.kicadCollabGetPos(id), uuid), {
+      .poll(() => tabB.evaluate((id) => window.Module.kicadCollabGetPos(id), SEG1), {
         timeout: 15000,
         intervals: [300],
       })

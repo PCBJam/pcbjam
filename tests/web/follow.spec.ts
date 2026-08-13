@@ -17,8 +17,8 @@ import { openOverlayMenu } from './overlay-menu';
 const SCOPE = 'default';
 
 type Mod = {
-  kicadCollabGetViewport(): string;
-  kicadCollabFitViewport(cx: number, cy: number, hw: number, hh: number): void;
+  kicadCollabGetViewport(): Promise<string>;
+  kicadCollabFitViewport(cx: number, cy: number, hw: number, hh: number): Promise<void>;
 };
 type W = { Module: Mod };
 type Vp = { cx: number; cy: number; scale: number; w: number; h: number };
@@ -47,8 +47,8 @@ async function bootBoard(page: Page, user: string): Promise<void> {
 }
 
 const viewport = (page: Page): Promise<Vp> =>
-  page.evaluate(() =>
-    JSON.parse((window as unknown as W).Module.kicadCollabGetViewport()),
+  page.evaluate(async () =>
+    JSON.parse(await (window as unknown as W).Module.kicadCollabGetViewport()),
   );
 
 const fit = (page: Page, cx: number, cy: number, hw: number, hh: number) =>

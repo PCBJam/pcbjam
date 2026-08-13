@@ -149,3 +149,44 @@ test('the floating button restores EXACTLY the pre-hide chrome (no over-shown pa
 
   await page.screenshot({ path: shotPath(page, 'web-chrome-restored.png'), scale: 'css' });
 });
+
+test('rapid hide→show keeps the latest intent after an older owner ticket was admitted', async () => {
+  test.setTimeout(120_000);
+
+  // Do not wait for the native hide to settle before publishing the opposite
+  // intent. The former implementation compared against the last *completed*
+  // value, so this second event saw "already shown", submitted no correction,
+  // and the older hide won when its Promise eventually completed.
+  for (let cycle = 0; cycle < 20; cycle++) {
+    await page.keyboard.press('Control+\\'); // submit hide
+    await page.keyboard.press('Control+\\'); // replace it with show
+
+    await expect
+      .poll(() => visibleMenuTitles(page), {
+        timeout: 15_000,
+        message: `cycle ${cycle + 1}: native chrome must match the latest show intent`,
+      })
+      .toBeGreaterThan(0);
+  }
+
+  await expect
+    .poll(
+      () =>
+        page.evaluate(() => {
+          const scheduler = (
+            globalThis as typeof globalThis & {
+              __wxScheduler?: {
+                mutatorJobs?: { size?: number };
+                mutatorInFlight?: number;
+              };
+            }
+          ).__wxScheduler;
+          return {
+            pending: scheduler?.mutatorJobs?.size ?? 0,
+            inFlight: scheduler?.mutatorInFlight ?? 0,
+          };
+        }),
+      { timeout: 15_000, message: 'the chrome owner lane must quiesce after the ABA storm' },
+    )
+    .toEqual({ pending: 0, inFlight: 0 });
+});

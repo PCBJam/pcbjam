@@ -97,12 +97,49 @@ if [ "$CLEAN_BUILD" = "1" ]; then
 fi
 
 # Native wasm-EH is the only build mode. The emsdk-bundled Binaryen v121 crashes asyncifying wasm-EH,
-# so we stub the in-link Asyncify and run --hoist-cpp-catches + --asyncify post-link on the Binaryen
-# submodule (version_130 + hoist pass) via apply-asyncify.sh.
-EMSDK_WASM_OPT="$PROJECT_ROOT/tools/emsdk/upstream/bin/wasm-opt"
+# so we stub ONLY the in-link wasm-opt and run --hoist-cpp-catches + --asyncify post-link on the
+# Binaryen submodule (version_130 + hoist pass) via apply-asyncify.sh. wasm-emscripten-finalize must
+# remain real during the em++ link: it creates the dynCall_* exports used by Emscripten's fiber JS.
+#
+# KiCad's large-app build deliberately leaves both tools stubbed in the persistent Docker image.
+# Do not overwrite that shared toolchain here. Give this process a private Binaryen overlay through
+# Emscripten's supported EM_BINARYEN_ROOT setting instead. This also makes a focused test build
+# independent of which app the container built immediately before it.
+EMSDK_BINARYEN_BIN="$EMSDK/upstream/bin"
+EMSDK_FINALIZE="$EMSDK_BINARYEN_BIN/wasm-emscripten-finalize"
+REAL_FINALIZE="$EMSDK_FINALIZE"
+[ -x "${EMSDK_FINALIZE}.real" ] && REAL_FINALIZE="${EMSDK_FINALIZE}.real"
 WASMOPT_STUB="$PROJECT_ROOT/wasm/stubs/wasm-opt-stub.sh"
-_eh_restore_wasmopt() { [ -f "${EMSDK_WASM_OPT}.ehbak" ] && mv -f "${EMSDK_WASM_OPT}.ehbak" "${EMSDK_WASM_OPT}"; }
+if [ ! -x "$REAL_FINALIZE" ]; then
+    echo "ERROR: real wasm-emscripten-finalize not found: $REAL_FINALIZE" >&2
+    exit 1
+fi
+if grep -aq 'Stub wasm-emscripten-finalize' "$REAL_FINALIZE"; then
+    echo "ERROR: $REAL_FINALIZE is the no-op finalizer, not the real Binaryen tool" >&2
+    exit 1
+fi
+
+EM_BINARYEN_OVERLAY="$(mktemp -d)"
+mkdir -p "$EM_BINARYEN_OVERLAY/bin"
+for binaryen_tool in "$EMSDK_BINARYEN_BIN"/*; do
+    [ -f "$binaryen_tool" ] || continue
+    tool_name="$(basename "$binaryen_tool")"
+    case "$tool_name" in
+        wasm-opt|wasm-emscripten-finalize) continue ;;
+    esac
+    ln -s "$binaryen_tool" "$EM_BINARYEN_OVERLAY/bin/$tool_name"
+done
+ln -s "$WASMOPT_STUB" "$EM_BINARYEN_OVERLAY/bin/wasm-opt"
+ln -s "$REAL_FINALIZE" "$EM_BINARYEN_OVERLAY/bin/wasm-emscripten-finalize"
+export EM_BINARYEN_ROOT="$EM_BINARYEN_OVERLAY"
+
+EH_MARKER=""
+_eh_cleanup() {
+    [ -z "$EH_MARKER" ] || rm -f -- "$EH_MARKER"
+    [ -z "$EM_BINARYEN_OVERLAY" ] || rm -rf -- "$EM_BINARYEN_OVERLAY"
+}
 EH_MARKER="$(mktemp)"   # created before the build so 'find -newer' below selects freshly-linked apps
+trap _eh_cleanup EXIT
 echo ""
 echo "=== Building the Binaryen submodule (version_130 + hoist pass) ==="
 # One binaryen everywhere: the submodule fork is version_130 (asyncify unchanged) + our hoist
@@ -110,10 +147,8 @@ echo "=== Building the Binaryen submodule (version_130 + hoist pass) ==="
 export HOIST_WASMOPT="$("$SCRIPT_DIR/binaryen-hoist-pass/build-wasm-opt.sh")"
 export V130_WASMOPT="$HOIST_WASMOPT"
 echo "  submodule wasm-opt: $HOIST_WASMOPT"
-echo "Stubbing in-link Asyncify (will run post-link instead)..."
-cp "$EMSDK_WASM_OPT" "${EMSDK_WASM_OPT}.ehbak"
-cp "$WASMOPT_STUB" "$EMSDK_WASM_OPT"; chmod +x "$EMSDK_WASM_OPT"
-trap _eh_restore_wasmopt EXIT
+echo "  link Binaryen overlay: $EM_BINARYEN_OVERLAY"
+echo "Stubbing in-link Asyncify in the private overlay (will run post-link instead)..."
 
 # Build (pass DEBUG flag if requested). App links are independent, so honor
 # JOBS/PARALLEL_JOBS from env.sh (each emcc link is slow due to Asyncify).
@@ -126,7 +161,7 @@ make_rc=$?
 if [ "$make_rc" -ne 0 ]; then
     # Fail loudly. Silently continuing to the post-link leaves the freshly-linked apps
     # asyncify-stubbed / un-injected, which looks like mass test failures rather than a build
-    # error. (The EXIT trap restores the stubbed emsdk wasm-opt in the native-EH build.)
+    # error. (The EXIT trap removes this process's private Binaryen overlay.)
     echo "" >&2
     echo "ERROR: make failed (exit $make_rc); aborting before the post-link step." >&2
     exit "$make_rc"
@@ -138,7 +173,6 @@ fi
 # of bounds" — e.g. a context-menu pick while the main loop is parked. The Makefile only injects
 # it for the coroutine apps; inject-dyncall-shims.sh is idempotent (skips an already-shimmed glue),
 # so re-running it here is safe. The .wasm gets post-link hoist + asyncify first.
-_eh_restore_wasmopt; trap - EXIT
 echo ""
 echo "=== Post-link --hoist-cpp-catches + --asyncify (${JOBS:-1}-wide) ==="
 # The apps are independent here too (apply-asyncify rewrites each wasm in place; the shim
@@ -165,6 +199,9 @@ find "$WASM_APP_DIR" -name '*.wasm' -newer "$EH_MARKER" -print0 \
     fi
 ' _
 rm -f "$EH_MARKER"
+EH_MARKER=""
+_eh_cleanup; trap - EXIT
+EM_BINARYEN_OVERLAY=""
 
 echo ""
 echo "=== Build complete ==="
