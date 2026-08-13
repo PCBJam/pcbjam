@@ -5,14 +5,14 @@ import { test, expect } from '../e2e/utils/fixtures';
 // (tests/apps/standalone/jspi-coroutine) is a wx-free MiniCoro that mirrors
 // tool/coroutine.h's protocol exactly — INVOCATION_ARGS, callerStub with the
 // finish_fcontext hook, jumpIn/jumpOut, CONTINUE_AFTER_ROOT — over the real
-// libcontext.cpp. 15 cases: create/run/finish, yield chains, nested
+// libcontext.cpp. 18 cases: create/run/finish, yield chains, nested
 // call-in-call routed by enterer inference, RunMainStack payload propagation,
-// ghost-resume refusal (dead tombstones), mid-body release census.
+// ghost-resume refusal (dead tombstones, sentinel-shaped), mid-body release census, phantom-release refusal (running record + enterer chain), destroy-while-parked containment.
 //
 // Output contract: per-case "[JSPI_CORO] CASE <name> PASS|FAIL" then
 // "[JSPI_CORO] SUMMARY passed=<n> failed=<n>".
 
-const EXPECTED_PASSES = 15;
+const EXPECTED_PASSES = 18;
 
 function findSummary(logs: string[]) {
   return logs.find((l) => l.includes('[JSPI_CORO] SUMMARY'));
@@ -31,7 +31,7 @@ function assertSummary(logs: string[]) {
 }
 
 test.describe('JSPI coroutine backend contract battery', () => {
-  test('single-thread build: 15/15 protocol cases pass', async ({ page, testLogger }) => {
+  test('single-thread build: 18/18 protocol cases pass', async ({ page, testLogger }) => {
     await page.goto('/standalone/jspi-coroutine/');
     await expect
       .poll(() => findSummary(testLogger.consoleLogs) ?? null, {
@@ -42,7 +42,7 @@ test.describe('JSPI coroutine backend contract battery', () => {
     assertSummary(testLogger.consoleLogs);
   });
 
-  test('pthread build: 15/15 protocol cases pass', async ({ page, testLogger }) => {
+  test('pthread build: 18/18 protocol cases pass', async ({ page, testLogger }) => {
     await page.goto('/standalone/jspi-coroutine/?pt=1');
     await expect
       .poll(() => findSummary(testLogger.consoleLogs) ?? null, {

@@ -69,9 +69,14 @@ WX_JSPI_EXPORTS = main,wx_dom_event,wx_dom_mouse,wx_window_close,wx_window_move,
 # deliberately stay plain.
 RACES_EXTRA_LDFLAGS = -sJSPI_EXPORTS=$(WX_JSPI_EXPORTS),races_swap_once,races_park_token2,races_wdt_park_b
 JSPI_SHIM = $(abspath ../../scripts/common/shims/jspi-scheduler.js)
+# $stringToNewUTF8: the JSPI rejection path decodes a thrown C++ exception
+# through it; without forced inclusion the reference resolves to emscripten's
+# throwing stub and the FIRST throwing wx handler aborts the whole runtime
+# ("native code called abort()" -> pthread mutex deadlock storm).
 ASYNC_LDFLAGS = -sJSPI \
                -sJSPI_EXPORTS=$(WX_JSPI_EXPORTS) \
                -s "EXPORTED_RUNTIME_METHODS=['HEAPU8','HEAP8','HEAP32','ccall','stackSave','stackRestore']" \
+               -sDEFAULT_LIBRARY_FUNCS_TO_INCLUDE='$$stringToNewUTF8' \
                --pre-js $(JSPI_SHIM)
 ASYNC_CORO_LDFLAGS = $(ASYNC_LDFLAGS)
 CXXFLAGS += $(EH_FLAGS)
@@ -708,7 +713,6 @@ $(S)/async-preload/async_preload_test.o: $(S)/async-preload/async_preload_test.c
 
 $(S)/async-preload/async_preload_test.html: $(S)/async-preload/async_preload_test.o $(WX_CORE_LIB) $(JS_FILES)
 	$(CXX) $< $(LDFLAGS_RAYTRACE) --pre-js $(JS) --shell-file $(HTML) -o $@
-	../../scripts/common/inject-dyncall-shims.sh $(basename $@).js
 
 async-preload: $(S)/async-preload/async_preload_test.html
 .PHONY: async-preload
@@ -723,7 +727,6 @@ $(S)/raytrace-modal/raytrace_modal_test.o: $(S)/raytrace-modal/raytrace_modal_te
 
 $(S)/raytrace-modal/raytrace_modal_test.html: $(S)/raytrace-modal/raytrace_modal_test.o $(WX_CORE_LIB) $(JS_FILES)
 	$(CXX) $< $(LDFLAGS_RAYTRACE) --pre-js $(JS) --shell-file $(HTML) -o $@
-	../../scripts/common/inject-dyncall-shims.sh $(basename $@).js
 
 raytrace-modal: $(S)/raytrace-modal/raytrace_modal_test.html
 .PHONY: raytrace-modal
@@ -746,7 +749,6 @@ $(S)/coroutine/libcontext.o: $(KICAD_ROOT)/thirdparty/libcontext/libcontext.cpp 
 
 $(S)/coroutine/coroutine_test.html: $(S)/coroutine/coroutine_test.o $(S)/coroutine/libcontext.o $(WX_CORE_LIB) $(JS_FILES)
 	$(CXX) $(filter %.o %.a,$^) $(LDFLAGS_COROUTINE) --pre-js $(JS) --shell-file $(HTML) -o $@
-	../../scripts/common/inject-dyncall-shims.sh $(basename $@).js
 
 # Nested coroutine+modal interaction harness - reproduces Asyncify rewind corruption
 # when fiber swaps happen inside a wxDialog::ShowModal event loop (Issue #9153).
@@ -755,9 +757,7 @@ $(S)/coroutine-nested/nested_test.o: $(S)/coroutine-nested/nested_test.cpp $(S)/
 
 $(S)/coroutine-nested/nested_test.html: $(S)/coroutine-nested/nested_test.o $(S)/coroutine/libcontext.o $(WX_CORE_LIB) $(JS_FILES)
 	$(CXX) $(filter %.o %.a,$^) $(LDFLAGS_COROUTINE) --pre-js $(JS) --shell-file $(HTML) -o $@
-	../../scripts/common/inject-dyncall-shims.sh $(basename $@).js
 
-	../../scripts/common/inject-dyncall-shims.sh $(basename $@).js
 
 # (The trampoline-heal / handleSleep ablation variants — races_test_noheal /
 # races_test_nosleepfix — were retired at doc 20 D-1 together with the legacy
@@ -767,7 +767,6 @@ $(S)/asyncify-races/races_test.o: $(S)/asyncify-races/races_test.cpp $(S)/corout
 
 $(S)/asyncify-races/races_test.html: $(S)/asyncify-races/races_test.o $(S)/coroutine/libcontext.o $(WX_CORE_LIB)
 	$(CXX) $^ $(LDFLAGS_RACES) $(RACES_EXTRA_LDFLAGS) --pre-js $(JS) --shell-file $(HTML) -o $@
-	../../scripts/common/inject-dyncall-shims.sh $(basename $@).js
 
 
 # Convenience targets
@@ -870,15 +869,18 @@ $(S)/coroutine-pthread/libcontext_pt.o: $(KICAD_ROOT)/thirdparty/libcontext/libc
 
 $(S)/coroutine-pthread/coroutine_test.html: $(S)/coroutine-pthread/coroutine_test_pt.o $(S)/coroutine-pthread/libcontext_pt.o $(WX_CORE_LIB) $(JS_FILES)
 	$(CXX) $(filter %.o %.a,$^) $(LDFLAGS_COROUTINE_PTHREAD) --pre-js $(JS) --shell-file $(HTML) -o $@
-	../../scripts/common/inject-dyncall-shims.sh $(basename $@).js
 
 coroutine-pthread: $(S)/coroutine-pthread/coroutine_test.html
 .PHONY: coroutine-pthread
 
-# === No-wx pthread main() reproduction: fiber pattern in main + pthreads, no wxWidgets ===
+# === No-wx pthread main() reproduction: coroutine pattern in main + pthreads, no wx ===
+# JSPI since 2026-08-13: these pages compile the JSPI-only libcontext, so they must
+# link the JSPI suspension engine (the old -sASYNCIFY/-sDYNCALLS link produced a
+# frankenbuild matching no shipped configuration — instant stack overflow at the
+# first yield).
 LDFLAGS_COROUTINE_PTHREAD_NOWX = $(EH_FLAGS) $(DEBUG_LDFLAGS) -sALLOW_MEMORY_GROWTH -sERROR_ON_UNDEFINED_SYMBOLS=0 \
-                  -sASYNCIFY=1 -sASYNCIFY_STACK_SIZE=65536 -sASYNCIFY_IMPORTS=['emscripten_fiber_swap'] \
-                  -sDYNCALLS=1 -pthread -sPTHREAD_POOL_SIZE='navigator.hardwareConcurrency' \
+                  -sJSPI -sJSPI_EXPORTS=main,pcbjam_libctx_entry \
+                  -pthread -sPTHREAD_POOL_SIZE='navigator.hardwareConcurrency' \
                   -sPTHREAD_POOL_SIZE_STRICT=0 -sEXPORTED_RUNTIME_METHODS=['ccall']
 
 $(S)/coroutine-pthread/main_repro.o: $(S)/coroutine-pthread/main_repro.cpp $(S)/coroutine/kicad_coroutine_harness.h
@@ -887,7 +889,6 @@ $(S)/coroutine-pthread/main_repro.o: $(S)/coroutine-pthread/main_repro.cpp $(S)/
 
 $(S)/coroutine-pthread/main_repro.html: $(S)/coroutine-pthread/main_repro.o $(S)/coroutine-pthread/libcontext_pt.o
 	$(CXX) $(filter %.o %.a,$^) $(LDFLAGS_COROUTINE_PTHREAD_NOWX) -o $@
-	../../scripts/common/inject-dyncall-shims.sh $(basename $@).js
 
 coroutine-pthread-main: $(S)/coroutine-pthread/main_repro.html
 .PHONY: coroutine-pthread-main
@@ -899,16 +900,15 @@ $(S)/coroutine-pthread/nested_repro.o: $(S)/coroutine-pthread/nested_repro.cpp $
 
 $(S)/coroutine-pthread/nested_repro.html: $(S)/coroutine-pthread/nested_repro.o $(S)/coroutine-pthread/libcontext_pt.o
 	$(CXX) $(filter %.o %.a,$^) $(LDFLAGS_COROUTINE_PTHREAD_NOWX) -o $@
-	../../scripts/common/inject-dyncall-shims.sh $(basename $@).js
 
 coroutine-pthread-nested: $(S)/coroutine-pthread/nested_repro.html
 .PHONY: coroutine-pthread-nested
 
-# Nested invoke_/dynCall reproduction WITH exceptions (invoke_* boundaries, asyncify-unwindable)
+# Nested invoke_/dynCall reproduction WITH exceptions (invoke_* boundaries).
+# JSPI since 2026-08-13 — see the NOWX comment above.
 LDFLAGS_COROUTINE_INVOKE = $(EH_FLAGS) $(DEBUG_LDFLAGS) -sALLOW_MEMORY_GROWTH -sERROR_ON_UNDEFINED_SYMBOLS=0 \
-                  -sASYNCIFY=1 -sASYNCIFY_STACK_SIZE=65536 \
-                  -sASYNCIFY_IMPORTS=['invoke_vi','invoke_v','invoke_ii','invoke_iii','emscripten_fiber_swap'] \
-                  -sDYNCALLS=1 -pthread -sPTHREAD_POOL_SIZE='navigator.hardwareConcurrency' \
+                  -sJSPI -sJSPI_EXPORTS=main,pcbjam_libctx_entry \
+                  -pthread -sPTHREAD_POOL_SIZE='navigator.hardwareConcurrency' \
                   -sPTHREAD_POOL_SIZE_STRICT=0 -sEXPORTED_RUNTIME_METHODS=['ccall']
 
 $(S)/coroutine-pthread/nested_repro_ex.o: $(S)/coroutine-pthread/nested_repro.cpp $(S)/coroutine/kicad_coroutine_harness.h
@@ -921,7 +921,6 @@ $(S)/coroutine-pthread/libcontext_ex.o: $(KICAD_ROOT)/thirdparty/libcontext/libc
 
 $(S)/coroutine-pthread/nested_repro_ex.html: $(S)/coroutine-pthread/nested_repro_ex.o $(S)/coroutine-pthread/libcontext_ex.o
 	$(CXX) $(filter %.o %.a,$^) $(LDFLAGS_COROUTINE_INVOKE) -o $@
-	../../scripts/common/inject-dyncall-shims.sh $(basename $@).js
 
 coroutine-pthread-nested-ex: $(S)/coroutine-pthread/nested_repro_ex.html
 .PHONY: coroutine-pthread-nested-ex
@@ -930,7 +929,6 @@ coroutine-pthread-nested-ex: $(S)/coroutine-pthread/nested_repro_ex.html
 # pthread workers don't crash on wx's module-eval document access.
 $(S)/coroutine-pthread/coroutine_test_wxpt.html: $(S)/coroutine-pthread/coroutine_test_pt.o $(S)/coroutine-pthread/libcontext_pt.o $(WX_CORE_LIB) $(JS_FILES)
 	$(CXX) $(filter %.o %.a,$^) $(LDFLAGS_COROUTINE_PTHREAD) --pre-js $(S)/coroutine-pthread/worker_dom_stub.js --pre-js $(JS) --shell-file $(HTML) -o $@
-	../../scripts/common/inject-dyncall-shims.sh $(basename $@).js
 
 coroutine-pthread-wx: $(S)/coroutine-pthread/coroutine_test_wxpt.html
 .PHONY: coroutine-pthread-wx
@@ -944,7 +942,6 @@ $(S)/coroutine-pthread/embind_repro.o: $(S)/coroutine-pthread/embind_repro.cpp $
 
 $(S)/coroutine-pthread/embind_repro.html: $(S)/coroutine-pthread/embind_repro.o $(S)/coroutine-pthread/libcontext_ex.o
 	$(CXX) $(filter %.o %.a,$^) $(LDFLAGS_COROUTINE_EMBIND) -o $@
-	../../scripts/common/inject-dyncall-shims.sh $(basename $@).js
 
 coroutine-pthread-embind: $(S)/coroutine-pthread/embind_repro.html
 .PHONY: coroutine-pthread-embind
@@ -954,25 +951,25 @@ $(S)/coroutine-pthread/mainloop_repro.o: $(S)/coroutine-pthread/mainloop_repro.c
 	@mkdir -p $(S)/coroutine-pthread
 	$(CXX) -c $(CXXFLAGS) -pthread -I$(KICAD_ROOT)/thirdparty/libcontext -I$(S)/coroutine $< -o $@
 
+# repro_tick is the promising rAF tick export (see mainloop_repro.cpp); a LAST
+# -sJSPI_EXPORTS overrides the base list.
 $(S)/coroutine-pthread/mainloop_repro.html: $(S)/coroutine-pthread/mainloop_repro.o $(S)/coroutine-pthread/libcontext_pt.o
-	$(CXX) $(filter %.o %.a,$^) $(LDFLAGS_COROUTINE_PTHREAD_NOWX) -o $@
-	../../scripts/common/inject-dyncall-shims.sh $(basename $@).js
+	$(CXX) $(filter %.o %.a,$^) $(LDFLAGS_COROUTINE_PTHREAD_NOWX) -sJSPI_EXPORTS=main,pcbjam_libctx_entry,repro_tick -o $@
 
 coroutine-pthread-mainloop: $(S)/coroutine-pthread/mainloop_repro.html
 .PHONY: coroutine-pthread-mainloop
 
 # WebGL2 + coroutine reproduction (no wx, no pthreads, default shell with #canvas)
 LDFLAGS_COROUTINE_GL = $(EH_FLAGS) $(DEBUG_LDFLAGS) -sALLOW_MEMORY_GROWTH -sERROR_ON_UNDEFINED_SYMBOLS=0 \
-                  -sASYNCIFY=1 -sASYNCIFY_STACK_SIZE=65536 -sASYNCIFY_IMPORTS=['emscripten_fiber_swap'] \
-                  -sDYNCALLS=1 -sMAX_WEBGL_VERSION=2 -sMIN_WEBGL_VERSION=2 -sEXPORTED_RUNTIME_METHODS=['ccall']
+                  -sJSPI -sJSPI_EXPORTS=main,pcbjam_libctx_entry \
+                  -sMAX_WEBGL_VERSION=2 -sMIN_WEBGL_VERSION=2 -sEXPORTED_RUNTIME_METHODS=['ccall']
 
 $(S)/coroutine-pthread/gl_repro.o: $(S)/coroutine-pthread/gl_repro.cpp $(S)/coroutine/kicad_coroutine_harness.h
 	@mkdir -p $(S)/coroutine-pthread
 	$(CXX) -c $(CXXFLAGS) -I$(KICAD_ROOT)/thirdparty/libcontext -I$(S)/coroutine $< -o $@
 
 $(S)/coroutine-pthread/gl_repro.html: $(S)/coroutine-pthread/gl_repro.o $(S)/coroutine/libcontext.o
-	$(CXX) $(filter %.o %.a,$^) $(LDFLAGS_COROUTINE_GL) -o $@
-	../../scripts/common/inject-dyncall-shims.sh $(basename $@).js
+	$(CXX) $(filter %.o %.a,$^) $(LDFLAGS_COROUTINE_GL) -sJSPI_EXPORTS=main,pcbjam_libctx_entry,repro_tick -o $@
 
 coroutine-pthread-gl: $(S)/coroutine-pthread/gl_repro.html
 .PHONY: coroutine-pthread-gl
@@ -986,8 +983,7 @@ $(S)/coroutine-pthread/gl_repro_pt.o: $(S)/coroutine-pthread/gl_repro.cpp $(S)/c
 	$(CXX) -c $(CXXFLAGS) -pthread -I$(KICAD_ROOT)/thirdparty/libcontext -I$(S)/coroutine $< -o $@
 
 $(S)/coroutine-pthread/gl_repro_pt.html: $(S)/coroutine-pthread/gl_repro_pt.o $(S)/coroutine-pthread/libcontext_pt.o
-	$(CXX) $(filter %.o %.a,$^) $(LDFLAGS_COROUTINE_GL_PTHREAD) -o $@
-	../../scripts/common/inject-dyncall-shims.sh $(basename $@).js
+	$(CXX) $(filter %.o %.a,$^) $(LDFLAGS_COROUTINE_GL_PTHREAD) -sJSPI_EXPORTS=main,pcbjam_libctx_entry,repro_tick -o $@
 
 coroutine-pthread-gl-pt: $(S)/coroutine-pthread/gl_repro_pt.html
 .PHONY: coroutine-pthread-gl-pt
@@ -998,7 +994,6 @@ $(S)/coroutine-pthread/vcall_repro.o: $(S)/coroutine-pthread/vcall_repro.cpp $(S
 
 $(S)/coroutine-pthread/vcall_repro.html: $(S)/coroutine-pthread/vcall_repro.o $(S)/coroutine-pthread/libcontext_pt.o
 	$(CXX) $(filter %.o %.a,$^) $(LDFLAGS_COROUTINE_PTHREAD_NOWX) -o $@
-	../../scripts/common/inject-dyncall-shims.sh $(basename $@).js
 
 coroutine-pthread-vcall: $(S)/coroutine-pthread/vcall_repro.html
 .PHONY: coroutine-pthread-vcall

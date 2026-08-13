@@ -51,7 +51,7 @@ const FAMILY_PATTERNS: Record<
   openSettleFailed: /\[open\] load chain never settled/,
   // JSPI-era families (jspi-scheduler.js + libcontext's JSPI backend):
   wxScheduler:
-    /\[wx-scheduler\] (force-clearing stuck window|mailbox tick error|untracked promising entry|activation stack imbalance|resume window misnested)/,
+    /\[wx-scheduler\] (force-clearing stuck window|job tick error|untracked promising entry|activation stack imbalance|resume window misnested)/,
   libctxJspi: /\[libctx-jspi\] ghost\/refused/,
 };
 

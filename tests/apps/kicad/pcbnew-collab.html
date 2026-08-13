@@ -133,7 +133,7 @@
     // pcbnew.spec.ts explicitly exercises the wizard; the collab tests instead
     // need a clean, wizard-free boot (like eeschema.html), hence this variant.
     var seedKicadConfig = function() {
-      var cfgDir = '/home/kicad/.config/kicad/kicad/9.99';
+      var cfgDir = '/home/kicad/.config/kicad/kicad/10.0';
       FS.mkdirTree(cfgDir);
 
       var writeIfAbsent = function(path, contents) {

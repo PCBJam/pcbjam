@@ -20,6 +20,15 @@
  */
 const GLUE = self.NGSPICE_GLUE_URL;
 
+// PTHREAD CHILD REALM (emscripten 6): the glue spawns pthread workers
+// (ngspice's bg_run thread) from _scriptName = self.location.href — THIS
+// wrapper blob (mainScriptUrlOrBlob was removed upstream). Load the glue (its
+// tail self-instantiates into pthread-child mode) and get out of the way; see
+// occ-worker.js for the full story.
+if (globalThis.name === "em-pthread") {
+  importScripts(GLUE);
+} else {
+
 self.addEventListener("error", (e) =>
   console.error("[ngspice_service] worker error:", e.message, e.filename, e.lineno));
 self.addEventListener("unhandledrejection", (e) =>
@@ -29,12 +38,8 @@ importScripts(GLUE);
 
 const modP = NgspiceService({
   onAbort: (what) => console.error("[ngspice_service] ABORT:", what),
-  // Same blob-importScripts trick as boot.ts / occ-worker.js: the module's own
-  // pthread children (ngspice's bg_run thread) must boot from a same-origin
-  // script even when the glue lives on a CDN.
-  mainScriptUrlOrBlob: new Blob(
-    ["importScripts(" + JSON.stringify(GLUE) + ");"],
-    { type: "text/javascript" }),
+  // (emscripten 6 removed mainScriptUrlOrBlob; pthread children re-run this
+  // wrapper blob instead — handled by the em-pthread branch at the top.)
   // A blob: worker has no http base URL — absolutize every asset path against
   // the glue's URL or the .wasm fetch dies with "Failed to parse URL".
   locateFile: (f) => new URL(f, GLUE).href,
@@ -139,3 +144,5 @@ onmessage = async (e) => {
   }
   postMessage({ id, res }, transfer);
 };
+
+} // end non-pthread (top service) realm

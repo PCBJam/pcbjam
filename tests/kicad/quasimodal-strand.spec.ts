@@ -298,21 +298,22 @@ test.describe("quasi-modal strand (doc 19)", () => {
     expect(await dialogCount(page)).toBeGreaterThan(0);
     await okButtonCenter(page);
 
-    // RE-PINNED AT THE FLIP (docs/features/async/22 §10, 2026-08-08). The
-    // overlap this staging proved (a timer park on top of an open-ended park)
-    // required an in-place park for the timer to land on; post-flip every
-    // party is a scheduler context and D5 removed the main loop's in-place
-    // park, so the window is structurally impossible. The staging now pins
-    // the post-migration invariant: the dialog opens, the timer fires and its
-    // park survives (asserted above), and NO concurrent-park window is
-    // observable.
+    // RE-PINNED AT THE FLIP (docs/features/async/22 §10, 2026-08-08), and
+    // RE-KEYED for JSPI (2026-08-13): the `[wx-asyncify] concurrent-park|…`
+    // beacons retired with the asyncify scheduler, which made the old filter
+    // vacuous. The post-migration invariant is the same — the dialog opens,
+    // the timer fires and its park survives (asserted above) — and the
+    // observable JSPI failure modes of an overlap are ghost/refused
+    // transitions, a stuck-window force-clear, or a job-tick trap.
     const overlapBeacons = testLogger.consoleLogs.filter((l) =>
-      /\[wx-asyncify\] (concurrent-park|aliased-wake-live|overlapped-wake)/.test(l),
+      /\[libctx-jspi\] ghost\/refused transition|\[wx-scheduler\] (force-clearing stuck window|job tick error)/.test(
+        l,
+      ),
     );
     console.log(`[STRAND] staging overlap beacons: ${overlapBeacons.length}`);
     expect(
       overlapBeacons.length,
-      "no concurrent-park window is observable post-flip",
+      "no ghost/stuck-window/job-tick anomaly is observable post-flip",
     ).toBe(0);
   });
 

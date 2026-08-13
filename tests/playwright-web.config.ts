@@ -53,9 +53,9 @@ const CHROMIUM_CI_ARGS = process.env.CI
     }
   : {};
 
-// Firefox prefs. JSPI is default-on only in Firefox >=153; the bundled 144
-// needs the pref — set it UNCONDITIONALLY, exactly like FIREFOX_PREFS_ALWAYS
-// in playwright.config.ts (a CI-gated blob would leave local runs without it).
+// Firefox prefs. JSPI is default-on since Firefox 153 (the Playwright 1.62
+// bundle); the pref stays as documentation of intent, UNCONDITIONAL exactly
+// like FIREFOX_PREFS_ALWAYS in playwright.config.ts.
 // CI additionally runs headed under Xvfb (the CI step wraps in xvfb-run) with
 // the no-GPU blocklist bypassed, since headless Firefox can't create a GL
 // context on GPU-less CI VMs. NOTE: spreads REPLACE launchOptions wholesale —

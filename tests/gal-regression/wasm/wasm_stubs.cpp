@@ -312,6 +312,14 @@ PGM_BASE& Pgm() {
     return *s_pgmInstance;
 }
 
+// Newer GAL code probes the program via the nullable accessor
+// (graphics_abstraction_layer.h GetSettings path); without this the
+// -sERROR_ON_UNDEFINED_SYMBOLS=0 stub aborts with
+// "missing function: _Z9PgmOrNullv" during WEBGL_GAL creation.
+PGM_BASE* PgmOrNull() {
+    return &Pgm();
+}
+
 const ADVANCED_CFG& ADVANCED_CFG::GetCfg() {
     static ADVANCED_CFG instance;
     return instance;

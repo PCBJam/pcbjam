@@ -3,8 +3,10 @@
 // KiCad's GAL renders via WebGL 2.0 in the rAF refresh, and tool coroutines activate
 // during the same refresh — so the Asyncify unwind/rewind happens MID-RENDER-FRAME with
 // the GL context current. This probe creates a real WebGL-2.0 context and activates the
-// coroutine between GL draw calls inside an emscripten_set_main_loop(rAF) frame, then the
-// coroutine yields back -> main rewinds the render frame.
+// coroutine between GL draw calls inside the rAF-driven frame, then the coroutine
+// yields back and the frame's promising activation suspends/resumes. (JSPI 2026-08-13:
+// emscripten_set_main_loop callbacks are plain calls and cannot suspend — the frame is
+// driven like the shipped app drives ticks, a JS rAF loop over a promising export.)
 //
 // No-wx (single-threaded first; GL+pthreads needs OFFSCREEN proxying — add later if this
 // passes). Firefox should reach "[REPRO] DONE"; if system Chrome crashes before DONE, the
@@ -13,6 +15,7 @@
 #include "kicad_coroutine_harness.h"
 
 #include <emscripten.h>
+#include <emscripten/em_js.h>
 #include <emscripten/html5.h>
 #include <GLES3/gl3.h>
 
@@ -41,8 +44,13 @@ static void run_coroutine()
     std::fflush( stdout );
 }
 
-static void render_frame()
+static bool g_done = false;
+
+extern "C" EMSCRIPTEN_KEEPALIVE void repro_tick()
 {
+    if( g_done )
+        return;
+
     ++g_frame;
     glClearColor( 0.1f, 0.2f, 0.3f, 1.0f );
     glClear( GL_COLOR_BUFFER_BIT );  // a real WebGL2 draw call before the coroutine
@@ -52,15 +60,23 @@ static void render_frame()
         std::printf( "[REPRO] frame %d: activating coroutine mid-GL-frame\n", g_frame );
         std::fflush( stdout );
 
-        run_coroutine();  // coroutine yields -> Asyncify rewinds the render frame
+        run_coroutine();  // coroutine yields -> the frame activation suspends + resumes
 
         glClearColor( 0.3f, 0.2f, 0.1f, 1.0f );
         glClear( GL_COLOR_BUFFER_BIT );  // another GL call after the coroutine resumes
         std::printf( "[REPRO] DONE\n" );
         std::fflush( stdout );
-        emscripten_cancel_main_loop();
+        g_done = true;
     }
 }
+
+// rAF driver over the promising tick export (each tick may suspend mid-frame).
+EM_JS( void, install_raf_driver, (), {
+    const tick = () => {
+        Promise.resolve( _repro_tick() ).then( () => requestAnimationFrame( tick ) );
+    };
+    requestAnimationFrame( tick );
+} );
 
 int main()
 {
@@ -73,6 +89,7 @@ int main()
     std::printf( "[REPRO] start; WebGL2 context=%d\n", (int) g_ctx );
     std::fflush( stdout );
 
-    emscripten_set_main_loop( render_frame, 0, 0 );
+    install_raf_driver();
+    emscripten_exit_with_live_runtime();  // main returns; rAF drives repro_tick
     return 0;
 }

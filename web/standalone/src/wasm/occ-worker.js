@@ -13,6 +13,19 @@
  */
 const GLUE = self.OCC_GLUE_URL;
 
+// PTHREAD CHILD REALM (emscripten 6): the glue spawns its pthread workers from
+// `_scriptName` = self.location.href — which, for a blob-booted service, is
+// THIS wrapper blob (`Module.mainScriptUrlOrBlob` was removed upstream). Each
+// child therefore re-executes this file. Detect the em-pthread realm, load the
+// glue (its tail self-instantiates into pthread-child mode and installs its own
+// onmessage for the wasmModule/wasmMemory handshake) and get out of the way —
+// running the wrapper's own boot here would recursively spawn whole new
+// services and clobber the pthread handshake handler (observed: occ_service
+// boot hanging forever in a worker-spawn storm while the pool never fills).
+if (globalThis.name === "em-pthread") {
+  importScripts(GLUE);
+} else {
+
 self.addEventListener("error", (e) =>
   console.error("[occ_service] worker error:", e.message, e.filename, e.lineno));
 self.addEventListener("unhandledrejection", (e) =>
@@ -26,11 +39,8 @@ const noise = (s) => /(^|: )Debug: /.test(String(s));
 
 const modP = OccService({
   onAbort: (what) => console.error("[occ_service] ABORT:", what),
-  // The module's own pthread children must boot from a same-origin script even
-  // when the glue lives on a CDN — same blob-importScripts trick as boot.ts.
-  mainScriptUrlOrBlob: new Blob(
-    ["importScripts(" + JSON.stringify(GLUE) + ");"],
-    { type: "text/javascript" }),
+  // (emscripten 6 removed mainScriptUrlOrBlob; pthread children re-run this
+  // wrapper blob instead — handled by the em-pthread branch at the top.)
   // A blob: worker has no http base URL — every asset path must be absolutized
   // against the glue's own URL or the .wasm fetch dies with "Failed to parse
   // URL" (root-relative bases like "/wasm" don't resolve).
@@ -68,3 +78,5 @@ onmessage = async (e) => {
   };
   postMessage({ id, res: out }, out.bytes ? [out.bytes.buffer] : []);
 };
+
+} // end non-pthread (top service) realm

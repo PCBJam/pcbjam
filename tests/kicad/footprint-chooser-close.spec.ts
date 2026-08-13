@@ -58,20 +58,36 @@ async function synthClick(page: Page, x: number, y: number): Promise<void> {
 }
 
 async function assertResponsive(page: Page, label: string): Promise<void> {
-    const before = await page.evaluate(
-        () => Number((window.__wxAsyncifyDump?.().match(/fcsTotal=(\d+)/) || [])[1] || 0),
-    );
-    await page.waitForTimeout(1500); // eslint-disable-line -- sampling the loop counter across a fixed window
-    const after = await page.evaluate(
-        () => Number((window.__wxAsyncifyDump?.().match(/fcsTotal=(\d+)/) || [])[1] || 0),
-    );
-    if (after === before) {
-        const dump = await page.evaluate(() =>
-            typeof window.__wxAsyncifyDump === 'function' ? window.__wxAsyncifyDump() : 'no dump',
-        );
-        console.log(`[TEST] RECORDER after ${label} (loop STALLED, fcs=${after}):\n${dump}`);
+    // JSPI liveness metric: a wx timer firing IS the doc-19 liveness semantic
+    // (the dead-app class = the event loop stops delivering). Arm the
+    // parking-timer lever with parkMs=0 (fires, no park; `fired` is a
+    // cumulative counter, so re-arming per call is fine) and poll for the
+    // increment. Engine-neutral, unlike scheduler wait counters, which sit
+    // still on an idle Firefox loop. (The asyncify-era fcsTotal retired with
+    // that scheduler.)
+    const fired = () =>
+        page.evaluate(() => {
+            const m = (window as any).Module;
+            try { return JSON.parse(m.kicadTestTimerParkState()).fired as number; }
+            catch { return -1; }
+        });
+    const before = await fired();
+    await page.evaluate(() => (window as any).Module.kicadTestArmTimerPark(30, 0));
+    let after = before;
+    for (let i = 0; i < 40 && after <= before; i++) {
+        await page.waitForTimeout(100); // eslint-disable-line -- polling the timer heartbeat
+        after = await fired();
     }
-    expect(after, `main loop still advancing after ${label}`).toBeGreaterThan(before);
+    if (after <= before) {
+        const dump = await page.evaluate(() => {
+            const w = window as any;
+            return typeof w.__wxWaitDump === 'function'
+                ? JSON.stringify(w.__wxWaitDump())
+                : 'no dump';
+        });
+        console.log(`[TEST] RECORDER after ${label} (loop STALLED, fired=${after}):\n${dump}`);
+    }
+    expect(after, `wx timer still delivered after ${label}`).toBeGreaterThan(before);
 }
 
 test.describe('Add Footprint chooser close (doc-19 dead-app repro)', () => {

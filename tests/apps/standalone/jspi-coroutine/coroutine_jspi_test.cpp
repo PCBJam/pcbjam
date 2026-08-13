@@ -50,8 +50,11 @@ struct MiniCoro
 
     ~MiniCoro()
     {
-        if( m_caller.ctx )
-            libcontext::release_fcontext( m_caller.ctx );
+        // Mirror of coroutine.h's ownership rule: m_callee.ctx is the one
+        // record we own. m_caller.ctx is BORROWED (the enterer's record or
+        // the root, written by jump_fcontext's symmetric protocol) — the old
+        // release here was the phantom-release bug the JSPI backend turned
+        // into a live-coroutine kill.
         if( m_callee.ctx )
             libcontext::release_fcontext( m_callee.ctx );
     }
@@ -167,6 +170,10 @@ EM_JS( int, js_live_slot_count, (), {
 EM_JS( int, js_dead_parked, (), {
     const L = globalThis.__libctxJspi;
     return L ? L.deadParked : -1;
+} );
+EM_JS( int, js_ghost_count, (), {
+    const L = globalThis.__libctxJspi;
+    return L ? L.ghosts : -1;
 } );
 EM_JS( void, js_schedule_resume_marker, (), {
     globalThis.__timerFired = 0;
@@ -325,10 +332,20 @@ int main()
         c.Call();
         c.Resume();                       // finishes
         bool resumed = c.Resume( 99 );    // must refuse: m_running false short-circuits
-        // force a backend-level ghost jump too:
+        // force a backend-level ghost jump too. Contract update: the ghost
+        // refusal must return the SENTINEL, never raw -1 — coroutine.h
+        // dereferences the return unconditionally, and a live COROUTINE CAN
+        // reach this path (a nested-dispatch partner's record dying
+        // mid-flight). The old "coroutine.h can't reach the raw -1" premise
+        // was disproven by the boot-time jumpOut OOB.
         intptr_t r = libcontext::jump_fcontext( &c.m_caller.ctx, c.m_callee.ctx, 0 );
+        auto* sent = reinterpret_cast<INVOCATION_ARGS*>( r );
+        bool sentinelShaped = r != -1 && r != 0
+                              && sent->type == INVOCATION_ARGS::FROM_ROUTINE
+                              && sent->context == nullptr;
         report( "resume_after_finish_does_not_reenter",
-                !resumed && entries == 1 && r == -1 );
+                !resumed && entries == 1 && sentinelShaped,
+                "r=" + std::to_string( (long long) r ) );
     }
 
     // 9. interleaving multiple coroutines
@@ -427,6 +444,95 @@ int main()
                 bodySteps == 1 && deadAfter == deadBefore + 1,
                 "steps=" + std::to_string( bodySteps )
                     + " dead=" + std::to_string( deadAfter ) );
+    }
+
+    // 16. release of the RUNNING record is refused (legacy ~CALL_CONTEXT
+    //     phantom-release shape): the coroutine keeps working afterwards
+    {
+        int deadBefore = js_dead_parked();
+        std::string order;
+        MiniCoro c( [&]( MiniCoro& me ) {
+            order += "a";
+            // what the old ~CALL_CONTEXT did: release the borrowed handle of
+            // the coroutine that is executing RIGHT NOW
+            libcontext::release_fcontext( me.m_callee.ctx );
+            order += "b";
+            me.Yield( 5 );      // must still park normally
+            order += "c";
+        } );
+        c.Call();
+        bool parked = c.Running() && c.YieldValue() == 5;
+        c.Resume();             // must still be resumable (record not killed)
+        report( "release_of_running_record_refused",
+                parked && !c.Running() && order == "abc"
+                    && js_dead_parked() == deadBefore,
+                order + " dead=" + std::to_string( js_dead_parked() ) );
+    }
+
+    // 17. release of a record on the ENTERER CHAIN is refused: a child body
+    //     releasing its (running) parent must not kill the parent
+    {
+        int deadBefore = js_dead_parked();
+        std::string order;
+        MiniCoro* parentPtr = nullptr;
+        MiniCoro child( [&]( MiniCoro& me ) {
+            order += "c1";
+            // parent is mid-slice on the enterer chain right now
+            libcontext::release_fcontext( parentPtr->m_callee.ctx );
+            me.Yield();
+            order += "c2";
+        } );
+        MiniCoro parent( [&]( MiniCoro& me ) {
+            order += "p1";
+            child.Call();
+            order += "p2";
+            me.Yield();         // parent must still park fine
+            order += "p3";
+            child.Resume();
+        } );
+        parentPtr = &parent;
+        parent.Call();
+        bool mid = order == "p1c1p2" && parent.Running();
+        parent.Resume();        // parent record must still be alive
+        report( "release_of_enterer_chain_refused",
+                mid && order == "p1c1p2p3c2" && !parent.Running()
+                    && !child.Running() && js_dead_parked() == deadBefore,
+                order + " dead=" + std::to_string( js_dead_parked() ) );
+    }
+
+    // 18. destroy-while-parked quarantines WITHOUT poisoning the world:
+    //     census +1 exactly once (double release idempotent), later jumps at
+    //     the corpse return the sentinel, and fresh coroutines run clean
+    {
+        int deadBefore = js_dead_parked();
+        int stepsAfterPark = 0;
+        auto* victim = new MiniCoro( [&]( MiniCoro& me ) {
+            me.Yield();
+            stepsAfterPark++;   // must NEVER run
+        } );
+        victim->Call();
+        libcontext::fcontext_t corpse = victim->m_callee.ctx;
+        delete victim;          // release while parked mid-body -> quarantine
+        int deadMid = js_dead_parked();
+        libcontext::release_fcontext( corpse ); // idempotent second release
+        bool alive = libcontext::context_alive( corpse );
+        // a stray jump at the corpse must refuse with the sentinel
+        libcontext::fcontext_t from = nullptr;
+        intptr_t r = libcontext::jump_fcontext( &from, corpse, 0 );
+        auto* sent = reinterpret_cast<INVOCATION_ARGS*>( r );
+        bool sentinelShaped = r != -1 && r != 0
+                              && sent->type == INVOCATION_ARGS::FROM_ROUTINE;
+        // the scheduler keeps working: a fresh coroutine full lifecycle
+        std::string order;
+        MiniCoro after( [&]( MiniCoro& me ) { order += "x"; me.Yield(); order += "y"; } );
+        after.Call();
+        after.Resume();
+        report( "destroy_while_parked_is_contained",
+                deadMid == deadBefore + 1 && js_dead_parked() == deadBefore + 1
+                    && stepsAfterPark == 0 && !alive && sentinelShaped
+                    && order == "xy" && !after.Running(),
+                "dead=" + std::to_string( js_dead_parked() )
+                    + " steps=" + std::to_string( stepsAfterPark ) );
     }
 
     std::printf( "[JSPI_CORO] SUMMARY passed=%d failed=%d\n", g_passed, g_failed );

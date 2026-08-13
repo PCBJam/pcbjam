@@ -229,8 +229,14 @@ static std::string kicadTestTimerParkState()
     return pcbjam_timer_park::stateJson();
 }
 
-// Test-only (fiber-resume-park repro, fiber_park.h): Resume() into an
-// asyncify-parked coroutine — the decoded prod board-load trap.
+// Test-only (fiber_park.h): Resume() into a foreign-parked coroutine — the
+// decoded prod board-load trap family. NOTE: these are sync embind bindings
+// for MANUAL probing on Chromium only. Do not build specs on them: the
+// mutating levers suspend, and no embind shape delivers that correctly
+// (plain registration throws on strict-JSPI Firefox; emscripten::async()
+// re-executes its invoker when the awaited promise settles). The runtime
+// contracts they staged are pinned by the jspi-coroutine harness (18 cases)
+// and tests/kicad/coroutine-lifecycle.spec.ts instead.
 static bool kicadTestFiberParkStart( int aParkMs )
 {
     return pcbjam_fiber_park::start( aParkMs );

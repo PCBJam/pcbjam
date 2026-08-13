@@ -101,9 +101,10 @@ const CHROMIUM_CI_ARGS = process.env.CI
     }
   : {};
 
-// Firefox prefs. JSPI (the wasm suspension mechanism, experiment/jspi) is
-// default-on only in Firefox >=153; the bundled 144 needs the pref — set it
-// UNCONDITIONALLY (a previous CI-gated blob left local runs without it).
+// Firefox prefs. JSPI (the wasm suspension mechanism) is default-on since
+// Firefox 153 — the Playwright 1.62 bundle — so the pref below is now a
+// belt-and-braces documentation of intent; keep it UNCONDITIONAL (a previous
+// CI-gated blob left local runs without it on the pref-gated 144).
 // CI additionally runs headed under Xvfb with software-WebGL forced: GPU-less
 // CI VMs can't create a headless GL context
 // (FEATURE_FAILURE_WEBGL_EXHAUSTED_DRIVERS); CI invokes the suite via

@@ -1,22 +1,26 @@
-// Reproduction probe #4: activate the coroutine from inside an emscripten_set_main_loop
-// (requestAnimationFrame) callback — the SINGLE JS->wasm boundary KiCad actually uses
-// (rAF -> callUserCallback -> iterFunc -> dynCall_v -> wasm refresh -> tool coroutine).
-// The crash trace's "main-refresh ctx=#2" is exactly this. Unlike the EM_JS/embind probes,
-// there is NO synchronous JS frame sitting above the coroutine — the coroutine runs in a
-// wasm chain below dynCall_v, so the Asyncify rewind re-enters via dynCall_v (like KiCad).
+// Reproduction probe #4: activate the coroutine from inside the rAF-driven tick —
+// the SINGLE JS->wasm boundary KiCad actually uses. Asyncify-era shape: rAF ->
+// callUserCallback -> iterFunc -> dynCall_v -> wasm refresh -> tool coroutine, via
+// emscripten_set_main_loop. JSPI (2026-08-13): a plain main-loop callback cannot
+// suspend ("SuspendError: trying to suspend without WebAssembly.promising"), and the
+// shipped app doesn't use emscripten_set_main_loop anymore — wx drives rAF ticks
+// through PROMISING exports (wxWasmTopLevelTick et al). This probe mirrors that: a JS
+// rAF driver calls the exported repro_tick(), which is on the target's JSPI_EXPORTS
+// list, so the coroutine suspends mid-tick exactly like a tool coroutine mid-refresh.
 //
-// No-wx + pthreads. Firefox should reach "[REPRO] DONE"; if system Chrome crashes before
-// DONE, the main-loop/rAF activation is the missing factor.
+// No-wx + pthreads. Both engines should reach "[REPRO] DONE".
 
 #include "kicad_coroutine_harness.h"
 
 #include <emscripten.h>
+#include <emscripten/em_js.h>
 
 #include <cstdio>
 
 using coroutine_test::TestCoroutine;
 
 static int g_frame = 0;
+static bool g_done = false;
 
 static void run_coroutine()
 {
@@ -26,7 +30,7 @@ static void run_coroutine()
         self.Yield( 42 );
     } );
 
-    bool running = co.Call( 1 );  // unwinds the main-loop callback back to dynCall_v; yields back
+    bool running = co.Call( 1 );  // suspends the tick's promising activation; yields back
     std::printf( "[REPRO] after Call: running=%d lastValue=%ld\n",
                  (int) running, (long) co.LastReturnValue() );
     std::fflush( stdout );
@@ -36,8 +40,11 @@ static void run_coroutine()
     std::fflush( stdout );
 }
 
-static void main_loop_iter()
+extern "C" EMSCRIPTEN_KEEPALIVE void repro_tick()
 {
+    if( g_done )
+        return;
+
     ++g_frame;
     std::printf( "[REPRO] main-loop frame %d\n", g_frame );
     std::fflush( stdout );
@@ -49,14 +56,27 @@ static void main_loop_iter()
         run_coroutine();
         std::printf( "[REPRO] DONE\n" );
         std::fflush( stdout );
-        emscripten_cancel_main_loop();
+        g_done = true;
     }
 }
 
+// rAF driver calling the PROMISING tick export (the glue wraps every
+// JSPI_EXPORTS entry with WebAssembly.promising, so each tick may suspend).
+EM_JS( void, install_raf_driver, (), {
+    const tick = () => {
+        Promise.resolve( _repro_tick() ).then( () => {
+            if( !Module.__reproDone )
+                requestAnimationFrame( tick );
+        } );
+    };
+    requestAnimationFrame( tick );
+} );
+
 int main()
 {
-    std::printf( "[REPRO] start; installing emscripten_set_main_loop (rAF)\n" );
+    std::printf( "[REPRO] start; installing rAF driver over the promising tick export\n" );
     std::fflush( stdout );
-    emscripten_set_main_loop( main_loop_iter, 0, 0 );  // main returns; rAF drives main_loop_iter
+    install_raf_driver();
+    emscripten_exit_with_live_runtime();  // main returns; rAF drives repro_tick
     return 0;
 }

@@ -35,13 +35,16 @@ test.describe( 'Raytracer worker-join inside a wx modal pump', () => {
     expect( abortErrors( testLogger ), 'no Asyncify abort' ).toHaveLength( 0 );
   } );
 
-  // The in-modal work runs in a fresh ProcessEvents entry at Asyncify state == Normal (the app
-  // probes and logs it), so an emscripten_sleep join is legal and the pass completes multi-core.
+  // The in-modal work runs in a fresh ProcessEvents entry, so an emscripten_sleep join is a
+  // legal scheduler park and the pass completes multi-core. (The asyncify-era `Asyncify.state=0`
+  // probe log retired with that backend — under JSPI the equivalent invariant is that the
+  // sleep park suspends cleanly, i.e. SUCCESS is reached with no scheduler anomaly.)
   test( 'm=1 yield: emscripten_sleep join inside the modal → multi-core', async ( { page, testLogger } ) => {
     await page.goto( `${APP}#m=1` );
     await waitForLog( testLogger, '[RTPOOL] SUCCESS mode=1' );
-    expect( testLogger.consoleLogs.some( l => /Asyncify\.state=0/.test( l ) ),
-            'the in-modal work runs at state == Normal (a fresh ProcessEvents entry)' ).toBe( true );
+    expect( testLogger.consoleLogs.filter( l =>
+              /\[wx-scheduler\] (force-clearing stuck window|job tick error)|\[libctx-jspi\] ghost\/refused/.test( l ) ),
+            'no scheduler anomaly during the in-modal join' ).toHaveLength( 0 );
     expect( workersRan( testLogger.consoleLogs ), 'the yield-join completes → multi-core' ).toBeGreaterThan( 1 );
     expect( abortErrors( testLogger ), 'no Asyncify abort' ).toHaveLength( 0 );
   } );

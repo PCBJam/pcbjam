@@ -186,6 +186,11 @@
     // (wxWasmYieldUntil inside the load) find a tracked record and get the
     // green-copy spill-stack discipline. Embind names live on Module WITHOUT
     // the underscore prefix, hence the separate installer.
+    // NOT here: the kicadTestFiberPark* levers. They are emscripten::async()
+    // (a plain embind call into a suspending body throws on strict-JSPI
+    // Firefox), but the parker wrap's turnstile queueing would DEFER a
+    // mid-park poke until the park drains — the exact race the levers exist
+    // to stage. Their suspensions ride the untracked-anon-record path.
     PARKER_NAMES: ["kicadOpenFile", "kicadOpenFiles", "kicadLibsReload"],
     _wrapParkers: function () {
       var wrapped = 0;
@@ -301,6 +306,10 @@
       var stranded = this.waits.size;
       if (stranded) {
         console.warn("[wx-scheduler] shutdown (" + why + ") stranded:" + stranded);
+      } else {
+        // teardown-gate contract (e2e/app-quit.spec.ts, ported from the
+        // asyncify shim): a clean exit must SAY so on the console
+        console.log("[wx-scheduler] shutdown (" + why + ") clean");
       }
       this._note("shutdown", why, stranded);
     },
@@ -680,8 +689,14 @@
       rec.dead = true;
       this._suspended.delete(rec.id);
       if (this._windowLive === rec) {
+        // Released from within its own running slice: that slice's wasm is
+        // executing on this region RIGHT NOW — restoring the enclosing SP
+        // here would yank the stack out from under it. Just drop the window
+        // marker; the turnstile moves on when this job ends. (g_current is
+        // reset C-side by release_fcontext.)
+        console.warn("[wx-scheduler] quarantine of the LIVE window lc" + id
+          + " — self-release mid-slice; skipping SP restore");
         this._windowLive = null;
-        if (rec.enclosingSp !== undefined) this._setSp(rec.enclosingSp);
       }
       delete this._libctxRecs[id];
       this._note("libctxQuarantine", "libctx", rec.id);

@@ -63,12 +63,34 @@ export async function installOccServiceStub(page: Page): Promise<void> {
                         const resolve = pending.get(id);
                         if (resolve) { pending.delete(id); resolve(res); }
                     };
+                    // Legible boot: the old handshake could never reject on a
+                    // worker DEATH (importScripts throw, pthread spawn wedge,
+                    // OOM-kill) — the promise just hung until the spec's 180s
+                    // timeout with zero evidence. Surface worker errors and
+                    // bound the boot.
                     await new Promise<void>((resolve, reject) => {
+                        const fail = (msg: string) => {
+                            clearTimeout(timer);
+                            reject(new Error(msg));
+                        };
+                        const timer = setTimeout(
+                            () => fail('[TEST-OCC] occ_service boot timed out after 60s '
+                                + '(no ready/bootError from the worker)'), 60000);
                         const onFirst = (e: MessageEvent) => {
-                            if (e.data?.ready) { worker.removeEventListener('message', onFirst); resolve(); }
-                            else if (e.data?.bootError) reject(new Error(e.data.bootError));
+                            if (e.data?.ready) {
+                                worker.removeEventListener('message', onFirst);
+                                clearTimeout(timer);
+                                resolve();
+                            } else if (e.data?.bootError) {
+                                fail(`[TEST-OCC] occ_service bootError: ${e.data.bootError}`);
+                            }
                         };
                         worker.addEventListener('message', onFirst);
+                        worker.addEventListener('error', (e: any) => fail(
+                            `[TEST-OCC] occ_service worker error: ${e?.message ?? e} `
+                            + `(${e?.filename ?? '?'}:${e?.lineno ?? '?'})`));
+                        worker.addEventListener('messageerror', () => fail(
+                            '[TEST-OCC] occ_service worker messageerror (structured clone failed)'));
                     });
                     console.log('[TEST-OCC] occ_service ready');
                     return worker;
