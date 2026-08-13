@@ -23,6 +23,16 @@
  * emscripten_thread_sleep (the real underlying blocking sleep — workers may block).
  *
  * SCOPE: only the main browser thread yields; only it must never block the event loop.
+ *
+ * ZERO-DURATION GUARD (ported from staging 29c61b8): a nanosleep of 0 ms
+ * returns immediately WITHOUT yielding. mimalloc's spin-wait hint
+ * mi_atomic_yield() is sleep(0) on wasm, reached from malloc's slow path
+ * under cross-thread delayed-free contention. Under JSPI a yield there
+ * SUSPENDS the activation inside the allocator — any other activation that
+ * then runs can re-enter mimalloc mid-operation. A zero-duration sleep never
+ * promised an event-loop turn — stock emscripten busy-waits and returns
+ * immediately. mimalloc is the module's only zero-duration sleeper; the
+ * worker-boot deadlock this shim fixes needs only the ms-scale yields.
  */
 #include <emscripten/emscripten.h>
 #include <emscripten/threading.h>
@@ -69,13 +79,16 @@ int nanosleep( const struct timespec* req, struct timespec* rem )
     if( req )
     {
         double ms = (double) req->tv_sec * 1000.0 + (double) req->tv_nsec / 1.0e6;
-        if( emscripten_is_main_runtime_thread() )
+        if( ms > 0.0 )
         {
-            if( !pcbjam_context_sleep_ms || !pcbjam_context_sleep_ms( ms ) )
-                __wasm_main_thread_yield_ms( ms ); /* yield -> event loop runs -> Worker boots */
+            if( emscripten_is_main_runtime_thread() )
+            {
+                if( !pcbjam_context_sleep_ms || !pcbjam_context_sleep_ms( ms ) )
+                    __wasm_main_thread_yield_ms( ms ); /* yield -> event loop runs -> Worker boots */
+            }
+            else
+                emscripten_thread_sleep( ms );     /* worker: real blocking sleep */
         }
-        else
-            emscripten_thread_sleep( ms );     /* worker: real blocking sleep */
     }
     if( rem )
     {
