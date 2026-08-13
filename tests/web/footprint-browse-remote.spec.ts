@@ -84,7 +84,14 @@ async function dblclickRow(page: Page, re: RegExp): Promise<string | null> {
   // KNOWN-BROKEN: the fp/sym editor kicadLibs enumerate/save flows are dead
   // (docs/features/web-e2e-rot/01-editor-lib-bridge-flows.md). fixme, not fail:
   // on CI this dies in a 180s boot timeout per engine — running it buys no signal.
-test.fixme('footprint editor browses + loads a real ingested footprint (read path / version cap)', async ({ page }) => {
+// Re-enabled 2026-08-13: the read path revived on the JSPI build (chromium).
+test(
+  'footprint editor browses + loads a real ingested footprint (read path / version cap)', async ({ page }) => {
+  test.skip(
+    test.info().project.name.includes('firefox'),
+    'FootprintEnumerate child rows never appear on Firefox within 60s — slow ' +
+      'wasm tier suspected (probed 2026-08-13); passes on chromium',
+  );
   const logs: string[] = [];
   page.on('console', (m) => logs.push(`[${m.type()}] ${m.text()}`));
   page.on('pageerror', (e) => logs.push(`[pageerror] ${e.message}`));

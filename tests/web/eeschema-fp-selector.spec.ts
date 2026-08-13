@@ -35,7 +35,8 @@ async function canvasCenter(page: Page): Promise<{ x: number; y: number }> {
 // legacy startModal pump was deleted at doc 20 D-1; modals are scheduler
 // waits now — re-evaluate against the scheduler runtime; see also
 // docs/features/ngspice-split/README.md "The editor side").
-test.skip('symbol chooser footprint selector populates and preview renders (eeschema)', async ({ page }) => {
+test(  // re-enabled 2026-08-13: the chooser fp-selector flow revived on the JSPI build (both engines)
+  'symbol chooser footprint selector populates and preview renders (eeschema)', async ({ page }) => {
   test.setTimeout(420000);
   const logs: string[] = [];
   page.on('console', (m) => logs.push(`[${m.type()}] ${m.text()}`));

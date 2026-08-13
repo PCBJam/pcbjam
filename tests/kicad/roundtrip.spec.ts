@@ -510,7 +510,7 @@ test.describe("round trip: file → yjs → file", () => {
   // fixture (via + gr_text + segments) therefore still loses those items on the
   // rebuild side. Un-fixme when the envelope parse is solved. Run with
   // --grep-invert skipped to see the live diff.
-  test.fixme(
+  test(  // re-enabled 2026-08-13: the asyncify-fragile envelope parse is gone with JSPI — passes both engines
     "pcbnew preserves items through a yjs round trip",
     async ({ context, testLogger }) => {
       const { orig, regen } = await roundTrip(context, PCB);

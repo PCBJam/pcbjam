@@ -353,10 +353,8 @@ for (const [cfg, label] of [
       // same SpiderMonkey wall playwright-kicad.config.ts documents for x86
       // CI, hit at 2× on ARM). V8 handles it: runs on chromium-ci in CI and
       // --project=chromium locally.
-      test.skip(
-        test.info().project.name.includes("firefox"),
-        "two kicad_editor tabs exceed Firefox's per-process wasm budget",
-      );
+      // 2026-08-13: FF wasm-budget skip retired — the JSPI build fits two
+      // editor tabs on Firefox 153; passes on kicad-firefox.
 
       const room = `ysync-v2-${label}-bug01-${test.info().workerIndex}`;
       const tabA = await context.newPage();

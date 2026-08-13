@@ -437,7 +437,8 @@ test.describe("pcbnew collab bridge — single page", () => {
 test.describe("pcbnew collab bridge — two tabs (BroadcastChannel)", () => {
   // SKIP headless for the same reason as the single-page apply test (harness can't PAINT).
   // Verified working in the real web app.
-  test.skip("a local move propagates A→B", async ({ context, testLogger }) => {
+  // re-enabled 2026-08-13: passes on the JSPI build (both engines)
+  test("a local move propagates A→B", async ({ context, testLogger }) => {
     const channel = `pcb-collab-e2e-${test.info().workerIndex}`;
     const bundle = path.resolve(__dirname, "../apps/kicad/collab-bundle.js");
 

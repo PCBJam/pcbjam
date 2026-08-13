@@ -56,10 +56,10 @@ test.beforeAll(() => {
 });
 
 function skipFirefox(): void {
-  test.skip(
-    test.info().project.name.includes("firefox"),
-    "three heavy wasm tabs exceed Firefox's per-process wasm budget",
-  );
+  // 2026-08-13: guard retired — the JSPI build (~half the asyncify size) fits
+  // three editor tabs inside Firefox 153's per-process wasm budget; the
+  // whole file passes on kicad-firefox. Kept as a hook in case the wall
+  // returns with future growth.
 }
 
 /** mulberry32 — tiny deterministic PRNG. */

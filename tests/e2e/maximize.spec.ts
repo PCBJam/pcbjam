@@ -56,6 +56,8 @@ test.describe('wxFrame::Maximize() Tests', () => {
 
   // Note: wxDisplay::GetFromWindow() has a bug returning invalid display index
   // This is a separate issue from the Maximize() functionality being tested
+  // Re-verified broken 2026-08-13: wxDisplay reports 0x0 in this harness app
+  // (JSPI build) — the port's display-geometry query, not Maximize().
   test.skip('Display geometry is reported correctly', async ({ page, testLogger }) => {
     await page.goto('/standalone/maximize/maximize_test.html');
     const loaded = await tryLoadApp(page);

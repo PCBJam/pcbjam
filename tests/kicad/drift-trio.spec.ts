@@ -51,10 +51,10 @@ test.beforeAll(() => {
 /** Heavy editors exceed Firefox's per-content-process wasm budget at 2+
  *  instances (see ysync-two-tab.spec.ts) — at 3 it is strictly worse. */
 function skipFirefox(): void {
-  test.skip(
-    test.info().project.name.includes("firefox"),
-    "three heavy wasm tabs exceed Firefox's per-process wasm budget",
-  );
+  // 2026-08-13: guard retired — the JSPI build (~half the asyncify size) fits
+  // three editor tabs inside Firefox 153's per-process wasm budget; the
+  // whole file passes on kicad-firefox. Kept as a hook in case the wall
+  // returns with future growth.
 }
 
 // ── pl_editor: green baseline validating the trio plumbing itself ────────────

@@ -46,10 +46,10 @@ test.beforeAll(() => {
 });
 
 function skipFirefox(): void {
-  test.skip(
-    test.info().project.name.includes("firefox"),
-    "three heavy wasm tabs exceed Firefox's per-process wasm budget",
-  );
+  // 2026-08-13: guard retired — the JSPI build (~half the asyncify size) fits
+  // three editor tabs inside Firefox 153's per-process wasm budget; the
+  // whole file passes on kicad-firefox. Kept as a hook in case the wall
+  // returns with future growth.
 }
 
 /** Poll until every tab's silent save contains `marker`. */
@@ -197,7 +197,8 @@ for (const ops of [SCH_OPS, PCB_OPS]) {
     // runs). A real same-item conflict-resolution race that needs its own
     // hunt — tracking: memory s4-value-race-divergence. The sequenced-edit
     // scenarios (S1–S3, S5–S8) have never diverged and stay active.
-    test.fixme(`${label} S4: move-vs-delete, value-vs-value, move-vs-move`, async ({
+    // re-enabled 2026-08-13: converges on the JSPI build
+    test(`${label} S4: move-vs-delete, value-vs-value, move-vs-move`, async ({
       context,
       testLogger,
     }) => {
@@ -241,7 +242,8 @@ for (const ops of [SCH_OPS, PCB_OPS]) {
     // locally at single-worker). A real CRDT/apply race that needs its own
     // hunt: capture both tabs' modelText diff at timeout, then bisect the
     // value-apply path. Tracking: memory s4-value-race-divergence.
-    test.fixme(`${label} S4b: value-vs-value converges (KNOWN ~5-8% divergence)`, async ({
+    // re-enabled 2026-08-13: converges on the JSPI build
+    test(`${label} S4b: value-vs-value converges (KNOWN ~5-8% divergence)`, async ({
       context,
       testLogger,
     }) => {

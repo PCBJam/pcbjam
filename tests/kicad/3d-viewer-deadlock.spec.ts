@@ -58,7 +58,8 @@ test.describe('3D viewer camera-move deadlock', () => {
     // m_boardAdapter.m_Cfg while RenderEngineChanged() reads GetAppSettings<…>() — possibly
     // different instances in the merged kicad_editor bundle. Unskip once the toggle works:
     // the engagement guard below then validates the engine flip loudly.
-    test.skip(true, 'KNOWN ISSUE: the raytracer engine toggle is inert on the webgl-era wasm '
+    test.skip(true, // re-verified still inert 2026-08-13 (both engines, JSPI build)
+    'KNOWN ISSUE: the raytracer engine toggle is inert on the webgl-era wasm '
         + 'build — the deadlock mechanism cannot be driven until it works (see comment)');
     // One 187 MB wasm runtime is already heavy; keep this serial and generous.
     test.describe.configure({ mode: 'serial' });

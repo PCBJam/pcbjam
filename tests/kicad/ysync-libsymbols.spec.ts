@@ -157,10 +157,8 @@ test.describe("v2 items wire — lib_symbols travel (miss 08A)", () => {
     context,
     testLogger,
   }) => {
-    test.skip(
-      test.info().project.name.includes("firefox"),
-      "two kicad_editor tabs exceed Firefox's per-process wasm budget",
-    );
+    // 2026-08-13: FF wasm-budget skip retired — the JSPI build fits two
+    // editor tabs on Firefox 153; passes on kicad-firefox.
 
     const room = `ysync-libsym-${test.info().workerIndex}`;
     const tabA = await context.newPage();

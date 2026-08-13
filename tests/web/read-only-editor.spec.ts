@@ -231,7 +231,7 @@ test("a writer's edits stream into the viewer live (and never the reverse)", asy
   // for two fully WRITABLE tabs on a fresh kicad_editor build (the previous
   // CI artifacts were built at an older kicad rev). Un-fixme once the
   // envelope/parser mismatch is fixed on main.
-  test.fixme();
+  // fixme removed 2026-08-13: passes on the JSPI build (both engines):
 
   const itemId = await writer.evaluate(() =>
     (window as unknown as W).Module.kicadCollabTestSelectFirst(),
