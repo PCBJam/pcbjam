@@ -1,3 +1,9 @@
+> **Historical (asyncify era).** These benches timed the Binaryen
+> `apply-asyncify` post-link tail, which the JSPI migration deleted — the
+> scripts below that reference it are gone. The VM provisioning pieces
+> (setup-vm.sh, vm-build.sh, cloud-init) remain useful for any host-side
+> build benching.
+
 # wasm-opt allocator/core benchmark
 
 Fast, local feedback loop for the CI perf issue: the host-side `wasm-opt`/asyncify

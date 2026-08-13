@@ -96,36 +96,12 @@ if [ "$CLEAN_BUILD" = "1" ]; then
     make -f Makefile.wasm clean 2>/dev/null || true
 fi
 
-# Native wasm-EH is the only build mode. The emsdk-bundled Binaryen v121 crashes asyncifying wasm-EH,
-# so we stub the in-link Asyncify and run --hoist-cpp-catches + --asyncify post-link on the Binaryen
-# submodule (version_130 + hoist pass) via apply-asyncify.sh.
-EMSDK_WASM_OPT="$PROJECT_ROOT/tools/emsdk/upstream/bin/wasm-opt"
-WASMOPT_STUB="$PROJECT_ROOT/wasm/stubs/wasm-opt-stub.sh"
-_eh_restore_wasmopt() { if [ -f "${EMSDK_WASM_OPT}.ehbak" ]; then mv -f "${EMSDK_WASM_OPT}.ehbak" "${EMSDK_WASM_OPT}"; fi; }
-EH_MARKER="$(mktemp)"   # created before the build so 'find -newer' below selects freshly-linked apps
-if [ "${PCBJAM_ASYNC_BACKEND:-asyncify}" = "jspi" ]; then
-    # JSPI: no binaryen instrumentation exists — no fork build, no stub dance,
-    # no post-link pass, no dyncall/scheduler injection (the jspi-scheduler
-    # ships as a --pre-js from Makefile.wasm). emcc's real wasm-opt runs
-    # in-link like any normal build.
-    echo ""
-    echo "=== JSPI backend: in-link build, no post-link instrumentation ==="
-else
-echo ""
-echo "=== Building the Binaryen submodule (version_130 + hoist pass) ==="
-# One binaryen everywhere: the submodule fork is version_130 (asyncify unchanged) + our hoist
-# pass, so the same binary does --hoist-cpp-catches AND --asyncify/-O2. No separate v130 clone.
-export HOIST_WASMOPT="$("$SCRIPT_DIR/binaryen-hoist-pass/build-wasm-opt.sh")"
-export V130_WASMOPT="$HOIST_WASMOPT"
-echo "  submodule wasm-opt: $HOIST_WASMOPT"
-echo "Stubbing in-link Asyncify (will run post-link instead)..."
-cp "$EMSDK_WASM_OPT" "${EMSDK_WASM_OPT}.ehbak"
-cp "$WASMOPT_STUB" "$EMSDK_WASM_OPT"; chmod +x "$EMSDK_WASM_OPT"
-trap _eh_restore_wasmopt EXIT
-fi
+# JSPI: no binaryen instrumentation exists — no fork build, no stub dance, no
+# post-link pass, no shim injection (the jspi-scheduler ships as a --pre-js
+# from Makefile.wasm). emcc's real wasm-opt runs in-link like any normal build.
 
 # Build (pass DEBUG flag if requested). App links are independent, so honor
-# JOBS/PARALLEL_JOBS from env.sh (each emcc link is slow due to Asyncify).
+# JOBS/PARALLEL_JOBS from env.sh.
 if [ "$DEBUG_BUILD" = "1" ]; then
     make -j"${JOBS:-1}" -f Makefile.wasm DEBUG=1 "$MAKE_TARGET"
 else
@@ -133,53 +109,10 @@ else
 fi
 make_rc=$?
 if [ "$make_rc" -ne 0 ]; then
-    # Fail loudly. Silently continuing to the post-link leaves the freshly-linked apps
-    # asyncify-stubbed / un-injected, which looks like mass test failures rather than a build
-    # error. (The EXIT trap restores the stubbed emsdk wasm-opt in the native-EH build.)
     echo "" >&2
-    echo "ERROR: make failed (exit $make_rc); aborting before the post-link step." >&2
+    echo "ERROR: make failed (exit $make_rc)." >&2
     exit "$make_rc"
 fi
-
-# Inject the dyncall + asyncify-scheduler shims into every freshly-linked app. The
-# scheduler's currData save/restore (Emscripten #9153) is needed: without it a rewind that
-# resumes through a fresh wasm re-entry hits _asyncify_start_rewind(null) -> "memory access out
-# of bounds" — e.g. a context-menu pick while the main loop is parked. The Makefile only injects
-# it for the coroutine apps; inject-dyncall-shims.sh is idempotent (skips an already-shimmed glue),
-# so re-running it here is safe. The .wasm gets post-link hoist + asyncify first.
-_eh_restore_wasmopt; trap - EXIT
-if [ "${PCBJAM_ASYNC_BACKEND:-asyncify}" = "jspi" ]; then
-    rm -f "$EH_MARKER"
-    echo ""
-    echo "=== Build complete (jspi backend) ==="
-    exit 0
-fi
-echo ""
-echo "=== Post-link --hoist-cpp-catches + --asyncify (${JOBS:-1}-wide) ==="
-# The apps are independent here too (apply-asyncify rewrites each wasm in place; the shim
-# injector's temp file is per-js), so fan the post-link out across JOBS like the make phase.
-# This dominates the build: per-app wasm-opt can't feed many cores (small modules, serial
-# parse/write), so parallelism must come from running apps side by side — serial 3m52s even
-# with BINARYEN_CORES=16, vs 2m08s fanned out at ~11 GB peak RAM. HOIST_WASMOPT is resolved
-# once above, so workers skip the binaryen ninja check. xargs fails the build (exit 123) if
-# any app's post-link fails.
-export SCRIPT_DIR
-# Match EVERY freshly-linked app wasm, not just standalone/*/*_test.wasm: the main demo
-# (apps/minimal_test.wasm) is at the apps/ root, and the coroutine-pthread repros + wxpt app
-# are *_repro*.wasm / *_wxpt.wasm. The old '*_test.wasm under standalone' filter silently
-# skipped all of those, so under native wasm-EH they never got hoist+asyncify and crashed at
-# runtime with "asyncify_start_unwind not found".
-find "$WASM_APP_DIR" -name '*.wasm' -newer "$EH_MARKER" -print0 \
-  | xargs -0 -n1 -P "${JOBS:-1}" bash -c '
-    set -eo pipefail
-    w="$1"
-    "$SCRIPT_DIR/common/apply-asyncify.sh" --no-removelist "$w"
-    js="${w%.wasm}.js"
-    if [ -f "$js" ]; then
-        ( cd "$(dirname "$js")" && "$SCRIPT_DIR/common/inject-dyncall-shims.sh" "$(basename "$js")" )
-    fi
-' _
-rm -f "$EH_MARKER"
 
 echo ""
 echo "=== Build complete ==="

@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 // Computes the "sc" (source-content) hash for the KiCad-WASM output cache key
-// in .github/workflows/ci-ubicloud.yml.
+// in .github/workflows/wasm-build.yml.
 //
 // The cache key is:
-//   kwasm-<os>-bin<binaryen-ver><opt-level>-k<kicad-sha>-wx<wx-sha>-sc<HASH>-e<epoch>
+//   kwasm-<os>-k<kicad-sha>-wx<wx-sha>-sc<HASH>-3d<flag>-e<epoch>
 //
 // The kicad/wx submodule SHAs already capture the *sources*. This hash captures
 // the *build logic* that shapes the wasm bytes but lives outside those
-// submodules — the asyncify/finalize/dyncall/wasm-opt host steps, the per-tool
+// submodules — the host ENV-shim patch, the per-tool
 // compile scripts, the dependency builds, and the Docker toolchain. Those were
 // deliberately dropped from the key's hashFiles() (so routine script edits don't
 // trigger a 1-2h rebuild); folding the *output-determining* subset back in here
@@ -47,14 +47,12 @@ import { join, relative, sep } from "node:path";
 //   { dir:  "<repo-relative dir>", match: RE }  files under the dir whose BASENAME matches RE, recursive
 // Paths are POSIX, relative to the repo root. This script always adds itself.
 const INPUTS = [
-  // Host-side post-processing — these directly shape the final wasm bytes.
-  { file: "scripts/common/apply-asyncify.sh" },
-  { file: "scripts/common/apply-finalize.sh" },
-  { file: "scripts/common/inject-dyncall-shims.sh" },
-  // The submodule build that provides BOTH host wasm-opt and wasm-emscripten-finalize.
-  // (get-wasm-opt.sh is no longer on the build path — bench-only — so it no longer
-  // belongs in the cache key.)
-  { file: "scripts/binaryen-hoist-pass/build-wasm-opt.sh" },
+  // Host-side post-processing — shapes the shipped glue.
+  { file: "scripts/common/patch-env-shim.mjs" },
+  // Link-time inputs baked into every editor app: the scheduler pre-js and
+  // the promising-export census.
+  { file: "scripts/common/shims/jspi-scheduler.js" },
+  { file: "scripts/common/jspi-exports.txt" },
 
   // Per-tool compile recipes (compile flags / emcc link options).
   { dir: "scripts/kicad", match: /^build-.*\.sh$/ },

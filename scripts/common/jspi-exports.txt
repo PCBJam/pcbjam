@@ -7,6 +7,5 @@ wx_window_resize
 ProcessEvents
 wxWasmMailboxTick
 wxWasmTopLevelTick
-wxWasmMainLoopPump
 wxWasmJobTick
 pcbjam_libctx_entry

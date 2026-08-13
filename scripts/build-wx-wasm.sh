@@ -60,13 +60,14 @@ done
 BUILD_DIR="$PROJECT_ROOT/build-wasm/wxwidgets"
 WXLIB_PREFIX="libwx_wasmu"
 
-# Async-backend stamp: PCBJAM_ASYNC_BACKEND changes COMPILE flags
-# (-DPCBJAM_JSPI selects whole other halves of the wasm port), which the
-# configure-cached incremental build cannot see — a knob flip against a stale
-# tree silently links the WRONG backend into every consumer. Force a clean
-# build whenever the stamp disagrees.
+# Async-backend stamp: the JSPI migration changed COMPILE flags in ways the
+# configure-cached incremental build cannot see — building over a stale
+# asyncify-era tree silently links a MIXED library. Force a clean build
+# whenever the stamp disagrees.
 BACKEND_STAMP="$BUILD_DIR/.pcbjam-async-backend"
-CURRENT_BACKEND="${PCBJAM_ASYNC_BACKEND:-asyncify}"
+# Single backend since the JSPI migration: the stamp still force-cleans any
+# pre-migration tree (asyncify objects would silently mix into the library).
+CURRENT_BACKEND="jspi"
 # ABSENT stamp = unknown provenance = same as a mismatch: an incremental build
 # over objects of unknown backend produced a MIXED library once (jspi evtloop
 # EM_JS in the glue next to live fiber dispatch — --allow-multiple-definition
@@ -192,15 +193,6 @@ if [ $NEEDS_CONFIGURE -eq 1 ]; then
     # build-wasm-test.sh) lets Asyncify suspend from inside C++ catch blocks. See docs/features/wasm-exceptions/.
     WX_EH_FLAGS="$DEPS_EH_FLAGS"
     echo "wx EH model flags: ${WX_EH_FLAGS}"
-
-    # Async backend (experiment/jspi): PCBJAM_ASYNC_BACKEND=jspi compiles the
-    # wasm port's JSPI lanes (evtloop/app/window PCBJAM_JSPI blocks) instead of
-    # the Asyncify/fiber lanes. ONE wx build output — flipping backends means
-    # rebuilding (use --clean). Default stays asyncify until Phase 4.
-    if [ "${PCBJAM_ASYNC_BACKEND:-asyncify}" = "jspi" ]; then
-        WX_EH_FLAGS="$WX_EH_FLAGS -DPCBJAM_JSPI=1"
-        echo "async backend: jspi (-DPCBJAM_JSPI)"
-    fi
 
     # Include emscripten cache sysroot for zlib headers
     export CFLAGS="-DZ_HAVE_UNISTD_H=1 -I$EM_CACHE_SYSROOT/include ${WX_DEBUG_FLAGS} ${WX_EH_FLAGS} -pthread -matomics -mbulk-memory"

@@ -1,6 +1,6 @@
 #!/bin/bash
 # Build a KiCad app (pcbnew, eeschema, calculator) inside Docker, then run
-# asyncify and friends on the host.
+# the ENV shim on the host.
 #
 # Usage:
 #   ./docker/build.sh <app>[,<app>...] [args...]
@@ -22,8 +22,8 @@
 # --full, --release, --diag=gal).
 #
 # The build is split into two phases:
-# 1. Docker: Compile KiCad to WASM (without asyncify)
-# 2. Host: dyncall shims + finalize + asyncify + wasm-opt -O1 (Binaryen submodule via build-wasm-opt.sh)
+# 1. Docker: Compile KiCad to WASM (fully finalized; JSPI links in-container)
+# 2. Host: ENV merge shim on the glue (patch-env-shim.mjs)
 #
 # KICAD_PIPELINE=1 (multi-app builds only): run phase 2 of each app in the
 # background while the next app compiles in the container. wasm-opt is
@@ -137,13 +137,11 @@ echo "Building app: ${APP_NAME}"
 
 # Build phase (cache split). The container compile produces an OPT-INDEPENDENT
 # base wasm; the only opt-DEPENDENT work is the final `wasm-opt -O$LEVEL` shrink
-# inside the host post-process (apply-asyncify.sh). Splitting them lets CI cache
-# the expensive compile once (shared regardless of the asyncify tail) and re-run just the
-# asyncify/-O tail per opt level — see .github/workflows/.
+# Splitting compile and postprocess lets CI cache the expensive compile once
+# and re-run just the host tail — see .github/workflows/.
 #   (default) both       — compile in-container, then host post-process.
 #   --compile-only       — only the in-container compile → base wasm in output/.
-#   --postprocess-only   — only the host post-process (dyncall + finalize +
-#                          asyncify + wasm-opt -O$BINARYEN_OPT_LEVEL) on the
+#   --postprocess-only   — only the host post-process (ENV merge shim) on the
 #                          existing output/ base wasm; NO container needed
 #                          (build-wasm-opt.sh self-provisions the Binaryen submodule).
 # Extracted here so they are NOT forwarded to the inner build-<app>.sh scripts.
@@ -272,14 +270,14 @@ compile_app() {
 
     # The container runs as root, so files in the bind-mounted ./output land
     # root-owned on the host. macOS Docker Desktop remaps ownership to the host
-    # user, but on a Linux CI runner the following host-side steps (dyncall,
-    # finalize, asyncify) can't write into ./output. Hand ownership back.
+    # user, but on a Linux CI runner the host-side ENV-shim step can't write
+    # into ./output. Hand ownership back.
     docker compose -f docker/docker-compose.yml exec kicad-wasm-builder \
         chown -R "$(id -u):$(id -g)" /workspace/output || true
 }
 
-# Phase 2 of one app: host-side post-processing (dyncall shims, finalize,
-# asyncify + wasm-opt -O1). Pure host work on output/${app}.* — independent of the
+# Phase 2 of one app: host-side post-processing (ENV merge shim). Pure host
+# work on output/${app}.* — independent of the
 # container, which is what makes it safe to run in the background while the
 # next app compiles.
 postprocess_app() {
@@ -294,36 +292,12 @@ postprocess_app() {
         return 0
     fi
 
-    # JSPI backend: the app links with the real in-container tools and needs no
-    # dyncall shims (no -sDYNCALLS), no host finalize, and no asyncify pass —
-    # the scheduler ships as a --pre-js at link. Only the ENV merge shim remains.
-    if [ "${PCBJAM_ASYNC_BACKEND:-asyncify}" = "jspi" ]; then
-        kw_stage env-shim
-        node ./scripts/common/patch-env-shim.mjs "${out_dir}/${app}.js"
-        return 0
-    fi
-
-    # Inject dynCall shims (fixes "dynCall_* is not defined" errors in Emscripten 4.x)
-    kw_stage dyncall-shims
-    ./scripts/common/inject-dyncall-shims.sh "${out_dir}/${app}.js"
-
-    # Merge Module.ENV into the runtime ENV: the emscripten glue never merges it,
-    # so ?trace= (boot.ts sets Module.ENV.KICAD_TRACE) was a silent no-op —
-    # environ_get on the app pthread proxies to the main thread, whose ENV stayed
-    # empty. Replaces a manual per-build glue edit. Idempotent; runtime no-op when
-    # Module.ENV is unset. See docs/features/libs/0013.
+    # JSPI: the app links fully finalized with the real in-container tools —
+    # no dyncall shims, no host finalize, no asyncify pass. Only the ENV merge
+    # shim remains: the emscripten glue never merges Module.ENV into the
+    # runtime ENV (?trace= would be a silent no-op — see docs/features/libs/0013).
+    kw_stage env-shim
     node ./scripts/common/patch-env-shim.mjs "${out_dir}/${app}.js"
-
-    # Apply wasm-emscripten-finalize on host (skipped in Docker due to memory limits)
-    kw_stage finalize
-    ./scripts/common/apply-finalize.sh "${out_dir}/${app}.wasm" "${out_dir}/${app}.wasm"
-
-    # Apply asyncify transformation on host (the ASYNCIFY=0 CLIs returned
-    # early above and never reach this).
-    # apply-asyncify always runs the --hoist-cpp-catches pass FIRST (native wasm-EH is the only build
-    # mode) so Asyncify can suspend from inside C++ catch arms, then asyncify + removelist + wasm-opt -O1.
-    kw_stage asyncify
-    ./scripts/common/apply-asyncify.sh "${out_dir}/${app}.wasm" "${out_dir}/${app}.wasm"
 }
 
 # --- Pipelined driver state (KICAD_PIPELINE=1) ---
@@ -403,8 +377,6 @@ elif [[ "$PHASE" == "postprocess" ]]; then
     # wasm (no container). Parallelize across apps when pipelining.
     if [[ "${KICAD_PIPELINE:-0}" == "1" ]] && [ "$TOTAL_APPS" -gt 1 ]; then
         mkdir -p "$PIPELINE_LOG_DIR"
-        kw_stage binaryen
-        ./scripts/binaryen-hoist-pass/build-wasm-opt.sh >/dev/null  # pre-warm Binaryen (submodule) once
         _install_pipeline_trap
         for app in "${APPS[@]}"; do
             pipeline_postprocess "$app"
@@ -419,10 +391,6 @@ elif [[ "${KICAD_PIPELINE:-0}" == "1" ]] && [ "$TOTAL_APPS" -gt 1 ]; then
     # both, pipelined: overlap app[i+1]'s container compile with app[i]'s host
     # post-process (KICAD_PIPELINE=1).
     mkdir -p "$PIPELINE_LOG_DIR"
-    # Pre-build the Binaryen submodule once — two concurrent postprocesses racing
-    # the first from-source build would collide.
-    kw_stage binaryen
-    ./scripts/binaryen-hoist-pass/build-wasm-opt.sh >/dev/null
     _install_pipeline_trap
     idx=1
     for app in "${APPS[@]}"; do

@@ -1,6 +1,6 @@
 #!/bin/bash
 # Ad-hoc build for the jspi-coroutine harness (Makefile.wasm wiring in Phase 3).
-# Compiles the REAL kicad/thirdparty/libcontext with -DPCBJAM_JSPI.
+# Compiles the REAL kicad/thirdparty/libcontext (JSPI backend).
 set -eo pipefail
 cd "$(dirname "$0")"
 ROOT="$(cd ../../../.. && pwd)"
@@ -9,7 +9,7 @@ LIBCTX="$ROOT/kicad/thirdparty/libcontext"
 
 "$EMXX" coroutine_jspi_test.cpp "$LIBCTX/libcontext.cpp" \
   -I"$LIBCTX" \
-  -DPCBJAM_JSPI=1 \
+  \
   -O1 \
   -fwasm-exceptions -sSUPPORT_LONGJMP=wasm -sWASM_LEGACY_EXCEPTIONS=1 \
   -sJSPI -sJSPI_EXPORTS=pcbjam_libctx_entry,main \

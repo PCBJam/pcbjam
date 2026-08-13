@@ -3,9 +3,8 @@ name: CI full build + e2e (Ubicloud)
 # Main/PR gate: build all 6 KiCad WASM tools + run the wxWidgets + KiCad e2e
 # suites on a Ubicloud runner. The actual recipe lives in the reusable
 # wasm-build.yml (the SINGLE build definition) — this is just the main/PR caller.
-# The asyncify wasm-opt tail is -O1 everywhere (main, release, local); the tag
-# release (release.yml) calls the same recipe at the same -O1 and then publishes,
-# so the build can never diverge from what ships.
+# The tag release (release.yml) calls the same recipe with the same inputs and
+# then publishes, so the build can never diverge from what ships.
 #
 # Routine edits under scripts/ do NOT bust the WASM output cache — only the subset
 # in scripts/deploy/wasm-cache-hash.mjs does. For inputs the sc-hash can't see
@@ -44,9 +43,7 @@ jobs:
     # post-test step can post the screenshot + perf report on push to main.
     secrets: inherit
     with:
-      # -O1 asyncify shrink — the level we ship (release.yml uses the same -O1).
       # 3D viewer ON so 3d-viewer.spec.ts has a viewer.
-      opt_level: "-O1"
       build_3d_viewer: "ON"
       run_tests: true
       no_cache: ${{ inputs.no_cache || false }}

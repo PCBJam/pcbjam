@@ -1,10 +1,9 @@
 name: release
 
 # Release pipeline on a vX.Y.Z tag, in order:
-#   1) build  — the SAME wasm-build.yml recipe as CI, at the SAME -O1 asyncify tail
-#               + run the e2e gate. Because the opt level now matches main, this
-#               FINAL-cache-hits main's build and skips the asyncify tail rebuild.
-#               Uploads output/.
+#   1) build  — the SAME wasm-build.yml recipe as CI + the e2e gate. For an
+#               already-built commit this hits main's WASM output cache and
+#               skips the build entirely. Uploads output/.
 #   2) publish-wasm — push the build to the CDN (content-addressed, idempotent)
 #               and write manifest-<tag>.json. The registry now reflects THIS tag.
 #   3) deploy-demo  — build the standalone pinned to that manifest + deploy to
@@ -69,13 +68,12 @@ jobs:
       - id: tag
         run: echo "tag=${{ github.event.inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
 
-  # 1) Build (-O1, identical to main) + e2e gate. Reuses main's FINAL cache (same
-  #    opt level) so the asyncify tail isn't rebuilt. Uploads the publishable
-  #    output/ as the 'wasm-output' artifact for the publish job.
+  # 1) Build (identical to main) + e2e gate. Reuses main's WASM output cache for
+  #    an already-built commit. Uploads the publishable output/ as the
+  #    'wasm-output' artifact for the publish job.
   build:
     uses: ./.github/workflows/wasm-build.yml
     with:
-      opt_level: "-O1"
       build_3d_viewer: "ON"
       run_tests: true
       upload_output: true

@@ -436,7 +436,6 @@
           entrySp: region.top,
           suspendedAt: 0
         };
-        if (globalThis.__wxTrace) console.log('[TRACE] alloc region ' + region.base + ' -> act ' + rec.id + ':' + name);
         S._actStack.push(rec);
         S._setSp(region.top);
         var out;
@@ -466,7 +465,6 @@
     },
 
     _endActivation: function (rec) {
-      if (globalThis.__wxTrace) console.log('[TRACE] end ' + rec.id + ':' + rec.kind + ' live=' + (this._windowLive ? this._windowLive.id : '-'));
       this._suspended.delete(rec.id);
       if (this._windowLive === rec) {
         // completed from a RESUMED window: wasm's epilogue left SP at the
@@ -476,7 +474,6 @@
         if (rec.enclosingSp !== undefined) this._setSp(rec.enclosingSp);
       }
       if (rec.region) {
-        if (globalThis.__wxTrace) console.log('[TRACE] free region ' + rec.region.base + ' <- act ' + rec.id);
         this._regionFree(rec.region);
         rec.region = null;
       }
@@ -485,7 +482,6 @@
     },
 
     _pumpResume: function () {
-      if (globalThis.__wxTrace) console.log('[TRACE] pump live=' + (this._windowLive ? this._windowLive.id + ':' + this._windowLive.kind : '-') + ' ready=' + this._resumeReady.map(function(e){return e.rec.id + ':' + e.rec.kind;}).join(','));
       if (this.dead) return;
       if (this._windowLive) {
         // Self-heal: an activation that suspended RAW (bypassing the shim)
@@ -580,7 +576,6 @@
           entrySp: S._sp(), suspendedAt: 0, anon: true
         };
       }
-      if (globalThis.__wxTrace) console.log('[TRACE] suspend ' + rec.id + ':' + rec.kind + ' ' + kind + '/' + token + ' live=' + (S._windowLive ? S._windowLive.id : '-') + ' stack=' + S._actStack.map(function(r){return r.id;}).join(','));
       rec.sp = S._sp();
       rec.suspendedAt = Date.now();
       rec.waitKind = kind;
@@ -828,7 +823,7 @@
       S.installExportWraps([
         "wx_dom_event", "wx_dom_mouse", "wx_window_close", "wx_window_move",
         "wx_window_resize", "ProcessEvents", "wxWasmMailboxTick",
-        "wxWasmTopLevelTick", "wxWasmMainLoopPump", "wxWasmJobTick"
+        "wxWasmTopLevelTick", "wxWasmJobTick"
       ]);
       // KiCad-only surfaces; both installers skip absent names, so the wx
       // test apps (no embind) pass through here untouched.

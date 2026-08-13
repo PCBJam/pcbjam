@@ -296,29 +296,11 @@ else
     log_info "Building KiCad in RELEASE mode (skipping wasm-opt due to memory limits)"
 fi
 
-# Async suspension backend (JSPI migration). Default asyncify; PCBJAM_ASYNC_BACKEND=jspi
-# links the browser apps with -sJSPI (native stack switching) instead of
-# -sASYNCIFY/-sDYNCALLS, defines PCBJAM_JSPI=1 for every TU (selects the JSPI
-# libcontext coroutine backend + the wx port's JSPI dispatch paths), and skips
-# the whole post-link asyncify pipeline (stub dance + host wasm-opt). The wx
-# build this app links against must be built with the SAME knob
-# (build-wx-wasm.sh reads it too). The headless CLIs (kicad_tools, occ_service)
-# stay asyncify-shaped regardless: their targets pin -sASYNCIFY=0 and run in
-# node/worker where no suspension backend is wanted.
-PCBJAM_ASYNC_BACKEND="${PCBJAM_ASYNC_BACKEND:-asyncify}"
-case "${APP_NAME}" in
-    kicad_tools|occ_service) PCBJAM_ASYNC_BACKEND="asyncify" ;;
-esac
-if [ "${PCBJAM_ASYNC_BACKEND}" = "jspi" ]; then
-    EXTRA_FLAGS="${EXTRA_FLAGS} -DPCBJAM_JSPI=1"
-    # PCBJAM_JSPI is ABI-affecting (coroutine.h's callerStub grows a finish
-    # hook — a template, so every instantiating TU must agree): route it into
-    # KICAD_TU_ABI_FLAGS via EMBIND_CONFIG_DEFINES like the Debug -DDEBUG.
-    EMBIND_CONFIG_DEFINES="${EMBIND_CONFIG_DEFINES} -DPCBJAM_JSPI=1"
-    log_info "Async backend: JSPI (-sJSPI, -DPCBJAM_JSPI=1)"
-else
-    log_info "Async backend: asyncify"
-fi
+# Suspension backend: JSPI (native stack switching) since the migration.
+# The headless CLIs (kicad_tools, occ_service) get NO suspension backend at
+# all — their targets pin -sASYNCIFY=0 and run in node/worker where nothing
+# may suspend. coroutine.h/libcontext key on __EMSCRIPTEN__ directly, so no
+# ABI define is threaded through the TU flags anymore.
 
 # Step 6: Create build directory
 mkdir -p "${KICAD_BUILD}"
@@ -395,32 +377,11 @@ fi
 EMSDK_WASM_OPT="${EMSDK}/upstream/bin/wasm-opt"
 EMSDK_FINALIZE="${EMSDK}/upstream/bin/wasm-emscripten-finalize"
 
-if [ "${APP_NAME}" = "kicad_tools" ] || [ "${APP_NAME}" = "occ_service" ] || [ "${PCBJAM_ASYNC_BACKEND}" = "jspi" ]; then
-    # Use the real tools so the module is fully finalized inside the container
-    # (no host post-processing / asyncify for these targets). JSPI mode has no
-    # asyncify pass at all, so every app finalizes in-container.
-    [ -f "${EMSDK_WASM_OPT}.real" ] && cp "${EMSDK_WASM_OPT}.real" "${EMSDK_WASM_OPT}"
-    [ -f "${EMSDK_FINALIZE}.real" ] && cp "${EMSDK_FINALIZE}.real" "${EMSDK_FINALIZE}"
-    log_info "Using real wasm-opt/finalize for ${APP_NAME} (finalize in-container)"
-else
-    if [ -f "${EMSDK_WASM_OPT}" ] && [ ! -f "${EMSDK_WASM_OPT}.real" ]; then
-        log_info "Backing up real wasm-opt..."
-        mv "${EMSDK_WASM_OPT}" "${EMSDK_WASM_OPT}.real"
-    fi
-    # Always copy the latest stub (in case it was updated)
-    cp "${STUBS_DIR}/wasm-opt-stub.sh" "${EMSDK_WASM_OPT}"
-    chmod +x "${EMSDK_WASM_OPT}"
-    log_info "wasm-opt stub installed (asyncify will run on host)"
-
-    if [ -f "${EMSDK_FINALIZE}" ] && [ ! -f "${EMSDK_FINALIZE}.real" ]; then
-        log_info "Backing up real wasm-emscripten-finalize..."
-        mv "${EMSDK_FINALIZE}" "${EMSDK_FINALIZE}.real"
-    fi
-    # Always copy the latest stub (in case it was updated)
-    cp "${STUBS_DIR}/wasm-emscripten-finalize-stub.sh" "${EMSDK_FINALIZE}"
-    chmod +x "${EMSDK_FINALIZE}"
-    log_info "wasm-emscripten-finalize stub installed (finalize will run on host)"
-fi
+# JSPI has no post-link asyncify pass: every app finalizes in-container with
+# the REAL tools. The .real backups exist on containers that ran the retired
+# asyncify stub dance — restore them if present.
+[ -f "${EMSDK_WASM_OPT}.real" ] && cp "${EMSDK_WASM_OPT}.real" "${EMSDK_WASM_OPT}"
+[ -f "${EMSDK_FINALIZE}.real" ] && cp "${EMSDK_FINALIZE}.real" "${EMSDK_FINALIZE}"
 
 # Step 6.5: Verify WASM support is in KiCad fork
 # The kicad submodule should already have WASM port detection and kiplatform support
@@ -527,37 +488,20 @@ if [ "${BUILD_3D_VIEWER}" = "ON" ]; then
 fi
 
 # Multi-threaded CPU raytracer (mainline threading restored): link the main-thread
-# nanosleep->Asyncify-yield shim so the raw-thread raytracer joins (sleep_for busy-wait)
-# yield to the JS event loop instead of deadlocking on-demand pthread-Worker creation.
-# Mirrors the wasm/gl1 pattern (compile to .o, add to the link). Shim:
-# wasm/shims/nanosleep_yield.c; its EM_ASYNC_JS yield is covered by env.__asyncjs__* in
-# scripts/common/asyncify-imports.txt.
-# The synchronous node CLIs (ASYNCIFY=0) must NOT link it: their Asyncify JS
-# runtime doesn't exist, so the shim's yield throws "Asyncify is not defined"
-# on the first main-thread sleep (e.g. DRC copper-clearance's worker-poll).
-# A blocking CLI wants libc's real blocking nanosleep anyway — node permits
+# nanosleep-yield shim so the raw-thread raytracer joins (sleep_for busy-wait)
+# yield to the JS event loop instead of deadlocking on-demand pthread-Worker
+# creation (wasm/shims/nanosleep_yield.c, suspends via the jspi scheduler).
+# The synchronous node CLIs must NOT link it: nothing in them may suspend and
+# a blocking CLI wants libc's real blocking nanosleep anyway — node permits
 # Atomics.wait on its main thread.
 if [ "${APP_NAME}" = "kicad_tools" ] || [ "${APP_NAME}" = "occ_service" ]; then
     NANOSLEEP_YIELD_LINK=""
 else
+    # Every main-thread sleep suspends in place (legal on a promising
+    # activation; EM_ASYNC_JS auto-wraps as WebAssembly.Suspending under
+    # -sJSPI) and routes through the jspi-scheduler turnstile.
     emcc -c -pthread "${PROJECT_ROOT}/wasm/shims/nanosleep_yield.c" -o "${STUBS_BUILD}/nanosleep_yield.o"
-    if [ "${PCBJAM_ASYNC_BACKEND}" = "jspi" ]; then
-        # JSPI: no scheduler-context lane exists — the weak
-        # pcbjam_context_sleep_ms stays null and every main-thread sleep
-        # suspends in place (legal on a promising activation; EM_ASYNC_JS
-        # auto-wraps as WebAssembly.Suspending under -sJSPI).
-        # context_sleep.cpp is fiber-only machinery and must not link.
-        NANOSLEEP_YIELD_LINK="${STUBS_BUILD}/nanosleep_yield.o"
-    else
-        # Its scheduler-aware half (docs/features/async/22 Phase B): a main-thread
-        # sleep on a scheduler context parks THAT CONTEXT instead of suspending the
-        # stack in place. C++ because the registry is a header-only C++ layer in
-        # wx's port, hence WX_CXXFLAGS for the include path (the same reason
-        # thirdparty/libcontext needed it at Phase A).
-        em++ -c -std=c++17 -pthread ${WX_CXXFLAGS} \
-            "${PROJECT_ROOT}/wasm/shims/context_sleep.cpp" -o "${STUBS_BUILD}/context_sleep.o"
-        NANOSLEEP_YIELD_LINK="${STUBS_BUILD}/nanosleep_yield.o ${STUBS_BUILD}/context_sleep.o"
-    fi
+    NANOSLEEP_YIELD_LINK="${STUBS_BUILD}/nanosleep_yield.o"
 fi
 
 # mallinfo() stub for the mimalloc build: -sMALLOC=mimalloc doesn't export the
@@ -583,21 +527,22 @@ else
     PTHREAD_POOL_EXPR='navigator.hardwareConcurrency'
 fi
 
-# Suspension-backend link surface. Asyncify: binaryen instrumentation +
-# DYNCALLS (+ the dynCall runtime export used by the post-link dyncall shims).
-# JSPI: native suspension — -sJSPI + the promising-export census
+# Suspension link surface. Browser apps: -sJSPI + the promising-export census
 # (scripts/common/jspi-exports.txt: the wx KEEPALIVE entries that can park +
 # pcbjam_libctx_entry; regenerate by grep, not memory), the jspi-scheduler
-# pre-js (successor of the post-link-injected asyncify-scheduler.js), and the
-# runtime methods its green-copy stack discipline needs (stackSave/
-# stackRestore/HEAPU8). -sDYNCALLS is a fatal link error under JSPI.
-if [ "${PCBJAM_ASYNC_BACKEND}" = "jspi" ]; then
-    ASYNC_LINK_FLAGS="-sJSPI -sJSPI_EXPORTS=@${PROJECT_ROOT}/scripts/common/jspi-exports.txt --pre-js ${PROJECT_ROOT}/scripts/common/shims/jspi-scheduler.js"
-    ASYNC_RUNTIME_METHODS="-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','UTF8ToString','stringToUTF8','lengthBytesUTF8','stackSave','stackRestore','HEAPU8','HEAP8','HEAP32']"
-else
-    ASYNC_LINK_FLAGS="-sASYNCIFY=1 -sDYNCALLS=1 -sASYNCIFY_STACK_SIZE=65536"
-    ASYNC_RUNTIME_METHODS="-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','UTF8ToString','stringToUTF8','lengthBytesUTF8','dynCall'] -sDEFAULT_LIBRARY_FUNCS_TO_INCLUDE=['\$dynCall']"
-fi
+# pre-js, and the runtime methods its spill-stack discipline needs
+# (stackSave/stackRestore/HEAPU8). Headless CLIs: nothing — their targets pin
+# -sASYNCIFY=0 and nothing in them may suspend.
+case "${APP_NAME}" in
+    kicad_tools|occ_service)
+        ASYNC_LINK_FLAGS=""
+        ASYNC_RUNTIME_METHODS="-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','UTF8ToString','stringToUTF8','lengthBytesUTF8']"
+        ;;
+    *)
+        ASYNC_LINK_FLAGS="-sJSPI -sJSPI_EXPORTS=@${PROJECT_ROOT}/scripts/common/jspi-exports.txt --pre-js ${PROJECT_ROOT}/scripts/common/shims/jspi-scheduler.js"
+        ASYNC_RUNTIME_METHODS="-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','UTF8ToString','stringToUTF8','lengthBytesUTF8','stackSave','stackRestore','HEAPU8','HEAP8','HEAP32']"
+        ;;
+esac
 
 emcmake cmake "${KICAD_DIR}" \
     ${CCACHE_OPTS} \
