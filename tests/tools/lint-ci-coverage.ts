@@ -32,8 +32,7 @@ const WORKFLOWS_DIR = path.join(REPO_ROOT, '.github', 'workflows');
 // or be added here on purpose — silence is exactly how the web suite rotted.
 const LOCAL_ONLY_PROJECTS = new Set([
   'kicad-chrome', // system Chrome, headed KiCad debugging
-  'asyncify-chrome', // system Chrome
-  'asyncify-webkit', // Safari-engine policy suite, run manually (test:asyncify:safari)
+  'jspi-chrome', // system Chrome (real V8; run manually via test:jspi:chrome)
   'coroutine-chrome', // system Chrome (real V8/GPU)
 ]);
 

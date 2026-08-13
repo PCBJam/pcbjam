@@ -1,0 +1,12 @@
+main
+wx_dom_event
+wx_dom_mouse
+wx_window_close
+wx_window_move
+wx_window_resize
+ProcessEvents
+wxWasmMailboxTick
+wxWasmTopLevelTick
+wxWasmMainLoopPump
+wxWasmJobTick
+pcbjam_libctx_entry

@@ -296,6 +296,30 @@ else
     log_info "Building KiCad in RELEASE mode (skipping wasm-opt due to memory limits)"
 fi
 
+# Async suspension backend (JSPI migration). Default asyncify; PCBJAM_ASYNC_BACKEND=jspi
+# links the browser apps with -sJSPI (native stack switching) instead of
+# -sASYNCIFY/-sDYNCALLS, defines PCBJAM_JSPI=1 for every TU (selects the JSPI
+# libcontext coroutine backend + the wx port's JSPI dispatch paths), and skips
+# the whole post-link asyncify pipeline (stub dance + host wasm-opt). The wx
+# build this app links against must be built with the SAME knob
+# (build-wx-wasm.sh reads it too). The headless CLIs (kicad_tools, occ_service)
+# stay asyncify-shaped regardless: their targets pin -sASYNCIFY=0 and run in
+# node/worker where no suspension backend is wanted.
+PCBJAM_ASYNC_BACKEND="${PCBJAM_ASYNC_BACKEND:-asyncify}"
+case "${APP_NAME}" in
+    kicad_tools|occ_service) PCBJAM_ASYNC_BACKEND="asyncify" ;;
+esac
+if [ "${PCBJAM_ASYNC_BACKEND}" = "jspi" ]; then
+    EXTRA_FLAGS="${EXTRA_FLAGS} -DPCBJAM_JSPI=1"
+    # PCBJAM_JSPI is ABI-affecting (coroutine.h's callerStub grows a finish
+    # hook — a template, so every instantiating TU must agree): route it into
+    # KICAD_TU_ABI_FLAGS via EMBIND_CONFIG_DEFINES like the Debug -DDEBUG.
+    EMBIND_CONFIG_DEFINES="${EMBIND_CONFIG_DEFINES} -DPCBJAM_JSPI=1"
+    log_info "Async backend: JSPI (-sJSPI, -DPCBJAM_JSPI=1)"
+else
+    log_info "Async backend: asyncify"
+fi
+
 # Step 6: Create build directory
 mkdir -p "${KICAD_BUILD}"
 cd "${KICAD_BUILD}"
@@ -371,9 +395,10 @@ fi
 EMSDK_WASM_OPT="${EMSDK}/upstream/bin/wasm-opt"
 EMSDK_FINALIZE="${EMSDK}/upstream/bin/wasm-emscripten-finalize"
 
-if [ "${APP_NAME}" = "kicad_tools" ] || [ "${APP_NAME}" = "occ_service" ]; then
-    # Use the real tools so the small -g0 module is fully finalized inside the
-    # container (no host post-processing / asyncify for these targets).
+if [ "${APP_NAME}" = "kicad_tools" ] || [ "${APP_NAME}" = "occ_service" ] || [ "${PCBJAM_ASYNC_BACKEND}" = "jspi" ]; then
+    # Use the real tools so the module is fully finalized inside the container
+    # (no host post-processing / asyncify for these targets). JSPI mode has no
+    # asyncify pass at all, so every app finalizes in-container.
     [ -f "${EMSDK_WASM_OPT}.real" ] && cp "${EMSDK_WASM_OPT}.real" "${EMSDK_WASM_OPT}"
     [ -f "${EMSDK_FINALIZE}.real" ] && cp "${EMSDK_FINALIZE}.real" "${EMSDK_FINALIZE}"
     log_info "Using real wasm-opt/finalize for ${APP_NAME} (finalize in-container)"
@@ -432,6 +457,16 @@ EMBIND_SRC="${PROJECT_ROOT}/wasm/bindings/${EMBIND_APP}_embind.cpp"
 # We use CMAKE_MODULE_PATH to inject our compatibility layer
 kw_stage kicad-configure
 log_info "Configuring KiCad with CMake..."
+# emcc 6: -sUSE_ZLIB is gone; prebuild the zlib port (regular + PIC) so the
+# explicit ZLIB_LIBRARY below always exists (PIC needed by the .so links).
+"${EMSDK}/upstream/emscripten/embuilder" build zlib >/dev/null 2>&1 || true
+"${EMSDK}/upstream/emscripten/embuilder" build zlib --pic >/dev/null 2>&1 || true
+
+# CMAKE_SHARED/MODULE_LINKER_FLAGS below: set EXPLICITLY (a stale CMakeCache
+# once resurrected experimental -L hacks), and carry the SAME ODR policy as
+# the exe links (wasm/editor/CMakeLists.txt): KiCad deliberately ships
+# wx-compat copies (wxGetContentRect in grid_checkbox.cpp vs wx grid.cpp)
+# that emcc 6 kiface/.so links reject without --allow-multiple-definition.
 
 # Use ccache if available (CMAKE_*_COMPILER_LAUNCHER is the proper CMake way)
 CCACHE_OPTS=""
@@ -506,14 +541,23 @@ if [ "${APP_NAME}" = "kicad_tools" ] || [ "${APP_NAME}" = "occ_service" ]; then
     NANOSLEEP_YIELD_LINK=""
 else
     emcc -c -pthread "${PROJECT_ROOT}/wasm/shims/nanosleep_yield.c" -o "${STUBS_BUILD}/nanosleep_yield.o"
-    # Its scheduler-aware half (docs/features/async/22 Phase B): a main-thread
-    # sleep on a scheduler context parks THAT CONTEXT instead of suspending the
-    # stack in place. C++ because the registry is a header-only C++ layer in
-    # wx's port, hence WX_CXXFLAGS for the include path (the same reason
-    # thirdparty/libcontext needed it at Phase A).
-    em++ -c -std=c++17 -pthread ${WX_CXXFLAGS} \
-        "${PROJECT_ROOT}/wasm/shims/context_sleep.cpp" -o "${STUBS_BUILD}/context_sleep.o"
-    NANOSLEEP_YIELD_LINK="${STUBS_BUILD}/nanosleep_yield.o ${STUBS_BUILD}/context_sleep.o"
+    if [ "${PCBJAM_ASYNC_BACKEND}" = "jspi" ]; then
+        # JSPI: no scheduler-context lane exists — the weak
+        # pcbjam_context_sleep_ms stays null and every main-thread sleep
+        # suspends in place (legal on a promising activation; EM_ASYNC_JS
+        # auto-wraps as WebAssembly.Suspending under -sJSPI).
+        # context_sleep.cpp is fiber-only machinery and must not link.
+        NANOSLEEP_YIELD_LINK="${STUBS_BUILD}/nanosleep_yield.o"
+    else
+        # Its scheduler-aware half (docs/features/async/22 Phase B): a main-thread
+        # sleep on a scheduler context parks THAT CONTEXT instead of suspending the
+        # stack in place. C++ because the registry is a header-only C++ layer in
+        # wx's port, hence WX_CXXFLAGS for the include path (the same reason
+        # thirdparty/libcontext needed it at Phase A).
+        em++ -c -std=c++17 -pthread ${WX_CXXFLAGS} \
+            "${PROJECT_ROOT}/wasm/shims/context_sleep.cpp" -o "${STUBS_BUILD}/context_sleep.o"
+        NANOSLEEP_YIELD_LINK="${STUBS_BUILD}/nanosleep_yield.o ${STUBS_BUILD}/context_sleep.o"
+    fi
 fi
 
 # mallinfo() stub for the mimalloc build: -sMALLOC=mimalloc doesn't export the
@@ -539,6 +583,22 @@ else
     PTHREAD_POOL_EXPR='navigator.hardwareConcurrency'
 fi
 
+# Suspension-backend link surface. Asyncify: binaryen instrumentation +
+# DYNCALLS (+ the dynCall runtime export used by the post-link dyncall shims).
+# JSPI: native suspension — -sJSPI + the promising-export census
+# (scripts/common/jspi-exports.txt: the wx KEEPALIVE entries that can park +
+# pcbjam_libctx_entry; regenerate by grep, not memory), the jspi-scheduler
+# pre-js (successor of the post-link-injected asyncify-scheduler.js), and the
+# runtime methods its green-copy stack discipline needs (stackSave/
+# stackRestore/HEAPU8). -sDYNCALLS is a fatal link error under JSPI.
+if [ "${PCBJAM_ASYNC_BACKEND}" = "jspi" ]; then
+    ASYNC_LINK_FLAGS="-sJSPI -sJSPI_EXPORTS=@${PROJECT_ROOT}/scripts/common/jspi-exports.txt --pre-js ${PROJECT_ROOT}/scripts/common/shims/jspi-scheduler.js"
+    ASYNC_RUNTIME_METHODS="-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','UTF8ToString','stringToUTF8','lengthBytesUTF8','stackSave','stackRestore','HEAPU8','HEAP8','HEAP32']"
+else
+    ASYNC_LINK_FLAGS="-sASYNCIFY=1 -sDYNCALLS=1 -sASYNCIFY_STACK_SIZE=65536"
+    ASYNC_RUNTIME_METHODS="-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','UTF8ToString','stringToUTF8','lengthBytesUTF8','dynCall'] -sDEFAULT_LIBRARY_FUNCS_TO_INCLUDE=['\$dynCall']"
+fi
+
 emcmake cmake "${KICAD_DIR}" \
     ${CCACHE_OPTS} \
     ${KICAD_TOOLS_CMAKE_FLAG} \
@@ -549,9 +609,13 @@ emcmake cmake "${KICAD_DIR}" \
     -DCMAKE_MODULE_PATH="${WASM_LAYER}/cmake" \
     -DSYSROOT="${SYSROOT}" \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-    -DCMAKE_CXX_FLAGS="${EXTRA_FLAGS} -Xclang -fno-pch-timestamp -pthread -sUSE_ZLIB=1 -DKICAD_USE_PLATFORM_WASM=1${DIAG_DEFINES} -I${SYSROOT}/include -I${STUBS_DIR} -include ${STUBS_DIR}/char_traits_uint16_workaround.h" \
-    -DCMAKE_C_FLAGS="${EXTRA_FLAGS} -pthread -sUSE_ZLIB=1 -I${SYSROOT}/include -I${STUBS_DIR}" \
-    -DCMAKE_EXE_LINKER_FLAGS="${LINKER_DEBUG_FLAGS} -pthread -sUSE_ZLIB=1 -sASYNCIFY=1 -sDYNCALLS=1 -sASYNCIFY_STACK_SIZE=65536 -sUSE_PTHREADS=1 -sMALLOC=mimalloc -sPTHREAD_POOL_SIZE='${PTHREAD_POOL_EXPR}' -sPTHREAD_POOL_SIZE_STRICT=0 -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=256MB -sMAXIMUM_MEMORY=4GB -sMAX_WEBGL_VERSION=2 ${GL3D_LINK_FLAGS} ${NANOSLEEP_YIELD_LINK} ${MALLINFO_STUB_LINK} -sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','UTF8ToString','stringToUTF8','lengthBytesUTF8','dynCall'] -sDEFAULT_LIBRARY_FUNCS_TO_INCLUDE=['\$dynCall'] ${EMBIND_LINK_FLAG} -L${SYSROOT}/lib ${STUBS_BUILD}/libgit2_stub.a ${STUBS_BUILD}/libcurl_stub.a${APP_STUB_LINK} ${STUBS_BUILD}/libnng_stub.a ${EMBIND_OBJ}" \
+    -DCMAKE_CXX_FLAGS="${EXTRA_FLAGS} -Xclang -fno-pch-timestamp -pthread --use-port=zlib -DKICAD_USE_PLATFORM_WASM=1${DIAG_DEFINES} -I${SYSROOT}/include -I${STUBS_DIR} -include ${STUBS_DIR}/char_traits_uint16_workaround.h" \
+    -DCMAKE_C_FLAGS="${EXTRA_FLAGS} -pthread --use-port=zlib -I${SYSROOT}/include -I${STUBS_DIR}" \
+    -DCMAKE_EXE_LINKER_FLAGS="${LINKER_DEBUG_FLAGS} -pthread ${ASYNC_LINK_FLAGS} -sUSE_PTHREADS=1 -sMALLOC=mimalloc -sPTHREAD_POOL_SIZE='${PTHREAD_POOL_EXPR}' -sPTHREAD_POOL_SIZE_STRICT=0 -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=256MB -sMAXIMUM_MEMORY=4GB -sMAX_WEBGL_VERSION=2 ${GL3D_LINK_FLAGS} ${NANOSLEEP_YIELD_LINK} ${MALLINFO_STUB_LINK} ${ASYNC_RUNTIME_METHODS} ${EMBIND_LINK_FLAG} -L${SYSROOT}/lib -L${KICAD_BUILD}/common -L${KICAD_BUILD}/common/gal ${STUBS_BUILD}/libgit2_stub.a ${STUBS_BUILD}/libcurl_stub.a${APP_STUB_LINK} ${STUBS_BUILD}/libnng_stub.a ${EMBIND_OBJ}" \
+    -DCMAKE_SHARED_LINKER_FLAGS="-Wl,--allow-multiple-definition" \
+    -DCMAKE_MODULE_LINKER_FLAGS="-Wl,--allow-multiple-definition" \
+    -DZLIB_LIBRARY="${EMSDK}/upstream/emscripten/cache/sysroot/lib/wasm32-emscripten/pic/libz.a" \
+    -DZLIB_INCLUDE_DIR="${EMSDK}/upstream/emscripten/cache/sysroot/include" \
     -DCMAKE_PREFIX_PATH="${SYSROOT};${WX_BUILD}" \
     -DwxWidgets_CONFIG_EXECUTABLE="${WX_BUILD}/wx-config" \
     \

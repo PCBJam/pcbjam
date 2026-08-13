@@ -1,5 +1,5 @@
-// Guard-beacon extraction for the mailbox/scheduler migration
-// (docs/features/async/17-mailbox-scheduler-plan.md, step S0.3).
+// Wait-beacon extraction (JSPI-era successor of guard-beacons.ts; the
+// mailbox/scheduler migration doc is docs/features/async/17, step S0.3).
 //
 // Every legacy anti-collision guard announces itself on the console when it fires.
 // During the migration each superseded guard is kept as a TRIPWIRE: the mailbox is
@@ -30,6 +30,10 @@ export interface GuardBeaconCounts {
   libcontext: BeaconFamilyCount;
   // open-settle gate giving up (open-flow.ts)
   openSettleFailed: BeaconFamilyCount;
+  // jspi-scheduler.js turnstile/containment beacons (JSPI builds)
+  wxScheduler: BeaconFamilyCount;
+  // libcontext JSPI backend ghost/refused-transition census
+  libctxJspi: BeaconFamilyCount;
   // scheduler build marker — identifies the dual-glue variant, not a guard
   schedulerBuild: boolean;
 }
@@ -45,6 +49,10 @@ const FAMILY_PATTERNS: Record<
   libcontext:
     /\[collab-fcontext\] (jump-refused|jump-refused-hot-main|hot-main-swap-out|jump-hot-into-main|jump-ghost|entry-orphaned)/,
   openSettleFailed: /\[open\] load chain never settled/,
+  // JSPI-era families (jspi-scheduler.js + libcontext's JSPI backend):
+  wxScheduler:
+    /\[wx-scheduler\] (force-clearing stuck window|mailbox tick error|untracked promising entry|activation stack imbalance|resume window misnested)/,
+  libctxJspi: /\[libctx-jspi\] ghost\/refused/,
 };
 
 const OCCURRENCE_RE = /\(occurrence (\d+)\)/;
@@ -61,6 +69,8 @@ export function countGuardBeacons(consoleLines: string[]): GuardBeaconCounts {
     wxAsyncify: emptyFamily(),
     libcontext: emptyFamily(),
     openSettleFailed: emptyFamily(),
+    wxScheduler: emptyFamily(),
+    libctxJspi: emptyFamily(),
     schedulerBuild: false,
   };
 

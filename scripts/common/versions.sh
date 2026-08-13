@@ -3,7 +3,8 @@
 # These versions match KiCad 8.99 requirements from CMakeLists.txt and vcpkg.json
 
 # Emscripten SDK version (single source of truth for Docker and local builds)
-export EMSCRIPTEN_VERSION="4.0.2"
+# 6.0.6: JSPI-capable toolchain for the experiment/jspi branch (was 4.0.2).
+export EMSCRIPTEN_VERSION="6.0.6"
 
 # KiCad submodule version
 export KICAD_COMMIT="4bfed3f1746e8cc0a7d942767770f56fa28b393c"
@@ -53,7 +54,10 @@ export OCC_URL="https://github.com/Open-Cascade-SAS/OCCT/archive/refs/tags/V${OC
 export RAPIDJSON_URL="https://github.com/Tencent/rapidjson/archive/${RAPIDJSON_COMMIT}.tar.gz"
 # downloads.sourceforge.net serves the file directly; the projects/... /download
 # form returns an HTML redirect page that breaks curl-based fetches.
-export NGSPICE_URL="https://downloads.sourceforge.net/project/ngspice/ng-spice-rework/${NGSPICE_VERSION}/ngspice-${NGSPICE_VERSION}.tar.gz"
+# Superseded releases move from ng-spice-rework/<v>/ to old-releases/<v>/ on
+# sourceforge (46 moved there when 47 shipped, 2026-08 - the top-level path
+# 404s). old-releases is the durable home for a pinned version.
+export NGSPICE_URL="https://downloads.sourceforge.net/project/ngspice/ng-spice-rework/old-releases/${NGSPICE_VERSION}/ngspice-${NGSPICE_VERSION}.tar.gz"
 
 # SHA256 checksums (to be filled in after first successful download)
 # export ZSTD_SHA256=""

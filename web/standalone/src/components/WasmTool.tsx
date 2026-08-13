@@ -1250,12 +1250,19 @@ export function WasmTool({
     const promote = (kind: string, msg: string) => {
       append(`[fatal] ${kind}: ${msg}`);
       append(dumpTrace());
-      // The asyncify flight recorder (handlesleep.js shim): event ring +
-      // machine state at death — the targeting data for the fiber trap.
-      const rec = (
-        window as Window & { __wxAsyncifyDump?: () => string }
-      ).__wxAsyncifyDump?.();
-      if (rec) append(rec);
+      // The scheduler flight recorder: event ring + wait/activation state at
+      // death — the targeting data for suspension-machinery traps. Canonical
+      // name is __wxWaitDump (jspi-scheduler); __wxAsyncifyDump is the legacy
+      // shim's name, kept as a fallback one release. The jspi dump is an
+      // object, the legacy one a string — normalize.
+      const dumper = (
+        window as Window & {
+          __wxWaitDump?: () => unknown;
+          __wxAsyncifyDump?: () => unknown;
+        }
+      );
+      const rec = (dumper.__wxWaitDump ?? dumper.__wxAsyncifyDump)?.();
+      if (rec) append(typeof rec === "string" ? rec : JSON.stringify(rec));
       setFatal(msg);
       setShowLog(true);
       // Arm the React-independent floor too: it stays invisible while our
@@ -1763,15 +1770,27 @@ export function WasmTool({
         // they proceed (saves are already MEMFS-only above).
         if (readOnly) {
           const setRo = (
-            win.Module as { kicadSetReadOnly?: (v: boolean) => boolean } | undefined
+            win.Module as
+              | { kicadSetReadOnly?: (v: boolean) => boolean | Promise<boolean> }
+              | undefined
           )?.kicadSetReadOnly;
           if (typeof setRo === "function") {
-            const t0 = Date.now();
-            while (setRo(true) !== true) {
-              if (Date.now() - t0 > 30_000) {
-                throw new Error("read-only lock did not apply");
-              }
-              await new Promise((r) => setTimeout(r, 150));
+            // The scheduler's mutator lane returns the boolean synchronously
+            // when the wasm side is idle, and a Promise for the SAME call when
+            // it queued behind a live open — await covers both. (The old
+            // poll-until-literal-true loop could spin forever under JSPI: a
+            // queued call re-enqueues on every retry and never compares true.)
+            const applied = await Promise.race([
+              Promise.resolve(setRo(true)),
+              new Promise<never>((_, reject) =>
+                setTimeout(
+                  () => reject(new Error("read-only lock did not apply")),
+                  30_000,
+                ),
+              ),
+            ]);
+            if (applied !== true) {
+              throw new Error("read-only lock did not apply");
             }
             append("[readonly] wasm frame locked (kicadSetReadOnly)");
           } else if (tool !== "gerbview" && tool !== "calculator") {

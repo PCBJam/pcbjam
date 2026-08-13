@@ -26,6 +26,7 @@
 #include <wx/string.h>
 #include "open_gate.h"
 #include "main_stack_runner.h"
+#include "pcbjam_async_policy.h"
 
 using namespace emscripten;
 using json = nlohmann::json;
@@ -86,7 +87,7 @@ static bool kicadOpenFileBusy()
 
 EMSCRIPTEN_BINDINGS( gerbview )
 {
-    function( "kicadOpenFile", &kicadOpenFile );
-    function( "kicadOpenFiles", &kicadOpenFiles );
+    function( "kicadOpenFile", &kicadOpenFile PCBJAM_PARKER_POLICY );
+    function( "kicadOpenFiles", &kicadOpenFiles PCBJAM_PARKER_POLICY );
     function( "kicadOpenFileBusy", &kicadOpenFileBusy );
 }

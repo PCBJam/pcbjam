@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>jspi-coroutine harness</title></head>
+<body>
+<script type="module">
+  // ?pt=1 loads the pthread build (needs the COOP/COEP the test server sets).
+  const pt = new URLSearchParams(location.search).get('pt') === '1';
+  const { default: factory } = await import(
+    pt ? './coroutine_jspi_test_pt.mjs' : './coroutine_jspi_test.mjs');
+  try {
+    await factory();
+  } catch (e) {
+    console.log('[JSPI_CORO] FATAL ' + e);
+  }
+</script>
+</body>
+</html>

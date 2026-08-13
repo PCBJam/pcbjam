@@ -177,6 +177,16 @@ docker compose -f docker/docker-compose.yml up -d --build
 # This avoids the timestamp mismatch cycle that caused full rebuilds every time.
 # Transferred files get current container time, so make detects them correctly.
 kw_stage container-sync
+# Re-seed the emscripten ports cache from the persistent volume: /emsdk lives
+# in the container layer, so any image-context edit recreates the container
+# and wipes the cache — and the in-container github fetch is flaky. Seeds are
+# staged once into the kicad-build-cache volume (emcache/ports); this copy
+# survives every recreation. No-op when the staging dir is absent.
+docker compose -f docker/docker-compose.yml exec kicad-wasm-builder bash -c \
+    'if [ -d /workspace/build-wasm/emcache/ports ]; then \
+        mkdir -p /emsdk/upstream/emscripten/cache/ports && \
+        cp -a /workspace/build-wasm/emcache/ports/. /emsdk/upstream/emscripten/cache/ports/ && \
+        echo "seeded emscripten ports cache from volume"; fi' || true
 echo "Syncing source code to container..."
 # rsync into the macOS-backed volume intermittently hits transient VirtioFS glitches:
 # temp-file rename failures (exit 23) or vanished-source files (exit 24, harmless).
@@ -244,6 +254,7 @@ compile_app() {
     # for headless CLIs like kicad_tools — the gl1 shim needs glm).
     docker compose -f docker/docker-compose.yml exec -e EMSDK=/emsdk \
         -e BUILD_3D_VIEWER="${BUILD_3D_VIEWER:-}" \
+        -e PCBJAM_ASYNC_BACKEND="${PCBJAM_ASYNC_BACKEND:-}" \
         kicad-wasm-builder \
         "/workspace/scripts/kicad/build-${app}.sh" "${ARGS[@]}"
 
@@ -280,6 +291,15 @@ postprocess_app() {
     # host post-processing (no dyncall shims, no finalize, no asyncify).
     if [ "$app" = "kicad_tools" ] || [ "$app" = "occ_service" ] || [ "$app" = "ngspice_service" ]; then
         echo "Skipping host post-processing for ${app} (finalized in-container)"
+        return 0
+    fi
+
+    # JSPI backend: the app links with the real in-container tools and needs no
+    # dyncall shims (no -sDYNCALLS), no host finalize, and no asyncify pass —
+    # the scheduler ships as a --pre-js at link. Only the ENV merge shim remains.
+    if [ "${PCBJAM_ASYNC_BACKEND:-asyncify}" = "jspi" ]; then
+        kw_stage env-shim
+        node ./scripts/common/patch-env-shim.mjs "${out_dir}/${app}.js"
         return 0
     fi
 

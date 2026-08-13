@@ -30,6 +30,15 @@
 
 /* EM_ASYNC_JS integrates with Asyncify automatically (binaryen instruments every caller). */
 EM_ASYNC_JS( void, __wasm_main_thread_yield_ms, ( double ms ), {
+    /* JSPI: route through the scheduler's turnstile when it exists - a raw
+       await's engine-level resume bypasses the shim's SP discipline and
+       leaves its window marked live (the pump then refuses every later
+       resume). Asyncify builds (no jspi scheduler) keep the raw await. */
+    var S = globalThis.__wxScheduler;
+    if( S && S.backend === 'jspi' ) {
+        await S.sleepYield( ms );
+        return;
+    }
     await new Promise( function( resolve ) { setTimeout( resolve, ms ); } );
 } );
 

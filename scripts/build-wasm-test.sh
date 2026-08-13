@@ -101,8 +101,16 @@ fi
 # submodule (version_130 + hoist pass) via apply-asyncify.sh.
 EMSDK_WASM_OPT="$PROJECT_ROOT/tools/emsdk/upstream/bin/wasm-opt"
 WASMOPT_STUB="$PROJECT_ROOT/wasm/stubs/wasm-opt-stub.sh"
-_eh_restore_wasmopt() { [ -f "${EMSDK_WASM_OPT}.ehbak" ] && mv -f "${EMSDK_WASM_OPT}.ehbak" "${EMSDK_WASM_OPT}"; }
+_eh_restore_wasmopt() { if [ -f "${EMSDK_WASM_OPT}.ehbak" ]; then mv -f "${EMSDK_WASM_OPT}.ehbak" "${EMSDK_WASM_OPT}"; fi; }
 EH_MARKER="$(mktemp)"   # created before the build so 'find -newer' below selects freshly-linked apps
+if [ "${PCBJAM_ASYNC_BACKEND:-asyncify}" = "jspi" ]; then
+    # JSPI: no binaryen instrumentation exists — no fork build, no stub dance,
+    # no post-link pass, no dyncall/scheduler injection (the jspi-scheduler
+    # ships as a --pre-js from Makefile.wasm). emcc's real wasm-opt runs
+    # in-link like any normal build.
+    echo ""
+    echo "=== JSPI backend: in-link build, no post-link instrumentation ==="
+else
 echo ""
 echo "=== Building the Binaryen submodule (version_130 + hoist pass) ==="
 # One binaryen everywhere: the submodule fork is version_130 (asyncify unchanged) + our hoist
@@ -114,6 +122,7 @@ echo "Stubbing in-link Asyncify (will run post-link instead)..."
 cp "$EMSDK_WASM_OPT" "${EMSDK_WASM_OPT}.ehbak"
 cp "$WASMOPT_STUB" "$EMSDK_WASM_OPT"; chmod +x "$EMSDK_WASM_OPT"
 trap _eh_restore_wasmopt EXIT
+fi
 
 # Build (pass DEBUG flag if requested). App links are independent, so honor
 # JOBS/PARALLEL_JOBS from env.sh (each emcc link is slow due to Asyncify).
@@ -139,6 +148,12 @@ fi
 # it for the coroutine apps; inject-dyncall-shims.sh is idempotent (skips an already-shimmed glue),
 # so re-running it here is safe. The .wasm gets post-link hoist + asyncify first.
 _eh_restore_wasmopt; trap - EXIT
+if [ "${PCBJAM_ASYNC_BACKEND:-asyncify}" = "jspi" ]; then
+    rm -f "$EH_MARKER"
+    echo ""
+    echo "=== Build complete (jspi backend) ==="
+    exit 0
+fi
 echo ""
 echo "=== Post-link --hoist-cpp-catches + --asyncify (${JOBS:-1}-wide) ==="
 # The apps are independent here too (apply-asyncify rewrites each wasm in place; the shim

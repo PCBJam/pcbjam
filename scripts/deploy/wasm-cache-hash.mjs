@@ -72,6 +72,10 @@ const INPUTS = [
   // Docker toolchain (base image, emsdk, build driver).
   { file: "docker/Dockerfile" },
   { file: "docker/build.sh" },
+  // Toolchain pins — EMSCRIPTEN_VERSION reaches the Dockerfile only as a build
+  // ARG, so without this entry an emsdk bump alone would cache-hit wasm built
+  // by the previous toolchain.
+  { file: "scripts/common/versions.sh" },
 ];
 
 // --- helpers -----------------------------------------------------------------

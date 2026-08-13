@@ -19,6 +19,7 @@
 #include <nlohmann/json.hpp>
 #include "open_gate.h"
 #include "main_stack_runner.h"
+#include "pcbjam_async_policy.h"
 #include <eda_draw_frame.h>
 #include <kiid.h>
 #include <pcbjam_read_only.h>
@@ -616,7 +617,7 @@ std::string kicadCollabTestAddText( std::string aText, double aX, double aY )
 
 EMSCRIPTEN_BINDINGS(pl_editor) {
     // Programmatic file open (preferred over UI automation from the web app).
-    function("kicadOpenFile", &kicadOpenFile);
+    function("kicadOpenFile", &kicadOpenFile PCBJAM_PARKER_POLICY);
     function("kicadOpenFileBusy", &kicadOpenFileBusy);
     function("kicadTestSetOpenPark", &kicadTestSetOpenPark);
     // Read-only viewer lock (read-only-viewer).

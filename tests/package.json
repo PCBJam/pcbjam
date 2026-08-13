@@ -4,10 +4,10 @@
   "description": "Playwright tests for wxWidgets WASM and KiCad",
   "scripts": {
     "test": "npm run test:e2e",
-    "test:e2e": "npm run setup:kicad && playwright test --project=wx-chromium --project=kicad-firefox --project=kicad-chromium --project=asyncify-firefox --project=coroutine-firefox",
+    "test:e2e": "npm run setup:kicad && playwright test --project=wx-chromium --project=kicad-firefox --project=kicad-chromium --project=jspi-firefox --project=coroutine-firefox",
     "test:kicad": "npm run setup:kicad && playwright test --project=kicad-firefox",
     "test:kicad:headed": "npm run setup:kicad && playwright test --project=kicad-chrome --headed",
-    "test:asyncify:safari": "playwright test --project=asyncify-webkit",
+    "test:jspi:chrome": "playwright test --project=jspi-chrome",
     "test:perf": "npm run setup:kicad && playwright test --project=perf --workers=1",
     "test:web": "npm run setup:kicad && playwright test --config=playwright-web.config.ts --project=web-firefox",
     "test:web:ci": "npm run setup:kicad && playwright test --config=playwright-web.config.ts --project=web-firefox --project=web-chromium --project=web-mobile",

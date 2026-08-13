@@ -101,21 +101,32 @@ const CHROMIUM_CI_ARGS = process.env.CI
     }
   : {};
 
-// CI-only Firefox prefs: GPU-less CI VMs can't create a headless GL context
-// (FEATURE_FAILURE_WEBGL_EXHAUSTED_DRIVERS) — run headed under Xvfb, where
-// GLX + Mesa llvmpipe provides software WebGL, and bypass the no-GPU
-// blocklist so the GAL canvas gets a context. CI invokes the suite via
-// `xvfb-run`.
+// Firefox prefs. JSPI (the wasm suspension mechanism, experiment/jspi) is
+// default-on only in Firefox >=153; the bundled 144 needs the pref — set it
+// UNCONDITIONALLY (a previous CI-gated blob left local runs without it).
+// CI additionally runs headed under Xvfb with software-WebGL forced: GPU-less
+// CI VMs can't create a headless GL context
+// (FEATURE_FAILURE_WEBGL_EXHAUSTED_DRIVERS); CI invokes the suite via
+// `xvfb-run`. NOTE: spreads REPLACE launchOptions wholesale — this must stay
+// the single composed object, never two competing spreads.
+const FIREFOX_PREFS_ALWAYS = {
+  'javascript.options.wasm_js_promise_integration': true,
+};
 const FIREFOX_CI_OPTS = process.env.CI
   ? {
       headless: false,
       launchOptions: {
         firefoxUserPrefs: {
+          ...FIREFOX_PREFS_ALWAYS,
           'webgl.force-enabled': true,
         },
       },
     }
-  : {};
+  : {
+      launchOptions: {
+        firefoxUserPrefs: { ...FIREFOX_PREFS_ALWAYS },
+      },
+    };
 
 export default defineConfig({
   globalSetup: './global-setup.ts',
@@ -184,12 +195,14 @@ export default defineConfig({
       },
     },
     {
-      // Asyncify-layer harnesses: the race-condition red-green battery and
-      // the Design-B scheduler-context gate. One heavy WASM app at a time.
-      // Matches EVERY spec in ./asyncify — a new harness here is covered by
-      // construction rather than by remembering to widen this pattern.
-      name: 'asyncify-firefox',
-      testDir: './asyncify',
+      // JSPI-layer harnesses: the shadow-stack red/green battery, the
+      // coroutine-backend contract battery, and the semantic suspension-race
+      // scenarios (successor of the retired ./asyncify suite). One heavy
+      // WASM app at a time. Matches EVERY spec in ./jspi — a new harness
+      // here is covered by construction rather than by remembering to widen
+      // this pattern.
+      name: 'jspi-firefox',
+      testDir: './jspi',
       testMatch: /\.spec\.ts$/,
       fullyParallel: false,
       timeout: 120000,
@@ -243,28 +256,19 @@ export default defineConfig({
       },
     },
     {
-      name: 'asyncify-chrome',
-      testDir: './asyncify',
-      testMatch: /asyncify-races.*\.spec\.ts$/,
+      // System Chrome (real V8/GPU) leg of the jspi harnesses. There is no
+      // WebKit leg anymore: Safari has no JSPI at all (accepted trade-off of
+      // the migration) — the retired asyncify-webkit project had no
+      // successor to rename into.
+      name: 'jspi-chrome',
+      testDir: './jspi',
+      testMatch: /\.spec\.ts$/,
       fullyParallel: false,
       timeout: 120000,
       use: {
         channel: 'chrome',
         viewport: { width: 1280, height: 720 },
         permissions: ['clipboard-read', 'clipboard-write'],
-      },
-    },
-    {
-      // WebKit (Safari's engine) — project policy: every asyncify spec must be
-      // green in all three engines. Run via npm run test:asyncify:safari.
-      name: 'asyncify-webkit',
-      testDir: './asyncify',
-      testMatch: /asyncify-races.*\.spec\.ts$/,
-      fullyParallel: false,
-      timeout: 120000,
-      use: {
-        ...devices['Desktop Safari'],
-        viewport: { width: 1280, height: 720 },
       },
     },
     {

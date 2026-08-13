@@ -1,6 +1,6 @@
 import type { Page } from "@playwright/test";
 import { test, expect } from "./fixtures";
-import { expectGuardsSilent } from "./utils/guard-beacons";
+import { expectGuardsSilent } from "./utils/wait-beacons";
 
 /**
  * Timer-park concurrent-Asyncify repro (gal-refresh-timer investigation).

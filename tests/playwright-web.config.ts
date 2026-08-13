@@ -53,15 +53,31 @@ const CHROMIUM_CI_ARGS = process.env.CI
     }
   : {};
 
-// Headless Firefox can't create a GL context on GPU-less CI VMs — run headed
-// under Xvfb (the CI step wraps in xvfb-run) with the no-GPU blocklist bypassed,
-// same as the kicad-firefox project in playwright.config.ts.
+// Firefox prefs. JSPI is default-on only in Firefox >=153; the bundled 144
+// needs the pref — set it UNCONDITIONALLY, exactly like FIREFOX_PREFS_ALWAYS
+// in playwright.config.ts (a CI-gated blob would leave local runs without it).
+// CI additionally runs headed under Xvfb (the CI step wraps in xvfb-run) with
+// the no-GPU blocklist bypassed, since headless Firefox can't create a GL
+// context on GPU-less CI VMs. NOTE: spreads REPLACE launchOptions wholesale —
+// keep this a single composed object, never two competing spreads.
+const FIREFOX_PREFS_ALWAYS = {
+  'javascript.options.wasm_js_promise_integration': true,
+};
 const FIREFOX_CI_OPTS = process.env.CI
   ? {
       headless: false,
-      launchOptions: { firefoxUserPrefs: { 'webgl.force-enabled': true } },
+      launchOptions: {
+        firefoxUserPrefs: {
+          ...FIREFOX_PREFS_ALWAYS,
+          'webgl.force-enabled': true,
+        },
+      },
     }
-  : {};
+  : {
+      launchOptions: {
+        firefoxUserPrefs: { ...FIREFOX_PREFS_ALWAYS },
+      },
+    };
 
 export default defineConfig({
   globalSetup: './web/global-setup-web.ts',

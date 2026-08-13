@@ -1,12 +1,18 @@
 /**
  * N5 — flood/fairness unit gates for the scheduler shim
  * (docs/features/async/17 §3d N5; the shim source is scripts/common/shims/
- * asyncify-scheduler.js, loaded here against a fake runtime surface).
+ * jspi-scheduler.js — the JSPI-era successor of asyncify-scheduler.js —
+ * loaded here against a fake runtime surface).
  *
  * Doc 06 §starvation: FIFO by default; a stimulus flood must neither reorder
  * deliveries nor starve them, and the time-boxed pump must not monopolize the
  * thread in one burst. These are unit gates — the e2e batteries cover the
  * same machinery under the real runtime.
+ *
+ * Retired with the asyncify shim (states unrepresentable under JSPI):
+ * deferred wakes (readyWakes/_scheduleWakeDrain), currData single-writer
+ * tripwire, state() machine string. The S4 wait-registry gates below are the
+ * JSPI-era additions.
  */
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { readFileSync } from "node:fs";
@@ -15,24 +21,27 @@ import path from "node:path";
 
 const SHIM_PATH = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
-  "../../../../scripts/common/shims/asyncify-scheduler.js",
+  "../../../../scripts/common/shims/jspi-scheduler.js",
 );
 
 type SchedulerShape = {
+  backend: string;
   mailbox: unknown[];
   mutatorQueue: unknown[];
   mutatorsDelivered: number;
-  readyWakes: { deliver: (r: unknown) => void; result: unknown }[];
-  deferredWakes: number;
-  drainedWakes: number;
-  strayWrites: number;
   dead: boolean;
   shutdown(reason: string): void;
   enqueueAfter(fn: number, arg: number, ms: number): void;
   _openBusy(): boolean;
   _armMutatorPump(): void;
-  _scheduleWakeDrain(): void;
-  state(): string;
+  beginWait(kind: string): number;
+  waitPromise(token: number): Promise<number>;
+  waitEarlyResolved(token: number): number;
+  takeWaitResult(token: number): number;
+  resolveWait(token: number, result: number): boolean;
+  resolveTopWait(kind: string, result: number): boolean;
+  pendingWaits(kind: string): number;
+  earlyWaitResolves: number;
 };
 
 declare global {
@@ -47,16 +56,6 @@ function loadShim(opts: { busy: () => boolean }) {
   delete (globalThis as Record<string, unknown>).__wxSchedulerInstalled;
   delete (globalThis as Record<string, unknown>).__wxScheduler;
   const g = globalThis as Record<string, unknown>;
-  g.Asyncify = {
-    state: 0,
-    exportCallStack: [],
-    currData: null,
-    handleSleep: function (startAsync: (wake: (r: unknown) => void) => void) {
-      startAsync(() => undefined);
-    },
-    allocateData: () => 0,
-    maybeStopUnwind: () => undefined,
-  };
   g.Module = {
     kicadOpenFileBusy: opts.busy,
     kicadCollabApplyItems: (x: unknown) => `applied:${String(x)}`,
@@ -64,15 +63,22 @@ function loadShim(opts: { busy: () => boolean }) {
   // eslint-disable-next-line no-eval
   (0, eval)(readFileSync(SHIM_PATH, "utf8"));
   const S = (globalThis as Record<string, unknown>).__wxScheduler as SchedulerShape;
-  // Run the Module init hook (fake runtime: pretend init fired).
+  // Run the Module init hook (fake runtime: pretend init fired) — installs
+  // the export/parker/mutator wraps; absent names are skipped.
   const M = g.Module as { onRuntimeInitialized?: () => void };
   M.onRuntimeInitialized?.();
   return S;
 }
 
-describe("N5: scheduler shim under flood", () => {
+describe("N5: scheduler shim under flood (jspi backend)", () => {
   beforeEach(() => {
     vi.useRealTimers();
+  });
+
+  it("identifies as the jspi backend", () => {
+    const S = loadShim({ busy: () => false });
+    expect(S.backend).toBe("jspi");
+    expect(globalThis.__wxSchedulerInstalled).toBe(true);
   });
 
   it("500-call mutator flood delivers strictly FIFO with zero drops", async () => {
@@ -140,7 +146,18 @@ describe("N5: scheduler shim under flood", () => {
     }
   });
 
-  it("S6 shutdown: queued mutators reject, messages and wakes drop, pumps stop", async () => {
+  it("mutators bypass the queue when idle and not open-busy", () => {
+    const S = loadShim({ busy: () => false });
+    const M = (globalThis as Record<string, unknown>).Module as {
+      kicadCollabApplyItems: (x: number) => unknown;
+    };
+    // Sync fast path: the wrapped call returns the real value, unqueued.
+    expect(M.kicadCollabApplyItems(7)).toBe("applied:7");
+    expect(S.mutatorQueue.length).toBe(0);
+    expect(S.mutatorsDelivered).toBe(1);
+  });
+
+  it("S6 shutdown: queued mutators reject, messages drop, pumps stop", async () => {
     vi.useFakeTimers();
     try {
       let busy = true;
@@ -152,7 +169,6 @@ describe("N5: scheduler shim under flood", () => {
       const exP = expect(p).rejects.toThrow("shutdown");
       S.enqueueAfter(1234, 0, 5);
       await vi.advanceTimersByTimeAsync(6); // message lands in the mailbox
-      S.readyWakes.push({ deliver: () => undefined, result: 0 });
       expect(S.mailbox.length).toBe(1);
       expect(S.mutatorQueue.length).toBe(1);
 
@@ -160,9 +176,7 @@ describe("N5: scheduler shim under flood", () => {
       await exP;
       expect(S.mailbox.length).toBe(0);
       expect(S.mutatorQueue.length).toBe(0);
-      expect(S.readyWakes.length).toBe(0);
       expect(S.dead).toBe(true);
-      expect(S.state()).toContain("DEAD");
 
       // Post-shutdown enqueues are dropped, and idempotent shutdown is safe.
       S.enqueueAfter(1234, 0, 1);
@@ -177,22 +191,47 @@ describe("N5: scheduler shim under flood", () => {
     }
   });
 
-  it("deferred wakes drain strictly FIFO", async () => {
-    vi.useFakeTimers();
-    try {
-      const S = loadShim({ busy: () => false });
-      const order: number[] = [];
-      // Queue 50 deferred wakes directly (the runtime path queues these when
-      // a wake arrives mid-transition); the drain must preserve order.
-      for (let i = 0; i < 50; i++) {
-        S.readyWakes.push({ deliver: (r) => order.push(r as number), result: i });
-      }
-      S._scheduleWakeDrain();
-      await vi.advanceTimersByTimeAsync(50);
-      expect(order).toEqual(Array.from({ length: 50 }, (_, i) => i));
-      expect(S.readyWakes.length).toBe(0);
-    } finally {
-      vi.useRealTimers();
-    }
+  // --- S4 wait registry (JSPI-era unit gates) ------------------------------
+
+  it("early resolve is consumed by the late waiter (no lost wake)", async () => {
+    const S = loadShim({ busy: () => false });
+    const token = S.beginWait("modal");
+    // Resolve BEFORE anyone awaits — the EndModal-during-Show() race.
+    expect(S.resolveWait(token, 42)).toBe(true);
+    expect(S.waitEarlyResolved(token)).toBe(1);
+    expect(S.earlyWaitResolves).toBe(1);
+    // The late waiter still gets the result, immediately.
+    await expect(S.waitPromise(token)).resolves.toBe(42);
+    // Consumed: a second take returns nothing.
+    expect(S.takeWaitResult(token)).toBe(0);
+  });
+
+  it("resolveTopWait pops per-kind LIFO — innermost modal first", () => {
+    const S = loadShim({ busy: () => false });
+    const outer = S.beginWait("modal");
+    const inner = S.beginWait("modal");
+    const nested = S.beginWait("nested"); // different kind: untouched
+    expect(S.pendingWaits("modal")).toBe(2);
+
+    expect(S.resolveTopWait("modal", 7)).toBe(true);
+    expect(S.waitEarlyResolved(inner), "inner resolved first").toBe(1);
+    expect(S.waitEarlyResolved(outer)).toBe(0);
+    expect(S.pendingWaits("modal")).toBe(1);
+    expect(S.pendingWaits("nested")).toBe(1);
+
+    expect(S.resolveTopWait("modal", 8)).toBe(true);
+    expect(S.waitEarlyResolved(outer)).toBe(1);
+    expect(S.resolveTopWait("modal", 9), "empty stack refuses").toBe(false);
+    void nested;
+  });
+
+  it("double resolve is refused; unknown token is a defined no-op", async () => {
+    const S = loadShim({ busy: () => false });
+    const token = S.beginWait("sleep");
+    expect(S.resolveWait(token, 1)).toBe(true);
+    expect(S.resolveWait(token, 2), "second resolve refused").toBe(false);
+    await expect(S.waitPromise(token)).resolves.toBe(1);
+    expect(S.resolveWait(99999, 0)).toBe(false);
+    await expect(S.waitPromise(99999), "unknown token resolves 0").resolves.toBe(0);
   });
 });

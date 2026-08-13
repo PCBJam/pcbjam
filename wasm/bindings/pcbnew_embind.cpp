@@ -54,6 +54,7 @@
 #include "collab_presence_core.h"
 #include "open_gate.h"
 #include "main_stack_runner.h"
+#include "pcbjam_async_policy.h"
 #include "timer_park.h"
 #include "fiber_park.h"
 #include "collab_presence_style.h"
@@ -2430,7 +2431,7 @@ EMSCRIPTEN_BINDINGS(pcbnew) {
     // JS names ALSO registered by eeschema_embind.cpp — in the merged image these are
     // registered once by kicad_editor_embind.cpp, dispatching on the active frame.
     // Programmatic file open (preferred over UI automation from the web app).
-    function("kicadOpenFile", &kicadOpenFile);
+    function("kicadOpenFile", &kicadOpenFile PCBJAM_PARKER_POLICY);
     function("kicadOpenFileBusy", &kicadOpenFileBusy);
     function("kicadTestSetOpenPark", &kicadTestSetOpenPark);
     function("kicadTestArmTimerPark", &kicadTestArmTimerPark);
@@ -2484,7 +2485,7 @@ EMSCRIPTEN_BINDINGS(pcbnew) {
     function("kicadCollabTestSelectByUuid", &pcbCollabTestSelectByUuid);
     function("kicadCollabTestClearSelection", &pcbCollabTestClearSelection);
     // Library reload after a remote (synced) lib edit — r2-idb-sync realtime.
-    function("kicadLibsReload", &pcbjam_libs::reloadLibrary);
+    function("kicadLibsReload", &pcbjam_libs::reloadLibrary PCBJAM_PARKER_POLICY);
 #endif // !KICAD_MERGED_EMBIND
 }
 #endif

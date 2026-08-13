@@ -60,6 +60,22 @@ done
 BUILD_DIR="$PROJECT_ROOT/build-wasm/wxwidgets"
 WXLIB_PREFIX="libwx_wasmu"
 
+# Async-backend stamp: PCBJAM_ASYNC_BACKEND changes COMPILE flags
+# (-DPCBJAM_JSPI selects whole other halves of the wasm port), which the
+# configure-cached incremental build cannot see — a knob flip against a stale
+# tree silently links the WRONG backend into every consumer. Force a clean
+# build whenever the stamp disagrees.
+BACKEND_STAMP="$BUILD_DIR/.pcbjam-async-backend"
+CURRENT_BACKEND="${PCBJAM_ASYNC_BACKEND:-asyncify}"
+# ABSENT stamp = unknown provenance = same as a mismatch: an incremental build
+# over objects of unknown backend produced a MIXED library once (jspi evtloop
+# EM_JS in the glue next to live fiber dispatch — --allow-multiple-definition
+# hid it and the editor took the fiber branch at runtime under JSPI).
+if [ -d "$BUILD_DIR" ] && [ "$(cat "$BACKEND_STAMP" 2>/dev/null)" != "$CURRENT_BACKEND" ]; then
+    echo "=== Async backend changed ($(cat "$BACKEND_STAMP" 2>/dev/null || echo unknown) -> $CURRENT_BACKEND): forcing clean wx build ==="
+    CLEAN_BUILD=1
+fi
+
 # Use our config.sub wrapper for autoconf projects
 # CONFIG_SHELL is critical: nested configures (pcre, etc.) do SHELL=${CONFIG_SHELL-/bin/sh}
 # Without CONFIG_SHELL, nested configures would reset SHELL to /bin/sh and bypass our wrapper
@@ -177,6 +193,15 @@ if [ $NEEDS_CONFIGURE -eq 1 ]; then
     WX_EH_FLAGS="$DEPS_EH_FLAGS"
     echo "wx EH model flags: ${WX_EH_FLAGS}"
 
+    # Async backend (experiment/jspi): PCBJAM_ASYNC_BACKEND=jspi compiles the
+    # wasm port's JSPI lanes (evtloop/app/window PCBJAM_JSPI blocks) instead of
+    # the Asyncify/fiber lanes. ONE wx build output — flipping backends means
+    # rebuilding (use --clean). Default stays asyncify until Phase 4.
+    if [ "${PCBJAM_ASYNC_BACKEND:-asyncify}" = "jspi" ]; then
+        WX_EH_FLAGS="$WX_EH_FLAGS -DPCBJAM_JSPI=1"
+        echo "async backend: jspi (-DPCBJAM_JSPI)"
+    fi
+
     # Include emscripten cache sysroot for zlib headers
     export CFLAGS="-DZ_HAVE_UNISTD_H=1 -I$EM_CACHE_SYSROOT/include ${WX_DEBUG_FLAGS} ${WX_EH_FLAGS} -pthread -matomics -mbulk-memory"
     export CXXFLAGS="-DZ_HAVE_UNISTD_H=1 -I$EM_CACHE_SYSROOT/include -I$PCRE2_INCLUDE ${WX_DEBUG_FLAGS} ${WX_EH_FLAGS} -pthread -matomics -mbulk-memory"
@@ -194,7 +219,11 @@ if [ $NEEDS_CONFIGURE -eq 1 ]; then
         --with-cxx=17 \
         --enable-utf8 \
         --with-zlib=sys \
+        --with-regex=builtin \
         ${WX_CONFIGURE_DEBUG}
+    # --with-regex=builtin: without it a host pkg-config can find the host's
+    # pcre2 (homebrew on macOS) and configure silently picks "regex sys", which
+    # skips the bundled 3rdparty/pcre build dir the next step requires.
 
     # Build PCRE first to avoid race condition with parallel builds
     # PCRE headers (pcre2.h) must be generated before regex.cpp compiles
@@ -268,5 +297,6 @@ done
 cd "$BUILD_DIR"
 
 echo ""
+mkdir -p "$BUILD_DIR" && printf %s "$CURRENT_BACKEND" > "$BACKEND_STAMP"
 echo "=== Build complete ==="
 ls -lh "$BUILD_DIR"/lib/*.a 2>/dev/null || echo "Libraries built in $BUILD_DIR/lib"

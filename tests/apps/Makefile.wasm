@@ -55,7 +55,49 @@ CXXFLAGS += -MMD -MP
 # wasm setjmp/longjmp, matching the libwx build (scripts/build-wx-wasm.sh) and scripts/common/env.sh.
 # The in-link Asyncify (emsdk Binaryen v121) crashes on wasm-EH, so build-wasm-test.sh stubs it and
 # runs the real pipeline (--hoist-cpp-catches + --asyncify via apply-asyncify.sh) post-link.
+# Async backend switch (experiment/jspi): PCBJAM_ASYNC_BACKEND=jspi links the
+# apps with JSPI instead of Asyncify. Requires the wx libs built with the same
+# knob (build-wx-wasm.sh). -sDYNCALLS is asyncify-only machinery and a FATAL
+# link error under -sJSPI; -DPCBJAM_JSPI selects the JSPI lanes in the wasm
+# port sources and libcontext.
+PCBJAM_ASYNC_BACKEND ?= asyncify
+
+ifeq ($(PCBJAM_ASYNC_BACKEND),jspi)
+EH_FLAGS = -fwasm-exceptions -sSUPPORT_LONGJMP=wasm -sWASM_LEGACY_EXCEPTIONS=1 -DPCBJAM_JSPI=1
+# Promising entry exports: every JS->wasm entry that can transitively suspend
+# (fresh census 2026-08-12 of EMSCRIPTEN_KEEPALIVE in wxwidgets/src/wasm; the
+# Sched*/abandon probes never suspend and stay plain). pcbjam_libctx_entry is
+# libcontext's coroutine entry (only present in apps that link libcontext —
+# emscripten warns-and-ignores absent names).
+WX_JSPI_EXPORTS = main,wx_dom_event,wx_dom_mouse,wx_window_close,wx_window_move,wx_window_resize,ProcessEvents,wxWasmMailboxTick,wxWasmTopLevelTick,wxWasmMainLoopPump,wxWasmJobTick,pcbjam_libctx_entry
+# Per-app suspending test levers (fresh-stack ccalls that park or swap a
+# coroutine). Appended as a LAST -sJSPI_EXPORTS on the app's link line, which
+# wins over the one inside ASYNC_LDFLAGS (emcc last-wins). The non-parking
+# levers (races_end_active_modal — the answer-synchronously resolve path)
+# deliberately stay plain.
+RACES_EXTRA_LDFLAGS = -sJSPI_EXPORTS=$(WX_JSPI_EXPORTS),races_swap_once,races_park_token2,races_wdt_park_b
+JSPI_SHIM = $(abspath ../../scripts/common/shims/jspi-scheduler.js)
+ASYNC_LDFLAGS = -sJSPI \
+               -sJSPI_EXPORTS=$(WX_JSPI_EXPORTS) \
+               -s "EXPORTED_RUNTIME_METHODS=['HEAPU8','HEAP8','HEAP32','ccall','stackSave','stackRestore']" \
+               --pre-js $(JSPI_SHIM)
+ASYNC_CORO_LDFLAGS = $(ASYNC_LDFLAGS)
+ASYNC_SCHED_CTX_LDFLAGS = $(ASYNC_LDFLAGS)
+else
 EH_FLAGS = -fwasm-exceptions -sSUPPORT_LONGJMP=wasm -sWASM_LEGACY_EXCEPTIONS=1 -sDYNCALLS=1
+ASYNC_LDFLAGS = -s "EXPORTED_RUNTIME_METHODS=['HEAPU8','HEAP8','HEAP32','ccall']" \
+               -sASYNCIFY=1 \
+               -sASYNCIFY_STACK_SIZE=65536 \
+               -sASYNCIFY_IMPORTS=['js_writeTextToClipboard','js_readTextFromClipboard','js_clipboardHasText','js_clearClipboard','js_enumerateFonts']
+ASYNC_CORO_LDFLAGS = -s "EXPORTED_RUNTIME_METHODS=['HEAPU8','HEAP8','HEAP32','ccall']" \
+               -sASYNCIFY=1 \
+               -sASYNCIFY_STACK_SIZE=65536 \
+               -sASYNCIFY_IMPORTS=['js_writeTextToClipboard','js_readTextFromClipboard','js_clipboardHasText','js_clearClipboard','js_enumerateFonts','emscripten_fiber_swap']
+ASYNC_SCHED_CTX_LDFLAGS = -s "EXPORTED_RUNTIME_METHODS=['HEAPU8','HEAP8','HEAP32','ccall']" \
+               -sASYNCIFY=1 \
+               -sASYNCIFY_STACK_SIZE=65536 \
+               -sASYNCIFY_IMPORTS=['emscripten_fiber_swap']
+endif
 CXXFLAGS += $(EH_FLAGS)
 
 # Base Emscripten flags (for all apps)
@@ -64,10 +106,7 @@ CXXFLAGS += $(EH_FLAGS)
 # - js_writeTextToClipboard, js_readTextFromClipboard, js_clipboardHasText, js_clearClipboard: for clipboard
 # - js_enumerateFonts: for font enumeration via Local Font Access API
 BASE_LDFLAGS = $(EH_FLAGS) -sALLOW_MEMORY_GROWTH -sERROR_ON_UNDEFINED_SYMBOLS=0 \
-               -s "EXPORTED_RUNTIME_METHODS=['HEAPU8','HEAP8','HEAP32','ccall']" \
-               -sASYNCIFY=1 \
-               -sASYNCIFY_STACK_SIZE=65536 \
-               -sASYNCIFY_IMPORTS=['js_writeTextToClipboard','js_readTextFromClipboard','js_clipboardHasText','js_clearClipboard','js_enumerateFonts']
+               $(ASYNC_LDFLAGS)
 
 # LDFLAGS for non-GL apps (standalone tests)
 LDFLAGS_NOGL = $(DEBUG_LDFLAGS) $(BASE_LDFLAGS) $(WX_LDFLAGS_NOGL)
@@ -99,10 +138,7 @@ LDFLAGS_PTHREAD = $(DEBUG_LDFLAGS) $(BASE_LDFLAGS) -pthread \
 
 # Coroutine harness flags - mirror KiCad's fiber-related runtime needs
 COROUTINE_BASE_LDFLAGS = $(EH_FLAGS) -sALLOW_MEMORY_GROWTH -sERROR_ON_UNDEFINED_SYMBOLS=0 \
-               -s "EXPORTED_RUNTIME_METHODS=['HEAPU8','HEAP8','HEAP32','ccall']" \
-               -sASYNCIFY=1 \
-               -sASYNCIFY_STACK_SIZE=65536 \
-               -sASYNCIFY_IMPORTS=['js_writeTextToClipboard','js_readTextFromClipboard','js_clipboardHasText','js_clearClipboard','js_enumerateFonts','emscripten_fiber_swap']
+               $(ASYNC_CORO_LDFLAGS)
 LDFLAGS_COROUTINE = $(DEBUG_LDFLAGS) $(COROUTINE_BASE_LDFLAGS) $(WX_LDFLAGS_NOGL)
 
 # The asyncify-races harness must match PRODUCTION asyncify semantics: the KiCad
@@ -118,10 +154,7 @@ LDFLAGS_RACES = $(DEBUG_LDFLAGS) $(COROUTINE_BASE_LDFLAGS) -sASSERTIONS=0 $(WX_L
 # operation" state; hitting one is the bug.
 LDFLAGS_SCHED_CTX = $(DEBUG_LDFLAGS) $(EH_FLAGS) -sALLOW_MEMORY_GROWTH \
                -sERROR_ON_UNDEFINED_SYMBOLS=0 \
-               -s "EXPORTED_RUNTIME_METHODS=['HEAPU8','HEAP8','HEAP32','ccall']" \
-               -sASYNCIFY=1 \
-               -sASYNCIFY_STACK_SIZE=65536 \
-               -sASYNCIFY_IMPORTS=['emscripten_fiber_swap']
+               $(ASYNC_SCHED_CTX_LDFLAGS)
 
 # LDFLAGS for the raytracer thread-deadlock repro. Same pthread + pool config as
 # LDFLAGS_PTHREAD, but built on COROUTINE_BASE_LDFLAGS for the 65536 ASYNCIFY
@@ -144,6 +177,11 @@ LDFLAGS_REALPOOL = $(DEBUG_LDFLAGS) $(COROUTINE_BASE_LDFLAGS) -pthread \
 # depend on them — otherwise editing a shim wouldn't trigger a relink.
 JS = $(TOOLS_ROOT)/wx.js --pre-js $(TOOLS_ROOT)/wx-dom.js
 JS_FILES = $(TOOLS_ROOT)/wx.js $(TOOLS_ROOT)/wx-dom.js
+# The scheduler shim is a pre-js on every jspi link (ASYNC_LDFLAGS): apps
+# whose objects are up to date must still relink when it changes.
+ifeq ($(PCBJAM_ASYNC_BACKEND),jspi)
+JS_FILES += $(JSPI_SHIM)
+endif
 HTML = $(TOOLS_ROOT)/template.html
 
 # wxWidgets library directory - used as dependency to rebuild when libs change
@@ -777,7 +815,7 @@ $(S)/asyncify-races/races_test.o: $(S)/asyncify-races/races_test.cpp $(S)/corout
 	$(CXX) -c $(CXXFLAGS) -I$(KICAD_ROOT)/thirdparty/libcontext -I$(S)/coroutine $< -o $@
 
 $(S)/asyncify-races/races_test.html: $(S)/asyncify-races/races_test.o $(S)/coroutine/libcontext.o $(WX_CORE_LIB)
-	$(CXX) $^ $(LDFLAGS_RACES) --pre-js $(JS) --shell-file $(HTML) -o $@
+	$(CXX) $^ $(LDFLAGS_RACES) $(RACES_EXTRA_LDFLAGS) --pre-js $(JS) --shell-file $(HTML) -o $@
 	../../scripts/common/inject-dyncall-shims.sh $(basename $@).js
 
 

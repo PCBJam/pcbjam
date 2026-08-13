@@ -21,9 +21,10 @@ export interface OpenFlowOptions {
    * Replace the programmatic invocation (default: `Module.kicadOpenFile(path)`)
    * while keeping the readiness handling around it — the frame wait, the
    * settle gate, the no-UI-automation-while-parked rule. GerbView uses this to
-   * open a whole fabrication set through `kicadOpenFiles`.
+   * open a whole fabrication set through `kicadOpenFiles`. May return the
+   * open call's Promise (JSPI embind async) — the flow contains its rejection.
    */
-  open?: () => void;
+  open?: () => unknown;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -98,20 +99,22 @@ function hasProgrammaticHook(win: ToolWindow): boolean {
 }
 
 /**
- * Invoke the programmatic hook. NOTE: kicadOpenFile runs OpenProjectFiles under
- * Asyncify, so the call SUSPENDS and unwinds back to JS before the load finishes
- * — its synchronous return is a falsy placeholder, not the real bool. So we fire
- * it and ignore the return; the caller polls for the loaded schematic instead.
+ * Invoke the programmatic hook. kicadOpenFile suspends mid-load either way:
+ * under JSPI it is an embind async() export and returns a real Promise for the
+ * whole load chain; legacy asyncify builds return a falsy placeholder. The
+ * caller contains the Promise's rejection and gates readiness on the settle
+ * probe, which is truthful for both shapes.
  */
 function invokeProgrammaticOpen(
   win: ToolWindow,
   absPath: string,
   log: (m: string) => void,
-): void {
+): unknown {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const mod = win.Module as any;
-  mod.kicadOpenFile(absPath);
-  log(`[open] invoked Module.kicadOpenFile(${absPath}) (async; polling for load)`);
+  const ret = mod.kicadOpenFile(absPath);
+  log(`[open] invoked Module.kicadOpenFile(${absPath}) (async; awaiting settle)`);
+  return ret;
 }
 
 /** Heuristic: the editor frame title drops "untitled" once a real file is open. */
@@ -222,14 +225,19 @@ export async function openFileInTool(
   }
 
   // Strategy 1: programmatic hook (preferred — deterministic, no UI automation).
-  // Because the call is Asyncify-async we can't trust its return value; instead
-  // we invoke it and wait for the open chain to settle (kicadOpenFileBusy — see
-  // waitForOpenSettled). We must NOT fall back to UI automation while the hook
-  // is in flight — synthesizing input would re-enter the suspended Asyncify
-  // call and corrupt it.
+  // The open call suspends mid-load; readiness comes from the settle probe
+  // (kicadOpenFileBusy — see waitForOpenSettled), NOT the call's return: under
+  // JSPI the returned Promise deliberately stays pending while the load is
+  // parked on a user dialog (file-version confirm, remap…), exactly the case
+  // the probe's input-dialog escape handles. We must NOT fall back to UI
+  // automation while the hook is in flight — synthesizing input would re-enter
+  // the suspended load and corrupt it.
   if (opts.open || hasProgrammaticHook(win)) {
-    if (opts.open) opts.open();
-    else invokeProgrammaticOpen(win, absPath, log);
+    const ret = opts.open ? opts.open() : invokeProgrammaticOpen(win, absPath, log);
+    // JSPI: contain the load Promise's rejection — a failed open clears the
+    // busy gate (RAII) and reports through the settle path like it always
+    // has; it must not ALSO surface as an unhandled rejection.
+    Promise.resolve(ret).catch((e) => log(`[open] open chain rejected: ${e}`));
     const settled = await waitForOpenSettled(win, log, timeoutMs, opts.settleTimeoutMs);
     return settled ? "programmatic" : "failed";
   }

@@ -65,6 +65,7 @@
 #include "collab_presence_style.h"
 #include "pcbjam_theme.h"
 #include "pcbjam_libs_reload.h"
+#include "pcbjam_async_policy.h"
 #include <algorithm>
 
 using namespace emscripten;
@@ -2061,7 +2062,7 @@ EMSCRIPTEN_BINDINGS(eeschema) {
     // JS names ALSO registered by pcbnew_embind.cpp — in the merged image these are
     // registered once by kicad_editor_embind.cpp, dispatching on the active frame.
     // Programmatic file open (preferred over UI automation from the web app).
-    function("kicadOpenFile", &kicadOpenFile);
+    function("kicadOpenFile", &kicadOpenFile PCBJAM_PARKER_POLICY);
     function("kicadOpenFileBusy", &kicadOpenFileBusy);
     function("kicadTestSetOpenPark", &kicadTestSetOpenPark);
     function("kicadCollabFiberBusy", &kicadCollabFiberBusyProbe);
@@ -2106,7 +2107,7 @@ EMSCRIPTEN_BINDINGS(eeschema) {
     function("kicadCollabTestSelectByUuid", &schCollabTestSelectByUuid);
     function("kicadCollabTestClearSelection", &schCollabTestClearSelection);
     // Library reload after a remote (synced) lib edit — r2-idb-sync realtime.
-    function("kicadLibsReload", &pcbjam_libs::reloadLibrary);
+    function("kicadLibsReload", &pcbjam_libs::reloadLibrary PCBJAM_PARKER_POLICY);
     // Placed-instance count for a library symbol (drives the "a symbol you are
     // using was updated" toast after a remote lib edit).
     function("kicadLibsSymbolUsage", &schLibsSymbolUsage);

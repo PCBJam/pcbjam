@@ -104,6 +104,8 @@ test.describe('Add Footprint chooser close (doc-19 dead-app repro)', () => {
                 framesBefore,
                 { timeout: 40000 },
             )
+            // best-effort wait: the frame-count expect right below is the
+            // real assertion; a timeout must reach it, not throw (documented)
             .catch(() => {});
         const framesOpen = await frameCount(page);
         console.log(`[TEST] frames: ${framesBefore} → ${framesOpen}`);
@@ -131,6 +133,8 @@ test.describe('Add Footprint chooser close (doc-19 dead-app repro)', () => {
                 framesBefore,
                 { timeout: 20000 },
             )
+            // best-effort wait: the trap check below is the real assertion;
+            // a stalled close must reach it, not throw here (documented)
             .catch(() => {});
         await assertResponsive(page, 'chooser cancel');
 

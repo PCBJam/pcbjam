@@ -105,7 +105,14 @@ void LogLine( const std::string& aLine )
 // Park the calling stack until JS resolves the token (races_resolve_token_after).
 EM_ASYNC_JS( int, races_await_token, ( int aToken ), {
     Module.__racesWaits = Module.__racesWaits || {};
-    return await new Promise( ( resolve ) => { Module.__racesWaits[aToken] = resolve; } );
+    var p = new Promise( ( resolve ) => { Module.__racesWaits[aToken] = resolve; } );
+    // JSPI: EVERY suspension must route through the scheduler's turnstile —
+    // a raw await's engine-level resume bypasses the SP discipline and never
+    // ends the current window (windowLive wedges the pump).
+    var S = globalThis.__wxScheduler;
+    if( S && S.backend === 'jspi' )
+        return await S.promiseYield( p, 'races-token' );
+    return await p;
 } );
 
 // Resolve a parked token after a JS-side delay (independent of the C++ world,
@@ -120,6 +127,11 @@ EM_JS( void, races_resolve_token_after, ( int aToken, int aValue, int aDelayMs )
 
 // Plain parked sleep.
 EM_ASYNC_JS( int, races_sleep_ms, ( int aMs ), {
+    var S = globalThis.__wxScheduler;
+    if( S && S.backend === 'jspi' ) {
+        await S.sleepYield( aMs );  // turnstile-routed (see races_await_token)
+        return 1;
+    }
     await new Promise( ( r ) => setTimeout( r, aMs ) );
     return 1;
 } );
@@ -183,7 +195,12 @@ EM_JS( void, races_mark_done, ( const char* aName ), {
 // no fiber is queued.
 EM_JS( int, races_quiescent, (), {
     try {
-        var stOk = ( typeof Asyncify === 'undefined' ) || Asyncify.state === 0;
+        // JSPI glue still defines an Asyncify object (shared library file)
+        // but with no state machine - Asyncify.state is undefined there, and
+        // that is quiescent-by-construction (suspensions are engine-native).
+        var stOk = ( typeof Asyncify === 'undefined' )
+                   || Asyncify.state === undefined
+                   || Asyncify.state === 0;
         var nfOk = ( typeof Fibers === 'undefined' ) || !Fibers.nextFiber;
         return ( stOk && nfOk ) ? 1 : 0;
     } catch( e ) {
@@ -841,6 +858,16 @@ public:
 
         LogLine( "[ASYNCIFY_RACES] PARAMS only='" + only + "' sleepPark="
                  + std::to_string( sleepPark ? 1 : 0 ) );
+
+        // JSPI: the ccall'd test levers are promising entries (JSPI_EXPORTS)
+        // that can PARK — the shim must track their activations like the wx
+        // entries, or their windows leak (untracked completion wedges the
+        // resume turnstile until the watchdog clears it).
+        EM_ASM( {
+            if( globalThis.__wxScheduler && globalThis.__wxScheduler.installExportWraps )
+                globalThis.__wxScheduler.installExportWraps(
+                    [ 'races_swap_once', 'races_park_token2', 'races_wdt_park_b' ] );
+        } );
 #endif
 
         // THE LOAD-BEARING TOPOLOGY: complete a fiber swap cycle during OnInit.

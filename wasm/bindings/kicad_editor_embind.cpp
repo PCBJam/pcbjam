@@ -41,6 +41,7 @@
 #include <project.h>
 
 #include "pcbjam_libs_reload.h"
+#include "pcbjam_async_policy.h"
 #include "open_gate.h"
 #include "main_stack_runner.h"
 #include "timer_park.h"
@@ -611,7 +612,7 @@ EMSCRIPTEN_BINDINGS(kicad_editor) {
     // JS side must defer scratch saves while collab fiber work is in flight.
     function("kicadCollabFiberBusy", &kicadCollabFiberBusyProbe);
     // Programmatic file open (preferred over UI automation from the web app).
-    function("kicadOpenFile", &kicadOpenFile);
+    function("kicadOpenFile", &kicadOpenFile PCBJAM_PARKER_POLICY);
     function("kicadOpenFileStart", &kicadOpenFileStart);
     function("kicadOpenFileBusy", &kicadOpenFileBusy);
     function("kicadTestSetOpenPark", &kicadTestSetOpenPark);
@@ -671,7 +672,7 @@ EMSCRIPTEN_BINDINGS(kicad_editor) {
     function("kicadCollabTestSelectFirst", &collabTestSelectFirst);
     function("kicadCollabTestClearSelection", &collabTestClearSelection);
     // Library reload after a remote (synced) lib edit — r2-idb-sync realtime.
-    function("kicadLibsReload", &pcbjam_libs::reloadLibrary);
+    function("kicadLibsReload", &pcbjam_libs::reloadLibrary PCBJAM_PARKER_POLICY);
     // Placed-instance count for a library symbol (schematic sessions only —
     // 0 from any other frame; drives the "symbol you are using was updated"
     // toast after a remote lib edit).

@@ -20,6 +20,14 @@ services:
           cpus: '${KICAD_DOCKER_CPUS:-10}'
           memory: ${KICAD_DOCKER_MEM:-32G}
 
+    # Emscripten cache on the PERSISTENT build volume: /emsdk lives in the
+    # container layer, so every container recreation (any image-context edit
+    # rebuilds the image) wiped the ports/sysroot cache and forced re-downloads
+    # through a flaky in-container fetcher. On the volume it survives, and the
+    # host can pre-seed port tarballs into emcache/ports/.
+    environment:
+      EM_CACHE: /workspace/build-wasm/emcache
+
     volumes:
       # Host source mounted read-only at staging location
       # (rsync'd to /workspace on container start to fix macOS timestamp issues)
