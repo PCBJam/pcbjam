@@ -99,17 +99,16 @@ function hasProgrammaticHook(win: ToolWindow): boolean {
 }
 
 /**
- * Invoke the programmatic hook. kicadOpenFile suspends mid-load either way:
- * under JSPI it is an embind async() export and returns a real Promise for the
- * whole load chain; legacy asyncify builds return a falsy placeholder. The
+ * Invoke the programmatic hook. kicadOpenFile is an embind async() export: it
+ * suspends mid-load and returns a real Promise for the whole load chain. The
  * caller contains the Promise's rejection and gates readiness on the settle
- * probe, which is truthful for both shapes.
+ * probe.
  */
 function invokeProgrammaticOpen(
   win: ToolWindow,
   absPath: string,
   log: (m: string) => void,
-): unknown {
+): Promise<unknown> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const mod = win.Module as any;
   const ret = mod.kicadOpenFile(absPath);
@@ -143,10 +142,10 @@ function inputDialogVisible(win: ToolWindow): boolean {
 }
 
 /**
- * Wait until the kicadOpenFile Asyncify chain has TRULY completed.
+ * Wait until the kicadOpenFile load chain has TRULY completed.
  *
  * kicadOpenFile suspends and unwinds back to JS long before the load finishes;
- * for the whole load the chain stays parked mid-mutation of the board/schematic.
+ * for the whole load its activation stays parked mid-mutation of the board/schematic.
  * Any bare embind entry that walks the model during such a park (collab
  * snapshot, presence bind) can virtual-dispatch through a half-built item and
  * trap with "indirect call signature mismatch" — the same reentrancy class the
@@ -209,7 +208,8 @@ export async function openFileInTool(
   // embind only registers the hook during runtime init — which lands AFTER the
   // Emscripten FS is ready, i.e. after driveProjectIntoTool calls us. Probing
   // the hook before the frame exists therefore always missed and fell back to
-  // UI automation (and the wizard's modal loop then crashed Asyncify). Waiting
+  // UI automation (and the wizard's unsupported modal loop then killed the
+  // load — see boot.ts seedKicadConfig). Waiting
   // for a visible Frame guarantees the runtime is initialized, the hook is
   // registered, and a top window exists — so we probe only after this point.
   const ready = await waitFor(

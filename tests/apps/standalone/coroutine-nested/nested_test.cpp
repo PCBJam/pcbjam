@@ -92,33 +92,6 @@ void LogLine( const std::string& aLine )
 }
 
 
-void LogAsyncifyState( const char* aTag )
-{
-#ifdef __EMSCRIPTEN__
-    EM_ASM( {
-        try {
-            var tag = UTF8ToString( $0 );
-            var state = ( typeof Asyncify !== 'undefined' ) ? Asyncify.state : 'N/A';
-            var stackLen = ( typeof Asyncify !== 'undefined' && Asyncify.exportCallStack )
-                               ? Asyncify.exportCallStack.length : 'N/A';
-            var currData = ( typeof Asyncify !== 'undefined' && Asyncify.currData )
-                               ? Asyncify.currData : 'null';
-            var tableLen = ( typeof wasmTable !== 'undefined' && wasmTable )
-                               ? wasmTable.length : 'N/A';
-            console.log( '[COROUTINE_TEST] ASYNCIFY ' + tag +
-                         ' state=' + state +
-                         ' stackLen=' + stackLen +
-                         ' currData=' + currData +
-                         ' tableLen=' + tableLen );
-        } catch (e) {
-            console.log( '[COROUTINE_TEST] ASYNCIFY ' + UTF8ToString( $0 ) + ' error=' + e );
-        }
-    }, aTag );
-#else
-    (void) aTag;
-#endif
-}
-
 } // namespace
 
 
@@ -155,7 +128,6 @@ private:
         if( aEvent.IsShown() )
         {
             LogLine( "[COROUTINE_TEST] MODAL-SHOW " + m_tag );
-            LogAsyncifyState( ( "modal-shown-" + m_tag ).c_str() );
 
             if( !m_externalClose )
                 m_timer.StartOnce( m_delayMs );
@@ -193,7 +165,7 @@ public:
                 panel,
                 wxID_ANY,
                 "Tests the interaction between wxDialog::ShowModal (EM_ASYNC_JS / startModal) and\n"
-                "libcontext fibers (emscripten_fiber_swap). Reproduces nested Asyncify crashes.\n"
+                "libcontext coroutines (JSPI). Historically reproduced nested asyncify crashes.\n"
                 "The suite runs automatically on startup and reports PASS/FAIL per scenario."
         );
         sizer->Add( description, 0, wxEXPAND | wxALL, 8 );
@@ -276,7 +248,6 @@ private:
         Log( wxString::Format( "[COROUTINE_TEST] CASE %s", caseName ) );
 
         CaseContext ctx;
-        LogAsyncifyState( "A-pre-modal" );
 
         {
             AutoClosingDialog dlg( this, "baselineA", 50 );
@@ -284,7 +255,6 @@ private:
             ctx.Expect( result == wxID_OK, "modal should return wxID_OK" );
         }
 
-        LogAsyncifyState( "A-post-modal" );
         FinalizeCase( caseName, std::move( ctx ) );
     }
 
@@ -296,7 +266,6 @@ private:
         Log( wxString::Format( "[COROUTINE_TEST] CASE %s", caseName ) );
 
         CaseContext ctx;
-        LogAsyncifyState( "B-pre-fiber" );
 
         TestCoroutine coroutine( []( TestCoroutine& self ) {
             self.Yield( 42 );
@@ -309,7 +278,6 @@ private:
         running = coroutine.Resume( 2 );
         ctx.Expect( !running, "fiber should finish on resume" );
 
-        LogAsyncifyState( "B-post-fiber" );
         FinalizeCase( caseName, std::move( ctx ) );
     }
 
@@ -323,7 +291,6 @@ private:
 
         m_currentCaseName = caseName;
         m_currentCtx = std::make_unique<CaseContext>();
-        LogAsyncifyState( "S3-pre-modal" );
 
         auto dlg = std::make_unique<AutoClosingDialog>( this, "S3", 0 );
         dlg->UseExternalClose();
@@ -337,7 +304,6 @@ private:
         int result = dlg->ShowModal();
         m_activeDialog = nullptr;
 
-        LogAsyncifyState( "S3-post-modal" );
         m_currentCtx->Expect( result == wxID_OK,
                               "modal should return wxID_OK (actual: " + std::to_string( result ) + ")" );
 
@@ -350,7 +316,6 @@ private:
 
     void RunScenario3FiberWork()
     {
-        LogAsyncifyState( "S3-timer-enter" );
 
         {
             TestCoroutine co( []( TestCoroutine& self ) {
@@ -361,16 +326,13 @@ private:
             m_currentCtx->Expect( running, "S3: fiber should yield on first call" );
             m_currentCtx->Expect( co.LastReturnValue() == 100, "S3: yield value should be 100" );
 
-            LogAsyncifyState( "S3-after-call" );
 
             running = co.Resume( 2 );
             m_currentCtx->Expect( !running, "S3: fiber should finish on resume" );
 
-            LogAsyncifyState( "S3-after-resume" );
         }
         // Fiber destroyed here
 
-        LogAsyncifyState( "S3-after-destroy" );
 
         if( m_activeDialog )
             m_activeDialog->EndModalExternal( wxID_OK );
@@ -385,7 +347,6 @@ private:
 
         m_currentCaseName = caseName;
         m_currentCtx = std::make_unique<CaseContext>();
-        LogAsyncifyState( "S4-pre-modal" );
 
         auto dlg = std::make_unique<AutoClosingDialog>( this, "S4", 0 );
         dlg->UseExternalClose();
@@ -397,7 +358,6 @@ private:
         int result = dlg->ShowModal();
         m_activeDialog = nullptr;
 
-        LogAsyncifyState( "S4-post-modal" );
         m_currentCtx->Expect( result == wxID_OK, "S4: modal should return wxID_OK" );
 
         FinalizeCase( caseName, std::move( *m_currentCtx ) );
@@ -408,7 +368,6 @@ private:
 
     void RunScenario4MultiSwap()
     {
-        LogAsyncifyState( "S4-timer-enter" );
 
         {
             TestCoroutine co( []( TestCoroutine& self ) {
@@ -433,7 +392,6 @@ private:
             m_currentCtx->Expect( !running, "S4: fiber should finish" );
         }
 
-        LogAsyncifyState( "S4-after-fiber" );
 
         if( m_activeDialog )
             m_activeDialog->EndModalExternal( wxID_OK );
@@ -449,7 +407,6 @@ private:
 
         m_currentCaseName = caseName;
         m_currentCtx = std::make_unique<CaseContext>();
-        LogAsyncifyState( "S5-pre-modal" );
 
         m_s5Fiber = std::make_unique<TestCoroutine>( []( TestCoroutine& self ) {
             self.Yield( 501 );
@@ -466,7 +423,6 @@ private:
         int result = dlg->ShowModal();
         m_activeDialog = nullptr;
 
-        LogAsyncifyState( "S5-post-modal" );
 
         // After modal, resume the fiber
         if( m_s5Fiber && m_s5Fiber->Running() )
@@ -489,13 +445,11 @@ private:
 
     void RunScenario5Yield()
     {
-        LogAsyncifyState( "S5-timer-enter" );
 
         bool running = m_s5Fiber->Call( 1 );
         m_currentCtx->Expect( running, "S5: fiber should yield in modal" );
         m_currentCtx->Expect( m_s5Fiber->LastReturnValue() == 501, "S5: yield 501" );
 
-        LogAsyncifyState( "S5-fiber-yielded" );
 
         // Do NOT resume; leave the fiber suspended across the modal close.
 
@@ -504,7 +458,8 @@ private:
     }
 
     // --- Case 6: fiber_deep_yield_loop_inside_modal ---
-    // Deep recursive stack with many yields inside a modal. Stresses asyncify buffers.
+    // Deep recursive stack with many yields inside a modal. Stresses the stack-capture
+    // machinery under deep frames.
     void StartCase_FiberDeepYieldLoop()
     {
         const std::string caseName = "fiber_deep_yield_loop_inside_modal";
@@ -512,7 +467,6 @@ private:
 
         m_currentCaseName = caseName;
         m_currentCtx = std::make_unique<CaseContext>();
-        LogAsyncifyState( "S6-pre-modal" );
 
         auto dlg = std::make_unique<AutoClosingDialog>( this, "S6", 0 );
         dlg->UseExternalClose();
@@ -524,7 +478,6 @@ private:
         int result = dlg->ShowModal();
         m_activeDialog = nullptr;
 
-        LogAsyncifyState( "S6-post-modal" );
         m_currentCtx->Expect( result == wxID_OK, "S6: modal should return wxID_OK" );
 
         FinalizeCase( caseName, std::move( *m_currentCtx ) );
@@ -535,7 +488,6 @@ private:
 
     void RunScenario6DeepYield()
     {
-        LogAsyncifyState( "S6-timer-enter" );
 
         {
             TestCoroutine co( [ctx = m_currentCtx.get()]( TestCoroutine& self ) {
@@ -571,7 +523,6 @@ private:
             m_currentCtx->Expect( !running, "S6: deep fiber should finish" );
         }
 
-        LogAsyncifyState( "S6-after-fiber" );
 
         if( m_activeDialog )
             m_activeDialog->EndModalExternal( wxID_OK );
@@ -585,7 +536,6 @@ private:
         Log( wxString::Format( "[COROUTINE_TEST] CASE %s", caseName ) );
 
         CaseContext ctx;
-        LogAsyncifyState( "S7-pre-modal-A" );
 
         // Modal A (auto-close)
         {
@@ -594,7 +544,6 @@ private:
             ctx.Expect( resultA == wxID_OK, "S7: modal A should return wxID_OK" );
         }
 
-        LogAsyncifyState( "S7-post-modal-A" );
 
         // Fiber work between modals
         {
@@ -609,7 +558,6 @@ private:
             ctx.Expect( !running, "S7: inter-modal fiber should finish" );
         }
 
-        LogAsyncifyState( "S7-mid" );
 
         // Modal B (auto-close)
         {
@@ -618,7 +566,6 @@ private:
             ctx.Expect( resultB == wxID_OK, "S7: modal B should return wxID_OK" );
         }
 
-        LogAsyncifyState( "S7-post-modal-B" );
 
         FinalizeCase( "modal_fiber_modal_sequence", std::move( ctx ) );
 
@@ -634,7 +581,6 @@ private:
 
         m_currentCaseName = caseName;
         m_currentCtx = std::make_unique<CaseContext>();
-        LogAsyncifyState( "S8-pre-modal" );
 
         auto dlg = std::make_unique<AutoClosingDialog>( this, "S8", 0 );
         dlg->UseExternalClose();
@@ -646,7 +592,6 @@ private:
         int result = dlg->ShowModal();
         m_activeDialog = nullptr;
 
-        LogAsyncifyState( "S8-post-modal" );
         m_currentCtx->Expect( result == wxID_OK, "S8: modal should return wxID_OK" );
 
         FinalizeCase( caseName, std::move( *m_currentCtx ) );
@@ -658,7 +603,6 @@ private:
 
     void RunScenario8NestedFibers()
     {
-        LogAsyncifyState( "S8-timer-enter" );
 
         {
             auto ctx = m_currentCtx.get();
@@ -692,7 +636,6 @@ private:
                          "S8: unexpected sequence: " + JoinVector( sequence ) );
         }
 
-        LogAsyncifyState( "S8-after-fiber" );
 
         if( m_activeDialog )
             m_activeDialog->EndModalExternal( wxID_OK );

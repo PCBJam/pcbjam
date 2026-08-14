@@ -6,9 +6,9 @@ import { clickMenuBarItem, clickMenuItemByText } from "../e2e/utils/element-trac
 
 /**
  * JSPI coroutine lifecycle in the REAL editor — successor to
- * fiber-resume-park.spec.ts (which pinned the retired Asyncify rewind guard;
- * its beacon string `fiber-resume-refused` no longer exists, making its
- * engagement assert vacuous).
+ * fiber-resume-park.spec.ts (which pinned the retired asyncify rewind guard;
+ * that guard's refused-resume beacon string no longer exists, which made the
+ * old spec's engagement assert vacuous).
  *
  * The prod-shaped gate for the August 2026 ownership bug: coroutine.h's
  * ~CALL_CONTEXT released a BORROWED context record (the live enterer of a

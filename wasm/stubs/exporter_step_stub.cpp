@@ -55,8 +55,8 @@ extern "C" void Pcbjam_SetExportJobJson( const char* aJson )
 
 // Phase E shape (docs/features/async/22 §5, K4): waits for the worker export
 // via a token wait (context park when the frame stands on a scheduler context)
-// instead of Asyncify-parking the stack in place. The wait result is a
-// malloc'd JSON string: { ok, report } — the download already happened in JS.
+// instead of suspending the stack in place. The wait result is a malloc'd
+// JSON string: { ok, report } — the download already happened in JS.
 // Every resolution defers to at least a microtask (the early-resolve
 // contract, doc 22 §10 Phase E retry entry).
 EM_JS( void, js_occExportStart,

@@ -540,7 +540,7 @@ test("fitViewport applies a world rect (contain) — GetViewport round trip", as
     m.kicadCollabFitViewport(t.cx, t.cy, t.halfW, t.halfH);
   }, target);
 
-  // The fit is CallAfter+fiber scheduled — poll the transform until it lands.
+  // The fit is CallAfter+coroutine scheduled — poll the transform until it lands.
   await expect
     .poll(
       async () => {

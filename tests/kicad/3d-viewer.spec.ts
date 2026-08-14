@@ -92,14 +92,14 @@ test.describe('3D viewer from pcbnew', () => {
         const aborts = allLines.filter((l) => l.includes('Aborted('));
         expect(aborts, `WASM aborted while opening the 3D viewer:\n${aborts.join('\n\n')}`).toEqual([]);
 
-        const asyncifySignatures = [
+        const wasmTrapSignatures = [
             'index out of bounds', 'indirect call to null', 'uncaught exception: unwind',
             'invalid state', 'is not a function',
         ];
-        const asyncifyErrors = allLines.filter((l) =>
-            asyncifySignatures.some((sig) => l.toLowerCase().includes(sig)));
-        expect(asyncifyErrors,
-            `Asyncify corruption surfaced opening the 3D viewer:\n${asyncifyErrors.join('\n\n')}`)
+        const wasmTrapErrors = allLines.filter((l) =>
+            wasmTrapSignatures.some((sig) => l.toLowerCase().includes(sig)));
+        expect(wasmTrapErrors,
+            `wasm trap surfaced opening the 3D viewer:\n${wasmTrapErrors.join('\n\n')}`)
             .toEqual([]);
 
         // The 3D viewer stub logs this when the real viewer is NOT compiled in —

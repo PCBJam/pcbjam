@@ -8,13 +8,13 @@ import { clickMenuBarItem, clickMenuItemByText } from '../e2e/utils/element-trac
  * (a quasi-modal running a NESTED event loop, opened from the place-footprint
  * TOOL COROUTINE) → click Cancel → the whole UI freezes.
  *
- * Root cause (recorder, live demo board): the nested loop parks IN PLACE on the
- * tool coroutine's fiber stack (`inplace-park-on-fiber-stack`), then the resume
- * that would close it is refused by the stale-fiber quarantine
- * (`fiber-resume-refused: … asyncify-parked mid-body`) and dropped — the
- * doc-19 disease. It was masked by the mainstack bounce until Phase F4 removed
- * it; the footprint chooser has no automated coverage so the removal went
- * unnoticed. This spec is that coverage.
+ * Root cause (recorder, live demo board, found asyncify-era): the nested loop
+ * parked IN PLACE on the tool coroutine's stack, then the resume that would
+ * close it was refused by the stale-fiber quarantine
+ * and dropped — the doc-19 disease. It was masked by
+ * the mainstack bounce until Phase F4 removed it; the footprint chooser had no
+ * automated coverage so the removal went unnoticed. This spec is that coverage,
+ * kept as the dead-app liveness gate for the chooser's nested wait.
  *
  * Mechanics that matter: the chooser is a wxFrame (not a wxDialog), so detect
  * it by a second top-level frame + a "nested" scheduler wait; drive the canvas
@@ -138,8 +138,8 @@ test.describe('Add Footprint chooser close (doc-19 dead-app repro)', () => {
         expect(cancel, 'Cancel button found').not.toBeNull();
         await synthClick(page, cancel!.x, cancel!.y);
 
-        // The chooser must close AND the app must stay alive. On the broken
-        // build the loop stalls here (the dropped fiber resume).
+        // The chooser must close AND the app must stay alive. On a broken
+        // build the loop stalls here (a dropped coroutine resume).
         await page
             .waitForFunction(
                 (n) =>

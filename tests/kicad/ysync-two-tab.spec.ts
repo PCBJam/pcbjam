@@ -350,7 +350,7 @@ for (const [cfg, label] of [
     }) => {
       // TWO kicad_editor instances exceed Firefox's per-content-process wasm
       // budget (the 2nd tab's #canvas never appears, even serial/isolated —
-      // same SpiderMonkey wall playwright-kicad.config.ts documents for x86
+      // same SpiderMonkey wall the merged playwright.config.ts documents for x86
       // CI, hit at 2× on ARM). V8 handles it: runs on chromium-ci in CI and
       // --project=chromium locally.
       // 2026-08-13: FF wasm-budget skip retired — the JSPI build fits two

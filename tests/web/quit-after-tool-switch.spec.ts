@@ -6,7 +6,7 @@ import { clickMenuBarItem, clickMenuItemByText } from '../e2e/utils/element-trac
  *
  * A tool switch (Tools → "Switch to PCB Editor", ExecuteFile →
  * window.kicadWebOpenTool) is a hard location.assign that pushes a history
- * entry. Quit therefore cannot rely on history unwinding: after
+ * entry. Quit therefore cannot rely on stepping history back: after
  * project → schematic → switch-to-pcb, one history step back is the schematic
  * editor, not the project page. Quit must navigate to the project overview
  * explicitly (WasmTool installQuitHook), wherever the session wandered first.

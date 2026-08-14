@@ -5,17 +5,17 @@ import * as path from 'path';
 
 // THE merged Playwright config for every suite that runs against the static
 // `apps` server: the wx widget suite (e2e/), the KiCad editor suite (kicad/),
-// the asyncify race harness (asyncify/) and the coroutine harness
+// the JSPI harness suite (jspi/) and the coroutine harness
 // (e2e/coroutine*). One config = one invocation = one webServer, one port file
 // and ONE start-of-run outputDir wipe — which is what retired the old
-// per-suite pw-artifacts/{wx,asyncify,kicad} redirect dance (each sequential
+// per-suite pw-artifacts redirect dance (each sequential
 // CI invocation used to wipe the previous suite's artifacts).
 //
 // The web-app suite (web/) stays in playwright-web.config.ts: it runs against
 // the React editor + backend stack (`pnpm --dir ../web dev`), not this server.
 //
 // CI runs: npm run test:e2e  (wx-chromium, kicad-firefox, kicad-chromium,
-//          asyncify-firefox, coroutine-firefox)
+//          jspi-firefox, coroutine-firefox)
 //          npm run test:perf (perf project, non-gating, separate invocation)
 // Local-only projects (system Chrome / WebKit) are listed at the bottom.
 

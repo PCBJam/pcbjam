@@ -51,15 +51,15 @@ export function hasWritableLib(lists: Iterable<LibInfo[]>): boolean {
  * `var Module` and publishes `FS`/`wxElementRegistry` onto `window` — exactly the
  * surface the iframe approach used, only now in the top-level window.
  *
- * Two browser facts make running in the main document (rather than at /wasm/...)
- * work without touching the build:
- *   - `locateFile` is overridden to resolve `<base>/<file>`, so the .wasm and the
- *     pthread worker script are fetched from the asset dir regardless of the
- *     SPA route the user is on.
- *   - `mainScriptUrlOrBlob` pins the pthread worker to `<base>/<tool>.js`. For a
- *     same-origin base that's the URL directly; for a cross-origin CDN base it's
- *     a same-origin blob shim that importScripts the glue (see
- *     `pthreadWorkerScript` — `new Worker(<cross-origin URL>)` is illegal).
+ * Running in the main document (rather than at /wasm/...) works without touching
+ * the build because `locateFile` is overridden to resolve `<base>/<file>`, so
+ * the .wasm and other assets are fetched from the asset dir regardless of the
+ * SPA route the user is on. Pthread child workers spawn from `_scriptName`
+ * (the glue's own absolute URL, captured when `<tool>.js` executes), so a
+ * same-origin asset base just works. KNOWN GAP: a cross-origin (CDN) base
+ * cannot spawn the pthread workers — `new Worker(<cross-origin URL>)` is a
+ * SecurityError, and emscripten 6 ignores `mainScriptUrlOrBlob` — see
+ * docs/features/async/23-jspi-runtime.md.
  *
  * Single-instance: the build owns process-global state (one `Module`, one wasm
  * memory) so only ONE tool can run per page load. A second boot — switching
@@ -154,17 +154,18 @@ function loadScript(src: string): Promise<void> {
 }
 
 /**
- * The pthread worker "script" passed as `Module.mainScriptUrlOrBlob`. KiCad's
- * pthreads spawn CLASSIC workers via `new Worker(...)` (see `<tool>.js`
- * `allocateUnusedWorker`):
- *   - SAME-ORIGIN base → the plain URL string (the proven local/dev path).
- *   - CROSS-ORIGIN base (the CDN) → a SAME-ORIGIN `blob:` worker that
- *     `importScripts()` the cross-origin glue. `new Worker(<cross-origin URL>)`
- *     is a SecurityError, but a `blob:` URL inherits the page origin (legal),
- *     and a classic worker's `importScripts` MAY load a cross-origin script when
- *     the CDN sends `Cross-Origin-Resource-Policy: cross-origin` (needed because
- *     the page is COEP `require-corp`). The `.wasm`/`images.tar.gz` fetches just
- *     need `ACAO` + `CORP` on the CDN. See docs/features/demo-deploy/0001-*.
+ * DORMANT — nothing consumes this today. It built the value once passed as
+ * `Module.mainScriptUrlOrBlob`, which emscripten 6 ignores: pthread child
+ * workers spawn from `_scriptName` instead, which is same-origin-only. Kept
+ * because the cross-origin (CDN) pthread fix — a KNOWN GAP, see
+ * docs/features/async/23-jspi-runtime.md — will need exactly this plumbing:
+ * a SAME-ORIGIN `blob:` worker that `importScripts()` the cross-origin glue.
+ * `new Worker(<cross-origin URL>)` is a SecurityError, but a `blob:` URL
+ * inherits the page origin (legal), and a classic worker's `importScripts` MAY
+ * load a cross-origin script when the CDN sends
+ * `Cross-Origin-Resource-Policy: cross-origin` (needed because the page is
+ * COEP `require-corp`). The `.wasm`/`images.tar.gz` fetches just need
+ * `ACAO` + `CORP` on the CDN. See docs/features/demo-deploy/0001-*.
  */
 /**
  * C++ diagnostics that must reach the BROWSER console, not just the in-page log.
@@ -485,9 +486,10 @@ async function doBoot(opts: BootOptions): Promise<void> {
     }
   };
 
-  // preRun (seeding tools only): suppress the first-run setup wizard, whose modal
-  // loop crashes Asyncify in our ephemeral MEMFS. Make all settings providers
-  // report NeedsUserInput()==false — the wizard's "use defaults" path.
+  // preRun (seeding tools only): suppress the first-run setup wizard — its modal
+  // loop is unsupported on our ephemeral MEMFS (nothing it writes would survive
+  // a reload, and the wizard would re-run every boot). Make all settings
+  // providers report NeedsUserInput()==false — the wizard's "use defaults" path.
   const seedKicadConfig = () => {
     const FS = moduleFS();
     FS.mkdirTree(KICAD_CONFIG_DIR);
@@ -618,9 +620,6 @@ async function doBoot(opts: BootOptions): Promise<void> {
     },
     // Resolve wasm + pthread worker against the asset base, not the SPA route.
     locateFile: (path: string) => `${base}/${path}`,
-    // Pin the pthread worker script. Same-origin → direct URL; cross-origin CDN
-    // → a same-origin blob shim that importScripts the glue (see helper above).
-    mainScriptUrlOrBlob: pthreadWorkerScript(base, bundle, traceMask),
     // Own the wasm fetch so we can report download progress (see helper). Streams
     // straight into the compiler; passing `module` to the callback lets emscripten
     // share it with the pthread workers (this hook fires on the main thread only).

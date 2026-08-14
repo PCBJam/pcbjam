@@ -15,8 +15,8 @@
  *
  * Header-only (the collab_common.h pattern); common-code includes only, so the
  * merged kicad_editor TU (deliberately eeschema/pcbnew-header-free) can use it.
- * Runs on the fiber stack: LoadLibraryEntry Asyncify-suspends in the JS bridge,
- * and the tree sync dispatches GAL/tree virtuals that trap off-fiber.
+ * Runs on the apply coroutine: LoadLibraryEntry suspends in the JS bridge, so
+ * the reload must serialize with the collab applies and local edits.
  */
 
 #pragma once
@@ -52,7 +52,7 @@ inline void reloadLibrary( std::string aKind, std::string aNickname )
     const bool     fp = aKind == "footprint";
     const wxString nick = wxString::FromUTF8( aNickname.c_str() );
 
-    pcbjam_collab::runOnFiber( top, [top, fp, nick]()
+    pcbjam_collab::runOnCoroutine( top, [top, fp, nick]()
     {
         LIBRARY_MANAGER&         mgr = Pgm().GetLibraryManager();
         const LIBRARY_TABLE_TYPE type =

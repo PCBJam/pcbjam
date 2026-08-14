@@ -6,12 +6,12 @@ import { test, expect } from "./fixtures";
  *
  * The user-visible bug: Symbol Properties (any quasi-modal opened from a tool
  * action) stops responding — OK/Cancel click, nothing happens, only the
- * titlebar × closes it. Mechanism (doc 19 §4): the tool fiber that owns the
- * dialog parks mid-body in the quasi-modal wait; a concurrent park's wake
- * aliases over its live sleep buffer (`aliased-wake-live`), the stale-fiber
- * guard quarantines it, and the fiber's own legitimate resume is then REFUSED
- * (`fiber-resume-refused`) and dropped. The fiber never completes, the
- * dispatch guard it holds never releases, every later click defers forever.
+ * titlebar × closes it. Mechanism (doc 19 §4, asyncify-era vocabulary): the
+ * tool fiber that owned the dialog parked mid-body in the quasi-modal wait; a
+ * concurrent park's wake aliased over its live sleep buffer, the stale-fiber
+ * guard quarantined it, and the fiber's own legitimate resume was then
+ * REFUSED and dropped. The fiber never completed, the dispatch guard it held
+ * never released, every later click deferred forever.
  *
  * Staging: the strand needs concurrent parks over the dialog's parked fiber.
  * The deterministic lever is the parking timer (wasm/bindings/timer_park.h):
@@ -299,8 +299,8 @@ test.describe("quasi-modal strand (doc 19)", () => {
     await okButtonCenter(page);
 
     // RE-PINNED AT THE FLIP (docs/features/async/22 §10, 2026-08-08), and
-    // RE-KEYED for JSPI (2026-08-13): the `[wx-asyncify] concurrent-park|…`
-    // beacons retired with the asyncify scheduler, which made the old filter
+    // RE-KEYED for JSPI (2026-08-13): the asyncify scheduler's concurrent-park
+    // beacon family retired with it, which made the old filter
     // vacuous. The post-migration invariant is the same — the dialog opens,
     // the timer fires and its park survives (asserted above) — and the
     // observable JSPI failure modes of an overlap are ghost/refused
@@ -351,22 +351,29 @@ test.describe("quasi-modal strand (doc 19)", () => {
         { timeout: 15000 },
       )
       .then(() => true, () => false);
-    const refusedSoFar = testLogger.consoleLogs.filter((l) =>
-      l.includes("fiber-resume-refused"),
+    const anomaliesSoFar = testLogger.consoleLogs.filter((l) =>
+      /\[libctx-jspi\] ghost\/refused transition|\[wx-scheduler\] (force-clearing stuck window|job tick error)|entry REJECTED/.test(
+        l,
+      ),
     ).length;
     console.log(
       `[STRAND] red outcome: closed=${closed} dialogs=${await dialogCount(page)} ` +
-        `refused-resumes=${refusedSoFar}`,
+        `anomalies=${anomaliesSoFar}`,
     );
 
     // Desired end state 1: the dialog closes.
     expect(closed, "OK closed the quasi-modal dialog").toBe(true);
 
-    // Desired end state 2: no refused fiber resume anywhere in the run.
-    const refused = testLogger.consoleLogs.filter((l) =>
-      l.includes("fiber-resume-refused"),
+    // Desired end state 2: no ghost/refused transition, scheduler anomaly or
+    // rejected coroutine entry anywhere in the run (the old refused-resume
+    // beacon retired with the asyncify scheduler; these are the JSPI
+    // equivalents of a dropped resume).
+    const anomalies = testLogger.consoleLogs.filter((l) =>
+      /\[libctx-jspi\] ghost\/refused transition|\[wx-scheduler\] (force-clearing stuck window|job tick error)|entry REJECTED/.test(
+        l,
+      ),
     );
-    expect(refused, `refused resumes: ${refused.join(" || ")}`).toHaveLength(0);
+    expect(anomalies, `anomalies: ${anomalies.join(" || ")}`).toHaveLength(0);
 
     // Desired end state 3: the wait books balance — the quasi-modal's
     // "nested" wait was resolved and consumed, nothing left parked.

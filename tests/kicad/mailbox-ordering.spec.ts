@@ -2,19 +2,16 @@ import type { Page } from "@playwright/test";
 import { test, expect } from "./fixtures";
 
 /**
- * N2 — message ordering under a parked open (scheduler-build target semantics).
+ * N2 — message ordering under a parked open (scheduler semantics).
  * docs/features/async/17-mailbox-scheduler-plan.md §3d N2, §3b.
  *
- * Legacy glue (open_gate, doc 14): collab entries issued while `kicadOpenFile`
- * is asyncify-parked are DROPPED — collab-load-fuzz.spec.ts asserts that drop
- * contract on legacy builds, and it is correct for the guard architecture.
- *
- * The mailbox flips drop→deliver: a mutating entry issued during the open
- * becomes a queued message, applied IN ORDER after the open completes. GREEN
- * since S1's embind lane — the scheduler shim wraps the audited mutators
- * (doc 18) at the Module boundary, queueing busy-window calls and delivering
- * after settle with promise-returned results. S4 moves queueing worker-side.
- * Self-skips on legacy glue (the lane is a build variant until S5).
+ * Legacy glue (open_gate, doc 14) DROPPED collab entries issued while
+ * `kicadOpenFile` was parked; the mailbox flipped drop→deliver, and the
+ * scheduler's embind lane is the only glue now: a mutating entry issued
+ * during the open becomes a queued message, applied IN ORDER after the open
+ * completes — the shim wraps the audited mutators (doc 18) at the Module
+ * boundary, queueing busy-window calls and delivering after settle with
+ * promise-returned results.
  *
  * Ordering probe: apply A ADDS a segment, apply B MOVES that same segment.
  * B can only land if A landed first — the single final-position check proves
@@ -86,15 +83,6 @@ test.describe("mailbox N2: entries during a parked open are delivered in order",
     test.setTimeout(180000);
     void testLogger;
     await bootHarness(page);
-
-    // The delivery contract under test is the scheduler build's embind lane;
-    // on legacy glue the open gate drops both applies by design.
-    const lane = await page.evaluate(() => {
-      const s = (globalThis as unknown as { __wxScheduler?: { mutatorsWrapped: number } })
-        .__wxScheduler;
-      return s ? s.mutatorsWrapped : 0;
-    });
-    test.skip(lane === 0, "legacy glue — embind lane absent (drop contract in collab-load-fuzz)");
 
     const issued = await page.evaluate(async ({ newSeg, board }) => {
       const w = window as unknown as { FS: FS; Module: Mod };

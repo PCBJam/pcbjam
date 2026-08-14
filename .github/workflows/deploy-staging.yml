@@ -25,7 +25,6 @@ jobs:
   build:
     uses: ./.github/workflows/wasm-build.yml
     with:
-      opt_level: "-O1"
       build_3d_viewer: "ON"
       run_tests: true
       upload_output: true

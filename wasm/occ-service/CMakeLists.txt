@@ -54,18 +54,18 @@ target_link_options( occ_service PRIVATE
     "LINKER:--no-whole-archive"
     )
 
-# Persistent worker embind module: no asyncify (neither OCC job suspends).
+# Persistent worker embind module: neither OCC job suspends, so no JSPI.
 # -Oz at link runs wasm-opt -Oz = whole-module dead-code elimination that
 # strips the unreachable editor code (same mechanism sym_convert documents
 # in eeschema/CMakeLists.txt); -g0 drops debug info so in-container
 # finalize doesn't OOM. MODULARIZE factory booted by the JS provider inside
 # a dedicated Worker; node kept in ENVIRONMENT so unit tests can drive it.
 # These override the browser-oriented values inherited from
-# CMAKE_EXE_LINKER_FLAGS (notably -sASYNCIFY=1). The inherited FULL pthread
-# pool ('navigator.hardwareConcurrency') is kept deliberately: the exporter
+# CMAKE_EXE_LINKER_FLAGS. The inherited FULL pthread pool
+# ('navigator.hardwareConcurrency') is kept deliberately: the exporter
 # uses GetKiCadThreadPool (step_pcb_model.cpp), and a browser cannot spawn
 # workers on demand while the calling thread is blocked inside occExport —
 # an undersized pool deadlocks in Chromium.
 # --pre-js supplies the wxConfig JS hooks backed by an in-memory store.
 set_target_properties( occ_service PROPERTIES
-    LINK_FLAGS "-Oz -g0 -sASYNCIFY=0 -sMODULARIZE=1 -sEXPORT_NAME=OccService -sENVIRONMENT=worker,node -sEXIT_RUNTIME=0 --pre-js ${CMAKE_CURRENT_SOURCE_DIR}/occ_service_pre.js" )
+    LINK_FLAGS "-Oz -g0 -sMODULARIZE=1 -sEXPORT_NAME=OccService -sENVIRONMENT=worker,node -sEXIT_RUNTIME=0 --pre-js ${CMAKE_CURRENT_SOURCE_DIR}/occ_service_pre.js" )

@@ -24,7 +24,7 @@ npm test          # setup:kicad + the full merged run (same projects as CI)
 
 One merged config (`playwright.config.ts`) drives every wasm suite as
 Playwright *projects*; `npm run test:e2e` runs the CI set: `wx-chromium`,
-`kicad-firefox`, `kicad-chromium`, `asyncify-firefox`, `coroutine-firefox`.
+`kicad-firefox`, `kicad-chromium`, `jspi-firefox`, `coroutine-firefox`.
 The KiCad specs (heavier — they need the docker-built KiCad WASM) run on BOTH
 engines; `npm run test:kicad` is the firefox-only shortcut. The React web app
 suite is separate: `npm run test:web` (see `playwright-web.config.ts`).
@@ -59,7 +59,7 @@ tests/
 ├── apps/              # Built WASM test applications
 │   ├── minimal_test.html  # Main test app
 │   └── standalone/        # Individual component test apps
-├── playwright.config.ts       # THE merged config (wx / kicad / asyncify / coroutine / perf projects)
+├── playwright.config.ts       # THE merged config (wx / kicad / jspi / coroutine / perf projects)
 └── playwright-web.config.ts   # React web-app suite (own server stack)
 ```
 
@@ -304,13 +304,12 @@ Button positions (relative to canvas):
 ## Open tasks
 
 - ~~Research: are the Asyncify fiber shims still needed under native-EH?~~
-  **Resolved at doc 20 D-1** (legacy-runtime deletion): the ablation builds
-  (`races_test_noheal` / `races_test_nosleepfix`) and their shim-redundancy pins in
-  `asyncify/asyncify-races.spec.ts` pinned a runtime that no longer exists — the
-  scheduler shim (`scripts/common/shims/asyncify-scheduler.js`) is the only runtime
-  and subsumes the handleSleep save/restore; the fiber trampoline self-heal (§3c)
-  remains injected unconditionally. The green battery runs every scenario against
-  the scheduler glue.
+  **Resolved at doc 20 D-1, then mooted by the JSPI migration (2026-08)**: the
+  ablation builds (`races_test_noheal` / `races_test_nosleepfix`) and their
+  shim-redundancy pins (in the since-deleted `asyncify/asyncify-races.spec.ts`)
+  pinned a runtime that no longer exists, and the asyncify scheduler shim they
+  were measured against retired with the backend. The semantic race battery
+  lives on in `jspi/suspend-races.spec.ts` against the JSPI runtime.
 
 ## Collab e2e — legacy vs v2 bundles, and repro markers
 

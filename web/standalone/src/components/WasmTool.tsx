@@ -516,7 +516,7 @@ function installQuitHook(
     // there instead of leaving the editor.
     //
     // Defer the navigation out of the wasm callback: this fires from inside the
-    // frame's C++ destructor (via EM_ASM under Asyncify), and the teardown keeps
+    // frame's C++ destructor (via EM_ASM), and the teardown keeps
     // running after we return. A cross-document location.assign() started here is
     // aborted by that continuing teardown — so hand it to a fresh task once the
     // wasm stack has unwound.
@@ -1251,18 +1251,15 @@ export function WasmTool({
       append(`[fatal] ${kind}: ${msg}`);
       append(dumpTrace());
       // The scheduler flight recorder: event ring + wait/activation state at
-      // death — the targeting data for suspension-machinery traps. Canonical
-      // name is __wxWaitDump (jspi-scheduler); __wxAsyncifyDump is the legacy
-      // shim's name, kept as a fallback one release. The jspi dump is an
-      // object, the legacy one a string — normalize.
+      // death — the targeting data for suspension-machinery traps
+      // (__wxWaitDump, jspi-scheduler.js).
       const dumper = (
         window as Window & {
           __wxWaitDump?: () => unknown;
-          __wxAsyncifyDump?: () => unknown;
         }
       );
-      const rec = (dumper.__wxWaitDump ?? dumper.__wxAsyncifyDump)?.();
-      if (rec) append(typeof rec === "string" ? rec : JSON.stringify(rec));
+      const rec = dumper.__wxWaitDump?.();
+      if (rec) append(JSON.stringify(rec));
       setFatal(msg);
       setShowLog(true);
       // Arm the React-independent floor too: it stays invisible while our
@@ -1279,7 +1276,7 @@ export function WasmTool({
       if (!isTerminalError(e.reason, msg)) return;
       promote("unhandled rejection", msg);
     };
-    // With PROXY_TO_PTHREAD, main()/wx/timers — and therefore every asyncify
+    // With PROXY_TO_PTHREAD, main()/wx/timers — and therefore every wasm
     // trap in this family — throw INSIDE a pthread worker. A worker's uncaught
     // error fires an ErrorEvent on the Worker OBJECT, never on `window`, so the
     // two listeners below can't see the very traps this overlay exists for
@@ -1802,7 +1799,7 @@ export function WasmTool({
         // Everything below drives BARE embind entries that walk the loaded
         // model (collab snapshot/adopt, presence bind, drift). Deferred until
         // the open chain settled (openResult) — calling them while the
-        // kicadOpenFile Asyncify chain is still parked mid-load walks a
+        // kicadOpenFile activation is still parked mid-load walks a
         // half-built model and traps ("indirect call signature mismatch").
         const attachCollabAndPresence = async () => {
         // Drift detection: while a sheet is collaboratively edited, periodically (every N
@@ -1886,7 +1883,7 @@ export function WasmTool({
           // STAGGERED out of the settle window (2026-08-02, the ladder
           // result): warm sibling-heavy projects crash at exactly this moment
           // (V1/V4 fail 2/2 warm, V2/V3 without siblings never do), and the
-          // asyncify flight recorder places the fatal interleave inside the
+          // scheduler flight recorder places the fatal interleave inside the
           // settle-time wake windows. The restage's room connects + restage
           // fetches were the only sibling-specific traffic contending with
           // those windows. Nothing here is needed for first paint — the boot

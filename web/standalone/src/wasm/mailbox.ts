@@ -12,7 +12,7 @@
 // Deliberately NOT here (S4 territory): worker-side interlock precision (a
 // mutator can still land while a NON-open chain is parked — those entries keep
 // their own C-side guards until S4 moves queuing into the bindings), and any
-// change to drift-detect's skip-if-fiber-busy logic (#10b semantics, its own
+// change to drift-detect's skip-if-collab-busy logic (#10b semantics, its own
 // deliberate contract).
 
 interface BusyProbe {

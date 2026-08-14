@@ -503,13 +503,11 @@ test.describe("round trip: file → yjs → file", () => {
     expect(hasAbort(testLogger), "no WASM abort").toBe(false);
   });
 
-  // REMAINING KNOWN GAP (ysync 0008 status, known limit 1 — tracked, not a test
-  // bug): pcbnew track/via/zone/text APPLY rides the `(kicad_pcb …)` envelope
-  // parse, the codebase's documented asyncify-fragile path (even a verbatim
-  // SaveSelection envelope for a segment dies silently in the commit). The full
-  // fixture (via + gr_text + segments) therefore still loses those items on the
-  // rebuild side. Un-fixme when the envelope parse is solved. Run with
-  // --grep-invert skipped to see the live diff.
+  // FORMER KNOWN GAP (ysync 0008 status, known limit 1): pcbnew
+  // track/via/zone/text APPLY rides the `(kicad_pcb …)` envelope parse, which
+  // was asyncify-fragile in wasm (even a verbatim SaveSelection envelope for a
+  // segment died silently in the commit) and lost those items on the rebuild
+  // side. Healthy under JSPI — this test is the pin.
   test(  // re-enabled 2026-08-13: the asyncify-fragile envelope parse is gone with JSPI — passes both engines
     "pcbnew preserves items through a yjs round trip",
     async ({ context, testLogger }) => {

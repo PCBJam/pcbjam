@@ -1,27 +1,24 @@
 /*
- * Test-only deterministic repro lever for the production board-load trap
- * family ("index out of bounds" / "unreachable executed" in doRewind —
- * gal-refresh-timer investigation, docs/features/async/14-open-settle-gate.md
- * lineage).
+ * Test-only deterministic lever: a SUSPENDING wx-timer handler running
+ * concurrently with the main loop's per-frame suspension (gal-refresh-timer
+ * investigation, docs/features/async/14-open-settle-gate.md lineage).
  *
- * The surviving hypothesis after the v0.1.19 crash log (2026-07-31): a wx
- * timer callback is a FRESH JS→wasm entry (emscripten_async_call →
- * TimerCallbackFunc::Run → Notify). The main loop is Asyncify-parked in
- * wxWasmYieldToBrowser for most of wall-clock time, so a timer handler that
- * itself parks creates TWO live Asyncify contexts over the single-slot
- * Asyncify.currData — the emscripten #9153 family the handlesleep.js shim
- * silently repairs. Add a fiber swap (the collab entries run on
- * TOOL_MANAGER coroutines — emscripten_fiber_swap, which bypasses the shim's
- * allocateData accounting entirely) and the prod trap's exact second stack
- * (doRewind → finishContextSwitch under __asyncjs__wxWasmYieldToBrowser)
- * becomes constructible on demand.
+ * A wx timer callback is a FRESH JS→wasm entry (emscripten_async_call →
+ * TimerCallbackFunc::Run → Notify). The main loop spends most wall-clock time
+ * suspended in wxWasmYieldToBrowser, so a timer handler that itself suspends
+ * puts a second suspended activation in flight over the shared scheduler
+ * state — the concurrency shape the scheduler's turnstile and the dispatch
+ * interlock must absorb. While the handler is suspended,
+ * wxWasmDispatchParked() reads true and every other due timer spins the 17 ms
+ * retry loop — the [wx-timer] storm diagnostic window this lever opens on
+ * demand.
  *
- * Natural occurrences need a timer handler that parks mid-paint (GAL init /
- * lib bridge) — scheduler-dependent, never reproduced locally in 10+
+ * Natural occurrences need a timer handler that suspends mid-paint (GAL init
+ * / lib bridge) — scheduler-dependent, never reproduced locally in 10+
  * attempts. This lever makes the window deterministic: arm a one-shot wx
  * timer whose Notify() emscripten_sleep()s for a fixed time; the e2e then
- * hammers fiber-based collab entries through the window and asserts the
- * runtime SURVIVES (red on a build where the hypothesis holds).
+ * hammers coroutine-based collab entries through the window and asserts the
+ * runtime SURVIVES.
  *
  * Production is unaffected: nothing fires unless kicadTestArmTimerPark is
  * called.

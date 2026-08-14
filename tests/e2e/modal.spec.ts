@@ -246,7 +246,7 @@ test.describe('Modal dialog border + drag (pcbjam #22)', () => {
 
     // Grab the bottom-right corner and grow the dialog in small steps, sampling the
     // modal canvas immediately after each move. A resize legitimately reassigns
-    // canvas.width/height (clears it); inside the modal's Asyncify pump the repaint
+    // canvas.width/height (clears it); inside the modal's suspended pump the repaint
     // that should refill it is deferred until the next input event, so with the bug
     // the canvas stays transparent and the black .window div shows through.
     const startX = hbox!.x + hbox!.width / 2;

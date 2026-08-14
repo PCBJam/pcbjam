@@ -383,8 +383,8 @@ for (const ops of [SCH_OPS, PCB_OPS]) {
 
 // ── S8: user-save during a peer's burst (pcbnew) ─────────────────────────────
 // Ctrl+S drives the FULL save flow (the real writer + the C++→JS onSave
-// notification chokepoint) while remote applies land — asyncify contention
-// between the save fiber and the apply fibers is exactly the surface.
+// notification chokepoint) while remote applies land — suspension contention
+// between the save coroutine and the apply coroutines is exactly the surface.
 
 test.describe("drift trio scenarios — pcbnew S8 save interplay", () => {
   test.describe.configure({ timeout: 900000 });

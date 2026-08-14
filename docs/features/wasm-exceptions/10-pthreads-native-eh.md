@@ -210,8 +210,8 @@ Two zero-KiCad-edit routes turn the live viewer multi-threaded:
 ## 6. pthread test coverage
 
 All four apps below compile the **real KiCad** thread-pool source and run on **pristine** KiCad/wx-core.
-The specs are named `coroutine-*` so `playwright-coroutine.config.ts` runs them in Firefox + Chrome
-(WebKit excluded — §2a).
+The specs are named `coroutine-*` so the merged config's `coroutine-firefox` / `coroutine-chrome`
+projects (testMatch `/coroutine.*\.spec\.ts$/`) run them in Firefox + Chrome (WebKit excluded — §2a).
 
 | Spec | App | What it proves | native-EH |
 |---|---|---|---|

@@ -390,8 +390,9 @@ export function installLibsProvider(
     try {
       switch (op) {
         case "list": {
-          // Enumerate gate (load-fanout): park this crossing (Asyncify) until
-          // the caller's precondition — typically the presync — has settled.
+          // Enumerate gate (load-fanout): park this crossing (the suspended
+          // C++ caller stays parked) until the caller's precondition —
+          // typically the presync — has settled.
           if (opts?.enumerateGate) await opts.enumerateGate(kind);
           // Each plugin parses its own key: footprints / symbols.
           const key = kind === "footprint" ? "footprints" : "symbols";
@@ -402,7 +403,7 @@ export function installLibsProvider(
             // Bracket the whole-library hydrate so the editor can overlay a
             // "loading libraries (slow, not hung)" state over the otherwise
             // silent multi-second freeze. `true` before the (async) IDB read so
-            // the overlay can paint while the C++ side is Asyncify-suspended;
+            // the overlay can paint while the C++ side is suspended;
             // `false` once the bytes are framed and about to cross the bridge.
             clearTimeout(fatResetTimer);
             if (fatTotal === 0) {

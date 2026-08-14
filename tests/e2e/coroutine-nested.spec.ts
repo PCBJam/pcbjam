@@ -71,7 +71,7 @@ test.describe('Nested Coroutine+Modal Tests', () => {
     expect(failLogs).toHaveLength(0);
     expect(passLogs).toHaveLength(EXPECTED_CASES.length);
 
-    // Critical: catch the nested-asyncify crash
+    // Critical: catch the historic nested-suspension crash signature
     const indexOobErrors = testLogger.errors.filter((e) =>
       e.toLowerCase().includes('index out of bounds')
     );

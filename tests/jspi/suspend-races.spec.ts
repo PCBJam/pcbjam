@@ -8,7 +8,7 @@ import { test, expect, tryLoadApp } from '../e2e/utils/fixtures';
 // teardown-on-error — so they are exactly as meaningful under JSPI as under
 // asyncify; only the failure MODES they'd catch differ (activation misnesting
 // or a lost wait token instead of a clobbered rewind buffer). The harness's
-// Fibers.* probes self-disable on non-asyncify glue ('n/a').
+// asyncify-era Fibers.* probes retired with that backend.
 //
 // Retired asyncify-mechanism gates, deliberately NOT ported: the
 // Asyncify.currData single-writer tripwire (N1) and the deferred-wake books

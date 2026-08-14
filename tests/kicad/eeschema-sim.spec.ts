@@ -188,7 +188,7 @@ test.describe('eeschema simulator', () => {
         const corruption = all.filter((l) =>
             l.includes('index out of bounds') || l.includes('indirect call to null')
             || l.includes('uncaught exception: unwind'));
-        expect(corruption, 'no asyncify corruption').toHaveLength(0);
+        expect(corruption, 'no wasm trap').toHaveLength(0);
     });
 
     test('a second run after the first succeeds (engine reset path)', async ({ page, testLogger }) => {

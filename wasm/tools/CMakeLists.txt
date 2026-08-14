@@ -70,4 +70,4 @@ target_link_options( kicad_tools PRIVATE
 # sym_convert) backs wxConfig with an in-memory store and copies process.env
 # into the wasm ENV.
 set_target_properties( kicad_tools PROPERTIES
-    LINK_FLAGS "-Oz -g0 --profiling-funcs -sSTACK_SIZE=2MB -sENVIRONMENT=node -sNODERAWFS=1 -sINVOKE_RUN=1 -sEXIT_RUNTIME=1 -sASYNCIFY=0 -sPTHREAD_POOL_SIZE=2 -sERROR_ON_UNDEFINED_SYMBOLS=0 --pre-js ${KICAD_WASM_LAYER}/cli/sym_convert_pre.js" )
+    LINK_FLAGS "-Oz -g0 --profiling-funcs -sSTACK_SIZE=2MB -sENVIRONMENT=node -sNODERAWFS=1 -sINVOKE_RUN=1 -sEXIT_RUNTIME=1 -sPTHREAD_POOL_SIZE=2 -sERROR_ON_UNDEFINED_SYMBOLS=0 --pre-js ${KICAD_WASM_LAYER}/cli/sym_convert_pre.js" )

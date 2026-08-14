@@ -91,9 +91,10 @@ export function initErrorReporting(): void {
           // requestAnimationFrame / addEventListener in try/catch to attach
           // better stack traces. KiCad-on-Emscripten drives its main loop
           // through exactly those (emscripten_async_call → setTimeout, and the
-          // GAL refresh timer re-arms in a tight loop), so wrapping them adds a
-          // closure per tick and changes stack identity in the middle of an
-          // Asyncify-transformed call graph. Not worth it for prettier traces.
+          // GAL refresh timer re-arms in a tight loop), so wrapping them adds
+          // a closure per tick on the hottest paths for marginal gain. (Under
+          // JSPI stack traces are not mangled, so source-map symbolication may
+          // now be worth revisiting — behavior kept as is.)
           i.name !== "BrowserApiErrors" && i.name !== "Breadcrumbs",
       ),
       // Keep breadcrumbs — clicks, navigation and fetches are exactly the "what

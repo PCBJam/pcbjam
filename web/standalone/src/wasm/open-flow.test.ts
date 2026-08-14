@@ -5,7 +5,7 @@ import { openFileInTool } from "./open-flow";
  * The programmatic-open settle gate (open_gate.h / kicadOpenFileBusy): the
  * shell must not report the open finished — and so must not go on to drive
  * bare embind entries (collab snapshot, presence bind) — while the
- * kicadOpenFile Asyncify chain is still parked mid-load. Regression tests for
+ * kicadOpenFile activation is still parked mid-load. Regression tests for
  * the prod "indirect call signature mismatch" trap at board load.
  */
 
@@ -44,7 +44,7 @@ function makeWin(opts: {
     Module: {
       kicadOpenFile: (p: string) => {
         opened.push(p);
-        return false; // asyncify placeholder return — callers must ignore it
+        return false; // non-Promise return — readiness comes from the settle probe, not this value
       },
       ...(opts.busy ? { kicadOpenFileBusy: opts.busy } : {}),
     },

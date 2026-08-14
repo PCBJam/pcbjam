@@ -9,7 +9,7 @@ import { test, expect } from "./fixtures";
  * pcbnew reuses the same wire contract + generic JS reconciler as pl_editor/eeschema; the new
  * code is the C++ adapter — a native BOARD_LISTENER trigger + post-settle snapshot-diff emit,
  * and a BOARD_COMMIT apply run inside a COROUTINE (so a freshly-built item's GAL view->Add has
- * the Asyncify/fiber context it needs, exactly as eeschema). Coverage:
+ * the tool-coroutine context it needs, exactly as eeschema). Coverage:
  *   - snapshot (read): kicadCollabSnapshot reflects items by uuid/type/position.
  *   - apply (single page): kicadCollabApply moves/removes/adds tracks by uuid (deferred via
  *     CallAfter + coroutine, so poll for the result).
@@ -202,7 +202,8 @@ test.describe("pcbnew collab bridge — single page", () => {
   // `added` reconstruction of a footprint, via and zone. The emit side attaches BOTH the full
   // itemToJson fields AND an s-expr clipboard blob; makeItem then reconstructs a footprint from
   // the bare `(footprint …)` blob, and a via/zone NATIVELY from the geometry fields (the
-  // `(kicad_pcb …)` envelope parse is asyncify-fragile in wasm for those). Round-trip each: read
+  // `(kicad_pcb …)` envelope parse was asyncify-fragile in wasm for those; healthy under JSPI —
+  // roundtrip.spec.ts pins it — the native path stays as the lean route). Round-trip each: read
   // its full snapshot item + blob, delete it, re-add, confirm it returns at the same position.
   for (const [label, id, type] of [
     ["footprint", FP1, "FOOTPRINT"],

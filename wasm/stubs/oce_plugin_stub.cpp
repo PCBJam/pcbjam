@@ -59,7 +59,7 @@ bool acceptAnyCacheTag( const char*, void* )
 } // namespace
 
 // Phase E shape (docs/features/async/22 §5, K5): waits for the worker
-// parse+tessellate via a token wait instead of Asyncify-parking in place. The
+// parse+tessellate via a token wait instead of suspending in place. The
 // wait result is a malloc'd path string: the scenegraph-cache file written
 // into this module's MEMFS ("" on failure). Every resolution defers to at
 // least a microtask (the early-resolve contract, doc 22 §10 Phase E retry).

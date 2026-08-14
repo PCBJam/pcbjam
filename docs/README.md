@@ -14,16 +14,17 @@ build KiCad with WASM and run it in a browser.
 
 ## Build
 
-- [docs/build.md](build.md) — Docker-based KiCad WASM build system (two-phase build, outputs, memory)
+- [docs/build.md](build.md) — Docker-based KiCad WASM build system (single-phase build, outputs, memory)
 - [docker/README.md](../docker/README.md) — Docker build environment, branch-specific containers, troubleshooting
 - [wasm/README.md](../wasm/README.md) — WASM compatibility layer (overrides/shims without patching KiCad)
 
-## Debugging & Asyncify
+## Debugging & WASM runtime
 
-- [docs/debugging/DEBUG.md](debugging/DEBUG.md) — debugging guide: Asyncify stalls vs crashes, shim/codegen coupling, stub-bisection
-- [docs/debugging/learning.md](debugging/learning.md) — Asyncify + consecutive modal dialogs: the lock pattern
-- [docs/research/threading_1.md](research/threading_1.md) — deep dive: the Asyncify single-slot `currData` collision bug and the fix
-- [docs/research/threading_2.md](research/threading_2.md) — external research: JSPI/WasmFX/state-machine alternatives, QEMU analysis
+- [docs/debugging/DEBUG.md](debugging/DEBUG.md) — debugging guide: the JSPI runtime's observability (`__wxWaitDump`, beacons), reading a SuspendError, the harnesses
+- [docs/features/async/23-jspi-runtime.md](features/async/23-jspi-runtime.md) — the JSPI runtime architecture (scheduler/turnstile, libcontext backend, embind call shapes)
+- [docs/debugging/learning.md](debugging/learning.md) — historical: Asyncify + consecutive modal dialogs, the lock pattern (asyncify era)
+- [docs/research/threading_1.md](research/threading_1.md) — historical deep dive: the Asyncify single-slot `currData` collision bug and its era's fix
+- [docs/research/threading_2.md](research/threading_2.md) — external research that pre-studied the alternatives (JSPI/WasmFX/state machines), QEMU analysis
 
 ## Architecture
 

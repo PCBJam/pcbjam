@@ -18,7 +18,6 @@
 #include <wx/window.h>
 #include <nlohmann/json.hpp>
 #include "open_gate.h"
-#include "main_stack_runner.h"
 #include "pcbjam_async_policy.h"
 #include <eda_draw_frame.h>
 #include <kiid.h>
@@ -40,7 +39,7 @@ using json = nlohmann::json;
 // File→Open.
 bool kicadOpenFile( std::string path )
 {
-    // Held across every Asyncify park of the load; see open_gate.h.
+    // Held across every suspension of the load; see open_gate.h.
     pcbjam_open::BusyGuard busy;
 
     if( pcbjam_open::testParkMs() > 0 )
@@ -315,7 +314,7 @@ void addBlob( DS_DATA_MODEL& aModel, const json& j )
 void kicadCollabApply( std::string aJson )
 {
     // Open-in-flight guard (open_gate.h): never touch the model while a
-    // kicadOpenFile Asyncify chain is parked mid-load; see kicadOpenFileBusy.
+    // kicadOpenFile chain is suspended mid-load; see kicadOpenFileBusy.
     if( pcbjam_open::busy() )
         return;
 

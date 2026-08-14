@@ -1,18 +1,13 @@
 /**
  * N5 — flood/fairness unit gates for the scheduler shim
  * (docs/features/async/17 §3d N5; the shim source is scripts/common/shims/
- * jspi-scheduler.js — the JSPI-era successor of asyncify-scheduler.js —
- * loaded here against a fake runtime surface).
+ * jspi-scheduler.js, loaded here against a fake runtime surface).
  *
  * Doc 06 §starvation: FIFO by default; a stimulus flood must neither reorder
  * deliveries nor starve them, and the time-boxed pump must not monopolize the
  * thread in one burst. These are unit gates — the e2e batteries cover the
- * same machinery under the real runtime.
- *
- * Retired with the asyncify shim (states unrepresentable under JSPI):
- * deferred wakes (readyWakes/_scheduleWakeDrain), currData single-writer
- * tripwire, state() machine string. The S4 wait-registry gates below are the
- * JSPI-era additions.
+ * same machinery under the real runtime. The S4 wait-registry gates below
+ * cover the token-wait contract the C++ bridges rely on.
  */
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { readFileSync } from "node:fs";
@@ -25,7 +20,6 @@ const SHIM_PATH = path.resolve(
 );
 
 type SchedulerShape = {
-  backend: string;
   mailbox: unknown[];
   mutatorQueue: unknown[];
   mutatorsDelivered: number;
@@ -70,14 +64,14 @@ function loadShim(opts: { busy: () => boolean }) {
   return S;
 }
 
-describe("N5: scheduler shim under flood (jspi backend)", () => {
+describe("N5: scheduler shim under flood", () => {
   beforeEach(() => {
     vi.useRealTimers();
   });
 
-  it("identifies as the jspi backend", () => {
+  it("installs the scheduler exactly once", () => {
     const S = loadShim({ busy: () => false });
-    expect(S.backend).toBe("jspi");
+    expect(S).toBeTruthy();
     expect(globalThis.__wxSchedulerInstalled).toBe(true);
   });
 

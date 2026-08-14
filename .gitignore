@@ -72,7 +72,6 @@ wxwidgets-clean/
 *.tmp
 output/
 *.d
-/tests/.test-port-coroutine
 .playwright-mcp
 .claude/worktrees/
 
@@ -80,18 +79,11 @@ output/
 # Curated design docs live under docs/features/ and ARE committed.
 /features/
 
-# wasm-opt benchmark local artifacts. The harness scripts under scripts/bench/
-# ARE committed; the fixtures/results (/bench) and the QEMU VM image
-# (scripts/bench/vm) are local-only.
-/bench/
-/scripts/bench/vm/
-
 # Temporary/disposable prebuilt WASM sets (native-EH + JS-EH × eeschema + pcbnew
 # O1 builds) + the standalone perf harness, used to reproduce the runtime-perf
 # comparison on demand. Large (~1 GB), never committed.
 /benchmark-builds/
 
-/tests/.test-port-asyncify
 /memory/
 
 # Wrangler (Cloudflare CLI) local state/cache — created when running R2 deploys.

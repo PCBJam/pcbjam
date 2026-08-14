@@ -1,5 +1,7 @@
 # wxWidgets WASM Test Status
 
+> Mechanism note: everything below predates the 2026-08 JSPI migration; "Asyncify" rows describe the retired backend.
+
 Last updated: 2025-12-04
 
 ## Test Summary

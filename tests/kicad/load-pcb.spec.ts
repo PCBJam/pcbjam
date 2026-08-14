@@ -150,8 +150,9 @@ function runLoadPcbTest(demo: DemoCfg): void {
         //    If we ever need to dismiss post-load wxMessageDialogs (missing
         //    libs etc.), do it INSIDE waitForBoardLoaded so the dismiss
         //    side-effect lives with the polling loop — calling page.evaluate
-        //    from the test driver hangs once the post-load asyncify clipboard
-        //    runtime error breaks the wasm event loop. ───────────────────
+        //    from the test driver hangs if a runtime error breaks the wasm
+        //    event loop (the asyncify-era post-load clipboard error was the
+        //    proven case). ─────────────────────────────────────────────────
 
         // ── Wait for the load to complete (no dialogs visible). ───────
         const result = await waitForBoardLoaded(page, testLogger, 60000);
@@ -179,24 +180,24 @@ function runLoadPcbTest(demo: DemoCfg): void {
             `WASM aborted during ${demo.name} load:\n${aborts.join('\n\n')}`,
         ).toEqual([]);
 
-        // ── Clean-console gate: NO asyncify corruption may surface anywhere in
-        //    the load — not before, not after the board renders. The formerly
-        //    tolerated post-load clipboard/unwind RuntimeErrors are fixed
-        //    (sync clipboard IsSupported in wx; "unwind" sentinel handling in
-        //    the scheduler shim; see docs/features/asyncify-arbiter/).
-        const asyncifySignatures = [
+        // ── Clean-console gate: NO wasm trap may surface anywhere in the
+        //    load — not before, not after the board renders. (Historical: the
+        //    once-tolerated post-load clipboard/unwind RuntimeErrors were
+        //    fixed in the asyncify era — sync clipboard IsSupported in wx,
+        //    "unwind" sentinel handling — see docs/features/asyncify-arbiter/.)
+        const wasmTrapSignatures = [
             'index out of bounds',
             'indirect call to null',
             'uncaught exception: unwind',
             'invalid state',
             'is not a function',
         ];
-        const asyncifyErrors = allLines.filter((l) =>
-            asyncifySignatures.some((sig) => l.toLowerCase().includes(sig)),
+        const wasmTrapErrors = allLines.filter((l) =>
+            wasmTrapSignatures.some((sig) => l.toLowerCase().includes(sig)),
         );
         expect(
-            asyncifyErrors,
-            `Asyncify corruption surfaced during ${demo.name} load:\n${asyncifyErrors.join('\n\n')}`,
+            wasmTrapErrors,
+            `wasm trap surfaced during ${demo.name} load:\n${wasmTrapErrors.join('\n\n')}`,
         ).toEqual([]);
     });
 }

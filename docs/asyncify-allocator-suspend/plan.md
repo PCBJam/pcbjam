@@ -1,3 +1,5 @@
+> **STATUS (2026-08-14):** Part 1 (zero-duration nanosleep guard) landed as 94cac5e and was ported to the JSPI branch. Parts 2-3 (removelist instrumentation) are moot — the JSPI migration removed Asyncify instrumentation entirely.
+
 <!-- STATUS: PLANNED, NOT EXECUTED (saved 2026-08-10). Verification findings herein are real
      (measured against the Aug 6 kicad_editor build, emsdk 4.0.2); the shim guard, the test,
      and the removelist additions have NOT been applied yet. -->

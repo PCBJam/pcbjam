@@ -10,7 +10,7 @@ import { resolveWasmBase } from "./wasm-assets";
  * kicad_editor.wasm carries no ngspice: eeschema's NGSPICE class binds to the
  * sharedspice client stub (wasm/stubs/sharedspice_client.cpp), whose
  * EM_ASYNC_JS bridges suspend the editor and land here. The ngspice_service
- * module (own emscripten instance, pthreads, `-sASYNCIFY=0`) boots in a
+ * module (own emscripten instance, pthreads, no suspension backend) boots in a
  * dedicated Worker on the FIRST request — a session that never opens the
  * simulator never fetches it.
  *

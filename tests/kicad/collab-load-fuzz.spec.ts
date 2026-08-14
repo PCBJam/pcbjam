@@ -4,32 +4,29 @@ import { test, expect } from "./fixtures";
 /**
  * Collab-entry-during-load gate test + fuzz (docs/features/async/14-open-settle-gate.md).
  *
- * The prod trap: `kicadOpenFile` runs `OpenProjectFiles` under Asyncify; on a
- * slow machine the chain parks mid-load (thread-pool futex waits), and any bare
- * embind entry that walks the model during such a park (the collab seed
- * snapshot, an adopt apply) can virtual-dispatch through half-mutated state and
- * trap with "indirect call signature mismatch". The fix is two-layered: the
- * shell defers the attach on `kicadOpenFileBusy` (open-flow.ts), and the
+ * The prod trap (an asyncify-era discovery; the surface is unchanged):
+ * `kicadOpenFile` suspends while `OpenProjectFiles` runs; on a slow machine
+ * the chain parks mid-load (thread-pool futex waits), and any bare embind
+ * entry that walks the model during such a park (the collab seed snapshot, an
+ * adopt apply) can virtual-dispatch through half-mutated state and trap with
+ * "indirect call signature mismatch". The fix is two-layered: the shell
+ * defers the attach on `kicadOpenFileBusy` (open-flow.ts), and the
  * snapshot/apply entries themselves early-return while the open is in flight
  * (open_gate.h guards).
  *
  * Natural in-load parks are scheduler-dependent — on a fast idle machine the
  * whole open runs synchronously and NO window exists — so the deterministic
- * test arms `kicadTestSetOpenPark`: kicadOpenFile then Asyncify-parks for a
- * fixed time on entry AND after OpenProjectFiles returns (model fully loaded,
- * gate still closed). Hammering the entries inside that window asserts the
- * guard contract sharply:
+ * test arms `kicadTestSetOpenPark`: kicadOpenFile then suspends for a fixed
+ * time on entry AND after OpenProjectFiles returns (model fully loaded, gate
+ * still closed). Hammering the entries inside that window asserts the
+ * contract sharply (docs/features/async/17 §3b):
  *   - `kicadOpenFileBusy()` reads true during the parks, false after;
  *   - mid-load snapshots return the EMPTY delta (an unguarded build would
  *     return the full board — deterministic red);
- *   - mid-load applies are DROPPED (the probe segment must not move);
+ *   - mid-load applies are QUEUED by the scheduler's embind lane and
+ *     DELIVERED in order after settle (legacy glue DROPPED them; that drop
+ *     contract retired with it);
  *   - after settle the entries work normally (guard released).
- *
- * VARIANT CONTRACT (docs/features/async/17 §3b): on scheduler glue the
- * shim's embind lane queues busy-window mutators and delivers them after
- * settle, so the "applies are DROPPED" assertions flip to "applies are
- * DELIVERED in order" — assertSettledContract branches on the lane's
- * presence. The busy-window and release assertions hold for both variants.
  *
  * The second test is the scheduler-dependent stress fuzz (spinning-worker CPU
  * starvation to force real futex-wait parks, hammering throughout the load).
@@ -39,7 +36,6 @@ import { test, expect } from "./fixtures";
  */
 
 const SEG_TARGET = "fa220000-0000-0000-0000-00000000cafe"; // apply probe
-const PROBE_HOME = "10000000,10000000"; // its on-disk position (IU)
 
 /** Deterministic large board (~13k items) — a realistic snapshot/apply load. */
 function bigBoard(): string {
@@ -235,19 +231,15 @@ async function openAndHammer(
     let iterations = 0;
     let maxBusySnapshotItems = 0;
     const errors: string[] = [];
-    // Scheduler glue QUEUES busy-window entries for post-settle delivery
+    // The scheduler QUEUES busy-window entries for post-settle delivery
     // (doc 17 §3b) — an unbounded hammer would replay hundreds of heavy
     // applies/snapshots afterwards (each Push walks connectivity across the
     // fixture's 800 vias; on a debug build every via prints an assert — a
     // 170k-line console flood that drowns the drain). The deterministic
     // contract needs delivery + order, not volume: cap the queued calls and
-    // keep observing the busy window. Legacy glue keeps the full hammer
-    // (drop semantics make it free). Volume lives in the STRESS test.
-    const lane =
-      ((globalThis as unknown as { __wxScheduler?: { mutatorsWrapped: number } }).__wxScheduler
-        ?.mutatorsWrapped ?? 0) > 0;
-    const maxEntryIters = lane ? 6 : Infinity;
-    // Every Asyncify park of the open chain hands the event loop to this
+    // keep observing the busy window. Volume lives in the STRESS test.
+    const maxEntryIters = 6;
+    // Every suspension of the open chain hands the event loop to this
     // timer — exactly how the prod shell's collab attach interleaved.
     while (performance.now() - t0 < 120000) {
       if (!w.Module.kicadOpenFileBusy()) break;
@@ -289,42 +281,35 @@ async function openAndHammer(
   }, opts);
 }
 
-/** Post-settle asserts shared by both tests: guard dropped applies + released. */
+/** Post-settle asserts shared by both tests: queued applies delivered + gate released. */
 async function assertSettledContract(page: Page, stats: FuzzStats): Promise<void> {
   expect(stats.settled, "kicadOpenFileBusy cleared after the load").toBe(true);
   expect(stats.errors, "no traps while hammering entries mid-load").toEqual([]);
-  // Guard held: no mid-load snapshot ever saw the model. On scheduler glue a
-  // busy-window snapshot returns a Promise (typeof !== "string" — the hammer
-  // skips it), so this assertion holds for both variants.
+  // Guard held: no mid-load snapshot ever saw the model. A busy-window
+  // snapshot returns a Promise (typeof !== "string" — the hammer skips it),
+  // so a nonzero count here means a synchronous walk leaked through the gate.
   expect(stats.maxBusySnapshotItems, "mid-load snapshots returned the empty delta").toBe(0);
   await expect.poll(() => page.title(), { timeout: 30000 }).toMatch(/fuzz/i);
 
-  // Variant contract (docs/features/async/17 §3b). Legacy glue: the gate
-  // DROPPED the mid-load applies — the probe never moved. Scheduler glue
-  // (scheduler shim embind lane, doc 18): the same applies were QUEUED
-  // and DELIVERED after settle, in order — the probe sits where the hammer's
-  // deltas moved it. Same stimulus, the drop→deliver flip is the assertion.
-  const schedulerLane = await page.evaluate(
-    () =>
-      ((globalThis as unknown as { __wxScheduler?: { mutatorsWrapped: number } }).__wxScheduler
-        ?.mutatorsWrapped ?? 0) > 0,
-  );
-  if (schedulerLane) {
-    // The hammer queued hundreds of calls (each mid-load snapshot delivers as
-    // a FULL board walk now, not the gate's empty delta) — wait for the
-    // time-boxed pump to drain the backlog before asserting final state.
-    await expect
-      .poll(
-        () =>
-          page.evaluate(
-            () =>
-              (globalThis as unknown as { __wxScheduler: { mutatorQueue: unknown[] } })
-                .__wxScheduler.mutatorQueue.length,
-          ),
-        { timeout: 240000, intervals: [1000] },
-      )
-      .toBe(0);
-  }
+  // Delivery contract (docs/features/async/17 §3b): the embind lane QUEUED
+  // the mid-load applies and delivers them after settle, in order — the probe
+  // sits where the hammer's deltas moved it. (Legacy glue DROPPED them and
+  // the probe stayed home; that drop contract retired with the flip.)
+  //
+  // The hammer queued hundreds of calls (each mid-load snapshot delivers as
+  // a FULL board walk now, not the gate's empty delta) — wait for the
+  // time-boxed pump to drain the backlog before asserting final state.
+  await expect
+    .poll(
+      () =>
+        page.evaluate(
+          () =>
+            (globalThis as unknown as { __wxScheduler: { mutatorQueue: unknown[] } })
+              .__wxScheduler.mutatorQueue.length,
+        ),
+      { timeout: 240000, intervals: [1000] },
+    )
+    .toBe(0);
   const HAMMER_TARGET = "55000000,55000000"; // both hammer deltas move the probe here
   await expect
     .poll(
@@ -332,7 +317,7 @@ async function assertSettledContract(page: Page, stats: FuzzStats): Promise<void
         page.evaluate((id) => (window.Module as unknown as Mod).kicadCollabGetPos(id), SEG_TARGET),
       { timeout: 10000, intervals: [200] },
     )
-    .toBe(schedulerLane ? HAMMER_TARGET : PROBE_HOME);
+    .toBe(HAMMER_TARGET);
 
   // Guard released: the snapshot now walks the real, fully-loaded board…
   const itemCount = await page.evaluate(
@@ -376,8 +361,8 @@ test.describe("collab entries during a parked board load (open_gate)", () => {
     page,
     testLogger,
   }) => {
-    // Scheduler-glue runs replay the whole hammer backlog after settle (the
-    // drain-wait in assertSettledContract) — budget for it on top of the load.
+    // The post-settle pump replays the whole hammer backlog (the drain-wait
+    // in assertSettledContract) — budget for it on top of the load.
     test.setTimeout(420000);
     await bootHarness(page);
 

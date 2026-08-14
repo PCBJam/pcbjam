@@ -43,9 +43,7 @@
 #include "pcbjam_libs_reload.h"
 #include "pcbjam_async_policy.h"
 #include "open_gate.h"
-#include "main_stack_runner.h"
 #include "timer_park.h"
-#include "fiber_park.h"
 
 using namespace emscripten;
 
@@ -141,7 +139,7 @@ bool        schCollabTestClearSelection();
 // standalone bundles compile from their own binding TU.
 static bool kicadOpenFile( std::string path )
 {
-    // Held across every Asyncify park of the load; see open_gate.h.
+    // Held across every suspension of the load; see open_gate.h.
     pcbjam_open::BusyGuard busy;
 
     if( pcbjam_open::testParkMs() > 0 )
@@ -167,43 +165,6 @@ static bool kicadOpenFile( std::string path )
     return ok;
 }
 
-// Phase F (docs/features/async/22 §10, the awaited-ccall entry class): the
-// open body above, driven from a DISPATCH CONTEXT instead of the main stack.
-// Run there, every wait inside the load parks the context through the
-// registry — the main stack never parks in place, which is the last
-// production member of the overlapped-wake class the D-on beacon sweep named.
-//
-// THE TOKEN IS PASSED IN, NOT RETURNED. Running the job on a dispatch context
-// Asyncify-suspends THIS embind frame while the load parks, so any return
-// value is delivered as an unwind PLACEHOLDER (0) into a rewind JS discards —
-// the same gotcha the fiber-park levers document. So the shim wrapper mints
-// the wait token in pure JS (no swap), hands it in here, and awaits its
-// promise; this starter returns void and its own placeholder return is
-// harmless. The job resolves the token when the load completes.
-extern "C" void wxWasmRunOnDispatchContext( void ( *fn )( void* ), void* arg );
-extern "C" void wxWasmResolveWait( int aToken, int aResult );
-
-namespace
-{
-struct OPEN_JOB
-{
-    std::string path;
-    int         token;
-};
-
-void kicadOpenFileJob( void* aArg )
-{
-    std::unique_ptr<OPEN_JOB> job( static_cast<OPEN_JOB*>( aArg ) );
-    const bool ok = kicadOpenFile( job->path );
-    wxWasmResolveWait( job->token, ok ? 1 : 0 );
-}
-}  // namespace
-
-static void kicadOpenFileStart( int token, std::string path )
-{
-    wxWasmRunOnDispatchContext( &kicadOpenFileJob, new OPEN_JOB{ std::move( path ), token } );
-}
-
 // JS-pollable open-in-flight probe (open_gate.h): the web shell defers the
 // collab/presence attach until the open chain has truly completed.
 static bool kicadOpenFileBusy()
@@ -218,7 +179,7 @@ static void kicadTestSetOpenPark( int aMs )
 }
 
 // Test-only (timer-park repro, timer_park.h): a one-shot wx timer whose
-// Notify() Asyncify-parks — the deterministic concurrent-park window.
+// Notify() suspends — the deterministic concurrent-suspension window.
 static bool kicadTestArmTimerPark( int aDelayMs, int aParkMs )
 {
     return pcbjam_timer_park::arm( aDelayMs, aParkMs );
@@ -227,44 +188,6 @@ static bool kicadTestArmTimerPark( int aDelayMs, int aParkMs )
 static std::string kicadTestTimerParkState()
 {
     return pcbjam_timer_park::stateJson();
-}
-
-// Test-only (fiber_park.h): Resume() into a foreign-parked coroutine — the
-// decoded prod board-load trap family. NOTE: these are sync embind bindings
-// for MANUAL probing on Chromium only. Do not build specs on them: the
-// mutating levers suspend, and no embind shape delivers that correctly
-// (plain registration throws on strict-JSPI Firefox; emscripten::async()
-// re-executes its invoker when the awaited promise settles). The runtime
-// contracts they staged are pinned by the jspi-coroutine harness (18 cases)
-// and tests/kicad/coroutine-lifecycle.spec.ts instead.
-static bool kicadTestFiberParkStart( int aParkMs )
-{
-    return pcbjam_fiber_park::start( aParkMs );
-}
-
-static bool kicadTestFiberParkPrime()
-{
-    return pcbjam_fiber_park::prime();
-}
-
-static bool kicadTestFiberParkPoke()
-{
-    return pcbjam_fiber_park::poke();
-}
-
-static std::string kicadTestFiberParkState()
-{
-    return pcbjam_fiber_park::stateJson();
-}
-
-static bool kicadTestFiberParkStartSecond()
-{
-    return pcbjam_fiber_park::startSecond();
-}
-
-static bool kicadTestFiberParkPokeSecond()
-{
-    return pcbjam_fiber_park::pokeSecond();
 }
 
 
@@ -607,29 +530,23 @@ static bool collabTestClearSelection()
 }
 
 
-static bool kicadCollabFiberBusyProbe()
+static bool kicadCollabBusyProbe()
 {
-    return pcbjam_collab::fiberBusy() || !pcbjam_collab::fiberQueue().empty();
+    return pcbjam_collab::applyBusy() || !pcbjam_collab::applyQueue().empty();
 }
 
 EMSCRIPTEN_BINDINGS(kicad_editor) {
-    // Fiber-queue idle probe (drift-trio finding #10b): a bare-embind-stack
-    // save during a parked apply fiber mis-dispatches (table index OOB) — the
-    // JS side must defer scratch saves while collab fiber work is in flight.
-    function("kicadCollabFiberBusy", &kicadCollabFiberBusyProbe);
+    // Apply-queue idle probe (drift-trio finding #10b): a scratch save taken
+    // while a collab apply is in flight (queued, or suspended mid-commit)
+    // would serialize a half-mutated model — the JS side must defer scratch
+    // saves until this reads false.
+    function("kicadCollabBusy", &kicadCollabBusyProbe);
     // Programmatic file open (preferred over UI automation from the web app).
     function("kicadOpenFile", &kicadOpenFile PCBJAM_PARKER_POLICY);
-    function("kicadOpenFileStart", &kicadOpenFileStart);
     function("kicadOpenFileBusy", &kicadOpenFileBusy);
     function("kicadTestSetOpenPark", &kicadTestSetOpenPark);
     function("kicadTestArmTimerPark", &kicadTestArmTimerPark);
     function("kicadTestTimerParkState", &kicadTestTimerParkState);
-    function("kicadTestFiberParkStart", &kicadTestFiberParkStart);
-    function("kicadTestFiberParkPrime", &kicadTestFiberParkPrime);
-    function("kicadTestFiberParkPoke", &kicadTestFiberParkPoke);
-    function("kicadTestFiberParkState", &kicadTestFiberParkState);
-    function("kicadTestFiberParkStartSecond", &kicadTestFiberParkStartSecond);
-    function("kicadTestFiberParkPokeSecond", &kicadTestFiberParkPokeSecond);
 
     // Canvas-only mobile mode (features/mobile).
     function("kicadSetChrome", &kicadSetChrome);

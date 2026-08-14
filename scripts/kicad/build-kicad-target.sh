@@ -296,11 +296,10 @@ else
     log_info "Building KiCad in RELEASE mode (skipping wasm-opt due to memory limits)"
 fi
 
-# Suspension backend: JSPI (native stack switching) since the migration.
-# The headless CLIs (kicad_tools, occ_service) get NO suspension backend at
-# all — their targets pin -sASYNCIFY=0 and run in node/worker where nothing
-# may suspend. coroutine.h/libcontext key on __EMSCRIPTEN__ directly, so no
-# ABI define is threaded through the TU flags anymore.
+# Suspension backend: JSPI (native stack switching). The headless CLIs
+# (kicad_tools, occ_service) get no suspension backend — they run in
+# node/workers where nothing may suspend. coroutine.h/libcontext key on
+# __EMSCRIPTEN__ directly, so no ABI define is threaded through the TU flags.
 
 # Step 6: Create build directory
 mkdir -p "${KICAD_BUILD}"
@@ -365,23 +364,11 @@ fi
 
 log_info "Stub libraries built"
 
-# Step 6.2/6.3: wasm-opt + wasm-emscripten-finalize handling.
-# For the editor apps these tools OOM on the huge debug wasm, so we stub them in
-# the container and run them on the host (docker/build.sh phase 2). The small,
-# debug-stripped (-g0) CLI finalizes fine in-container, so for kicad_tools
-# we restore/keep the real tools and skip host post-processing entirely.
+# EMSDK is needed below (emscripten sysroot paths in the CMake invocation).
 if [ -z "${EMSDK}" ]; then
     log_error "EMSDK environment variable is not set."
     exit 1
 fi
-EMSDK_WASM_OPT="${EMSDK}/upstream/bin/wasm-opt"
-EMSDK_FINALIZE="${EMSDK}/upstream/bin/wasm-emscripten-finalize"
-
-# JSPI has no post-link asyncify pass: every app finalizes in-container with
-# the REAL tools. The .real backups exist on containers that ran the retired
-# asyncify stub dance — restore them if present.
-[ -f "${EMSDK_WASM_OPT}.real" ] && cp "${EMSDK_WASM_OPT}.real" "${EMSDK_WASM_OPT}"
-[ -f "${EMSDK_FINALIZE}.real" ] && cp "${EMSDK_FINALIZE}.real" "${EMSDK_FINALIZE}"
 
 # Step 6.5: Verify WASM support is in KiCad fork
 # The kicad submodule should already have WASM port detection and kiplatform support
@@ -531,16 +518,16 @@ fi
 # (scripts/common/jspi-exports.txt: the wx KEEPALIVE entries that can park +
 # pcbjam_libctx_entry; regenerate by grep, not memory), the jspi-scheduler
 # pre-js, and the runtime methods its spill-stack discipline needs
-# (stackSave/stackRestore/HEAPU8). Headless CLIs: nothing — their targets pin
-# -sASYNCIFY=0 and nothing in them may suspend.
+# (stackSave/stackRestore/HEAPU8). Headless CLIs: nothing — no suspension
+# backend; nothing in them may suspend.
 case "${APP_NAME}" in
     kicad_tools|occ_service)
-        ASYNC_LINK_FLAGS=""
-        ASYNC_RUNTIME_METHODS="-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','UTF8ToString','stringToUTF8','lengthBytesUTF8']"
+        JSPI_LINK_FLAGS=""
+        JSPI_RUNTIME_METHODS="-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','UTF8ToString','stringToUTF8','lengthBytesUTF8']"
         ;;
     *)
-        ASYNC_LINK_FLAGS="-sJSPI -sJSPI_EXPORTS=@${PROJECT_ROOT}/scripts/common/jspi-exports.txt --pre-js ${PROJECT_ROOT}/scripts/common/shims/jspi-scheduler.js"
-        ASYNC_RUNTIME_METHODS="-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','UTF8ToString','stringToUTF8','lengthBytesUTF8','stackSave','stackRestore','HEAPU8','HEAP8','HEAP32']"
+        JSPI_LINK_FLAGS="-sJSPI -sJSPI_EXPORTS=@${PROJECT_ROOT}/scripts/common/jspi-exports.txt --pre-js ${PROJECT_ROOT}/scripts/common/shims/jspi-scheduler.js"
+        JSPI_RUNTIME_METHODS="-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','UTF8ToString','stringToUTF8','lengthBytesUTF8','stackSave','stackRestore','HEAPU8','HEAP8','HEAP32']"
         ;;
 esac
 
@@ -556,7 +543,7 @@ emcmake cmake "${KICAD_DIR}" \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
     -DCMAKE_CXX_FLAGS="${EXTRA_FLAGS} -Xclang -fno-pch-timestamp -pthread --use-port=zlib -DKICAD_USE_PLATFORM_WASM=1${DIAG_DEFINES} -I${SYSROOT}/include -I${STUBS_DIR} -include ${STUBS_DIR}/char_traits_uint16_workaround.h" \
     -DCMAKE_C_FLAGS="${EXTRA_FLAGS} -pthread --use-port=zlib -I${SYSROOT}/include -I${STUBS_DIR}" \
-    -DCMAKE_EXE_LINKER_FLAGS="${LINKER_DEBUG_FLAGS} -pthread ${ASYNC_LINK_FLAGS} -sUSE_PTHREADS=1 -sMALLOC=mimalloc -sPTHREAD_POOL_SIZE='${PTHREAD_POOL_EXPR}' -sPTHREAD_POOL_SIZE_STRICT=0 -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=256MB -sMAXIMUM_MEMORY=4GB -sMAX_WEBGL_VERSION=2 ${GL3D_LINK_FLAGS} ${NANOSLEEP_YIELD_LINK} ${MALLINFO_STUB_LINK} ${ASYNC_RUNTIME_METHODS} ${EMBIND_LINK_FLAG} -L${SYSROOT}/lib -L${KICAD_BUILD}/common -L${KICAD_BUILD}/common/gal ${STUBS_BUILD}/libgit2_stub.a ${STUBS_BUILD}/libcurl_stub.a${APP_STUB_LINK} ${STUBS_BUILD}/libnng_stub.a ${EMBIND_OBJ}" \
+    -DCMAKE_EXE_LINKER_FLAGS="${LINKER_DEBUG_FLAGS} -pthread ${JSPI_LINK_FLAGS} -sUSE_PTHREADS=1 -sMALLOC=mimalloc -sPTHREAD_POOL_SIZE='${PTHREAD_POOL_EXPR}' -sPTHREAD_POOL_SIZE_STRICT=0 -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=256MB -sMAXIMUM_MEMORY=4GB -sMAX_WEBGL_VERSION=2 ${GL3D_LINK_FLAGS} ${NANOSLEEP_YIELD_LINK} ${MALLINFO_STUB_LINK} ${JSPI_RUNTIME_METHODS} ${EMBIND_LINK_FLAG} -L${SYSROOT}/lib -L${KICAD_BUILD}/common -L${KICAD_BUILD}/common/gal ${STUBS_BUILD}/libgit2_stub.a ${STUBS_BUILD}/libcurl_stub.a${APP_STUB_LINK} ${STUBS_BUILD}/libnng_stub.a ${EMBIND_OBJ}" \
     -DCMAKE_SHARED_LINKER_FLAGS="-Wl,--allow-multiple-definition" \
     -DCMAKE_MODULE_LINKER_FLAGS="-Wl,--allow-multiple-definition" \
     -DZLIB_LIBRARY="${EMSDK}/upstream/emscripten/cache/sysroot/lib/wasm32-emscripten/pic/libz.a" \

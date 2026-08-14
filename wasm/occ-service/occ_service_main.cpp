@@ -4,7 +4,7 @@
  * A standalone WebAssembly module (own emscripten instance + memory) meant to
  * run in a dedicated Web Worker, so the editor can drop its OCC link entirely
  * (docs/features/occ-split/README.md). pcbnew reaches it through a postMessage
- * RPC; this module never suspends, so it builds -sASYNCIFY=0.
+ * RPC; this module never suspends, so it builds without JSPI.
  *
  * Two embind entry points, both batch/synchronous:
  *   occExport(boardSexpr, paramsJson, models) -> { ok, report, fileName, bytes }

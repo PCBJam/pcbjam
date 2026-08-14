@@ -10,7 +10,3 @@
 	path = web/pcbjam-shared
 	url = https://github.com/PCBJam/pcbjam-shared.git
 	branch = main
-[submodule "binaryen"]
-	path = binaryen
-	url = https://github.com/PCBJam/binaryen
-	branch = wasm-port

@@ -219,8 +219,9 @@ const PCB: ToolCfg = {
   // pcbnew v2-apply scope (ysync 0008 Stage C): FOOTPRINT blobs are the proven
   // path (bare-footprint parse + replace-by-uuid with children — the 0004
   // containment win). Track/via/zone/text APPLY via the (kicad_pcb …) envelope
-  // is the codebase's documented asyncify-fragile parse — those types remain on
-  // the legacy scalar apply until that's solved (tracked in 0008 status).
+  // rode the parse that was asyncify-fragile in wasm (healthy under JSPI —
+  // roundtrip.spec.ts pins it); those types still ship on the legacy scalar
+  // apply (tracked in 0008 status).
   changed: {
     // Replace the footprint wholesale from its own snapshot blob, moved.
     fromSnapshotUuid: "66666666-0000-0000-0000-000000000001",
@@ -267,8 +268,8 @@ for (const cfg of [PL, SCH, PCB]) {
 
       // 3. A genuine local edit emits an items wire carrying the touched item.
       // Run this BEFORE the applies: TestMoveFirst moves the FIRST screen item,
-      // which must be a fixture wire/track (the proven off-fiber move path) — an
-      // apply-added text would no-op the virtual Move (known asyncify quirk).
+      // which must be a fixture wire/track (the proven off-coroutine move path) —
+      // an apply-added text would no-op the virtual Move (a quirk found asyncify-era).
       // Skipped when the harness can't drive the tool's emit (see ToolCfg).
       if (cfg.localEdit) {
         const editedUuid = (await page.evaluate(cfg.localEdit)) as string;

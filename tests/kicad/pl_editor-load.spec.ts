@@ -10,7 +10,7 @@ import { stableShot } from '../e2e/utils/element-tracker';
  *      deterministically without UI automation, and
  *   2. the seeded KiCad config that skips the first-run STARTWIZARD (the harness
  *      now seeds it in preRun, matching the web app's boot.ts) — without it the
- *      wizard's modal loop crashes Asyncify and no file can load.
+ *      wizard's modal loop wedges the boot and no file can load.
  *
  * Strategy mirrors eeschema-load.spec.ts: write a minimal .kicad_wks into MEMFS,
  * call Module.kicadOpenFile(), and poll the editor title. GREEN once it shows the

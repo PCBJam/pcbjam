@@ -13,7 +13,7 @@
 # stays free to service RPC (bg_halt, status, vector reads) mid-simulation.
 # The 4MB/2MB stacks are load-bearing: ngspice's parser overflows emscripten's
 # default 64KB stack (found by the Gate-1 smoke; the CIDER deck died parsing
-# spinit). ASYNCIFY stays off: nothing in the service suspends.
+# spinit). Nothing in the service suspends, so no JSPI.
 # PTHREAD_POOL_DELAY_LOAD: boot must not block on the pool — Firefox stalls
 # nested-worker spawning under multi-page pressure (the SECOND simulator
 # session in an e2e run hung forever in module boot without it); bg_run's
@@ -76,4 +76,4 @@ target_link_libraries( ngspice_service PRIVATE
 # basename) runs identically to a native install regardless of the prefix the
 # dep build happened to use.
 set_target_properties( ngspice_service PROPERTIES
-    LINK_FLAGS "-O2 -g0 --bind -pthread ${NGSPICE_EH_FLAGS} -sASYNCIFY=0 -sMODULARIZE=1 -sEXPORT_NAME=NgspiceService -sENVIRONMENT=worker,node -sEXIT_RUNTIME=0 -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=256MB -sMAXIMUM_MEMORY=4GB -sPTHREAD_POOL_SIZE=4 -sPTHREAD_POOL_SIZE_STRICT=0 -sPTHREAD_POOL_DELAY_LOAD=1 -sSTACK_SIZE=4MB -sDEFAULT_PTHREAD_STACK_SIZE=2MB --embed-file ${NGSPICE_SYSROOT}/share/ngspice/scripts/spinit@/ngspice/scripts/spinit" )
+    LINK_FLAGS "-O2 -g0 --bind -pthread ${NGSPICE_EH_FLAGS} -sMODULARIZE=1 -sEXPORT_NAME=NgspiceService -sENVIRONMENT=worker,node -sEXIT_RUNTIME=0 -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=256MB -sMAXIMUM_MEMORY=4GB -sPTHREAD_POOL_SIZE=4 -sPTHREAD_POOL_SIZE_STRICT=0 -sPTHREAD_POOL_DELAY_LOAD=1 -sSTACK_SIZE=4MB -sDEFAULT_PTHREAD_STACK_SIZE=2MB --embed-file ${NGSPICE_SYSROOT}/share/ngspice/scripts/spinit@/ngspice/scripts/spinit" )

@@ -5,8 +5,8 @@ import { test, expect } from './utils/fixtures';
 // KiCad-10 PCBJAM preload shape, with NO KiCad source. Proves native wasm-EH makes the worker-side
 // parse-throw safe, and that the proxy round-trip / lazy join / modal-reentrancy all work.
 //
-// Named coroutine-* so playwright-coroutine.config.ts runs it in real Chrome + Firefox.
-// WebKit skipped for pthread apps (COEP).
+// Named coroutine-*: the merged config's coroutine-* projects select by testMatch
+// /coroutine.*\.spec\.ts$/ — keep these filenames. WebKit skipped for pthread apps (COEP).
 
 const APP = '/standalone/async-preload/async_preload_test.html';
 
@@ -22,7 +22,7 @@ async function waitForLog( testLogger: { consoleLogs: string[] }, needle: string
   await expect.poll( () => testLogger.consoleLogs.some( l => l.includes( needle ) ), { timeout } ).toBe( true );
 }
 
-// Fatal native-EH / Asyncify failures we must NOT see.
+// Fatal native-EH / suspension-runtime failures we must NOT see.
 function fatal( testLogger: { errors: string[] } ) {
   return testLogger.errors.filter( e => !e.includes( 'favicon' )
     && /invalid state|table index out of bounds|aborted|unreachable|func is not a function/i.test( e ) );

@@ -96,8 +96,9 @@ export const TOOL_FRAME: Record<Tool, string | undefined> = {
  * Every standalone tool here boots through common/single_top.cpp, which runs
  * STARTWIZARD::CheckAndRun() — the first-run "KiCad Setup" wizard. It shows
  * whenever any provider (SETTINGS / LIBRARIES / PRIVACY) reports
- * NeedsUserInput(), which is always true on our ephemeral MEMFS with no config,
- * and its modal loop crashes Asyncify. So for all of them we seed a default
+ * NeedsUserInput() — always true on our ephemeral MEMFS with no config, where
+ * the wizard's modal loop is unsupported (nothing it writes survives a reload,
+ * so it would re-run every boot). So for all of them we seed a default
  * KiCad config before main() (kicad_common.json privacy flags + the lib-tables
  * the providers check) so NeedsUserInput() is false and the wizard is skipped.
  */

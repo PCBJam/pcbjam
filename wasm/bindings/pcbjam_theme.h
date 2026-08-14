@@ -42,7 +42,7 @@ namespace pcbjam_theme {
  *  which have no chrome API. */
 inline void ( *g_afterThemeApplied )() = nullptr;
 
-/** Set the chrome appearance FLAG only — no widget traffic, no fiber. Safe
+/** Set the chrome appearance FLAG only — no widget traffic, no coroutine. Safe
  *  from the browser main thread at any point (it writes one bool in shared
  *  wasm memory); the embedder calls it at onRuntimeInitialized, BEFORE main()
  *  spawns on the KiCad pthread, so the first widget paint is already themed.
@@ -79,7 +79,7 @@ inline void syncChromeAppearance( bool aDark )
 }
 
 /** Apply `aTheme` ("pcbjam-dark", "_builtin_default", …) to one frame. Runs
- *  on the frame's fiber: CommonSettingsChanged reaches tool/view internals
+ *  on the apply coroutine: CommonSettingsChanged reaches tool/view internals
  *  that must not run from a bare JS callback. Null frame no-ops (the merged
  *  dispatcher calls every editor, open or not). */
 inline void setColorTheme( EDA_DRAW_FRAME* aFrame, const std::string& aTheme )
@@ -87,7 +87,7 @@ inline void setColorTheme( EDA_DRAW_FRAME* aFrame, const std::string& aTheme )
     if( !aFrame )
         return;
 
-    pcbjam_collab::runOnFiber( aFrame, [aFrame, aTheme]() {
+    pcbjam_collab::runOnCoroutine( aFrame, [aFrame, aTheme]() {
         // The shell only ever sends our dark theme name or the builtin
         // default, so the chrome appearance rides on that distinction.
         const bool         dark = aTheme != "_builtin_default";
@@ -116,7 +116,7 @@ inline void setColorTheme( EDA_DRAW_FRAME* aFrame, const std::string& aTheme )
         // unconditionally reloads colors and recaches the view.
         aFrame->CommonSettingsChanged( 0 );
 
-        // Queued from INSIDE the fiber body, AFTER CommonSettingsChanged: the
+        // Queued from INSIDE the coroutine body, AFTER CommonSettingsChanged: the
         // menubar rebuild it triggers is itself a CallAfter on this same
         // handler, so FIFO puts the re-assert behind the rebuilt (shown)
         // menubar.

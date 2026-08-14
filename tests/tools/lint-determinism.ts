@@ -18,7 +18,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 const TESTS_ROOT = path.resolve(__dirname, '..');
-const SPEC_DIRS = ['kicad', 'e2e', 'web'];
+const SPEC_DIRS = ['kicad', 'e2e', 'jspi', 'web'];
 
 type Rule = {
   name: string;

@@ -27,14 +27,6 @@ async function canvasCenter(page: Page): Promise<{ x: number; y: number }> {
   return { x: box!.x + box!.width / 2, y: box!.y + box!.height / 2 };
 }
 
-// TODO: re-enable and fix — flaky-red on CI web-firefox (run 29605741796, the
-// very commit that dropped its expected-fail marker): the no-fp-index path
-// trips the crash-free gate below with "[wxWasm] modal event pump error -
-// cancelling modal: RuntimeError: index out of bounds" — the known
-// nested-modal-inside-doRewind asyncify pump limitation (historical: the
-// legacy startModal pump was deleted at doc 20 D-1; modals are scheduler
-// waits now — re-evaluate against the scheduler runtime; see also
-// docs/features/ngspice-split/README.md "The editor side").
 test(  // re-enabled 2026-08-13: the chooser fp-selector flow revived on the JSPI build (both engines)
   'symbol chooser footprint selector populates and preview renders (eeschema)', async ({ page }) => {
   test.setTimeout(420000);
@@ -207,7 +199,8 @@ test(  // re-enabled 2026-08-13: the chooser fp-selector flow revived on the JSP
   // Sources without a published footprint index (the remote/example backend)
   // answer the index op null; the WASM side then intentionally leaves the
   // selector default-only instead of lazily fat-loading every lib inside the
-  // modal pump (which crashes Asyncify — see filterFootprints in pcbnew.cpp).
+  // modal pump (a guard in filterFootprints, pcbnew.cpp — the fat-load crashed
+  // the asyncify-era pump, and staying lean inside a modal is still right).
   // In that mode the meaningful assertions are: the chooser survived with the
   // dual-seeded fp-lib-table, and no modal-pump/runtime error fired.
   const indexAnswered = fpCalls.some((c) => c[0] === 'index' && c[4] === 'ok');

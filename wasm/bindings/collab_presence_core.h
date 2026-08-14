@@ -250,7 +250,7 @@ struct CORE
      *  (center + half-extents, IU) into this canvas — contain, never crop:
      *  the follower's zoom is derived from ITS OWN canvas size, so leaders
      *  and followers on different monitors see the same world region.
-     *  Fiber like every other view mutation from JS. */
+     *  Apply coroutine like every other view mutation from JS. */
     void fitViewport( double aCx, double aCy, double aHalfW, double aHalfH )
     {
         EDA_DRAW_FRAME* fr = frame();
@@ -258,7 +258,7 @@ struct CORE
         if( !fr || aHalfW <= 0 || aHalfH <= 0 )
             return;
 
-        pcbjam_collab::runOnFiber( fr, [this, fr, aCx, aCy, aHalfW, aHalfH]() {
+        pcbjam_collab::runOnCoroutine( fr, [this, fr, aCx, aCy, aHalfW, aHalfH]() {
             KIGFX::VIEW*    view = fr->GetCanvas()->GetView();
             const VECTOR2I& sz   = view->GetScreenPixelSize();
 
@@ -279,7 +279,7 @@ struct CORE
     }
 
     /** kicadCollabSetViewport (0005): pan to a world position (comment panel
-     *  "jump to pin"). Fiber like every other view mutation from JS. */
+     *  "jump to pin"). Apply coroutine like every other view mutation from JS. */
     void panTo( double aCx, double aCy )
     {
         EDA_DRAW_FRAME* fr = frame();
@@ -287,7 +287,7 @@ struct CORE
         if( !fr )
             return;
 
-        pcbjam_collab::runOnFiber( fr, [this, fr, aCx, aCy]() {
+        pcbjam_collab::runOnCoroutine( fr, [this, fr, aCx, aCy]() {
             fr->GetCanvas()->GetView()->SetCenter( VECTOR2D( aCx, aCy ) );
             fr->GetCanvas()->ForceRefresh();
             emitViewportIfChanged();
@@ -311,7 +311,8 @@ struct CORE
             return;
 
         // Screen→world via the non-virtual VIEW::ToWorld (the virtual
-        // VIEW_CONTROLS::GetMousePosition is an asyncify dispatch risk here).
+        // VIEW_CONTROLS::GetMousePosition mis-dispatched here under the
+        // retired asyncify runtime; the direct call stays).
         wxPoint  p     = aEvt.GetPosition();
         VECTOR2D world = fr->GetCanvas()->GetView()->ToWorld( VECTOR2D( p.x, p.y ), true );
 
@@ -327,9 +328,9 @@ struct CORE
 
     // ── remote render ─────────────────────────────────────────────────────
 
-    // Repaint the remote-peers overlay. Runs in CallAfter + COROUTINE: the
-    // first MakeOverlay() view->Add and the items' virtual ViewBBox() need the
-    // fiber stack (asyncify virtual dispatch — same constraint as the apply).
+    // Repaint the remote-peers overlay. Runs in CallAfter + COROUTINE via the
+    // apply queue — serialized with the applies, same constraint as every
+    // other view mutation from JS.
     void redrawOverlay()
     {
         redrawScheduled = false;
@@ -407,7 +408,7 @@ struct CORE
             return;
 
         redrawScheduled = true;
-        pcbjam_collab::runOnFiber( fr, [this]() { redrawOverlay(); } );
+        pcbjam_collab::runOnCoroutine( fr, [this]() { redrawOverlay(); } );
     }
 
     // ── JS entry-point bodies ─────────────────────────────────────────────

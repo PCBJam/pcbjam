@@ -323,16 +323,16 @@ export async function closeTrio(trio: Trio): Promise<void> {
 // ── Per-tab probes ───────────────────────────────────────────────────────────
 
 /** Silent save-to-MEMFS + read back — no onSave side effects. Defers while
- *  collab fiber work is in flight: a bare-embind-stack save during a parked
+ *  collab coroutine work is in flight: a bare-embind-stack save during a parked
  *  apply mis-dispatches (finding #10b) — the wait is JS-side, so it is safe. */
 export function modelText(page: Page, cfg: ToolCfg): Promise<string> {
   return page.evaluate(
     async ({ saveFn, ext }) => {
       const w = window as unknown as {
         FS: FSApi;
-        Module: Mod & { kicadCollabFiberBusy?: () => boolean };
+        Module: Mod & { kicadCollabBusy?: () => boolean };
       };
-      for (let i = 0; i < 200 && w.Module.kicadCollabFiberBusy?.(); i++) {
+      for (let i = 0; i < 200 && w.Module.kicadCollabBusy?.(); i++) {
         await new Promise((r) => setTimeout(r, 25));
       }
       const out = `/home/kicad/documents/_dump.${ext}`;
@@ -371,9 +371,9 @@ export function drift(page: Page, cfg: ToolCfg): Promise<DriftSummary | null> {
     async ({ saveFn, ext }) => {
       const w = window as unknown as {
         KicadCollabV2: { driftReport(f: string, p: string): DriftSummary | null };
-        Module: { kicadCollabFiberBusy?: () => boolean };
+        Module: { kicadCollabBusy?: () => boolean };
       };
-      for (let i = 0; i < 200 && w.Module.kicadCollabFiberBusy?.(); i++) {
+      for (let i = 0; i < 200 && w.Module.kicadCollabBusy?.(); i++) {
         await new Promise((r) => setTimeout(r, 25));
       }
       return w.KicadCollabV2.driftReport(saveFn, `/home/kicad/documents/_drift.${ext}`);

@@ -125,10 +125,10 @@ export function startDriftDetection(opts: DriftDetectOptions): DriftDetector {
   // unchanged since the last report, or the session cap is spent). Being fully
   // synchronous is what lets the session-end check finish during page unload.
   function computeDrift(): DriftReportBody | null {
-    // Defer while collab fiber work is in flight (0008 finding #10b): a save
-    // on the bare embind stack during a parked apply fiber mis-dispatches
+    // Defer while collab apply work is in flight (0008 finding #10b): a save
+    // on the bare embind stack during a parked apply coroutine mis-dispatches
     // (table index OOB). The next Y-update trigger retries.
-    const busy = (opts.mod as { kicadCollabFiberBusy?: () => boolean }).kicadCollabFiberBusy;
+    const busy = (opts.mod as { kicadCollabBusy?: () => boolean }).kicadCollabBusy;
     if (busy?.()) return null;
     save(scratchPath);
     let text: unknown;

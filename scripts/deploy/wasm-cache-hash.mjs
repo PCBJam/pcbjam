@@ -53,6 +53,8 @@ const INPUTS = [
   // the promising-export census.
   { file: "scripts/common/shims/jspi-scheduler.js" },
   { file: "scripts/common/jspi-exports.txt" },
+  // Single-sources DEPS_EH_FLAGS (the exception-model link flags).
+  { file: "scripts/common/env.sh" },
 
   // Per-tool compile recipes (compile flags / emcc link options).
   { dir: "scripts/kicad", match: /^build-.*\.sh$/ },

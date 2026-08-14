@@ -1,3 +1,15 @@
+# Promising-export census for the KiCad browser apps: every wasm entry export
+# whose body can reach a suspension (park) under JSPI. Consumed as
+# -sJSPI_EXPORTS=@thisfile by scripts/kicad/build-kicad-target.sh; emscripten's
+# symbol-list parser strips lines starting with '#'. Do NOT add blank lines
+# (they would parse as empty symbol entries).
+# Regenerate by grep, not memory: the wx entries are the EMSCRIPTEN_KEEPALIVE
+# exports in wxwidgets/src/wasm/ that can park; pcbjam_libctx_entry is
+# libcontext's coroutine entry (kicad/thirdparty/libcontext).
+# Kept in sync BY HAND with two siblings:
+#   - scripts/common/shims/jspi-scheduler.js installExportWraps list (same set
+#     minus main — the runtime calls main before the wraps exist)
+#   - tests/apps/Makefile.wasm WX_JSPI_EXPORTS (comma-joined copy)
 main
 wx_dom_event
 wx_dom_mouse

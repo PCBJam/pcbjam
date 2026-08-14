@@ -1,34 +1,36 @@
-// races_test.cpp - Asyncify race-condition red-green harness.
+// races_test.cpp - suspension race-condition red-green harness.
 //
-// Reproduces the KiCad-WASM Asyncify failure modes deterministically so the shim
-// fixes stay pinned by tests (see features/async/ research dossier):
+// Reproduces the KiCad-WASM suspension failure modes deterministically so the
+// scheduler-shim fixes stay pinned by tests (see features/async/ research
+// dossier). The scenarios were decoded on the retired asyncify runtime; the
+// topologies they stage are runtime-agnostic and now pin the JSPI scheduler's
+// turnstile/window contracts:
 //
-//   - The app performs a fiber swap during OnInit BEFORE the main loop parks.
-//     This is the load-bearing topology detail: it means main() is resumed via
-//     Fibers.trampoline() when wxGUIEventLoop::DoRun() executes the
-//     emscripten_set_main_loop(...,1) `throw "unwind"` park, so the throw tears
-//     through the live trampoline do/while. Without the trampoline self-heal
-//     shim that wedges Fibers.trampolineRunning=true forever and the FIRST
-//     post-park fiber swap hangs (the KiCad schematic/PCB tool hang).
+//   - The app performs a coroutine swap during OnInit BEFORE the main loop
+//     parks. This is the load-bearing topology detail: the park then lands on
+//     a stack that already completed a suspension chain (the startup shape
+//     that historically wedged the asyncify fiber trampoline — the KiCad
+//     schematic/PCB tool hang).
 //     coroutine-nested/nested_test.cpp does NOT do a pre-park swap, which is
 //     why it never reproduced that hang.
 //
-//   - EM_ASYNC_JS sleeps (modal dialogs, token waits) overlapping fiber swaps
-//     reproduce the single-slot Asyncify.currData clobber family (the KiCad
-//     clipboard "index out of bounds" crash).
+//   - EM_ASYNC_JS sleeps (modal dialogs, token waits) overlapping coroutine
+//     swaps — historically the single-slot Asyncify.currData clobber family
+//     (the KiCad clipboard "index out of bounds" crash), now the concurrent
+//     multi-suspension bookkeeping the scheduler's turnstile serializes.
 //
 // URL parameters:
 //   ?only=<scenario>    run a single scenario instead of the default battery
 //                       (used for scenarios that intentionally wedge/crash)
 //   ?mode=sleep-park    make the LAST pre-park suspension a sleep instead of a
-//                       fiber swap: the park throw then escapes through the
-//                       sleep's wakeUp promise reaction as an unhandled
-//                       "unwind" rejection (scenario unwind_through_promise)
+//                       coroutine swap, so the park arrives out of a sleep
+//                       resume rather than a swap (scenario
+//                       unwind_through_promise)
 //
-// Output protocol (polled by tests/asyncify/asyncify-races.spec.ts):
+// Output protocol (polled by tests/jspi/suspend-races.spec.ts):
 //   [ASYNCIFY_RACES] CASE <name>
 //   [ASYNCIFY_RACES] PASS <name>   /  FAIL <name> :: <detail>
-//   [ASYNCIFY_RACES] WATCHDOG <name> state=.. currData=.. trampolineRunning=..
+//   [ASYNCIFY_RACES] WATCHDOG <name> windowLive=.. resumeReady=..
 //   [ASYNCIFY_RACES] SUMMARY total=N passed=N failed=N
 
 #include "wx/wx.h"
@@ -110,7 +112,7 @@ EM_ASYNC_JS( int, races_await_token, ( int aToken ), {
     // a raw await's engine-level resume bypasses the SP discipline and never
     // ends the current window (windowLive wedges the pump).
     var S = globalThis.__wxScheduler;
-    if( S && S.backend === 'jspi' )
+    if( S )
         return await S.promiseYield( p, 'races-token' );
     return await p;
 } );
@@ -128,7 +130,7 @@ EM_JS( void, races_resolve_token_after, ( int aToken, int aValue, int aDelayMs )
 // Plain parked sleep.
 EM_ASYNC_JS( int, races_sleep_ms, ( int aMs ), {
     var S = globalThis.__wxScheduler;
-    if( S && S.backend === 'jspi' ) {
+    if( S ) {
         await S.sleepYield( aMs );  // turnstile-routed (see races_await_token)
         return 1;
     }
@@ -152,19 +154,19 @@ EM_JS( void, races_schedule_ccall, ( const char* aFunc, int aDelayMs ), {
     }, aDelayMs );
 } );
 
-// Watchdog: if the scenario hasn't marked itself done in aMs, dump the Asyncify
-// state and emit a FAIL line. JS-side, so it fires even when C++ is wedged.
+// Watchdog: if the scenario hasn't marked itself done in aMs, dump the
+// scheduler state and emit a FAIL line. JS-side, so it fires even when C++ is
+// wedged.
 EM_JS( void, races_arm_watchdog, ( const char* aName, int aMs ), {
     var name = UTF8ToString( aName );
     Module.__racesDone = Module.__racesDone || {};
     setTimeout( function() {
         if( !Module.__racesDone[name] ) {
-            var st = ( typeof Asyncify !== 'undefined' ) ? Asyncify.state : 'n/a';
-            var cd = ( typeof Asyncify !== 'undefined' ) ? ( Asyncify.currData || 0 ) : 'n/a';
-            var tr = ( typeof Fibers !== 'undefined' ) ? Fibers.trampolineRunning : 'n/a';
-            var nf = ( typeof Fibers !== 'undefined' ) ? Fibers.nextFiber : 'n/a';
-            console.log( '[ASYNCIFY_RACES] WATCHDOG ' + name + ' state=' + st + ' currData=' + cd
-                         + ' trampolineRunning=' + tr + ' nextFiber=' + nf );
+            var S = globalThis.__wxScheduler;
+            var wl = S ? !!S._windowLive : 'n/a';
+            var rr = ( S && S._resumeReady ) ? S._resumeReady.length : 'n/a';
+            console.log( '[ASYNCIFY_RACES] WATCHDOG ' + name + ' windowLive=' + wl
+                         + ' resumeReady=' + rr );
             console.log( '[ASYNCIFY_RACES] FAIL ' + name + ' :: watchdog timeout (suspension never completed)' );
         }
     }, aMs );
@@ -175,34 +177,28 @@ EM_JS( void, races_mark_done, ( const char* aName ), {
     Module.__racesDone[UTF8ToString( aName )] = true;
 } );
 
-// Quiescence invariant sampled from C++ between scenarios.
-//
-// Two things are deliberately NOT checked:
-//   * Fibers.trampolineRunning — this can run on a stack itself resumed via
-//     Fibers.trampoline(), in which case the guard is legitimately true.
-//   * Asyncify.currData — under native wasm-EH the top-level event loop is a
-//     per-frame-yield while-loop (wxWasmYieldToBrowser, an EM_ASYNC_JS rAF
-//     suspend that re-arms every frame; see wxwidgets/src/wasm/evtloop.cpp). So
-//     the main stack is asyncify-suspended between frames and currData is
-//     legitimately churning — it is non-zero while a frame yield is pending, and
-//     can momentarily hold a freed-but-not-yet-nulled buffer right after a
-//     concurrent suspension resumes. That is a transient bookkeeping value, NOT a
-//     leak (the buffers are _malloc/_free'd each frame — addresses are reused),
-//     so requiring currData==0 here is a stale legacy assumption from the old
-//     throw-to-park loop. A genuinely stuck suspension is caught by state != 0
-//     (Suspending/Rewinding never clearing) and by the scenario watchdogs.
-// What's left is the real invariant: the asyncify machine is back to Normal and
-// no fiber is queued.
+// Quiescence invariant sampled from C++ between scenarios, keyed to the JSPI
+// scheduler (globalThis.__wxScheduler): between scenarios no resume window may
+// still be live (_windowLive) and no resume may sit queued (_resumeReady).
+// The main loop's own per-frame suspension (wxWasmYieldToBrowser) does not
+// count against either — its window closes when the frame yield's suspension
+// completes, before the next C++ code runs. A genuinely stuck suspension is
+// additionally caught by the scenario watchdogs. Without a scheduler (the
+// raw-await harness builds) there is no shared state to wedge — quiescent by
+// construction.
 EM_JS( int, races_quiescent, (), {
     try {
-        // JSPI glue still defines an Asyncify object (shared library file)
-        // but with no state machine - Asyncify.state is undefined there, and
-        // that is quiescent-by-construction (suspensions are engine-native).
-        var stOk = ( typeof Asyncify === 'undefined' )
-                   || Asyncify.state === undefined
-                   || Asyncify.state === 0;
-        var nfOk = ( typeof Fibers === 'undefined' ) || !Fibers.nextFiber;
-        return ( stOk && nfOk ) ? 1 : 0;
+        var S = globalThis.__wxScheduler;
+        if( !S )
+            return 1;
+        // NOTE: _windowLive is NOT part of quiescence here — this probe runs
+        // from INSIDE a tracked activation, whose own window is live by
+        // definition. A wedge manifests as backlog: queued-but-unarmed
+        // resumes or a stuck mutator FIFO (the 2s force-clear watchdog keys
+        // on the same signal).
+        var rrOk = !S._resumeReady || S._resumeReady.length === 0;
+        var mqOk = !S.mutatorQueue || S.mutatorQueue.length === 0;
+        return ( rrOk && mqOk ) ? 1 : 0;
     } catch( e ) {
         return 0;
     }
@@ -211,12 +207,11 @@ EM_JS( int, races_quiescent, (), {
 EM_JS( void, races_log_state, ( const char* aTag ), {
     try {
         var tag = UTF8ToString( aTag );
-        var st = ( typeof Asyncify !== 'undefined' ) ? Asyncify.state : 'n/a';
-        var cd = ( typeof Asyncify !== 'undefined' ) ? ( Asyncify.currData || 0 ) : 'n/a';
-        var tr = ( typeof Fibers !== 'undefined' ) ? Fibers.trampolineRunning : 'n/a';
-        var nf = ( typeof Fibers !== 'undefined' ) ? Fibers.nextFiber : 'n/a';
-        console.log( '[ASYNCIFY_RACES] STATE ' + tag + ' state=' + st + ' currData=' + cd
-                     + ' trampolineRunning=' + tr + ' nextFiber=' + nf );
+        var S = globalThis.__wxScheduler;
+        var wl = S ? !!S._windowLive : 'n/a';
+        var rr = ( S && S._resumeReady ) ? S._resumeReady.length : 'n/a';
+        console.log( '[ASYNCIFY_RACES] STATE ' + tag + ' windowLive=' + wl
+                     + ' resumeReady=' + rr );
     } catch( e ) {}
 } );
 
@@ -380,8 +375,8 @@ private:
     {
 #ifdef __EMSCRIPTEN__
         aCtx.Expect( races_quiescent() == 1,
-                     "asyncify machine not quiescent " + aWhere
-                     + " (state/currData/trampolineRunning/nextFiber - see STATE log)" );
+                     "scheduler not quiescent " + aWhere
+                     + " (windowLive/resumeReady - see STATE log)" );
 
         if( races_quiescent() != 1 )
             races_log_state( ( "non-quiescent-" + aWhere ).c_str() );
@@ -870,10 +865,10 @@ public:
         } );
 #endif
 
-        // THE LOAD-BEARING TOPOLOGY: complete a fiber swap cycle during OnInit.
-        // From here on, main() runs inside Fibers.trampoline()'s do/while; the
-        // upcoming emscripten_set_main_loop(...,1) park throw will tear through
-        // that live frame (exactly what KiCad's startup tool burst does).
+        // THE LOAD-BEARING TOPOLOGY: complete a coroutine swap cycle during
+        // OnInit, before the main loop parks (exactly what KiCad's startup
+        // tool burst does). Historically this put main() inside the asyncify
+        // fiber trampoline when the park throw tore through it.
         {
             TestCoroutine co( []( TestCoroutine& self ) { self.Yield( 1 ); } );
             co.Call( 1 );
@@ -884,9 +879,9 @@ public:
 #ifdef __EMSCRIPTEN__
         if( sleepPark )
         {
-            // Make the LAST pre-park suspension a sleep: main is then resumed
-            // from the sleep's wakeUp (trampoline frame already closed), and the
-            // park throw escapes through the wakeUp promise reaction instead.
+            // Make the LAST pre-park suspension a sleep: main then reaches the
+            // park out of a sleep resume rather than a swap (historically the
+            // park throw escaped through the sleep's wakeUp promise reaction).
             races_sleep_ms( 30 );
             LogLine( "[ASYNCIFY_RACES] PRE-PARK-SLEEP done (sleep-park mode)" );
         }

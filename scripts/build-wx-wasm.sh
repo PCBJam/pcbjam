@@ -189,8 +189,8 @@ if [ $NEEDS_CONFIGURE -eq 1 ]; then
     fi
 
     # Exception model: native WebAssembly exceptions (legacy binary encoding) + wasm setjmp/longjmp,
-    # single-sourced from scripts/common/env.sh. The catch-arm-hoisting pass (run post-link, see
-    # build-wasm-test.sh) lets Asyncify suspend from inside C++ catch blocks. See docs/features/wasm-exceptions/.
+    # single-sourced from scripts/common/env.sh. -sWASM_LEGACY_EXCEPTIONS=1 pins the EH binary
+    # encoding (exnref is not adopted across our pinned emsdk/browsers). See docs/features/wasm-exceptions/.
     WX_EH_FLAGS="$DEPS_EH_FLAGS"
     echo "wx EH model flags: ${WX_EH_FLAGS}"
 

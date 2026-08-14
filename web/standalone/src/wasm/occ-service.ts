@@ -18,7 +18,7 @@ import { resolveWasmBase } from "./wasm-assets";
  *     the SCENEGRAPH serialized in KiCad's binary cache format, which the
  *     C++ stub rebuilds with S3D::ReadCache.
  *
- * The occ_service module (own emscripten instance, `-sASYNCIFY=0`) boots in a
+ * The occ_service module (own emscripten instance, no suspension backend) boots in a
  * dedicated Worker on the FIRST request — a pcbnew session that never exports
  * and never views STEP models never fetches it. Same cross-origin worker rules
  * as the pthread workers (boot.ts): a same-origin blob wrapper importScripts

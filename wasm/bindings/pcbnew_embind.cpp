@@ -53,10 +53,8 @@
 #include "collab_common.h"
 #include "collab_presence_core.h"
 #include "open_gate.h"
-#include "main_stack_runner.h"
 #include "pcbjam_async_policy.h"
 #include "timer_park.h"
-#include "fiber_park.h"
 #include "collab_presence_style.h"
 #include "pcbjam_theme.h"
 #include "pcbjam_libs_reload.h"
@@ -89,7 +87,7 @@ using json = nlohmann::json;
 #ifndef KICAD_MERGED_EMBIND
 bool kicadOpenFile( std::string path )
 {
-    // Held across every Asyncify park of the load; see open_gate.h.
+    // Held across every suspension of the load; see open_gate.h.
     pcbjam_open::BusyGuard busy;
 
     if( pcbjam_open::testParkMs() > 0 )
@@ -129,7 +127,7 @@ void kicadTestSetOpenPark( int aMs )
 }
 
 // Test-only (timer-park repro, timer_park.h): a one-shot wx timer whose
-// Notify() Asyncify-parks — the deterministic concurrent-park window.
+// Notify() suspends — the deterministic concurrent-suspension window.
 bool kicadTestArmTimerPark( int aDelayMs, int aParkMs )
 {
     return pcbjam_timer_park::arm( aDelayMs, aParkMs );
@@ -138,38 +136,6 @@ bool kicadTestArmTimerPark( int aDelayMs, int aParkMs )
 std::string kicadTestTimerParkState()
 {
     return pcbjam_timer_park::stateJson();
-}
-
-// Test-only (fiber-resume-park repro, fiber_park.h): Resume() into an
-// asyncify-parked coroutine — the decoded prod board-load trap.
-bool kicadTestFiberParkStart( int aParkMs )
-{
-    return pcbjam_fiber_park::start( aParkMs );
-}
-
-bool kicadTestFiberParkPrime()
-{
-    return pcbjam_fiber_park::prime();
-}
-
-bool kicadTestFiberParkPoke()
-{
-    return pcbjam_fiber_park::poke();
-}
-
-std::string kicadTestFiberParkState()
-{
-    return pcbjam_fiber_park::stateJson();
-}
-
-bool kicadTestFiberParkStartSecond()
-{
-    return pcbjam_fiber_park::startSecond();
-}
-
-bool kicadTestFiberParkPokeSecond()
-{
-    return pcbjam_fiber_park::pokeSecond();
 }
 
 // Read-only viewer lock (read-only-viewer): flips the process-global
@@ -205,9 +171,9 @@ bool kicadSetReadOnly( bool aReadOnly )
 //             trigger; the real change set is a diff of the full model taken after the
 //             edit's BOARD_COMMIT::Push — connectivity cleanup included — has returned,
 //             so peers converge by re-applying already-clean geometry). See eeschema 0007.
-//   - apply = BOARD_COMMIT run inside a CallAfter + COROUTINE fiber stack, the exact
-//             context native tool edits run in, so GAL view->Add of a freshly-constructed
-//             item dispatches its asyncify-instrumented virtuals correctly (eeschema 0007).
+//   - apply = BOARD_COMMIT run inside a CallAfter + COROUTINE, the exact context native
+//             tool edits run in, serialized with every other apply/local edit through the
+//             collab_common.h apply queue (eeschema 0007).
 //
 // Scope of this first commit (0004 §"first PoC", matching eeschema commit-3's first cut):
 // position/geometry sync of existing items — changed (move/reshape) and removed work for
@@ -232,12 +198,12 @@ bool isTrackType( KICAD_T t )
     return t == PCB_TRACE_T || t == PCB_ARC_T || t == PCB_VIA_T;
 }
 
-// Read an item's layer WITHOUT the virtual GetLayer(). That virtual mis-dispatches in the
-// non-coroutine emit/snapshot context — it returns 0 (F_Cu) for EVERY item (the same asyncify
-// call_indirect class as eeschema's Move()), which silently put every collab-added item/track/
-// text on the top copper layer on the peer. A class-qualified `BOARD_ITEM::GetLayer()` is a
-// statically-bound (direct) call that just reads m_layer, bypassing call_indirect. Zones keep
-// their layer in m_layerSet (not m_layer), so use their non-virtual GetFirstLayer().
+// Read an item's layer WITHOUT the virtual GetLayer(). Under the retired asyncify runtime
+// that virtual mis-dispatched in the non-coroutine emit/snapshot context — it returned 0
+// (F_Cu) for EVERY item, silently putting every collab-added item/track/text on the top
+// copper layer on the peer. The class-qualified `BOARD_ITEM::GetLayer()` is a statically-
+// bound (direct) call that just reads m_layer — correct on any runtime, so it stays. Zones
+// keep their layer in m_layerSet (not m_layer), so use their non-virtual GetFirstLayer().
 int itemLayer( BOARD_ITEM* aItem )
 {
     if( aItem->Type() == PCB_ZONE_T )
@@ -314,8 +280,9 @@ json itemToJson( BOARD_ITEM* aItem )
     }
 
     // Vias and zones reconstruct NATIVELY on `added` (the s-expr clipboard blob's `(kicad_pcb …)`
-    // envelope parse — used for footprints — is asyncify-fragile in wasm for these, the same wall
-    // that deferred the eeschema symbol blob). So emit the geometry their makeItem needs.
+    // envelope parse — used for footprints — proved fragile for these under the retired asyncify
+    // runtime, the same wall that deferred the eeschema symbol blob; the native path stays as the
+    // simpler, pinned-by-tests route). So emit the geometry their makeItem needs.
     if( aItem->Type() == PCB_VIA_T )
     {
         auto* via  = static_cast<PCB_VIA*>( aItem );
@@ -342,7 +309,7 @@ json itemToJson( BOARD_ITEM* aItem )
 
         j["poly"] = pts;
     }
-    // A board-level graphic text (Place→Text) also reconstructs NATIVELY (same asyncify reason as
+    // A board-level graphic text (Place→Text) also reconstructs NATIVELY (same reason as
     // via/zone): emit its size / stroke / angle so makeItem can rebuild it. Footprint child text
     // is synced by move, not `added`, so this is only the board PCB_TEXT case.
     else if( aItem->Type() == PCB_TEXT_T )
@@ -632,7 +599,7 @@ BOARD_ITEM* makeItem( BOARD& aBoard, const json& j )
         item = tr;
     }
     // Via / zone: reconstruct natively from emitted geometry (the envelope-blob parse is
-    // asyncify-fragile for these — see itemToJson). The blob is still emitted as a fallback.
+    // skipped for these — see itemToJson). The blob is still emitted as a fallback.
     else if( type == "PCB_VIA" && j.contains( "drill" ) )
     {
         auto*    via = new PCB_VIA( &aBoard );
@@ -714,7 +681,7 @@ BOARD_ITEM* makeItem( BOARD& aBoard, const json& j )
 // Set an existing item's geometry from a `changed` delta. Tracks reshape via their endpoints
 // (independent — like an eeschema wire); everything else moves to an absolute position.
 // SetStart/SetEnd/SetPosition run inside the apply COROUTINE (see kicadCollabApply), the same
-// fiber context native edits use, so the virtual dispatch resolves correctly.
+// context native edits use, serialized through the apply queue.
 void applyChanged( BOARD_ITEM* aItem, const json& j )
 {
     if( isTrackType( aItem->Type() ) && j.contains( "sx" ) )
@@ -915,7 +882,7 @@ void flushDiff()
             // Attach an s-expr clipboard blob ONLY for types makeItem reconstructs from it
             // (footprints, board graphics, …). Tracks/vias/zones/text rebuild NATIVELY from the
             // fields itemToJson already emitted, so they need no blob — and skipping it avoids a
-            // wasted SaveSelection plus the asyncify-fragile envelope parse for those.
+            // wasted SaveSelection plus the envelope parse for those.
             if( live && !isTrackType( live->Type() ) && live->Type() != PCB_ZONE_T
                 && live->Type() != PCB_TEXT_T )
                 withBlob["sexpr"] = blobForItem( board, live );
@@ -971,10 +938,11 @@ void flushDiff()
 
 // Coalesce all the listener callbacks of one commit (and any other edits in the same loop
 // turn) into a single post-settle diff.
-// flushDiff runs inside a COROUTINE: the v2 items emit serializes ROOT items via
-// CLIPBOARD_IO Format (blobForItem), whose virtual dispatch is only reliable on the
-// libcontext fiber stack — on the bare CallAfter stack it can trap and silently kill
-// the whole flush, legacy emit included (same lesson as doApply / eeschema 0007).
+// flushDiff runs inside a COROUTINE via the apply queue: the v2 items emit serializes
+// ROOT items via CLIPBOARD_IO Format (blobForItem), and running it in the same queue
+// as the applies keeps emits from interleaving with a suspended apply body (under the
+// retired asyncify runtime the bare CallAfter stack additionally trapped here — same
+// lesson as doApply / eeschema 0007).
 void scheduleFlush()
 {
     if( g_flushScheduled )
@@ -983,7 +951,7 @@ void scheduleFlush()
     g_flushScheduled = true;
 
     if( PCB_EDIT_FRAME* fr = pcbFrame() )
-        pcbjam_collab::runOnFiber( fr, []() { flushDiff(); } );
+        pcbjam_collab::runOnCoroutine( fr, []() { flushDiff(); } );
     else
         flushDiff();
 }
@@ -1246,10 +1214,9 @@ void doApplyItems( PCB_EDIT_FRAME* aFrame, const json& aWire )
 }
 
 // Test/PoC move (the BOARD_COMMIT body for kicadCollabTestMoveFirst). Run inside a COROUTINE by
-// the caller: `BOARD_ITEM::Move` is virtual, and dispatched off the app main stack (a bare
-// CallAfter) it hits the asyncify call_indirect mis-dispatch and silently NO-OPS — the commit
-// dirties the board but the item doesn't move. On the fiber stack (where native tool edits and
-// doApply run) it dispatches correctly. (Same lesson as eeschema's devirtualized move.)
+// the caller — the context native tool edits and doApply run in, serialized through the apply
+// queue. (Under the retired asyncify runtime the virtual `BOARD_ITEM::Move` additionally
+// mis-dispatched off that context; same lesson as eeschema's devirtualized move.)
 void collabTestMove( PCB_EDIT_FRAME* aFrame, BOARD_ITEM* aItem, int aDx, int aDy )
 {
     BOARD_COMMIT commit( aFrame );
@@ -1344,8 +1311,8 @@ pcbjam_presence::CORE& presenceCore()
 
             // Draw ONE item's selection box under the given style. Exact-geometry
             // outline (style shape 5): footprints hug their bounding hull,
-            // everything else its transformed shape. Runs on the coroutine fiber
-            // (virtual dispatch), falls back to the bbox on anything that can't
+            // everything else its transformed shape. Runs on the apply
+            // coroutine, falls back to the bbox on anything that can't
             // produce a polygon.
             auto drawItem = [&]( BOARD_ITEM* item, const std::string& name,
                                  const KIGFX::COLOR4D& itemColor,
@@ -1447,19 +1414,18 @@ void schedulePresenceSelCheck()
 // JS → C++. Apply a remote per-item delta by uuid, through BOARD_COMMIT so connectivity/ratsnest
 // recompute the same way a UI edit would (0004 §apply).
 //
-// BOARD_COMMIT must run in the editor's Asyncify-rooted main loop — invoking it from this embind
-// ccall, or from a setTimeout callback, traps with an "indirect call signature mismatch" (those
-// aren't the asyncify root). wxEvtHandler::CallAfter queues onto the app's pending-event list,
-// drained every frame by the wasm main loop (src/wasm/evtloop.cpp) — the exact context real UI
-// edits run in. Additionally run the mutation inside a COROUTINE so it executes on a libcontext
-// fiber stack: BOARD_COMMIT::Push's CHT_ADD of a freshly-built item dispatches GAL virtuals
-// (view->Add → ViewGetLayers) through asyncify-instrumented invoke_*; off the fiber stack those
-// mis-dispatch and trap inside KiCad core, on it they dispatch correctly (eeschema 0007).
+// BOARD_COMMIT must run on the editor's main loop, not on this embind ccall or a setTimeout
+// callback: wxEvtHandler::CallAfter queues onto the app's pending-event list, drained every
+// frame by the wasm main loop (src/wasm/evtloop.cpp) — the exact context real UI edits run in.
+// Additionally run the mutation inside a COROUTINE via the collab_common.h apply queue: a
+// commit body that suspends (connectivity/GAL work) returns early from COROUTINE::Call, so
+// applies must serialize with each other and with local edits or they interleave on shared
+// commit/listener state (eeschema 0007, drift-trio #10).
 void pcbCollabApply( std::string aJson )
 {
     // Open-in-flight guard (open_gate.h): never touch the model while a
-    // kicadOpenFile Asyncify chain is parked mid-load — commits/virtuals on a
-    // half-built board mis-dispatch ("indirect call signature mismatch").
+    // kicadOpenFile chain is suspended mid-load — commits/virtuals would walk
+    // a half-built board mid-mutation.
     // Callers gate on kicadOpenFileBusy; fuzzed by tests/kicad/collab-load-fuzz.spec.ts.
     if( pcbjam_open::busy() )
         return;
@@ -1474,7 +1440,7 @@ void pcbCollabApply( std::string aJson )
     if( !fr )
         return;
 
-    pcbjam_collab::runOnFiber( fr, [fr, delta]() { doApply( fr, delta ); } );
+    pcbjam_collab::runOnCoroutine( fr, [fr, delta]() { doApply( fr, delta ); } );
 }
 
 
@@ -1495,7 +1461,7 @@ void pcbCollabApplyItems( std::string aJson )
     if( !fr )
         return;
 
-    pcbjam_collab::runOnFiber( fr, [fr, wire]() { doApplyItems( fr, wire ); } );
+    pcbjam_collab::runOnCoroutine( fr, [fr, wire]() { doApplyItems( fr, wire ); } );
 }
 
 
@@ -1631,9 +1597,9 @@ std::string pcbCollabTestMoveFirst( int aDx, int aDy )
                             return;
 
                         movedId = toUtf8( item->m_Uuid.AsString() );
-                        // Main stack + fiber (runOnFiber), so the virtual Move()
-                        // dispatches instead of no-opping — same wrapping as doApply.
-                        pcbjam_collab::runOnFiber( fr, [fr, item, aDx, aDy]() {
+                        // Main loop + apply coroutine (runOnCoroutine) — same
+                        // wrapping as doApply.
+                        pcbjam_collab::runOnCoroutine( fr, [fr, item, aDx, aDy]() {
                             collabTestMove( fr, item, aDx, aDy );
                         } );
                     } );
@@ -1997,9 +1963,8 @@ std::string kicadCollabTestItemBlob( std::string aId )
 // ── ysync-review repro hooks ─────────────────────────────────────────────────
 // Local-edit test hooks for the ysync-review repro e2e (docs/features/
 // ysync-review on the ysync-review branch): each drives a REAL BOARD_COMMIT on
-// the app main stack inside a COROUTINE fiber (the collabTestMove wrapping —
-// virtual item mutators mis-dispatch off the fiber stack), so the
-// COLLAB_LISTENER → flushDiff emit path runs exactly as for a UI edit. Each
+// the app main loop inside the apply COROUTINE (the collabTestMove wrapping),
+// so the COLLAB_LISTENER → flushDiff emit path runs exactly as for a UI edit. Each
 // returns false when the uuid doesn't resolve, letting the spec distinguish
 // "hook missed the item" from "differ missed the edit" (bug 04).
 
@@ -2035,7 +2000,7 @@ bool pcbCollabTestRemoveItem( std::string aId )
     if( !item )
         return false;
 
-    pcbjam_collab::runOnFiber( fr, [fr, item]() {
+    pcbjam_collab::runOnCoroutine( fr, [fr, item]() {
         BOARD_COMMIT commit( fr );
         commit.Remove( item );
         commit.Push( wxT( "Collab test remove" ) );
@@ -2055,7 +2020,7 @@ bool pcbCollabTestRotateItem( std::string aId, double aDeg )
     if( !item )
         return false;
 
-    pcbjam_collab::runOnFiber( fr, [fr, item, aDeg]() {
+    pcbjam_collab::runOnCoroutine( fr, [fr, item, aDeg]() {
         BOARD_COMMIT commit( fr );
         commit.Modify( item );
         item->Rotate( item->GetPosition(), EDA_ANGLE( aDeg, DEGREES_T ) );
@@ -2077,7 +2042,7 @@ bool pcbCollabTestSetPadSize( std::string aId, int aW, int aH )
 
     PAD* pad = static_cast<PAD*>( item );
 
-    pcbjam_collab::runOnFiber( fr, [fr, pad, aW, aH]() {
+    pcbjam_collab::runOnCoroutine( fr, [fr, pad, aW, aH]() {
         BOARD_COMMIT commit( fr );
         commit.Modify( pad );
         pad->SetSize( PADSTACK::ALL_LAYERS, VECTOR2I( aW, aH ) );
@@ -2098,7 +2063,7 @@ bool pcbCollabTestMoveEndpoint( std::string aId, int aDx, int aDy )
     if( !item || ( !isTrackType( item->Type() ) && item->Type() != PCB_SHAPE_T ) )
         return false;
 
-    pcbjam_collab::runOnFiber( fr, [fr, item, aDx, aDy]() {
+    pcbjam_collab::runOnCoroutine( fr, [fr, item, aDx, aDy]() {
         BOARD_COMMIT commit( fr );
         commit.Modify( item );
 
@@ -2121,7 +2086,7 @@ bool pcbCollabTestMoveEndpoint( std::string aId, int aDx, int aDy )
 
 // ── drift-trio phase B action hooks (standalone-hardening 0008 §5) ───────────
 // Creation/mutation primitives for the trio harness's action catalog. Each
-// drives a REAL BOARD_COMMIT on the fiber stack, so the BOARD_LISTENER →
+// drives a REAL BOARD_COMMIT on the apply coroutine, so the BOARD_LISTENER →
 // flushDiff emit path runs exactly as for a UI edit. Names are tool-unique
 // (registered outside the KICAD_MERGED_EMBIND guard — same convention as
 // kicadCollabTestSetPadSize), so the merged image needs no dispatcher.
@@ -2140,7 +2105,7 @@ static std::string pcbCollabTestCommitAdd( BOARD_ITEM* aItem, const wxChar* aMsg
     std::string id = toUtf8( aItem->m_Uuid.AsString() );
     wxString    msg( aMsg );
 
-    pcbjam_collab::runOnFiber( fr, [fr, aItem, msg]() {
+    pcbjam_collab::runOnCoroutine( fr, [fr, aItem, msg]() {
         BOARD_COMMIT commit( fr );
         commit.Add( aItem );
         commit.Push( msg );
@@ -2221,7 +2186,7 @@ bool pcbCollabTestFlipBoardItem( std::string aId )
     if( !testResolve( fr, aId ) )
         return false;
 
-    pcbjam_collab::runOnFiber( fr, [fr, aId]() {   // re-resolve on the fiber (S4)
+    pcbjam_collab::runOnCoroutine( fr, [fr, aId]() {   // re-resolve on the coroutine (S4)
         BOARD_ITEM* item = testResolve( fr, aId );
 
         if( !item )
@@ -2251,7 +2216,7 @@ bool pcbCollabTestSetFootprintField( std::string aId, std::string aField, std::s
     if( !isRef && aField != "Value" )
         return false;
 
-    pcbjam_collab::runOnFiber( fr, [fr, aId, text, isRef]() {   // re-resolve on the fiber (S4)
+    pcbjam_collab::runOnCoroutine( fr, [fr, aId, text, isRef]() {   // re-resolve on the coroutine (S4)
         BOARD_ITEM* live = testResolve( fr, aId );
 
         if( !live || live->Type() != PCB_FOOTPRINT_T )
@@ -2279,7 +2244,7 @@ bool pcbCollabTestSetBoardItemLocked( std::string aId, bool aLocked )
     if( !testResolve( fr, aId ) )
         return false;
 
-    pcbjam_collab::runOnFiber( fr, [fr, aId, aLocked]() {   // re-resolve on the fiber (S4)
+    pcbjam_collab::runOnCoroutine( fr, [fr, aId, aLocked]() {   // re-resolve on the coroutine (S4)
         BOARD_ITEM* item = testResolve( fr, aId );
 
         if( !item )
@@ -2294,7 +2259,7 @@ bool pcbCollabTestSetBoardItemLocked( std::string aId, bool aLocked )
     return true;
 }
 
-// By-uuid variant of MoveFirst (same fiber + BOARD_COMMIT body).
+// By-uuid variant of MoveFirst (same coroutine + BOARD_COMMIT body).
 bool pcbCollabTestMoveBoardItem( std::string aId, int aDx, int aDy )
 {
     PCB_EDIT_FRAME* fr = pcbFrame();
@@ -2302,11 +2267,11 @@ bool pcbCollabTestMoveBoardItem( std::string aId, int aDx, int aDy )
     if( !testResolve( fr, aId ) )
         return false;
 
-    // Re-resolve ON the fiber: a remote remove can apply between scheduling
+    // Re-resolve ON the coroutine: a remote remove can apply between scheduling
     // and running, and doApplyItems FREES removed items — a captured pointer
     // would be dangling and the commit would resurrect a deleted item
     // (drift-trio S4 move-vs-delete). Vanished => the move loses, silently.
-    pcbjam_collab::runOnFiber( fr, [fr, aId, aDx, aDy]() {
+    pcbjam_collab::runOnCoroutine( fr, [fr, aId, aDx, aDy]() {
         if( BOARD_ITEM* item = testResolve( fr, aId ) )
             collabTestMove( fr, item, aDx, aDy );
     } );
@@ -2330,7 +2295,7 @@ std::string pcbCollabTestDuplicateBoardItem( std::string aId, int aDx, int aDy )
 
     std::string id = toUtf8( dup->m_Uuid.AsString() );
 
-    pcbjam_collab::runOnFiber( fr, [fr, dup]() {
+    pcbjam_collab::runOnCoroutine( fr, [fr, dup]() {
         BOARD_COMMIT commit( fr );
         commit.Add( dup );
         commit.Push( wxT( "Collab test duplicate" ) );
@@ -2389,9 +2354,9 @@ std::string Pad_GetPinFunction(PAD* pad) {
     return pad->GetPinFunction().ToStdString();
 }
 
-static bool kicadCollabFiberBusyProbe()
+static bool kicadCollabBusyProbe()
 {
-    return pcbjam_collab::fiberBusy() || !pcbjam_collab::fiberQueue().empty();
+    return pcbjam_collab::applyBusy() || !pcbjam_collab::applyQueue().empty();
 }
 
 EMSCRIPTEN_BINDINGS(pcbnew) {
@@ -2436,13 +2401,7 @@ EMSCRIPTEN_BINDINGS(pcbnew) {
     function("kicadTestSetOpenPark", &kicadTestSetOpenPark);
     function("kicadTestArmTimerPark", &kicadTestArmTimerPark);
     function("kicadTestTimerParkState", &kicadTestTimerParkState);
-    function("kicadTestFiberParkStart", &kicadTestFiberParkStart);
-    function("kicadTestFiberParkPrime", &kicadTestFiberParkPrime);
-    function("kicadTestFiberParkPoke", &kicadTestFiberParkPoke);
-    function("kicadTestFiberParkState", &kicadTestFiberParkState);
-    function("kicadTestFiberParkStartSecond", &kicadTestFiberParkStartSecond);
-    function("kicadTestFiberParkPokeSecond", &kicadTestFiberParkPokeSecond);
-    function("kicadCollabFiberBusy", &kicadCollabFiberBusyProbe);
+    function("kicadCollabBusy", &kicadCollabBusyProbe);
     // Read-only viewer lock (read-only-viewer).
     function("kicadSetReadOnly", &kicadSetReadOnly);
     // Yjs collaborative bridge entry points (same contract as pl_editor / eeschema).

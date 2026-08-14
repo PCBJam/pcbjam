@@ -3,36 +3,34 @@ import { test, expect } from "./fixtures";
 import { expectGuardsSilent } from "./utils/wait-beacons";
 
 /**
- * Timer-park concurrent-Asyncify repro (gal-refresh-timer investigation).
+ * Timer-park concurrency repro (gal-refresh-timer investigation).
  *
- * The prod trap ("index out of bounds" + "unreachable executed" in doRewind,
- * v0.1.17–19, still un-reproduced naturally): a wx timer callback is a FRESH
- * JS→wasm entry (emscripten_async_call → TimerCallbackFunc::Run → Notify()),
- * and the main loop spends most wall-clock time Asyncify-parked inside
- * wxWasmYieldToBrowser. A timer handler that itself parks therefore creates
- * TWO live Asyncify contexts over the single-slot `Asyncify.currData` — the
- * emscripten #9153 family that the scheduler shim
- * (scripts/common/shims/asyncify-scheduler.js) silently repairs. The collab entries add the third ingredient: they run on
- * TOOL_MANAGER coroutines (emscripten_fiber_swap), which bypass the shim's
- * allocateData accounting entirely — and `finishContextSwitch` is exactly
- * where the prod trap's second stack dies.
+ * The prod trap this spec was built to chase ("index out of bounds" +
+ * "unreachable executed" in doRewind, v0.1.17–19, never reproduced naturally)
+ * was an asyncify-era disease: a wx timer callback is a FRESH JS→wasm entry
+ * (emscripten_async_call → TimerCallbackFunc::Run → Notify()), and a timer
+ * handler that itself parked could overlap the main loop's in-place yield
+ * park — two live suspension contexts over asyncify's single-slot state (the
+ * emscripten #9153 family). The collab entries added the third ingredient:
+ * they ran on TOOL_MANAGER fibers, which bypassed the old shim's accounting
+ * entirely. Under JSPI every suspending entry owns its own suspender, so the
+ * collision class is structurally gone; this spec pins that it STAYS gone.
  *
  * The natural trigger needs a timer handler that parks mid-paint
  * (scheduler-dependent; never hit locally). `kicadTestArmTimerPark` makes the
  * window deterministic: a one-shot wx timer whose Notify() emscripten_sleep()s
  * for a fixed time. Three escalating cycles:
  *
- *   1. timer park alone           (timer chain × main-loop yield park)
- *   2. + collab entry hammering   (adds fiber swaps through the window)
+ *   1. timer park alone           (timer chain suspends across frame yields)
+ *   2. + collab entry hammering   (adds coroutine switches through the window)
  *   3. same again                 (interleaving lottery, second draw)
  *
- * The spec asserts the runtime SURVIVES every cycle — on a build where the
- * hypothesis holds this is deterministically RED, and after the real fix it
- * is the regression gate.
+ * The spec asserts the runtime SURVIVES every cycle and that no scheduler or
+ * libcontext anomaly beacon fires anywhere in the run.
  *
  * RE-PINNED AT THE FLIP (docs/features/async/22 §10, 2026-08-08): the staged
  * overlap needed the main loop's per-frame in-place park, which D5 removed.
- * The final assert now pins ZERO observable concurrent-park windows — the
+ * The final assert now pins ZERO observable anomaly beacons — the
  * post-migration invariant — instead of demanding the overlap engage.
  */
 
@@ -150,10 +148,10 @@ async function openAndSettle(page: Page, content: string): Promise<void> {
 
 /**
  * One repro cycle in-page: arm the parking timer, then poll its state until
- * the park completes — optionally hammering the fiber-based collab entries
+ * the park completes — optionally hammering the coroutine-based collab entries
  * through the window (the prod settle fan-out shape). Every embind entry here
- * runs while the timer chain is Asyncify-parked and the main loop's yield
- * park keeps cycling: the exact concurrent-context interleaving under test.
+ * runs while the timer chain is suspended mid-Notify(): the exact
+ * concurrent-entry interleaving under test.
  */
 async function armAndRide(
   page: Page,
@@ -176,7 +174,7 @@ async function armAndRide(
     stats.armed = true;
 
     const t0 = performance.now();
-    // Bound = park length + generous rewind budget; exits on completion.
+    // Bound = park length + generous resume budget; exits on completion.
     while (performance.now() - t0 < parkMs + 20000) {
       try {
         const st = JSON.parse(m.kicadTestTimerParkState()) as {
@@ -197,8 +195,8 @@ async function armAndRide(
       // Heap growth mid-park (prod trace: `stage:done … GREW +187MB`): growth
       // detaches every JS heap view; a stale view held across it is one of
       // the few mechanisms that yields a bad function-table index LATER.
-      // 256 MB per shot, deliberately leaked — the asyncify buffers of the
-      // parked chains live in linear memory on both sides of the boundary.
+      // 256 MB per shot, deliberately leaked — the suspended chains' coroutine
+      // stacks live in linear memory on both sides of the boundary.
       if (stats.fired && growHeap && !stats.grewBytes) {
         const alloc = (
           m as unknown as { ___libc_malloc?: (n: number) => number }
@@ -234,7 +232,7 @@ async function armAndRide(
   }, opts);
 }
 
-test.describe("timer Notify() Asyncify-park during main-loop yield (concurrent currData)", () => {
+test.describe("timer Notify() suspends during the main-loop frame yield (concurrent parks)", () => {
   test("runtime survives a parking timer handler, alone and under fiber hammering", async ({
     page,
     testLogger,
@@ -270,7 +268,7 @@ test.describe("timer Notify() Asyncify-park during main-loop yield (concurrent c
     }
 
     // The runtime is still fully functional: snapshots walk the board and a
-    // real apply lands (a poisoned Asyncify state fails one of these first).
+    // real apply lands (a poisoned suspension state fails one of these first).
     const itemCount = await page.evaluate(
       () =>
         JSON.parse((window.Module as unknown as Mod).kicadCollabSnapshotItems()).added.length,
@@ -331,21 +329,23 @@ test.describe("timer Notify() Asyncify-park during main-loop yield (concurrent c
     );
     if (cLane) expectGuardsSilent(testLogger.consoleLogs, ["timerRetry"]);
 
-    // RE-PINNED AT THE FLIP (docs/features/async/22 §10, 2026-08-08). This
-    // lever staged "timer park × MAIN-LOOP YIELD PARK", and D5 removed the
-    // main loop's per-frame in-place park — the overlap is structurally
-    // impossible now, so "the shim observed the window" (>0) can never pass
-    // again. The pin flips to the invariant the migration exists to
-    // establish: the lever runs, the park survives (asserted above), and NO
-    // concurrent-park window is observable at all.
+    // RE-PINNED AT THE FLIP (docs/features/async/22 §10, 2026-08-08), and
+    // RE-KEYED for JSPI (2026-08-14): the asyncify scheduler's concurrent-park
+    // beacon family retired with it, which made the old filter
+    // vacuous. The invariant stands — the lever runs and the park survives
+    // (asserted above) — and the observable JSPI failure modes of an overlap
+    // are ghost/refused transitions, a stuck-window force-clear, a job-tick
+    // trap, or a refused coroutine entry.
     const overlapLines = testLogger.consoleLogs.filter((l) =>
-      /\[wx-asyncify\] (concurrent-park|aliased-wake-live|overlapped-wake)/.test(l),
+      /\[libctx-jspi\] ghost\/refused transition|\[wx-scheduler\] (force-clearing stuck window|job tick error)|entry REJECTED/.test(
+        l,
+      ),
     );
     console.log(`[TEST] overlap beacons: ${overlapLines.length} line(s)`);
     for (const l of overlapLines.slice(0, 10)) console.log(`[TEST]   ${l}`);
     expect(
       overlapLines.length,
-      "no concurrent-park window is observable post-flip",
+      "no ghost/stuck-window/job-tick/rejected-entry anomaly is observable post-flip",
     ).toBe(0);
   });
 });

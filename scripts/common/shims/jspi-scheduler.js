@@ -1,9 +1,9 @@
-// jspi-scheduler.js — the JSPI-era successor of asyncify-scheduler.js.
+// jspi-scheduler.js — the wx scheduler shim for the JSPI runtime.
 //
-// Ships as a --pre-js. Keeps the S4 token-wait registry contract byte-for-byte
+// Ships as a --pre-js. Provides the S4 token-wait registry
 // (beginWait/waitPromise/resolveWait/resolveTopWait/waitEarlyResolved/
-// takeWaitResult/pendingWaits/noteContextWait/shutdown) so every C++ bridge
-// and web caller keeps working, and adds the two things JSPI needs:
+// takeWaitResult/pendingWaits/shutdown) that every C++ bridge and web
+// caller relies on, plus the two things JSPI needs:
 //
 //  1. ACTIVATION TRACKING. Every promising export the app declares is wrapped
 //     so the shim always knows which activation is executing synchronously
@@ -20,30 +20,21 @@
 //     into parked frames' locals (stack-allocated wxDialog members mutated
 //     by a cross-tick EndModal), resurrecting dead state at resume.
 //
-// Observability: an event ring + live activation table via __wxWaitDump()
-// (alias __wxAsyncifyDump kept one release for crash-report consumers).
-//
-// Asyncify-era machinery that has NO successor here, by design: currData
-// single-writer tripwire, deferred-wake queue, stale-fiber quarantine,
-// trampoline heal, dyncall shims — the states they policed are
-// unrepresentable under JSPI.
+// Observability: an event ring + live activation table via __wxWaitDump().
 
 (function () {
   "use strict";
 
-  if (globalThis.__wxScheduler && globalThis.__wxScheduler.backend === "jspi") {
+  if (globalThis.__wxSchedulerInstalled) {
     return; // idempotent under double injection
   }
 
   var RING_CAP = 256;
 
   var S = {
-    backend: "jspi",
-
     // --- mailbox lane (timers/wheel; ordering machinery, mechanism-free) ----
-    // Same contract as the asyncify shim: enqueueAfter queues a C callback,
-    // delivery happens through the dedicated _wxWasmMailboxTick export from a
-    // fresh task, in order. Under JSPI the tick is a promising export — a
+    // enqueueAfter queues a C callback; delivery happens through the dedicated
+    // _wxWasmMailboxTick export from a fresh task, in order. The tick is a
     // suspension inside a delivered handler parks the tick's own activation,
     // and the rejection path carries the same containment (a throwing handler
     // must not leave a parked quasi-modal unresolved).
@@ -94,17 +85,12 @@
       }, 0);
     },
 
-    // --- S1 embind lane (contract-identical port from asyncify-scheduler) --
+    // --- S1 embind lane --
     // Mutators (doc 18 classification) must not enter wasm while a load is in
     // flight: the open activation is suspended mid-load and a collab-apply /
     // save / theme flip entering between its parks would mutate the board
-    // under it. Semantic exclusion — nothing asyncify-specific about it.
-    // The FIFO drains, in order, once kicadOpenFileBusy clears.
-    //
-    // Retired here, by design: _wrapOpenFile / kicadOpenFileStart (the
-    // asyncify Phase F starter route). Under JSPI kicadOpenFile is an embind
-    // async() export — its own promising activation parks legally and the
-    // call returns a real Promise; no dispatch-context detour exists.
+    // under it. The exclusion is semantic, independent of the suspension
+    // mechanism. The FIFO drains, in order, once kicadOpenFileBusy clears.
     MUTATOR_NAMES: [
       "kicadSetChrome", "kicadSetReadOnly",
       "kicadCollabApply", "kicadCollabApplyItems",
@@ -181,16 +167,11 @@
     },
 
     // The embind PARKERs (kicadOpenFile / kicadOpenFiles / kicadLibsReload,
-    // registered emscripten::async() under PCBJAM_JSPI): wrap them with the
+    // registered emscripten::async()): wrap them with the
     // same activation tracking as the raw promising exports, so their parks
     // (wxWasmYieldUntil inside the load) find a tracked record and get the
-    // green-copy spill-stack discipline. Embind names live on Module WITHOUT
+    // green-region spill-stack discipline. Embind names live on Module WITHOUT
     // the underscore prefix, hence the separate installer.
-    // NOT here: the kicadTestFiberPark* levers. They are emscripten::async()
-    // (a plain embind call into a suspending body throws on strict-JSPI
-    // Firefox), but the parker wrap's turnstile queueing would DEFER a
-    // mid-park poke until the park drains — the exact race the levers exist
-    // to stage. Their suspensions ride the untracked-anon-record path.
     PARKER_NAMES: ["kicadOpenFile", "kicadOpenFiles", "kicadLibsReload"],
     _wrapParkers: function () {
       var wrapped = 0;
@@ -252,12 +233,6 @@
       return entry.result | 0;
     },
 
-    // JSPI: context waits do not exist; kept as a loud no-op for transition
-    // callers (nothing registers them — wxWasmYieldUntil suspends in place).
-    noteContextWait: function (token) {
-      console.warn("[wx-scheduler] noteContextWait(" + token + ") under jspi backend");
-    },
-
     resolveWait: function (token, result) {
       var entry = this.waits.get(token);
       if (!entry || entry.resolved) return false;
@@ -294,7 +269,7 @@
     dead: false,
     shutdown: function (why) {
       this.dead = true;
-      // S6 teardown contract (same as the asyncify shim): queued-but-
+      // S6 teardown contract: queued-but-
       // undelivered mutators FAIL LOUDLY instead of hanging their callers,
       // and undelivered mailbox messages drop — the pumps stop themselves on
       // the dead flag.
@@ -307,8 +282,8 @@
       if (stranded) {
         console.warn("[wx-scheduler] shutdown (" + why + ") stranded:" + stranded);
       } else {
-        // teardown-gate contract (e2e/app-quit.spec.ts, ported from the
-        // asyncify shim): a clean exit must SAY so on the console
+        // teardown-gate contract (e2e/app-quit.spec.ts): a clean exit must
+        // SAY so on the console
         console.log("[wx-scheduler] shutdown (" + why + ") clean");
       }
       this._note("shutdown", why, stranded);
@@ -751,7 +726,7 @@
       return wrapped;
     },
 
-    // --- observability skeleton (finalized in Phase 7) ---------------------
+    // --- observability ------------------------------------------------------
     _ring: [],
     _note: function (ev, a, b) {
       this._ring.push([Date.now(), ev, String(a), b | 0]);
@@ -768,7 +743,6 @@
         });
       });
       return {
-        backend: "jspi",
         dead: this.dead,
         waitsBegun: this.waitsBegun,
         waitsResolved: this.waitsResolved,
@@ -787,7 +761,7 @@
   globalThis.__wxScheduler = S;
   globalThis.__wxSchedulerInstalled = true; // wxWasmSchedulerAssertInstalled probe
 
-  // --- Phase 7 signals ------------------------------------------------------
+  // --- diagnostic signals ---------------------------------------------------
   // SuspendError attributor: a SuspendError means a PLAIN (non-promising)
   // wasm entry tried to park — a missed -sJSPI_EXPORTS/installExportWraps
   // entry. The engine cannot say WHICH export, but the live dump (what was
@@ -825,8 +799,6 @@
     });
   }, 10000);
   globalThis.__wxWaitDump = function () { return S.dump(); };
-  // transition alias: crash-report consumers read __wxAsyncifyDump
-  globalThis.__wxAsyncifyDump = globalThis.__wxWaitDump;
 
   // Self-install the activation wraps once the runtime is up (this file ships
   // as a --pre-js, so Module exists here). The name set mirrors the

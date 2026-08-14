@@ -1841,7 +1841,7 @@ const SHOT_OPTS = { scale: 'css', animations: 'disabled', caret: 'hide' } as con
  *   1. Fast rAF convergence — hash every animation frame until `stableFrames` are identical (~48ms):
  *      cheap, catches high-frequency motion (animations).
  *   2. Wide confirmation — then re-hash `confirmFrames` times, each `interval` ms apart (~500ms), so a
- *      SLOW async repaint (e.g. a file list arriving after an asyncify readdir) that a few 16ms frames
+ *      SLOW async repaint (e.g. a file list arriving after a suspended readdir) that a few 16ms frames
  *      would sail past forces a reset back to phase 1.
  * Resolves once both phases pass, or when `timeout` elapses — genuinely-animating states (timers,
  * mid-slide) never converge and are captured at the deadline, exactly as the old raw screenshots did.

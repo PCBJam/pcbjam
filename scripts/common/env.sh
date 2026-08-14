@@ -41,8 +41,8 @@ export EMSDK_QUIET=1
 # WebAssembly exceptions (legacy binary encoding) are the only build mode. -sSUPPORT_LONGJMP=wasm is
 # required because the deps that use setjmp/longjmp (freetype, cairo, OpenCASCADE) must use wasm
 # setjmp — emscripten's JS-longjmp implementation cannot coexist with -fwasm-exceptions (it would
-# leave emscripten_longjmp undefined). -sWASM_LEGACY_EXCEPTIONS=1 selects the EH binary encoding our
-# post-link Asyncify + catch-arm-hoisting pass can consume (Asyncify can't handle exnref).
+# leave emscripten_longjmp undefined). -sWASM_LEGACY_EXCEPTIONS=1 pins the legacy EH binary encoding:
+# the exnref encoding is not adopted across our pinned emsdk toolchain and target browsers.
 export DEPS_EH_FLAGS="-fwasm-exceptions -sSUPPORT_LONGJMP=wasm -sWASM_LEGACY_EXCEPTIONS=1"
 
 # Emscripten SDK setup
@@ -122,23 +122,6 @@ elif [ -z "$JOBS" ]; then
     # Use -j N to override for faster builds on machines with more RAM
     export JOBS=1
 fi
-
-# Common linker flags for WASM
-export WASM_LDFLAGS="\
--sALLOW_MEMORY_GROWTH=1 \
--sINITIAL_MEMORY=256MB \
--sSTACK_SIZE=5MB \
--sASYNCIFY=1 \
--sASYNCIFY_STACK_SIZE=16384 \
--sLEGACY_GL_EMULATION \
--sMAX_WEBGL_VERSION=2"
-
-# Threading flags (when enabled)
-export PTHREAD_LDFLAGS="\
--pthread \
--sPROXY_TO_PTHREAD=1 \
--sPTHREAD_POOL_SIZE=navigator.hardwareConcurrency \
--sOFFSCREENCANVAS_SUPPORT=1"
 
 # Create output directories
 mkdir -p "$BUILD_ROOT" "$DEPS_ROOT" "$SYSROOT"/{lib,include,share} "$STAMPS_DIR"

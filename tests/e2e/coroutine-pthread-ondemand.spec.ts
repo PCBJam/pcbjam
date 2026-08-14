@@ -6,9 +6,10 @@ import { test, expect } from './utils/fixtures';
 // consumes ALL the pre-warmed Workers at construction; raw fly-threads beyond that count
 // must then be created ON DEMAND, whose 'loaded'->'run' handshake needs the main event loop.
 // The fix is wasm/shims/nanosleep_yield.c (a strong nanosleep override): the main-thread sleep_for
-// join Asyncify-yields so the loop services the handshake and the on-demand Workers boot.
+// join suspends to the browser loop so it services the handshake and the on-demand Workers boot.
 //
-// Named coroutine-* so playwright-coroutine.config.ts runs it in real Chrome + Firefox.
+// Named coroutine-*: the merged config's coroutine-* projects select by testMatch
+// /coroutine.*\.spec\.ts$/ — keep these filenames.
 // WebKit is skipped for pthread apps (COEP worker-load limitation; doc 10 §2a).
 
 const APP = '/standalone/pthread-ondemand/pthread_ondemand_test.html';

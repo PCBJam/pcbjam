@@ -8,17 +8,15 @@
  * binds its pointers to the pcbjam_ngSpice_* functions here instead. Each
  * forwards over the `globalThis.ngspiceService` provider
  * (web/standalone/src/wasm/ngspice-service.ts) via EM_ASYNC_JS — the editor
- * suspends through Asyncify while the worker answers (the `__asyncjs__*`
- * import is auto-covered by scripts/common/asyncify-imports.txt).
+ * suspends (JSPI) while the worker answers.
  *
  * Callbacks: KiCad registers its cbSendChar/cbSendStat/cbControlledExit/
  * cbBGThreadRunning with pcbjam_ngSpice_Init; the worker streams `{ evt }`
  * frames which the provider hands to `globalThis.__ngspiceOnEvent` (installed
  * here). The dispatcher calls the exported pcbjam_ngspice_event — a fresh
- * WASM entry from JS, safe while the main C++ stack is Asyncify-suspended
- * (the wx-dom DOM-event mechanism, wxwidgets/src/wasm/domevents.cpp); KiCad's
- * callbacks only take a mutex and wxQueueEvent, so nothing on this path can
- * suspend.
+ * WASM entry from JS, safe while the main C++ stack is suspended (the wx-dom
+ * DOM-event mechanism, wxwidgets/src/wasm/domevents.cpp); KiCad's callbacks
+ * only take a mutex and wxQueueEvent, so nothing on this path can suspend.
  *
  * ngSpice_running stays cheap: a client-side atomic mirror maintained from
  * command results and bg events — the simulator UI polls it on a refresh
@@ -57,9 +55,9 @@ using nlohmann::json;
 // Generic request: JSON in, JSON out (malloc'd; caller frees). Vector data
 // never travels this path — see js_ngspice_get_vec.
 //
-// Phase E shape (docs/features/async/22 §5, K6): token wait instead of an
-// in-place Asyncify park; resolution ALWAYS deferred to at least a microtask
-// (the early-resolve contract, doc 22 §10 Phase E retry entry).
+// Phase E shape (docs/features/async/22 §5, K6): token wait instead of
+// suspending the stack in place; resolution ALWAYS deferred to at least a
+// microtask (the early-resolve contract, doc 22 §10 Phase E retry entry).
 // clang-format off
 EM_JS( void, js_ngspice_request_start, ( int aToken, const char* aReqJson ), {
     const finish = ( res ) => {

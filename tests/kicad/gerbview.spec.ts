@@ -124,9 +124,9 @@ test.describe('gerbview WASM', () => {
         });
 
         expect(opened.hook, 'gerbview exposes kicadOpenFiles (gerbview_embind.cpp)').toBe(true);
-        // NOT the return value: OpenProjectFiles parks under Asyncify, so the
-        // embind call unwinds and hands back a falsy placeholder long before the
-        // load finishes (same reason open-flow.ts ignores kicadOpenFile's bool).
+        // NOT the return value: OpenProjectFiles suspends via JSPI, so the
+        // embind call hands back a Promise long before the load finishes
+        // (same reason open-flow.ts ignores kicadOpenFile's return).
         // The truthful completion signal is the open-gate probe.
         await expect.poll(
             async () => page.evaluate(() => {

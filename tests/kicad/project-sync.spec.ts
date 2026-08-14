@@ -325,7 +325,7 @@ async function openSyncDialog(page: import('@playwright/test').Page): Promise<vo
     );
 }
 
-/** Close the currently-open modal dialog (Escape unwinds the wx modal loop). */
+/** Close the currently-open modal dialog (Escape resolves the wx modal wait). */
 async function closeDialog(page: import('@playwright/test').Page): Promise<void> {
     await page.keyboard.press('Escape');
     await waitUntil(

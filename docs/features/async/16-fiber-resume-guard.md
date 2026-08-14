@@ -4,6 +4,8 @@ Status: 2026-07-31 · red/green e2e `tests/kicad/fiber-resume-park.spec.ts` ·
 lineage: 14 (open-settle gate), 15 (timer-park lever + the v0.1.20 decode),
 drift-trio #10b (fiber buffers, ghost beacons).
 
+> Successor spec: tests/kicad/coroutine-lifecycle.spec.ts (fiber-resume-park.spec.ts was retired with the asyncify backend).
+
 ## The bug
 
 `RuntimeError: index out of bounds` / `unreachable executed` on prod board

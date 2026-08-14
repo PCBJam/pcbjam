@@ -124,7 +124,7 @@ test.describe('pl_editor WASM', () => {
         );
 
         // The dialog object exists in the registry as soon as C++ constructs it, but the
-        // directory enumeration (MEMFS readdir → asyncify suspend) hasn't returned yet so
+        // directory enumeration (MEMFS readdir → JSPI suspend) hasn't returned yet so
         // the inner file list isn't painted. stableShot's stabilization waits for the
         // list to finish painting — deterministically replacing the old waitForTimeout(600)
         // that used to catch the dialog as a black rectangle.

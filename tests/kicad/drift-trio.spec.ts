@@ -146,7 +146,7 @@ for (const [cfg, label, act] of S1) {
 
       // 1. A moves the first item (the seeder's emit half — bug 01 regression
       //    surface: seed()'s snapshotItems registered A's listener). The hooks
-      //    run on a fiber, so first poll A's OWN pos until the move landed
+      //    run on a coroutine, so first poll A's OWN pos until the move landed
       //    (two-tab's green precondition), then compare the peers against it.
       const uuids = [...cfg.fixture.matchAll(/\(uuid "([0-9a-f-]{36})"\)/g)].map((m) => m[1]!);
       const before: Record<string, string> = {};
@@ -333,7 +333,7 @@ for (const [cfg, label, catalog] of [
       for (const step of catalog) {
         await test.step(step.name, async () => {
           const actor = step.actor === "A" ? trio.A : trio.B;
-          // The hooks commit on a fiber: settleConverged alone can pass on the
+          // The hooks commit on a coroutine: settleConverged alone can pass on the
           // PRE-action state (all tabs still equal) and the sweep then reads
           // legitimate mid-propagation state as drift. Gate on the actor's own
           // save changing first, so convergence is convergence ON the edit.

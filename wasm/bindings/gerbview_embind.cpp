@@ -25,7 +25,6 @@
 #include <wx/app.h>
 #include <wx/string.h>
 #include "open_gate.h"
-#include "main_stack_runner.h"
 #include "pcbjam_async_policy.h"
 
 using namespace emscripten;
@@ -38,8 +37,8 @@ static GERBVIEW_FRAME* gerbFrame()
 
 static bool openFileSet( const std::vector<wxString>& aFiles )
 {
-    // Held across every Asyncify park of the load (open_gate.h): the layer load
-    // parks, and a wx timer dispatched into a half-built layer set traps.
+    // Held across every suspension of the load (open_gate.h): the layer load
+    // suspends, and a wx timer dispatched into a half-built layer set traps.
     pcbjam_open::BusyGuard busy;
 
     GERBVIEW_FRAME* frame = gerbFrame();

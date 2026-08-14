@@ -1,5 +1,6 @@
-// jspi-coroutine — validates the JSPI libcontext backend (PCBJAM_JSPI) through
-// the EXACT protocol coroutine.h drives it with, without linking wx or KiCad.
+// jspi-coroutine — validates the JSPI libcontext backend (the __EMSCRIPTEN__
+// build of kicad/thirdparty/libcontext) through the EXACT protocol
+// coroutine.h drives it with, without linking wx or KiCad.
 //
 // MiniCoro below is a compact transcription of COROUTINE<>'s libcontext
 // mechanics (doCall/jumpIn/jumpOut/callerStub, INVOCATION_ARGS, the
@@ -109,7 +110,7 @@ struct MiniCoro
         cor->m_body( *cor );
         cor->m_running = false;
 
-        // the 3-line JSPI hook coroutine.h carries under PCBJAM_JSPI
+        // the completion hook coroutine.h carries under __EMSCRIPTEN__
         libcontext::finish_fcontext( cor->m_callee.ctx );
 
         cor->jumpOut();

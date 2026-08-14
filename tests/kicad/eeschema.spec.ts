@@ -251,7 +251,7 @@ test.describe('Eeschema WASM', () => {
         // ONE place in the converted suite that still uses a fixed delay: a wire vertex
         // commit produces no JS-observable signal (no registry entry, and click(start)
         // makes no pixel change to settle on), so we cannot poll a real condition — and
-        // the asyncify WASM event loop needs wall-clock time to process each click as a
+        // the suspending WASM event loop needs wall-clock time to process each click as a
         // discrete mouse event (proven: replacing these with canvas-stability waits, which
         // return in ~3 frames, leaves the wire uncommitted). Making this deterministic
         // needs a KiCad-side "tool operation idle" hook (see the render-idle plan);

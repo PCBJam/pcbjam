@@ -292,6 +292,10 @@
     // CLASSIC workers via `new Worker(...)`; a cross-origin URL is a SecurityError,
     // so for the CDN base we hand emscripten a SAME-ORIGIN blob worker that
     // importScripts the cross-origin glue (allowed because the CDN sends CORP).
+    // NOTE: this page tracks the CDN's LATEST deployed glue, not this repo's
+    // build — emscripten 6 (the JSPI builds) ignores mainScriptUrlOrBlob, so
+    // once such a release is deployed this becomes inert (cross-origin pthread
+    // gap: docs/features/async/23-jspi-runtime.md in pcbjam-private).
     function pthreadWorkerScript() {
       var abs = new URL(base + "/gerbview.js", location.href);
       if (abs.origin === location.origin) return base + "/gerbview.js";

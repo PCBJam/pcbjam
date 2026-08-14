@@ -57,14 +57,14 @@ CXXFLAGS += -MMD -MP
 # whole Asyncify/binaryen post-link pipeline are retired).
 EH_FLAGS = -fwasm-exceptions -sSUPPORT_LONGJMP=wasm -sWASM_LEGACY_EXCEPTIONS=1
 # Promising entry exports: every JS->wasm entry that can transitively suspend
-# (census of EMSCRIPTEN_KEEPALIVE in wxwidgets/src/wasm; the Sched*/abandon
-# probes never suspend and stay plain). pcbjam_libctx_entry is libcontext's
+# (census of EMSCRIPTEN_KEEPALIVE in wxwidgets/src/wasm; the non-suspending
+# wx_dispatch_abandon probe stays plain). pcbjam_libctx_entry is libcontext's
 # coroutine entry (only present in apps that link libcontext — emscripten
 # warns-and-ignores absent names).
 WX_JSPI_EXPORTS = main,wx_dom_event,wx_dom_mouse,wx_window_close,wx_window_move,wx_window_resize,ProcessEvents,wxWasmMailboxTick,wxWasmTopLevelTick,wxWasmJobTick,pcbjam_libctx_entry
 # Per-app suspending test levers (fresh-stack ccalls that park or swap a
 # coroutine). Appended as a LAST -sJSPI_EXPORTS on the app's link line, which
-# wins over the one inside ASYNC_LDFLAGS (emcc last-wins). The non-parking
+# wins over the one inside JSPI_LDFLAGS (emcc last-wins). The non-parking
 # levers (races_end_active_modal — the answer-synchronously resolve path)
 # deliberately stay plain.
 RACES_EXTRA_LDFLAGS = -sJSPI_EXPORTS=$(WX_JSPI_EXPORTS),races_swap_once,races_park_token2,races_wdt_park_b
@@ -73,12 +73,12 @@ JSPI_SHIM = $(abspath ../../scripts/common/shims/jspi-scheduler.js)
 # through it; without forced inclusion the reference resolves to emscripten's
 # throwing stub and the FIRST throwing wx handler aborts the whole runtime
 # ("native code called abort()" -> pthread mutex deadlock storm).
-ASYNC_LDFLAGS = -sJSPI \
+JSPI_LDFLAGS = -sJSPI \
                -sJSPI_EXPORTS=$(WX_JSPI_EXPORTS) \
                -s "EXPORTED_RUNTIME_METHODS=['HEAPU8','HEAP8','HEAP32','ccall','stackSave','stackRestore']" \
                -sDEFAULT_LIBRARY_FUNCS_TO_INCLUDE='$$stringToNewUTF8' \
                --pre-js $(JSPI_SHIM)
-ASYNC_CORO_LDFLAGS = $(ASYNC_LDFLAGS)
+JSPI_CORO_LDFLAGS = $(JSPI_LDFLAGS)
 CXXFLAGS += $(EH_FLAGS)
 
 # Base Emscripten flags (for all apps)
@@ -86,7 +86,7 @@ CXXFLAGS += $(EH_FLAGS)
 # - js_writeTextToClipboard, js_readTextFromClipboard, js_clipboardHasText, js_clearClipboard: for clipboard
 # - js_enumerateFonts: for font enumeration via Local Font Access API
 BASE_LDFLAGS = $(EH_FLAGS) -sALLOW_MEMORY_GROWTH -sERROR_ON_UNDEFINED_SYMBOLS=0 \
-               $(ASYNC_LDFLAGS)
+               $(JSPI_LDFLAGS)
 
 # LDFLAGS for non-GL apps (standalone tests)
 LDFLAGS_NOGL = $(DEBUG_LDFLAGS) $(BASE_LDFLAGS) $(WX_LDFLAGS_NOGL)
@@ -116,9 +116,9 @@ LDFLAGS_PTHREAD = $(DEBUG_LDFLAGS) $(BASE_LDFLAGS) -pthread \
                   -sPTHREAD_POOL_SIZE_STRICT=0 \
                   $(WX_LDFLAGS_NOGL)
 
-# Coroutine harness flags - mirror KiCad's fiber-related runtime needs
+# Coroutine harness flags - mirror KiCad's coroutine runtime needs
 COROUTINE_BASE_LDFLAGS = $(EH_FLAGS) -sALLOW_MEMORY_GROWTH -sERROR_ON_UNDEFINED_SYMBOLS=0 \
-               $(ASYNC_CORO_LDFLAGS)
+               $(JSPI_CORO_LDFLAGS)
 LDFLAGS_COROUTINE = $(DEBUG_LDFLAGS) $(COROUTINE_BASE_LDFLAGS) $(WX_LDFLAGS_NOGL)
 
 # The suspend-races harness must match PRODUCTION suspension semantics: the KiCad
@@ -129,7 +129,7 @@ LDFLAGS_RACES = $(DEBUG_LDFLAGS) $(COROUTINE_BASE_LDFLAGS) -sASSERTIONS=0 $(WX_L
 
 # LDFLAGS for the raytracer thread-deadlock repro. Same pthread + pool config as
 # LDFLAGS_PTHREAD, but built on COROUTINE_BASE_LDFLAGS for the
-# stack KiCad actually ships (emscripten_sleep needs Asyncify to yield).
+# stack KiCad actually ships (emscripten_sleep suspends via JSPI).
 LDFLAGS_RAYTRACE = $(DEBUG_LDFLAGS) $(COROUTINE_BASE_LDFLAGS) -pthread \
                   -sPTHREAD_POOL_SIZE='navigator.hardwareConcurrency' \
                   -sPTHREAD_POOL_SIZE_STRICT=0 \
@@ -148,7 +148,7 @@ LDFLAGS_REALPOOL = $(DEBUG_LDFLAGS) $(COROUTINE_BASE_LDFLAGS) -pthread \
 # depend on them — otherwise editing a shim wouldn't trigger a relink.
 JS = $(TOOLS_ROOT)/wx.js --pre-js $(TOOLS_ROOT)/wx-dom.js
 JS_FILES = $(TOOLS_ROOT)/wx.js $(TOOLS_ROOT)/wx-dom.js
-# The scheduler shim is a pre-js on every link (ASYNC_LDFLAGS): apps whose
+# The scheduler shim is a pre-js on every link (JSPI_LDFLAGS): apps whose
 # objects are up to date must still relink when it changes.
 JS_FILES += $(JSPI_SHIM)
 HTML = $(TOOLS_ROOT)/template.html
@@ -677,7 +677,7 @@ all: $(TP_REAL)/threadpool_real_test.html
 # On-demand non-warm Worker test (Phase 2). The real pool (compiled-in thread_pool.cpp)
 # consumes the pre-warmed Workers, then raw fly-threads force on-demand creation;
 # wasm/shims/nanosleep_yield.c (a strong nanosleep override; -Wl,--wrap crashes wasm-ld)
-# makes the main-thread sleep_for join Asyncify-yield so the on-demand Workers boot.
+# makes the main-thread sleep_for join yield (a JSPI suspension) so the on-demand Workers boot.
 # Reuses threadpool-real's pool stubs.
 OD = $(S)/pthread-ondemand
 OD_INC = -std=c++20 \
@@ -720,7 +720,7 @@ async-preload: $(S)/async-preload/async_preload_test.html
 all: $(S)/async-preload/async_preload_test.html
 
 # A raytracer worker-join run inside a wx modal pump. The pump dispatches the work via
-# ProcessEvents (ccall async:true) at Asyncify state==Normal, so both joins complete:
+# ProcessEvents (ccall async:true) between suspensions, so both joins complete:
 # m=0 sleep_for busy-wait, m=1 emscripten_sleep yield.
 $(S)/raytrace-modal/raytrace_modal_test.o: $(S)/raytrace-modal/raytrace_modal_test.cpp
 	$(CXX) -c $(CXXFLAGS) -pthread $< -o $@
@@ -750,8 +750,9 @@ $(S)/coroutine/libcontext.o: $(KICAD_ROOT)/thirdparty/libcontext/libcontext.cpp 
 $(S)/coroutine/coroutine_test.html: $(S)/coroutine/coroutine_test.o $(S)/coroutine/libcontext.o $(WX_CORE_LIB) $(JS_FILES)
 	$(CXX) $(filter %.o %.a,$^) $(LDFLAGS_COROUTINE) --pre-js $(JS) --shell-file $(HTML) -o $@
 
-# Nested coroutine+modal interaction harness - reproduces Asyncify rewind corruption
-# when fiber swaps happen inside a wxDialog::ShowModal event loop (Issue #9153).
+# Nested coroutine+modal interaction harness - historically reproduced asyncify rewind
+# corruption when coroutine swaps happened inside a wxDialog::ShowModal event loop
+# (Issue #9153); now pins the same topologies on the JSPI runtime.
 $(S)/coroutine-nested/nested_test.o: $(S)/coroutine-nested/nested_test.cpp $(S)/coroutine/kicad_coroutine_harness.h
 	$(CXX) -c $(CXXFLAGS) -I$(KICAD_ROOT)/thirdparty/libcontext -I$(S)/coroutine $< -o $@
 
@@ -851,7 +852,7 @@ clean:
 
 .PHONY: all clean menu contextmenu scrollbar clipboard filedialog layout aui toolbar grid dialog timer tree dataview htmlwin stc print dnd propgrid pickers collapsible listctrl infobar dataviewvirtual auinotebook wizard gridedit calendar gridrenderers printpreview bitmapbuttons specialized validators ownerdrawn popup xml wasmedge fontenum textdecor bitmask regions maximize earlysize selectheight uipolish threadpool logerror retinascale coroutine coroutine-nested asyncify-races notebook radiogroups collapse-relayout
 
-# === Coroutine pthread variant — reproduces the KiCad Asyncify-fiber x pthreads crash ===
+# === Coroutine pthread variant — historically reproduced the KiCad coroutine x pthreads crash ===
 # Same modal-free harness as `coroutine`, but compiled/linked with pthreads to match
 # KiCad's runtime (-pthread + PTHREAD_POOL_SIZE). The single-threaded `coroutine` build
 # passes in system Chrome; KiCad (pthreads) crashes. This isolates that difference.

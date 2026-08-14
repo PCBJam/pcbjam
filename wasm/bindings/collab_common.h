@@ -1,7 +1,7 @@
 /*
  * Shared plumbing for the per-editor collab binding TUs (eeschema_embind.cpp,
  * pcbnew_embind.cpp) — the frame-type-free half of the bridge: string/JSON
- * wire emitters to window.kicadCollab, the CallAfter+COROUTINE fiber idiom,
+ * wire emitters to window.kicadCollab, the CallAfter+COROUTINE apply queue,
  * and the frame-generic test hooks. Header-only (the collab_presence_style.h
  * pattern), so the build script needs no extra objects and the merged
  * kicad_editor image links it without ODR issues.
@@ -28,112 +28,110 @@ namespace pcbjam_collab {
 inline std::string toUtf8( const wxString& s ) { return std::string( s.utf8_str() ); }
 
 /**
- * Run a body on the editor's main loop AND on a libcontext fiber stack — the
- * exact context native tool edits run in. Embind ccalls / bare CallAfter
- * stacks mis-dispatch asyncify-instrumented virtual calls (invoke_* through a
- * stale table type traps, or silently no-ops); commits, GAL overlay work and
- * the s-expr formatters must therefore run through this. CallAfter queues
- * onto the app's pending-event list (drained every frame by the wasm main
- * loop, src/wasm/evtloop.cpp); COROUTINE::Call moves the body to the fiber.
+ * Run a body on the editor's main loop AND inside a COROUTINE — the exact
+ * context native tool edits run in. CallAfter queues onto the app's
+ * pending-event list (drained every frame by the wasm main loop,
+ * src/wasm/evtloop.cpp); COROUTINE::Call moves the body onto its own
+ * coroutine stack. Commits, GAL overlay work and the s-expr formatters run
+ * through this.
  *
  * SERIALIZED (drift-trio finding #10, standalone-hardening 0008 §10): bodies
- * run strictly one-at-a-time through a FIFO. The previous per-body
- * fire-and-forget coroutine interleaved under load: when a body PARKED
- * (asyncify suspension inside commit.Push — connectivity/GAL work), the main
- * loop kept draining pending events and started the NEXT body — a local
- * commit and a remote apply then ran interleaved on shared commit/listener
- * state (s_applyingRemote is a single global), silently losing applies on the
- * actively-editing receiver and, in the worst case, corrupting memory (fuzz
- * S10: wasm OOB on an observer). The busy flag is park-safe: an asyncify
- * suspension suspends the whole drain loop with the body and rewinds it
- * transparently, while any other drain invocation no-ops on the flag; the
- * suspended drain's own while-loop picks up whatever queued meanwhile.
+ * run strictly one-at-a-time through a FIFO. A body that SUSPENDS (a JSPI
+ * suspension inside commit.Push — connectivity/GAL work) returns early from
+ * COROUTINE::Call while its coroutine is still in flight. Without the queue
+ * the main loop kept draining pending events and started the NEXT body — a
+ * local commit and a remote apply then ran interleaved on shared
+ * commit/listener state (s_applyingRemote is a single global), silently
+ * losing applies on the actively-editing receiver and, in the worst case,
+ * corrupting memory (fuzz S10: wasm OOB on an observer). The busy flag is
+ * suspension-safe: while a suspended body is in flight every other drain
+ * invocation no-ops on the flag, and the body's own coroutine tail
+ * re-schedules the drain when it completes.
  */
-inline std::deque<std::function<void()>>& fiberQueue()
+inline std::deque<std::function<void()>>& applyQueue()
 {
     static std::deque<std::function<void()>> q;
     return q;
 }
 
-inline bool& fiberBusy()
+inline bool& applyBusy()
 {
     static bool busy = false;
     return busy;
 }
 
 /* The in-flight body. HEAP-allocated and pinned for the body's whole life:
- * when a body PARKS (asyncify suspension inside commit.Push), COROUTINE::Call
- * RETURNS EARLY — the later asyncify rewind re-enters the fiber through the
- * SAME callable at the SAME addresses (dynCall_vi → fcontext_entry →
- * callerStub → the wrapper). Stack-local cor/body (the original runOnFiber
- * AND the first serialized version) were destroyed on that early return, so
- * the rewind called through freed objects — "table index is out of bounds"
- * at rewind, memory corruption downstream (finding #10b's symbolized stack).
- * `done` is the ONLY completion signal; Call() returning is not. */
-struct FiberSlot
+ * when a body SUSPENDS (a JSPI suspension inside commit.Push), COROUTINE::Call
+ * RETURNS EARLY — the later resume re-enters the coroutine through the SAME
+ * callable at the SAME addresses. Stack-local cor/body (the original
+ * runOnCoroutine AND the first serialized version) were destroyed on that
+ * early return, so the resume ran through freed objects — memory corruption
+ * downstream (finding #10b's symbolized stack). `done` is the ONLY completion
+ * signal; Call() returning is not. */
+struct ApplySlot
 {
     COROUTINE<int, int>*   cor = nullptr;
     std::function<void()>* body = nullptr;
     bool                   done = false;
 };
 
-inline FiberSlot& activeFiberSlot()
+inline ApplySlot& activeApplySlot()
 {
-    static FiberSlot s;
+    static ApplySlot s;
     return s;
 }
 
-inline wxEvtHandler*& fiberHandler()
+inline wxEvtHandler*& applyHandler()
 {
     static wxEvtHandler* h = nullptr;
     return h;
 }
 
-inline void drainFibers();
+inline void drainApplies();
 
-inline void reapFiber()
+inline void reapApply()
 {
-    FiberSlot& slot = activeFiberSlot();
+    ApplySlot& slot = activeApplySlot();
     delete slot.cor;
     delete slot.body;
     slot.cor = nullptr;
     slot.body = nullptr;
     slot.done = false;
-    fiberBusy() = false;
+    applyBusy() = false;
 }
 
-inline void drainFibers()
+inline void drainApplies()
 {
-    FiberSlot& slot = activeFiberSlot();
+    ApplySlot& slot = activeApplySlot();
 
-    if( fiberBusy() )
+    if( applyBusy() )
     {
         if( !slot.done )
-            return;         // parked body still in flight — its tail re-drains
+            return;         // suspended body still in flight — its tail re-drains
 
-        reapFiber();        // completed via rewind since the last drain
+        reapApply();        // completed since the last drain
     }
 
-    auto& q = fiberQueue();
+    auto& q = applyQueue();
 
     while( !q.empty() )
     {
-        fiberBusy() = true;
+        applyBusy() = true;
         slot.done = false;
         slot.body = new std::function<void()>( std::move( q.front() ) );
         q.pop_front();
 
         slot.cor = new COROUTINE<int, int>( []( int ) -> int
         {
-            FiberSlot& sl = activeFiberSlot();
+            ApplySlot& sl = activeApplySlot();
             ( *sl.body )();
             sl.done = true;
 
-            // If we parked, no drain is pending by the time the rewind
-            // completes — schedule the reap + next body from the fiber tail
-            // (CallAfter only queues; safe here).
-            if( wxEvtHandler* h = fiberHandler() )
-                h->CallAfter( []() { drainFibers(); } );
+            // If we suspended, no drain is pending by the time the body
+            // completes — schedule the reap + next body from the coroutine
+            // tail (CallAfter only queues; safe here).
+            if( wxEvtHandler* h = applyHandler() )
+                h->CallAfter( []() { drainApplies(); } );
 
             return 0;
         } );
@@ -141,17 +139,17 @@ inline void drainFibers()
         slot.cor->Call( 0 );
 
         if( !slot.done )
-            return;         // parked — cor/body stay pinned for the rewind
+            return;         // suspended — cor/body stay pinned for the resume
 
-        reapFiber();
+        reapApply();
     }
 }
 
-inline void runOnFiber( wxEvtHandler* aHandler, std::function<void()> aBody )
+inline void runOnCoroutine( wxEvtHandler* aHandler, std::function<void()> aBody )
 {
-    fiberHandler() = aHandler;
-    fiberQueue().push_back( std::move( aBody ) );
-    aHandler->CallAfter( []() { drainFibers(); } );
+    applyHandler() = aHandler;
+    applyQueue().push_back( std::move( aBody ) );
+    aHandler->CallAfter( []() { drainApplies(); } );
 }
 
 // ── C++ → JS wire emitters (no-ops without a JS listener) ───────────────────
@@ -205,14 +203,14 @@ inline void emitViewport( double aCx, double aCy, double aPxPerIu, int aW, int a
 
 // ── frame-generic test hooks (ysync miss 09) ────────────────────────────────
 
-/** Run Edit>Undo exactly like the UI would (main-loop + fiber stack) —
+/** Run Edit>Undo exactly like the UI would (main loop + apply coroutine) —
  *  exercises the local-ops-only undo policy and the stale-picker UUID guard. */
 inline bool testUndo( EDA_BASE_FRAME* aFrame )
 {
     if( !aFrame )
         return false;
 
-    runOnFiber( aFrame, [aFrame]() { aFrame->GetToolManager()->RunAction( ACTIONS::undo ); } );
+    runOnCoroutine( aFrame, [aFrame]() { aFrame->GetToolManager()->RunAction( ACTIONS::undo ); } );
     return true;
 }
 

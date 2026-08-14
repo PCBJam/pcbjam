@@ -1,5 +1,10 @@
 # Asyncify `currData` contention in KiCad-WASM — research dossier
 
+> **STATUS (2026-08-14): HISTORICAL.** This directory is the Asyncify-era
+> investigation log. The JSPI migration (2026-08) superseded the TL;DR
+> conclusion below ("we are not switching to JSPI"). Current architecture:
+> [23-jspi-runtime.md](23-jspi-runtime.md).
+
 > **Status:** research / understanding only. No implementation has been chosen.
 > Authored 2026-06. All line numbers are against the artifacts current at that time
 > (`tests/apps/kicad/pcbnew.js`, `wxwidgets/src/wasm/*.cpp`,
@@ -50,11 +55,11 @@ or **hang** (a swap unwinds but is never rewound).
 | [`22-absorbing-libcontext.md`](22-absorbing-libcontext.md) | **PLAN (2026-08-06), the current one:** absorb libcontext's wasm backend into the scheduler so ONE handler owns every js↔asyncify↔fiber switch — the cure for the blue screen (a context recovered twice or by the wrong fiber). Diagnosis of why three guard layers cannot fix it, why the D2/D3 phases knotted, phases A–F with estimates (~4–6 wk), gates, and the traps this implementation run paid for. **Start here.** |
 | [`17-mailbox-scheduler-plan.md`](17-mailbox-scheduler-plan.md) | **PLAN (2026-08):** the mailbox/scheduler implementation plan — Design B's phasing revised with the July–August guard record (dispatch interlock, open-settle gate, v0.1.28 schedule-don't-dispatch). Test inventory with per-test fate (keep / rewrite / retire / new), 7 steps S0–S6 with gates and rollback, ≈5–7 wk. Supersedes 12/13's phasing; overturns 13 §6f's "no scheduler needed". |
 
-## Where to start (2026-08-06)
+## Where to start (2026-08-14)
 
-**Read [`22-absorbing-libcontext.md`](22-absorbing-libcontext.md).** It carries the current
-plan, the diagnosis behind it, and the traps the last implementation run paid for.
-Prerequisites: [`20`](20-design-b-core-plan.md) §10 (what each phase actually cost) and
+**Read [`23-jspi-runtime.md`](23-jspi-runtime.md)** — the current (JSPI)
+architecture. The plan that got there is [`22-absorbing-libcontext.md`](22-absorbing-libcontext.md),
+with prerequisites [`20`](20-design-b-core-plan.md) §10 (what each phase actually cost) and
 [`21`](21-park-site-audit.md) (the migration surface).
 
 <details>

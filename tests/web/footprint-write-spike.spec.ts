@@ -14,8 +14,8 @@ import { clickByTooltip, waitForWxApp, focusCanvas, stableShot } from '../e2e/ut
  * window.kicadLibs.request("save", …, "footprint") on the main thread
  * (EM_ASYNC_JS), captured onto window.__pcbjamSaved. Assert: the body is
  * well-formed fork-native s-expr (version 20251028), and the app stays live
- * (no abort / no OOM respawn) — i.e. the editor-as-tool + main-thread Asyncify
- * save both work. THIS IS THE GATE before the backend (0009-A) is built.
+ * (no abort / no OOM respawn) — i.e. the editor-as-tool + the main-thread
+ * suspending save both work. THIS IS THE GATE before the backend (0009-A) is built.
  */
 
 async function bootFootprintEditor(page: Page): Promise<void> {
@@ -145,7 +145,7 @@ test.fixme(
     'no file-times error',
   ).toBe(false);
 
-  // App stayed live: no abort, no OOM respawn (the main-thread Asyncify save gate).
+  // App stayed live: no abort, no OOM respawn (the main-thread suspending-save gate).
   expect(logs.some((l) => l.includes('Aborted(')), 'no WASM abort').toBe(false);
   expect(new URL(page.url()).searchParams.get('oomRetry'), 'no OOM respawn').toBeNull();
 

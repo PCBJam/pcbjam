@@ -12,8 +12,9 @@ import { clickByTooltip, findByTooltip } from "../e2e/utils/element-tracker";
  *
  *  - The text tool froze the app. createNewText shows DIALOG_TEXT_PROPERTIES via
  *    ShowQuasiModal, whose nested wxGUIEventLoop::DoRun re-entered emscripten_set_main_loop
- *    (simulate_infinite_loop → "unwind"), which can't be nested/resumed. Fixed by pumping
- *    nested event loops through Asyncify (wxwidgets/src/wasm/evtloop.cpp).
+ *    (simulate_infinite_loop → "unwind"), which can't be nested/resumed. Fixed by running
+ *    nested event loops as suspending waits (wxwidgets/src/wasm/evtloop.cpp; asyncify
+ *    then, JSPI now).
  */
 
 const SAMPLE_SCH = `(kicad_sch
@@ -114,10 +115,10 @@ test.describe("eeschema core UI (wasm)", () => {
     // The quasi-modal dialog must appear (previously the nested event loop threw "unwind").
     // Poll for it instead of a fixed 1500ms "let the dialog open" sleep.
     await expect.poll(dialogsOpen, { timeout: 8000, intervals: [300] }).toBeGreaterThan(0);
-    // App must stay responsive while it's up (Asyncify suspend, not a frozen main thread).
+    // App must stay responsive while it's up (JSPI suspend, not a frozen main thread).
     expect(await page.evaluate(() => 1 + 1).then(() => true).catch(() => false)).toBe(true);
 
-    // Escape must close it — exercises the Asyncify resume (ShowQuasiModal returns).
+    // Escape must close it — exercises the suspension resume (ShowQuasiModal returns).
     await page.keyboard.press("Escape");
     await expect.poll(dialogsOpen, { timeout: 8000, intervals: [300] }).toBe(0);
 

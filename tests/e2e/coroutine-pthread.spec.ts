@@ -12,7 +12,7 @@ test.describe('Coroutine pthread main() reproduction', () => {
     await expect
       .poll(() => testLogger.consoleLogs.some((l) => l.includes('[REPRO] DONE')), {
         timeout: 30000,
-        message: 'should reach [REPRO] DONE (i.e. the main-context rewind survived)',
+        message: 'should reach [REPRO] DONE (i.e. the main-context suspension chain survived)',
       })
       .toBe(true);
 
@@ -31,7 +31,7 @@ test.describe('Coroutine pthread main() reproduction', () => {
     await expect
       .poll(() => testLogger.consoleLogs.some((l) => l.includes('[REPRO] DONE')), {
         timeout: 30000,
-        message: 'should reach [REPRO] DONE (main rewind through the dynCall chain survived)',
+        message: 'should reach [REPRO] DONE (the suspension chain through the dynCall boundaries survived)',
       })
       .toBe(true);
 
@@ -60,9 +60,13 @@ test.describe('Coroutine pthread main() reproduction', () => {
   });
 
   // Probe #4: coroutine activated via an embind (--bind) call.
-  // Known crash repro: the embind-dispatched fiber currently crashes the renderer
-  // before reaching DONE. Marked as an expected failure until the coroutine/asyncify
-  // rewind through the embind dispatch is fixed.
+  // Still an expected failure, for the JSPI-era reason (re-probed 2026-08-14):
+  // a PLAIN embind invoker is not a promising entry, so the coroutine's first
+  // suspension inside it cannot suspend the activation — the page never
+  // reaches DONE. The shipped app never uses this shape: suspending embind
+  // entries are either emscripten::async() + parker-wrapped (kicadOpenFile)
+  // or raw KEEPALIVE promising exports. Un-fail only if embind ever grows a
+  // true one-shot promising registration.
   test.fail('embind-activated fiber reaches DONE without renderer crash', async ({ page, testLogger }) => {
     await page.goto('/standalone/coroutine-pthread/embind_repro.html');
     await tryLoadApp(page, 20000).catch(() => {});  // eslint-disable-line -- best-effort load in a pthread/coroutine runtime probe
@@ -70,7 +74,7 @@ test.describe('Coroutine pthread main() reproduction', () => {
     await expect
       .poll(() => testLogger.consoleLogs.some((l) => l.includes('[REPRO] DONE')), {
         timeout: 30000,
-        message: 'should reach [REPRO] DONE (rewind through the embind dispatch survived)',
+        message: 'should reach [REPRO] DONE (the suspension chain through the embind dispatch survived)',
       })
       .toBe(true);
 
@@ -89,7 +93,7 @@ test.describe('Coroutine pthread main() reproduction', () => {
     await expect
       .poll(() => testLogger.consoleLogs.some((l) => l.includes('[REPRO] DONE')), {
         timeout: 30000,
-        message: 'should reach [REPRO] DONE (rewind through the main-loop dynCall_v survived)',
+        message: 'should reach [REPRO] DONE (the suspension chain through the main-loop dynCall_v survived)',
       })
       .toBe(true);
 
@@ -107,7 +111,7 @@ test.describe('Coroutine pthread main() reproduction', () => {
     await expect
       .poll(() => testLogger.consoleLogs.some((l) => l.includes('[REPRO] DONE')), {
         timeout: 30000,
-        message: 'should reach [REPRO] DONE (rewind of a mid-GL-frame survived)',
+        message: 'should reach [REPRO] DONE (the mid-GL-frame suspension chain survived)',
       })
       .toBe(true);
 
@@ -125,7 +129,7 @@ test.describe('Coroutine pthread main() reproduction', () => {
     await expect
       .poll(() => testLogger.consoleLogs.some((l) => l.includes('[REPRO] DONE')), {
         timeout: 30000,
-        message: 'should reach [REPRO] DONE (GL + pthreads mid-frame rewind survived)',
+        message: 'should reach [REPRO] DONE (GL + pthreads mid-frame suspension chain survived)',
       })
       .toBe(true);
   });

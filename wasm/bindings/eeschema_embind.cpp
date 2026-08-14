@@ -60,7 +60,6 @@
 #include <pcbjam_remote_lock.h>
 #include "collab_common.h"
 #include "open_gate.h"
-#include "main_stack_runner.h"
 #include "collab_presence_core.h"
 #include "collab_presence_style.h"
 #include "pcbjam_theme.h"
@@ -85,7 +84,7 @@ using json = nlohmann::json;
 #ifndef KICAD_MERGED_EMBIND
 bool kicadOpenFile( std::string path )
 {
-    // Held across every Asyncify park of the load; see open_gate.h.
+    // Held across every suspension of the load; see open_gate.h.
     pcbjam_open::BusyGuard busy;
 
     if( pcbjam_open::testParkMs() > 0 )
@@ -302,10 +301,10 @@ SCH_ITEM* makeItem( const json& j )
     else if( type == "SCH_SHAPE" )
     {
         // Reconstruct from the geometry itemToJson emits. Committing a *new* SCH_SHAPE used to
-        // trap in SCH_COMMIT::Push's CHT_ADD path (GAL view->Add → an asyncify invoke_viii
-        // mis-dispatch, "memory access out of bounds") because doApply ran off a fiber stack;
-        // doApply now runs inside a COROUTINE (kicadCollabApply) so the add dispatches correctly,
-        // exactly as a native draw does. (0006/0007.)  NB FILL_T::NO_FILL == 1, not 0.
+        // trap in SCH_COMMIT::Push's CHT_ADD path under the retired asyncify runtime because
+        // doApply ran off the coroutine context; doApply runs inside a COROUTINE
+        // (kicadCollabApply), serialized with local edits, exactly as a native draw does.
+        // (0006/0007.)  NB FILL_T::NO_FILL == 1, not 0.
         SHAPE_T st    = (SHAPE_T) j.value( "stype", (int) SHAPE_T::RECTANGLE );
         int     layer = j.value( "layer", (int) LAYER_NOTES );
         int     width = j.value( "width", 0 );
@@ -577,10 +576,11 @@ void flushDiff()
 }
 
 // Coalesce all the listener callbacks of one commit (and any other edits in the same loop
-// turn) into a single post-settle diff. flushDiff runs inside a COROUTINE: its v2 items
-// emit serializes items via SCH_IO_KICAD_SEXPR::Format (itemBlob), whose virtual dispatch
-// is only reliable on the libcontext fiber stack — on the bare CallAfter stack it traps
-// and silently kills the whole flush, legacy emit included (same lesson as doApply, 0007).
+// turn) into a single post-settle diff. flushDiff runs inside a COROUTINE via the apply
+// queue: its v2 items emit serializes items via SCH_IO_KICAD_SEXPR::Format (itemBlob), and
+// queueing it with the applies keeps emits from interleaving with a suspended apply body
+// (under the retired asyncify runtime the bare CallAfter stack additionally trapped here —
+// same lesson as doApply, 0007).
 void scheduleFlush()
 {
     if( g_flushScheduled )
@@ -589,7 +589,7 @@ void scheduleFlush()
     g_flushScheduled = true;
 
     if( SCH_EDIT_FRAME* fr = schFrame() )
-        pcbjam_collab::runOnFiber( fr, []() { flushDiff(); } );
+        pcbjam_collab::runOnCoroutine( fr, []() { flushDiff(); } );
     else
         flushDiff();
 }
@@ -598,9 +598,9 @@ void scheduleFlush()
 // to the child .kicad_sch file and tell the standalone (window.kicadCollab.onSheetCreated),
 // so the child is persisted/registered the moment it's created — without waiting for the
 // user to enter it or save the project. Otherwise the parent's `(sheet … child)` reference
-// dangles for peers / on reload. Deferred onto the fiber stack (CallAfter + COROUTINE):
-// SCH_IO_KICAD_SEXPR::Format's virtual dispatch traps on the bare listener/CallAfter stack,
-// same as flushDiff/doApply. The sheet is re-resolved by uuid in the deferred body so a
+// dangles for peers / on reload. Deferred onto the apply coroutine (CallAfter + COROUTINE),
+// same as flushDiff/doApply, so the save serializes with any in-flight apply.
+// The sheet is re-resolved by uuid in the deferred body so a
 // since-deleted sheet (e.g. an immediate undo) is a no-op rather than a dangling pointer.
 void scheduleSheetSave( SCH_SHEET* aSheet )
 {
@@ -616,7 +616,7 @@ void scheduleSheetSave( SCH_SHEET* aSheet )
     std::string childAbs = toUtf8( childFn.GetFullPath() );
     std::string uuid = toUtf8( aSheet->m_Uuid.AsString() );
 
-    pcbjam_collab::runOnFiber( fr, [fr, childAbs, uuid]() {
+    pcbjam_collab::runOnCoroutine( fr, [fr, childAbs, uuid]() {
         KIID      kid( wxString::FromUTF8( uuid.c_str() ) );
         SCH_ITEM* item = fr->Schematic().ResolveItem( kid, nullptr, /*allowNull*/ true );
 
@@ -834,24 +834,23 @@ void schedulePresenceSelCheck()
 namespace {
 
 // SCH_SYMBOL::Move() / SCH_LABEL_BASE::Move() move their child fields (reference, value, …) via
-// an inner `field.Move()` — itself a virtual call that mis-dispatches in the apply context, so
-// the field text is left behind at its old position while the body moves. Re-move the fields
-// with a devirtualized call so the labels follow the symbol on the peer. (The inner call is a
-// harmless no-op when it mis-dispatches — the fields stay put — so this doesn't double-move.)
+// an inner `field.Move()`. Under the retired asyncify runtime that inner call silently no-oped
+// in the apply context — the field text was left behind at its old position while the body
+// moved — so the fields are re-moved here with a devirtualized call. Kept as-is through the
+// JSPI migration; the collab move/drift suites pin the peer's field positions.
 void moveFields( std::vector<SCH_FIELD>& aFields, const VECTOR2I& aDelta )
 {
     for( SCH_FIELD& field : aFields )
         field.SCH_FIELD::Move( aDelta );
 }
 
-// Move an item to an absolute position for the `changed` path. SCH_ITEM::Move() is virtual;
-// dispatching it through the vtable from the apply/CallAfter context hits the asyncify
-// call_indirect mis-dispatch and silently NO-OPS (so symbols/junctions/labels never moved on
-// the peer — only SCH_LINE worked, via its direct SetStart/EndPoint path). GetPosition() reads
-// fine (it's a plain virtual read; see 0003 / eeschema_collab_asyncify_apply). The fix:
-// devirtualize Move() with an explicit class-qualified call, which is statically bound — a
-// plain wasm `call`, not an instrumented call_indirect — so it actually executes. Composite
-// items additionally need their child fields moved (see moveFields).
+// Move an item to an absolute position for the `changed` path. Under the retired asyncify
+// runtime the virtual SCH_ITEM::Move(), dispatched from the apply/CallAfter context, silently
+// NO-OPED (symbols/junctions/labels never moved on the peer — only SCH_LINE worked, via its
+// direct SetStart/EndPoint path; see 0003 / eeschema_collab_asyncify_apply). Move() is
+// therefore devirtualized with explicit class-qualified calls — statically bound plain wasm
+// calls, correct on any runtime, so they stay. Composite items additionally need their child
+// fields moved (see moveFields).
 void moveItemTo( SCH_ITEM* aItem, const VECTOR2I& aNewPos )
 {
     VECTOR2I delta = aNewPos - aItem->GetPosition();
@@ -887,9 +886,8 @@ void moveItemTo( SCH_ITEM* aItem, const VECTOR2I& aNewPos )
 }
 
 // The actual model mutation, via SCH_COMMIT so connectivity/ERC recompute as for a UI
-// edit. (Editor write ops like SCH_ITEM::Move are called through invoke_vii, whose
-// asyncify-instrumented dynCall trampoline traps on a stale type — fixed at the JS shim
-// layer in scripts/common/shims/dyncall-binding.js.tmpl; see 0003.)
+// edit. (0003 decoded an asyncify-era dynCall trap on this path; the shim that healed
+// it retired with that runtime.)
 void doApply( SCH_EDIT_FRAME* aFrame, const json& aDelta )
 {
     SCHEMATIC& sch = aFrame->Schematic();
@@ -1140,17 +1138,16 @@ void collabTestMove( SCH_EDIT_FRAME* aFrame, SCH_ITEM* aItem, SCH_SCREEN* aScree
 // JS → C++. Apply a remote per-item delta by uuid, through SCH_COMMIT so connectivity/
 // ERC/hierarchy recompute the same way a UI edit would (0003 §apply).
 //
-// SCH_COMMIT must run in the editor's Asyncify-rooted main loop — invoking it from this
-// embind ccall, or from an emscripten_async_call/setTimeout callback, traps with an
-// "indirect call signature mismatch" because those are not the asyncify root (0001 §5).
-// wxEvtHandler::CallAfter queues onto the app's pending-event list, which the wasm main
-// loop drains every frame via ProcessPendingEvents() (src/wasm/evtloop.cpp) — i.e. the
-// exact context real UI edits run in. So defer the whole mutation there.
+// SCH_COMMIT must run on the editor's main loop, not on this embind ccall or an
+// emscripten_async_call/setTimeout callback: wxEvtHandler::CallAfter queues onto the
+// app's pending-event list, which the wasm main loop drains every frame via
+// ProcessPendingEvents() (src/wasm/evtloop.cpp) — i.e. the exact context real UI edits
+// run in. So defer the whole mutation there.
 void schCollabApply( std::string aJson )
 {
     // Open-in-flight guard (open_gate.h): never touch the model while a
-    // kicadOpenFile Asyncify chain is parked mid-load — commits/virtuals on a
-    // half-built schematic mis-dispatch ("indirect call signature mismatch").
+    // kicadOpenFile chain is suspended mid-load — commits/virtuals would walk
+    // a half-built schematic mid-mutation.
     // Callers gate on kicadOpenFileBusy; fuzzed by tests/kicad/collab-load-fuzz.spec.ts.
     if( pcbjam_open::busy() )
         return;
@@ -1165,12 +1162,11 @@ void schCollabApply( std::string aJson )
     if( !fr )
         return;
 
-    // Defer to the editor's main-loop context + fiber stack (runOnFiber) so SCH_COMMIT runs
-    // like a normal edit: SCH_COMMIT::Push's CHT_ADD of a *new* SCH_SHAPE/SCH_SYMBOL
-    // dispatches GAL virtuals (view->Add → ViewGetLayers) through asyncify-instrumented
-    // invoke_*; off the fiber stack those mis-dispatch and trap inside KiCad core, which the
-    // bridge can't devirtualize. On the fiber stack they dispatch correctly. (0007.)
-    pcbjam_collab::runOnFiber( fr, [fr, delta]() { doApply( fr, delta ); } );
+    // Defer to the editor's main loop + apply coroutine (runOnCoroutine) so SCH_COMMIT runs
+    // like a normal edit: a commit body that suspends (connectivity/GAL work) returns early
+    // from COROUTINE::Call, so applies must serialize with each other and with local edits
+    // or they interleave on shared commit/listener state. (0007, drift-trio #10.)
+    pcbjam_collab::runOnCoroutine( fr, [fr, delta]() { doApply( fr, delta ); } );
 }
 
 
@@ -1211,7 +1207,7 @@ void schCollabApplyItems( std::string aJson )
     if( !fr )
         return;
 
-    pcbjam_collab::runOnFiber( fr, [fr, wire]() { doApplyItems( fr, wire ); } );
+    pcbjam_collab::runOnCoroutine( fr, [fr, wire]() { doApplyItems( fr, wire ); } );
 }
 
 
@@ -1353,7 +1349,7 @@ bool schCollabTestRemoveItem( std::string aId )
 
     SCH_SCREEN* screen = path.LastScreen();
 
-    pcbjam_collab::runOnFiber( fr, [fr, item, screen]() {
+    pcbjam_collab::runOnCoroutine( fr, [fr, item, screen]() {
         SCH_COMMIT commit( fr );
         commit.Remove( item, screen );
         commit.Push( wxT( "Collab test remove" ) );
@@ -1382,7 +1378,7 @@ bool schCollabTestRotateItem( std::string aId, double aDeg )
     SCH_SCREEN* screen = path.LastScreen();
     int         steps = ( (int) ( aDeg / 90.0 + ( aDeg >= 0 ? 0.5 : -0.5 ) ) % 4 + 4 ) % 4;
 
-    pcbjam_collab::runOnFiber( fr, [fr, item, screen, steps]() {
+    pcbjam_collab::runOnCoroutine( fr, [fr, item, screen, steps]() {
         SCH_COMMIT commit( fr );
         commit.Modify( item, screen );
 
@@ -1427,7 +1423,7 @@ bool schCollabTestSetFieldText( std::string aId, std::string aText )
     SCH_SCREEN* screen = path.LastScreen();
     wxString    text = wxString::FromUTF8( aText.c_str() );
 
-    pcbjam_collab::runOnFiber( fr, [fr, sym, screen, text]() {
+    pcbjam_collab::runOnCoroutine( fr, [fr, sym, screen, text]() {
         SCH_COMMIT commit( fr );
         commit.Modify( sym, screen );
         sym->SetValueFieldText( text );
@@ -1440,7 +1436,7 @@ bool schCollabTestSetFieldText( std::string aId, std::string aText )
 
 // ── drift-trio phase B action hooks (standalone-hardening 0008 §5) ───────────
 // Creation/mutation primitives for the trio harness's action catalog. Each
-// drives a REAL SCH_COMMIT on the fiber stack, so the SCHEMATIC_LISTENER →
+// drives a REAL SCH_COMMIT on the apply coroutine, so the SCHEMATIC_LISTENER →
 // flushDiff emit path runs exactly as for a UI edit. Names are tool-unique
 // (registered outside the KICAD_MERGED_EMBIND guard — same convention as
 // kicadCollabTestSetFieldText), so the merged image needs no dispatcher.
@@ -1467,7 +1463,7 @@ static std::string schCollabTestCommitAdd( SCH_ITEM* aItem, const wxChar* aMsg )
     std::string id = toUtf8( aItem->m_Uuid.AsString() );
     wxString    msg( aMsg );
 
-    pcbjam_collab::runOnFiber( fr, [fr, aItem, screen, msg]() {
+    pcbjam_collab::runOnCoroutine( fr, [fr, aItem, screen, msg]() {
         SCH_COMMIT commit( fr );
         commit.Add( aItem, screen );
         commit.Push( msg );
@@ -1549,7 +1545,7 @@ std::string schCollabTestAddSymbol( std::string aLibId, int aX, int aY, std::str
 
     std::string id = toUtf8( sym->m_Uuid.AsString() );
 
-    pcbjam_collab::runOnFiber( fr, [fr, sym, screen]() {
+    pcbjam_collab::runOnCoroutine( fr, [fr, sym, screen]() {
         SCH_COMMIT commit( fr );
         commit.Add( sym, screen );
         commit.Push( wxT( "Collab test add symbol" ) );
@@ -1600,7 +1596,7 @@ bool schCollabTestMirrorSchItem( std::string aId, bool aHorizontal )
     if( !item )
         return false;
 
-    pcbjam_collab::runOnFiber( fr, [fr, aId, aHorizontal]() {   // re-resolve on the fiber (S4)
+    pcbjam_collab::runOnCoroutine( fr, [fr, aId, aHorizontal]() {   // re-resolve on the coroutine (S4)
         SCH_SHEET_PATH path;
         SCH_ITEM* live = fr->Schematic().ResolveItem( KIID( wxString::FromUTF8( aId.c_str() ) ),
                                                       &path, /*allowNull*/ true );
@@ -1643,7 +1639,7 @@ std::string schCollabTestDuplicateSchItem( std::string aId, int aDx, int aDy )
 
     std::string id = toUtf8( dup->m_Uuid.AsString() );
 
-    pcbjam_collab::runOnFiber( fr, [fr, dup, screen]() {
+    pcbjam_collab::runOnCoroutine( fr, [fr, dup, screen]() {
         SCH_COMMIT commit( fr );
         commit.Add( dup, screen );
         commit.Push( wxT( "Collab test duplicate" ) );
@@ -2038,9 +2034,9 @@ void kicadSaveSchematic( std::string path )
 }
 
 
-static bool kicadCollabFiberBusyProbe()
+static bool kicadCollabBusyProbe()
 {
-    return pcbjam_collab::fiberBusy() || !pcbjam_collab::fiberQueue().empty();
+    return pcbjam_collab::applyBusy() || !pcbjam_collab::applyQueue().empty();
 }
 
 EMSCRIPTEN_BINDINGS(eeschema) {
@@ -2065,7 +2061,7 @@ EMSCRIPTEN_BINDINGS(eeschema) {
     function("kicadOpenFile", &kicadOpenFile PCBJAM_PARKER_POLICY);
     function("kicadOpenFileBusy", &kicadOpenFileBusy);
     function("kicadTestSetOpenPark", &kicadTestSetOpenPark);
-    function("kicadCollabFiberBusy", &kicadCollabFiberBusyProbe);
+    function("kicadCollabBusy", &kicadCollabBusyProbe);
     // Read-only viewer lock (read-only-viewer).
     function("kicadSetReadOnly", &kicadSetReadOnly);
     // Yjs collaborative bridge entry points (same contract as pl_editor).

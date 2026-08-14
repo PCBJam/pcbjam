@@ -11,7 +11,7 @@ This document describes how to build KiCad for WebAssembly using the Docker-base
 
 ### Host Tools
 
-Binaryen (wasm-opt) is downloaded automatically by the build script. No manual installation needed.
+Node.js (for the seconds-long host postprocess step). Everything else runs inside the container.
 
 ## Quick Start
 
@@ -36,47 +36,30 @@ Binaryen (wasm-opt) is downloaded automatically by the build script. No manual i
 - `build-wasm/kicad-pcbnew/pcbnew/pcbnew.wasm` - WASM binary
 - `build-wasm/kicad-pcbnew/pcbnew/pcbnew.wasm.map` - Source map (debug builds)
 
-## Two-Phase Build
+## Single-Phase Build
 
-The build is split into two phases due to memory requirements:
+The build is one pass: `docker/build.sh` compiles, links **and finalizes** the
+wasm inside the container. The only host-side step is a postprocess on the
+generated glue — `node scripts/common/patch-env-shim.mjs` merges `Module.ENV`
+into the runtime's `ENV` (needed for `?trace=` and any future `Module.ENV`
+use). It takes seconds and is idempotent.
 
-### Phase 1: Docker Compilation
-Compiles KiCad to WASM **without** asyncify transformation. This runs inside Docker with 32GB memory limit.
+`--compile-only` / `--postprocess-only` split the two so CI can cache the
+expensive compile and re-run just the host tail.
 
-### Phase 2: Host Asyncify
-Applies `wasm-opt --asyncify` on the host machine using Binaryen v121 (downloaded automatically to `tools/`). This transformation uses ~20-30GB RAM.
+### Suspension: JSPI
 
-**Note:** Binaryen v121 is used because v125 has a regression causing crashes in the asyncify liveness analysis.
+Blocking calls — `wxDialog::ShowModal()`, `wxMessageBox()`, clipboard,
+sleeps/waits, board loads — must yield to the browser event loop. This is
+handled at **link time** by JSPI (JavaScript Promise Integration): every wasm
+entry point that can suspend is a promising export
+(`-sJSPI -sJSPI_EXPORTS=@scripts/common/jspi-exports.txt`), and the
+`jspi-scheduler.js` pre-js supplies the spill-stack and resume-serialization
+discipline around it. See
+[docs/features/async/23-jspi-runtime.md](features/async/23-jspi-runtime.md).
 
-### Why Asyncify?
-
-Asyncify is an Emscripten transformation that allows WASM code to pause and resume execution. This is required for:
-
-- **Modal dialogs** - `wxDialog::ShowModal()` blocks until user closes the dialog
-- **Message boxes** - `wxMessageBox()` waits for user response
-- **Clipboard operations** - Browser clipboard API is async
-- **Sleep/wait operations** - Any blocking call that needs to yield to the browser
-
-Without asyncify, modal dialogs would freeze the browser because WASM cannot yield control back to JavaScript's event loop.
-
-### How It Works
-
-1. `docker/build.sh` compiles KiCad in Docker (no asyncify flags)
-2. Output is copied to `./output/` directory
-3. `wasm-opt --asyncify` runs on host, transforming the WASM binary
-4. Final output is ready for browser execution
-
-### Technical Details
-
-The asyncify transformation:
-- Instruments every function that might be on the call stack during an async operation
-- Adds stack save/restore logic to unwind and rewind the WASM stack
-- Increases binary size by ~20% (141MB → 171MB for KiCad)
-- Uses `asyncify-imports` pattern matching to identify async entry points
-
-Import patterns used:
-- `env.invoke_*` - Exception handling trampolines
-- `env.__asyncjs__*` - EM_ASYNC_JS functions (like `startModal()`)
+There is no post-link binary rewriting: the wasm the container links is the
+wasm that ships.
 
 ## Docker Architecture
 
@@ -155,17 +138,18 @@ The build system is optimized for fast development iteration:
 - **ccache**: Caches compiled objects by hashing preprocessed source
 - **wxWidgets**: `configure` runs once, `make` handles file-level dependencies
 - **KiCad**: CMake tracks dependencies, only recompiles changed files
-- **Asyncify**: Post-processing runs every build (~1 min, irreducible minimum)
+- **Host postprocess**: the ENV-shim patch (`patch-env-shim.mjs`) re-runs every build — seconds
 
 ### Performance
 
 | Scenario | Time |
 |----------|------|
-| No changes | ~1.5 min |
-| Single file change (KiCad or wxWidgets) | ~1.5 min |
+| No changes | seconds |
+| Single file change (KiCad or wxWidgets) | dominated by the recompile + relink of that target |
 | Full rebuild | ~10 min |
 
-Most time is spent on asyncify post-processing which runs on every build.
+There is no fixed per-build post-processing cost: an unchanged tree re-runs
+only the host ENV-shim patch.
 
 ### Debug vs Release
 
@@ -259,23 +243,29 @@ The WASM port requires compatibility layers for browser execution:
 | Directory | Purpose |
 |-----------|---------|
 | `wasm/kiplatform/` | Platform abstraction (app, UI, printing, etc.) |
-| `wasm/libcontext/` | Coroutine/fiber implementation for Asyncify |
+| `kicad/thirdparty/libcontext/` | Coroutine backend (JSPI: one promising activation per coroutine) |
 | `wasm/stubs/` | Stub implementations (libgit2, curl) |
 | `wasm/config/` | Build configuration headers |
 
 ## Emscripten Flags
 
-Key flags used in the build:
+Key flags used in the build (browser apps; see
+`scripts/kicad/build-kicad-target.sh` for the authoritative link surface):
 
 ```
--pthread -sUSE_PTHREADS=1          # Threading support
--sASYNCIFY=1                       # Async coroutine support
--sALLOW_MEMORY_GROWTH=1            # Dynamic memory
--sINITIAL_MEMORY=256MB             # Starting memory
--sMAXIMUM_MEMORY=4GB               # Maximum memory
--sLEGACY_GL_EMULATION              # OpenGL compatibility
--sMAX_WEBGL_VERSION=2              # WebGL 2.0
+-pthread -sUSE_PTHREADS=1                            # Threading support
+-sJSPI                                               # JSPI suspension
+-sJSPI_EXPORTS=@scripts/common/jspi-exports.txt      # promising-export census
+--pre-js scripts/common/shims/jspi-scheduler.js      # scheduler/turnstile shim
+-sALLOW_MEMORY_GROWTH=1                              # Dynamic memory
+-sINITIAL_MEMORY=256MB                               # Starting memory
+-sMAXIMUM_MEMORY=4GB                                 # Maximum memory
+-sMAX_WEBGL_VERSION=2                                # WebGL 2.0
 ```
+
+Headless targets (`kicad_tools`, `occ_service`) link **no suspension
+backend**: nothing in them may suspend, so they carry none of the three
+JSPI-related flags above.
 
 ## Testing
 

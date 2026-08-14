@@ -2,31 +2,25 @@ import { test, expect } from './fixtures';
 import { stableShot } from '../e2e/utils/element-tracker';
 
 /**
- * Eeschema schematic-LOAD regression test (fiber / Asyncify trampoline shim).
+ * Eeschema schematic-LOAD regression test (JSPI load-chain gate).
  *
- * This guards the fix in scripts/common/inject-dyncall-shims.sh
- * ("3c. Fiber trampoline self-heal").
+ * Pins the programmatic load chain end to end: kicadOpenFile (an embind async
+ * export that suspends via JSPI while OpenProjectFiles runs) must complete a
+ * real schematic load. Opening a schematic calls SCH_EDIT_FRAME::SetScreen()
+ * -> m_toolManager->RunAction(selectionClear), which rides a tool coroutine —
+ * so a regression anywhere in the chain (the async export, the scheduler
+ * ring, the libcontext JSPI backend) shows up here as a load that suspends
+ * and never resumes: the editor title stays "untitled".
  *
- * Background: KiCad's tool framework runs action handlers in coroutines that
- * switch stacks via emscripten_fiber_swap. The emscripten fiber glue gates its
- * context switch on `Fibers.trampolineRunning` and resets that flag at the end of
- * `Fibers.trampoline()`. At startup `emscripten_set_main_loop(...,1)` throws
- * "unwind" to establish the main loop; KiCad does that from inside a tool
- * coroutine, so the throw propagates THROUGH the trampoline and skips the reset.
- * The flag then stays `true` forever, `Fibers.trampoline()` becomes a permanent
- * no-op, and EVERY fiber swap after startup silently fails to switch contexts.
- *
- * Opening a schematic calls SCH_EDIT_FRAME::SetScreen() ->
- * m_toolManager->RunAction(selectionClear), which performs such a fiber swap. So
- * without the shim, OpenProjectFiles() suspends in selectionClear and never
- * resumes: the load hangs and the editor title stays "untitled".
- *
- * The shim wraps the trampoline loop in try/finally so the flag is always reset.
- * With it, the load completes and the title switches to the opened file.
+ * Historical note: this spec originally guarded the asyncify-era fiber
+ * trampoline self-heal shim, whose absence hung exactly this chain. The shim
+ * and its injector are gone with the JSPI migration; the spec stays as the
+ * canonical schematic-load gate because the failure mode (a suspended load
+ * chain that never resumes) is mechanism-independent.
  *
  * Assertion strategy: open a minimal (text-free) schematic via the programmatic
  * Module.kicadOpenFile() hook and poll the editor title. GREEN once it shows the
- * file name; RED (poll timeout) if the load hangs because the shim is missing.
+ * file name; RED (poll timeout) if the load hangs.
  *
  * The schematic holds a few wires + junctions (a box with a crossbar) so a dev
  * can eyeball a screenshot and immediately see whether it rendered. It uses ONLY
@@ -65,7 +59,7 @@ type EmscriptenFS = {
 type KicadModule = { kicadOpenFile(path: string): unknown };
 
 test.describe('Eeschema schematic load', () => {
-    test('opens a .kicad_sch via kicadOpenFile and finishes loading (fiber shim regression)', async ({
+    test('opens a .kicad_sch via kicadOpenFile and finishes loading (load-chain regression)', async ({
         page,
     }) => {
         await page.goto('/kicad/eeschema.html');
@@ -96,8 +90,8 @@ test.describe('Eeschema schematic load', () => {
         expect(await page.title()).toMatch(/untitled/i);
 
         // Write a minimal, version-compatible schematic into MEMFS and open it.
-        // kicadOpenFile runs OpenProjectFiles under Asyncify: it suspends and
-        // returns a placeholder, so we ignore the return and poll the title.
+        // kicadOpenFile is a promising export: it suspends via JSPI and hands
+        // back a Promise, so we ignore the return and poll the title.
         const openedPath = await page.evaluate((content) => {
             const w = window as unknown as { FS: EmscriptenFS; Module: KicadModule };
             const dir = '/home/kicad/documents';
@@ -113,15 +107,16 @@ test.describe('Eeschema schematic load', () => {
         }, SAMPLE_SCH);
         expect(openedPath).toContain('regression.kicad_sch');
 
-        // With the fiber trampoline self-heal shim the load completes and the
-        // title switches to the opened file. WITHOUT it, the selectionClear fiber
-        // swap hangs and the title stays "untitled" -> this poll times out (RED).
+        // On a healthy build the load completes and the title switches to the
+        // opened file. If the selectionClear coroutine never resumes, the title
+        // stays "untitled" -> this poll times out (RED).
         await expect
             .poll(async () => page.title(), {
                 message:
                     'Schematic load did not complete (title stayed "untitled"). ' +
-                    'The fiber trampoline self-heal shim (inject-dyncall-shims.sh "3c") is ' +
-                    'likely missing or broken.',
+                    'Suspect the JSPI load chain: the kicadOpenFile embind async export, ' +
+                    'the scheduler ring, or a refused coroutine transition — the ' +
+                    '[wx-scheduler]/[libctx-jspi] console beacons say which.',
                 timeout: 30000,
                 intervals: [500],
             })

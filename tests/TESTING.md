@@ -1,9 +1,9 @@
 # Testing rules
 
-Determinism rules for the Playwright specs (`tests/e2e`, `tests/kicad`, `tests/web`).
+Determinism rules for the Playwright specs (`tests/e2e`, `tests/kicad`, `tests/jspi`, `tests/web`).
 Enforced by `npm run lint:determinism` (`tools/lint-determinism.ts`, gating in CI). Run specs
 from `tests/` via `npm run test:e2e` (the full CI project set: wx-chromium, kicad-firefox,
-kicad-chromium, asyncify-firefox, coroutine-firefox) or `npm run test:kicad` (kicad-firefox
+kicad-chromium, jspi-firefox, coroutine-firefox) or `npm run test:kicad` (kicad-firefox
 only) — not playwright directly. One spec on one engine:
 `npx playwright test --project=kicad-firefox kicad/pcbnew.spec.ts`.
 

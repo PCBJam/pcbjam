@@ -22,18 +22,19 @@ import { test, expect } from './utils/fixtures';
 // itself and has NO connection to KiCad's render_3d_raytrace_base.cpp. It validates the
 // threading MECHANISM in seconds (not the ~12-min KiCad build), not the shipped viewer.
 //
-// TODO(asyncify-nesting): the real KiCad 3D viewer currently ships SERIAL (single-core).
-// The emscripten_sleep variants (B1/B2/m4) pass HERE but ABORT the real viewer with
-// `Aborted(invalid state: 1)`: the viewer renders inside the wx modal/event-pump, which is
-// already mid-Asyncify-unwind, and emscripten_sleep can't nest on that context. This
-// harness runs from a clean OnInit, so it never hits that nesting — a reminder that an
-// isolated repro can be faithful to the *threading* yet miss the *Asyncify context*.
-// The B3/persistent-pool design (m=5) avoids emscripten_sleep entirely and was the one
-// ported into KiCad — but it's currently PARKED (`git -C kicad stash`) pending research
-// into whether a nestable yield (fibers / emscripten_fiber_swap / JSPI) is possible.
+// TODO(raytrace-multicore): the real KiCad 3D viewer still ships SERIAL (single-core) —
+// its engine toggle is inert. The old blocker was asyncify's nesting limit: the viewer
+// renders inside the wx modal/event-pump and an emscripten_sleep join could not nest on
+// that context (`Aborted(invalid state: 1)`) — which this clean-OnInit harness never hit,
+// a reminder that an isolated repro can be faithful to the *threading* yet miss the
+// *suspension context*. JSPI answered that blocking question (nested suspension is legal),
+// so porting the B3/persistent-pool design (m=5, proven below) into the viewer is now a
+// concrete work item rather than research. (An earlier KiCad-side port sits in a local
+// `git -C kicad stash`.)
 //
-// Named coroutine-* so playwright-coroutine.config.ts runs it in real Chrome + Firefox
-// (same engines as the KiCad app), and the default config runs it in bundled Chromium.
+// Named coroutine-*: the merged config's coroutine-* projects select by testMatch
+// /coroutine.*\.spec\.ts$/ (real Chrome + Firefox, same engines as the KiCad app;
+// the wx-chromium project also runs it in bundled Chromium) — keep these filenames.
 
 const APP = '/standalone/raytrace-threads/raytrace_threads_test.html';
 // Modest, fixed work so each pass is ~1-2s serial (enough to show a clear speedup).
@@ -77,7 +78,7 @@ test.describe( 'Raytracer threading (render_3d_raytrace_base.cpp) — must run m
               `pass ${p} should complete (pool reused)` ).toBe( true );
   } );
 
-  test( 'B1-local: stack-local atomics (mirrors raytracer) survive Asyncify yields', async ( { page, testLogger } ) => {
+  test( 'B1-local: stack-local atomics (mirrors raytracer) survive suspension yields', async ( { page, testLogger } ) => {
     // The real raytracer shares stack-local atomics (threadsFinished/nextBlock) with
     // its workers. This proves emscripten_sleep's unwind/rewind doesn't lose the
     // workers' concurrent writes to those C-stack locals (which would hang forever).
@@ -89,7 +90,8 @@ test.describe( 'Raytracer threading (render_3d_raytrace_base.cpp) — must run m
 
   test( 'B3: persistent pool + sleep_for busy-wait (real raytracer mechanism) → multi-core', async ( { page, testLogger } ) => {
     // This is the exact mechanism ported into the raytracer: pre-alive workers, NO
-    // emscripten_sleep (so no Asyncify nesting), main-thread busy-wait that still
+    // emscripten_sleep (so no suspension nesting — the asyncify-era constraint
+    // that shaped it), main-thread busy-wait that still
     // completes because the workers run on their own cores.
     await page.goto( `${APP}#m=5&passes=3&${WORK}` );
     await waitForLog( testLogger, '[RTPOOL] SUCCESS mode=5' );

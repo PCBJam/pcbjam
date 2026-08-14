@@ -9,12 +9,13 @@ import { test, expect } from './utils/fixtures';
 // pool's persistent pthread workers.
 //
 // The real pool is mode-a/b-safe by construction (persistent workers -> no on-demand spawn;
-// futex busy-wait join -> no Asyncify nesting). The only native-EH risk is mode-c: a task
-// that THROWS on a worker (caught by submit_task's promise wrapper ON the worker drives
-// Asyncify under -fexceptions). So mode 6 is the decisive native-EH proof; modes 0-5 prove
+// futex busy-wait join -> no suspension nesting). The only native-EH risk was mode-c: a task
+// that THROWS on a worker (caught by submit_task's promise wrapper ON the worker, which
+// drove asyncify under -fexceptions). So mode 6 is the decisive native-EH proof; modes 0-5 prove
 // real multi-core (workersRan>1) across the API surface. Green => we can drop the shim.
 //
-// Named coroutine-* so playwright-coroutine.config.ts runs it in real Chrome + Firefox.
+// Named coroutine-*: the merged config's coroutine-* projects select by testMatch
+// /coroutine.*\.spec\.ts$/ — keep these filenames.
 // WebKit is skipped for pthread apps (COEP worker-load limitation; doc 10 §2a).
 
 const APP = '/standalone/threadpool-real/threadpool_real_test.html';
@@ -53,9 +54,10 @@ test.describe( 'Real BS::thread_pool (GetKiCadThreadPool) — multi-core under n
   }
 
   // mode-c: a task throws ON a worker; submit_task's promise wrapper catches it on the
-  // worker (drives Asyncify under -fexceptions -> "func is not a function" crash) and
-  // rethrows on main. Native wasm-EH decouples exceptions from Asyncify, so this must
-  // complete cleanly. (Red under JS-EH, green under native-EH — the contrast IS the proof.)
+  // worker (under -fexceptions this drove asyncify -> "func is not a function" crash) and
+  // rethrows on main. Native wasm-EH decouples exceptions from the suspension machinery,
+  // so this must complete cleanly. (Red under JS-EH, green under native-EH — the contrast
+  // IS the proof.)
   test( 'mode 6: throw on a worker is safe under native-EH and rethrows on main', async ( { page, testLogger } ) => {
     await page.goto( `${APP}#m=6` );
     // A worker throw is a mode-c crash under JS-EH and only safe under native wasm-EH, so this

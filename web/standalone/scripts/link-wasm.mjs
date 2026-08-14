@@ -3,7 +3,7 @@
 // third copy: symlink standalone/public/wasm -> the synced artifact dir
 // (tests/apps/kicad, populated by tests/scripts/setup-kicad-wasm.sh). Vite then
 // serves them at /wasm from the app's own origin — required because KiCad WASM
-// (Asyncify build, COEP/cross-origin-isolated document) refuses to load its
+// (a COEP/cross-origin-isolated document) refuses to load its
 // glue/wasm from a different origin.
 //
 // No bytes are duplicated; the link points straight at the synced dir.

@@ -16,7 +16,7 @@
 #   eeschema       standalone schematic engine (debug aid; not deployed)
 #
 # A comma-separated list builds just those apps in order (e.g.
-# "calculator,pl_editor" — used to exercise the multi-app pipeline cheaply).
+# "calculator,pl_editor" — used to exercise the multi-app path cheaply).
 #
 # Any extra args are forwarded to scripts/kicad/build-<app>.sh (e.g. -j 8,
 # --full, --release, --diag=gal).
@@ -24,17 +24,6 @@
 # The build is split into two phases:
 # 1. Docker: Compile KiCad to WASM (fully finalized; JSPI links in-container)
 # 2. Host: ENV merge shim on the glue (patch-env-shim.mjs)
-#
-# KICAD_PIPELINE=1 (multi-app builds only): run phase 2 of each app in the
-# background while the next app compiles in the container. wasm-opt is
-# Amdahl-capped at ~4 effective cores, so on a many-core CI box the container
-# would otherwise sit idle for the 1-2h of host-side wasm-opt (run 27226030304:
-# 103 min of the 4h was tools serialized behind each other's wasm-opt). At most
-# KICAD_PIPELINE_JOBS (default 2) postprocesses run concurrently — pcbnew's wasm-opt
-# pass peaks ~34 GB RSS, so 2 fits the 128 GB CI box but NOT a dev Mac: leave
-# KICAD_PIPELINE unset locally.
-#
-# Binaryen is downloaded automatically - no prerequisites needed.
 
 # Auto-launch the live progress dashboard in this terminal (handled by logging.sh,
 # which owns the TTY before it re-execs us with output redirected). Set KICAD_NO_MONITOR=1
@@ -104,13 +93,11 @@ APP_NAME="$1"
 shift
 
 # Expand the app argument into APPS[]: "all", a single app, or a comma list.
-# kicad_editor first in "all" — the merged image is the largest bundle, so its
-# host-side wasm-opt chain is the critical path and must start as early as
-# possible (especially with KICAD_PIPELINE=1). pcbnew/eeschema stay buildable as
-# standalone debug aids but are not part of "all" (not deployed).
-# kicad_tools joined "all" for the runner-image CI (tasks-runner 0001 R2) —
-# it finalizes in-container (no host wasm-opt tail), so it never contends
-# with the editor's critical path.
+# kicad_editor first in "all" — the merged image is the deployed bundle and the
+# longest compile, so it starts first and surfaces failures earliest.
+# pcbnew/eeschema stay buildable as standalone debug aids but are not part of
+# "all" (not deployed). kicad_tools joined "all" for the runner-image CI
+# (tasks-runner 0001 R2).
 if [[ "$APP_NAME" == "all" ]]; then
     APPS=(kicad_editor occ_service ngspice_service calculator pl_editor gerbview kicad_tools)
 else
@@ -135,15 +122,14 @@ export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-kicad-wasm-${BRANCH_NAME}}"
 echo "Using Docker project: ${COMPOSE_PROJECT_NAME}"
 echo "Building app: ${APP_NAME}"
 
-# Build phase (cache split). The container compile produces an OPT-INDEPENDENT
-# base wasm; the only opt-DEPENDENT work is the final `wasm-opt -O$LEVEL` shrink
-# Splitting compile and postprocess lets CI cache the expensive compile once
-# and re-run just the host tail — see .github/workflows/.
+# Build phase (cache split). The container compile emits the finalized wasm;
+# the host tail is only the ENV merge shim on the glue. Splitting compile and
+# postprocess lets CI cache the expensive compile once and re-run just the
+# host tail — see .github/workflows/.
 #   (default) both       — compile in-container, then host post-process.
-#   --compile-only       — only the in-container compile → base wasm in output/.
+#   --compile-only       — only the in-container compile → wasm+glue in output/.
 #   --postprocess-only   — only the host post-process (ENV merge shim) on the
-#                          existing output/ base wasm; NO container needed
-#                          (build-wasm-opt.sh self-provisions the Binaryen submodule).
+#                          existing output/ glue; NO container needed.
 # Extracted here so they are NOT forwarded to the inner build-<app>.sh scripts.
 PHASE="both"
 _FILTERED=()
@@ -252,7 +238,6 @@ compile_app() {
     # for headless CLIs like kicad_tools — the gl1 shim needs glm).
     docker compose -f docker/docker-compose.yml exec -e EMSDK=/emsdk \
         -e BUILD_3D_VIEWER="${BUILD_3D_VIEWER:-}" \
-        -e PCBJAM_ASYNC_BACKEND="${PCBJAM_ASYNC_BACKEND:-}" \
         kicad-wasm-builder \
         "/workspace/scripts/kicad/build-${app}.sh" "${ARGS[@]}"
 
@@ -277,128 +262,40 @@ compile_app() {
 }
 
 # Phase 2 of one app: host-side post-processing (ENV merge shim). Pure host
-# work on output/${app}.* — independent of the
-# container, which is what makes it safe to run in the background while the
-# next app compiles.
+# work on output/${app}.js — no container needed.
 postprocess_app() {
     local app="$1"
     local out_dir="output"
 
-    # The headless CLI and the OCC/ngspice services are finalized in-container
-    # (real tools, small -g0 wasm) and build with ASYNCIFY=0, so they need no
-    # host post-processing (no dyncall shims, no finalize, no asyncify).
+    # The headless CLI and the OCC/ngspice services skip the ENV merge shim:
+    # it exists for the interactive apps' runtime env overrides (?trace=),
+    # which these targets never read.
     if [ "$app" = "kicad_tools" ] || [ "$app" = "occ_service" ] || [ "$app" = "ngspice_service" ]; then
         echo "Skipping host post-processing for ${app} (finalized in-container)"
         return 0
     fi
 
-    # JSPI: the app links fully finalized with the real in-container tools —
-    # no dyncall shims, no host finalize, no asyncify pass. Only the ENV merge
-    # shim remains: the emscripten glue never merges Module.ENV into the
+    # ENV merge shim: the emscripten glue never merges Module.ENV into the
     # runtime ENV (?trace= would be a silent no-op — see docs/features/libs/0013).
     kw_stage env-shim
     node ./scripts/common/patch-env-shim.mjs "${out_dir}/${app}.js"
 }
 
-# --- Pipelined driver state (KICAD_PIPELINE=1) ---
-# One background postprocess per app; logs + rc files land in logs/build/ so the
-# interleaved output stays readable and failures survive until the final wait.
-PIPELINE_PIDS=()
-PIPELINE_APPS_BG=()
-PIPELINE_LOG_DIR="logs/build"
-PIPELINE_TS="$(date +%Y%m%d-%H%M%S)"
-
-pipeline_running_count() {
-    local n=0 pid
-    for pid in "${PIPELINE_PIDS[@]}"; do
-        kill -0 "$pid" 2>/dev/null && n=$((n + 1))
-    done
-    echo "$n"
-}
-
-# Launch postprocess_app in the background, capped at KICAD_PIPELINE_JOBS
-# concurrent jobs (default 2: pcbnew's wasm-opt pass peaks ~34 GB RSS; two postprocesses
-# plus the container compile fit the 128 GB CI box). Portable poll loop instead
-# of `wait -n` (absent in macOS bash 3.2).
-pipeline_postprocess() {
-    local app="$1"
-    local max_jobs="${KICAD_PIPELINE_JOBS:-2}"
-    while [ "$(pipeline_running_count)" -ge "$max_jobs" ]; do
-        sleep 10
-    done
-    local log_file="${PIPELINE_LOG_DIR}/postprocess-${app}-${PIPELINE_TS}.log"
-    echo "Pipelining host-side postprocess of ${app} (log: ${log_file})"
-    (
-        postprocess_app "$app" >"$log_file" 2>&1
-        echo $? >"${log_file}.rc"
-    ) &
-    PIPELINE_PIDS+=($!)
-    PIPELINE_APPS_BG+=("$app")
-}
-
-# Wait for all background postprocesses, replay their logs into the main log,
-# and fail if any of them failed.
-pipeline_wait_all() {
-    local failed=0 i pid app log_file rc
-    for i in "${!PIPELINE_PIDS[@]}"; do
-        pid="${PIPELINE_PIDS[$i]}"
-        app="${PIPELINE_APPS_BG[$i]}"
-        log_file="${PIPELINE_LOG_DIR}/postprocess-${app}-${PIPELINE_TS}.log"
-        wait "$pid" || true
-        rc="$(cat "${log_file}.rc" 2>/dev/null || echo 1)"
-        echo ""
-        echo "=== Postprocess ${app} (rc=${rc}) — ${log_file} ==="
-        cat "$log_file" 2>/dev/null || true
-        if [ "$rc" != "0" ]; then
-            echo "ERROR: postprocess of ${app} failed (rc=${rc})"
-            failed=1
-        fi
-    done
-    return "$failed"
-}
-
 TOTAL_APPS="${#APPS[@]}"
 
-# Shared pipeline trap: on a failure, kill orphaned background wasm-opt jobs
-# (each ~30 GB) and keep the monitor's done/fail marker from the EXIT trap.
-_install_pipeline_trap() {
-    trap '_rc=$?; for p in "${PIPELINE_PIDS[@]}"; do kill "$p" 2>/dev/null || true; done; if [ $_rc -eq 0 ]; then kw_done; else kw_fail $_rc; fi; stop_builder' EXIT
-}
-
 if [[ "$PHASE" == "compile" ]]; then
-    # --compile-only: produce the opt-independent base wasm; no host post-process.
+    # --compile-only: produce the wasm+glue in output/; no host post-process.
     idx=1
     for app in "${APPS[@]}"; do
         compile_app "$app" "$idx" "$TOTAL_APPS"
         idx=$((idx + 1))
     done
 elif [[ "$PHASE" == "postprocess" ]]; then
-    # --postprocess-only: pure host post-process on the existing output/ base
-    # wasm (no container). Parallelize across apps when pipelining.
-    if [[ "${KICAD_PIPELINE:-0}" == "1" ]] && [ "$TOTAL_APPS" -gt 1 ]; then
-        mkdir -p "$PIPELINE_LOG_DIR"
-        _install_pipeline_trap
-        for app in "${APPS[@]}"; do
-            pipeline_postprocess "$app"
-        done
-        pipeline_wait_all
-    else
-        for app in "${APPS[@]}"; do
-            postprocess_app "$app"
-        done
-    fi
-elif [[ "${KICAD_PIPELINE:-0}" == "1" ]] && [ "$TOTAL_APPS" -gt 1 ]; then
-    # both, pipelined: overlap app[i+1]'s container compile with app[i]'s host
-    # post-process (KICAD_PIPELINE=1).
-    mkdir -p "$PIPELINE_LOG_DIR"
-    _install_pipeline_trap
-    idx=1
+    # --postprocess-only: pure host post-process on the existing output/ glue
+    # (no container).
     for app in "${APPS[@]}"; do
-        compile_app "$app" "$idx" "$TOTAL_APPS"
-        pipeline_postprocess "$app"
-        idx=$((idx + 1))
+        postprocess_app "$app"
     done
-    pipeline_wait_all
 else
     # both, sequential.
     idx=1

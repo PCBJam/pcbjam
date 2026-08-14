@@ -91,6 +91,7 @@ BEGIN {
     # Canonical per-app stage rows, in order. Sub-stages (wxwidgets-configure /
     # -compile) fold into the wxwidgets row via parent[].
     ROWN = 0
+    ord[++ROWN] = "container-sync";  lab["container-sync"]  = "Sync source to container"
     ord[++ROWN] = "deps";            lab["deps"]            = "Dependencies"
     ord[++ROWN] = "wxwidgets";       lab["wxwidgets"]       = "wxWidgets"
     ord[++ROWN] = "kicad-stubs";     lab["kicad-stubs"]     = "Stub libraries"
@@ -98,10 +99,7 @@ BEGIN {
     ord[++ROWN] = "kicad-compile";   lab["kicad-compile"]   = "KiCad compile"
     ord[++ROWN] = "kicad-bitmaps";   lab["kicad-bitmaps"]   = "Bitmap resources"
     ord[++ROWN] = "copy-output";     lab["copy-output"]     = "Copy output"
-    ord[++ROWN] = "binaryen";        lab["binaryen"]        = "Build Binaryen"
-    ord[++ROWN] = "dyncall-shims";   lab["dyncall-shims"]   = "dynCall shims"
-    ord[++ROWN] = "finalize";        lab["finalize"]        = "Finalize WASM"
-    ord[++ROWN] = "asyncify";        lab["asyncify"]        = "Asyncify"
+    ord[++ROWN] = "env-shim";        lab["env-shim"]        = "ENV merge shim"
     for (i = 1; i <= ROWN; i++) ridx[ord[i]] = i
     parent["wxwidgets-configure"] = "wxwidgets"
     parent["wxwidgets-compile"]   = "wxwidgets"
@@ -152,12 +150,11 @@ curRawKey == "kicad-compile" {
     if ($0 ~ /Configuring KiCad with CMake/)      h_phase = "kicad-configure"
     if ($0 ~ /\(CMake target:/)                   h_phase = "kicad-compile"
     if ($0 ~ /Building bitmap resources/)         h_phase = "kicad-bitmaps"
-    if ($0 ~ /Applying asyncify transformation/)  h_phase = "asyncify"
     if (h_phase == "kicad-compile" && match($0, /[0-9]+%\]/)) {
         p = substr($0, RSTART, RLENGTH); gsub(/[^0-9]/, "", p); h_pct = p + 0
     }
     if (h_phase == "kicad-compile" && $0 ~ /Building (C|CXX) object/) h_cc++
-    if ($0 ~ /Build complete\. Output files/ || $0 ~ /Asyncify complete/) h_done = 1
+    if ($0 ~ /Build complete\. Output files/) h_done = 1
 }
 END {
     if (markerCount > 0) { render_markers(); }
@@ -173,8 +170,6 @@ function render_markers(   state, totalEl, pk, curIdx, i, k, st, det, subdet, en
         printf "H|-|0|0|%d|%s\n", totalEl, state
         if (curRawKey == "container-sync") {
             printf "R|active|Sync source to container|%s\n", fmt(termTs - rowStartTs["container-sync"])
-        } else if (curRawKey == "binaryen") {
-            printf "R|active|Build Binaryen|%s\n", fmt(termTs - rowStartTs["binaryen"])
         } else {
             printf "N|waiting for build to start...\n"
         }
@@ -234,13 +229,12 @@ function render_heuristic(   state, order, ph, i, k, st, names) {
     }
     printf "N|(no progress markers in this log - inferred from log text)\n"
     # Reduced ordered phase set we can detect heuristically.
-    split("wxwidgets kicad-configure kicad-compile kicad-bitmaps asyncify", order, " ")
+    split("wxwidgets kicad-configure kicad-compile kicad-bitmaps", order, " ")
     names["wxwidgets"]="wxWidgets"; names["kicad-configure"]="KiCad configure (CMake)"
     names["kicad-compile"]="KiCad compile"; names["kicad-bitmaps"]="Bitmap resources"
-    names["asyncify"]="Asyncify"
     ph = 0
-    for (i = 1; i <= 5; i++) if (order[i] == h_phase) ph = i
-    for (i = 1; i <= 5; i++) {
+    for (i = 1; i <= 4; i++) if (order[i] == h_phase) ph = i
+    for (i = 1; i <= 4; i++) {
         k = order[i]
         if (h_done) st = "done"
         else if (i < ph) st = "done"

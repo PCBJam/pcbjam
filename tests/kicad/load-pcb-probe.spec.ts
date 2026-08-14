@@ -203,7 +203,7 @@ test.describe('PCB load probe', () => {
 
         // Give the file dialog generous time to render — wxGenericFileDialog
         // populates its file list by scanning the directory, which on MEMFS
-        // is fast but goes through the Asyncify loop.
+        // is fast but goes through the suspending event loop.
         await page.waitForTimeout(3000);  // eslint-disable-line -- diagnostic one-shot; intentional state-capture interval
 
         await page.screenshot({ path: shotPath(page, 'probe-02-after-open-click.png'), scale: 'css' });
