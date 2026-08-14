@@ -117,6 +117,19 @@ fi
 echo ""
 echo "=== Build complete ==="
 
+# JSPI micro-harnesses (jspi-stack, jspi-coroutine): still on their ad-hoc
+# per-directory build.sh scripts (Makefile.wasm wiring is the Phase 3 TODO).
+# Without this the jspi/ Playwright suites 404 their built .mjs modules on any
+# machine that never ran the scripts by hand — which is exactly what CI is.
+if [ -z "$TARGET" ]; then
+    echo ""
+    echo "=== JSPI micro-harnesses ==="
+    for harness in jspi-stack jspi-coroutine; do
+        echo "Building $harness..."
+        "$STANDALONE_DIR/$harness/build.sh"
+    done
+fi
+
 if [ -n "$TARGET" ]; then
     # Show just the built target
     echo ""

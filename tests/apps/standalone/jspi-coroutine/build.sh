@@ -7,14 +7,24 @@ ROOT="$(cd ../../../.. && pwd)"
 EMXX="${EMXX:-$ROOT/tools/emsdk/upstream/emscripten/em++}"
 LIBCTX="$ROOT/kicad/thirdparty/libcontext"
 
-"$EMXX" coroutine_jspi_test.cpp "$LIBCTX/libcontext.cpp" \
-  -I"$LIBCTX" \
-  \
-  -O1 \
-  -fwasm-exceptions -sSUPPORT_LONGJMP=wasm -sWASM_LEGACY_EXCEPTIONS=1 \
-  -sJSPI -sJSPI_EXPORTS=pcbjam_libctx_entry,main \
-  -sMODULARIZE=1 -sEXPORT_ES6=1 -sENVIRONMENT=node,web \
-  -sALLOW_MEMORY_GROWTH=1 \
+COMMON=(
+  -I"$LIBCTX"
+  -O1
+  -fwasm-exceptions -sSUPPORT_LONGJMP=wasm -sWASM_LEGACY_EXCEPTIONS=1
+  -sJSPI -sJSPI_EXPORTS=pcbjam_libctx_entry,main
+  -sMODULARIZE=1 -sEXPORT_ES6=1
+  -sALLOW_MEMORY_GROWTH=1
+)
+
+"$EMXX" coroutine_jspi_test.cpp "$LIBCTX/libcontext.cpp" "${COMMON[@]}" \
+  -sENVIRONMENT=node,web \
   -o coroutine_jspi_test.mjs
 
-echo "built: coroutine_jspi_test.mjs"
+# pthread variant (index.html?pt=1 / run_pt.mjs) — same battery with the
+# pthread runtime linked, mirroring jspi-stack's *_pt build.
+"$EMXX" coroutine_jspi_test.cpp "$LIBCTX/libcontext.cpp" "${COMMON[@]}" \
+  -pthread -sPTHREAD_POOL_SIZE=2 -sPTHREAD_POOL_SIZE_STRICT=0 \
+  -sENVIRONMENT=node,web,worker \
+  -o coroutine_jspi_test_pt.mjs
+
+echo "built: coroutine_jspi_test.mjs + coroutine_jspi_test_pt.mjs"

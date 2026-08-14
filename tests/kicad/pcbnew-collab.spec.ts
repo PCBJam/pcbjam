@@ -460,9 +460,19 @@ test.describe("pcbnew collab bridge — two tabs (BroadcastChannel)", () => {
     await startCollab(tabA);
     await startCollab(tabB);
 
+    // Read the pre-move baseline BEFORE triggering the move: TestMoveFirst
+    // queues the commit through CallAfter + the apply coroutine, and the drain
+    // can land between two consecutive page.evaluate round-trips. A GetPos
+    // taken after the call raced that drain (~50% under CI load) and captured
+    // the ALREADY-MOVED position, so the not-toBe poll waited on itself.
+    const preSnap = await tabA.evaluate(() => JSON.parse(window.Module.kicadCollabSnapshot()));
+    const prePos = new Map<string, string>(
+      preSnap.added.map((i: { id: string; x: number; y: number }) => [i.id, `${i.x},${i.y}`]),
+    );
     const uuid = await tabA.evaluate(() => window.Module.kicadCollabTestMoveFirst(2_000_000, 0));
     expect(uuid).toMatch(/[0-9a-f-]{36}/);
-    const orig = await tabA.evaluate((id) => window.Module.kicadCollabGetPos(id), uuid);
+    const orig = prePos.get(uuid);
+    expect(orig, "moved item present in pre-move snapshot").toBeTruthy();
 
     await expect
       .poll(() => tabA.evaluate((id) => window.Module.kicadCollabGetPos(id), uuid), {
