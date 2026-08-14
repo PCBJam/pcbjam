@@ -93,3 +93,6 @@ tests/.scratch/
 *.o.stamp
 tests/apps/standalone/*/stack_test*.mjs
 tests/apps/standalone/*/coroutine_jspi_test*.mjs
+
+# jspi retired the asyncify pipeline; leftover binaryen checkouts stay untracked
+/binaryen/
