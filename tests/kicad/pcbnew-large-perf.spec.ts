@@ -118,11 +118,18 @@ test.describe('pcbnew large-board bench', () => {
         });
     }
 
-    test('FPS on vme-wren across throttles', async ({ page, testLogger }) => {
-        test.setTimeout(900000);
+    // Shared throttle-sweep FPS battery: load editor, fetch+open the board,
+    // then rAF + distinct-glcanvas-frame FPS at each throttle rate.
+    async function fpsBattery(
+        page: Parameters<Parameters<typeof test>[2]>[0]['page'],
+        testLogger: { consoleLogs: string[]; errors: string[] },
+        boardUrl: string,
+        memfsPath: string,
+        section: string,
+    ): Promise<void> {
         await measureLoad(page, '/kicad/pcbnew.html');
-        await fetchIntoMemfs(page, VME_URL, '/home/kicad/documents/vme-wren.kicad_pcb');
-        await openAndWait(page, '/home/kicad/documents/vme-wren.kicad_pcb', 'board', testLogger, 480000);
+        await fetchIntoMemfs(page, boardUrl, memfsPath);
+        await openAndWait(page, memfsPath, 'board', testLogger, 780000);
         await page.keyboard.press('Escape').catch(() => {}); // eslint-disable-line -- best-effort Escape
 
         const cdp = await page.context().newCDPSession(page);
@@ -130,13 +137,29 @@ test.describe('pcbnew large-board bench', () => {
             await setThrottle(cdp, rate);
             for (let rep = 0; rep < FPS_REPS; rep++) {
                 const f = await measureFpsDetailed(page, FPS_SECS);
-                record('fps-vme', { throttle: rate, rep: rep + 1, ...f });
+                record(section, { throttle: rate, rep: rep + 1, ...f });
                 expect(f.rafFps).toBeGreaterThan(0);
             }
         }
         await setThrottle(cdp, 1);
         const mem = await sampleMemory(page);
-        record('fps-vme-postmem', { postFpsMem: mem });
+        record(`${section}-postmem`, { postFpsMem: mem });
+    }
+
+    test('FPS on vme-wren across throttles', async ({ page, testLogger }) => {
+        test.setTimeout(900000);
+        await fpsBattery(page, testLogger, VME_URL, '/home/kicad/documents/vme-wren.kicad_pcb', 'fps-vme');
+    });
+
+    test('FPS on jetson-agx-thor across throttles', async ({ page, testLogger }) => {
+        test.setTimeout(900000);
+        await fpsBattery(
+            page,
+            testLogger,
+            JETSON_URL,
+            '/home/kicad/documents/jetson-agx-thor-baseboard.kicad_pcb',
+            'fps-jetson',
+        );
     });
 
     test('open jetson-agx-thor (80.9 MB) — outcome, OOM allowed', async ({ page, testLogger }) => {

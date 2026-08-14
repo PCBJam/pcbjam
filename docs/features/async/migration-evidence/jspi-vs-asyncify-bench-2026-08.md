@@ -156,6 +156,16 @@ The distinct-frame gap grows from +21 % at 1× to +68 % at 4× — the same
 "advantage widens under throttle" signature doc-12 used to prove lower
 CPU-per-operation (as opposed to just a smaller module).
 
+**FPS on jetson-agx-thor (80.9 MB)** — added 2026-08-14 pm: at this scale BOTH
+arms saturate outright and the backend difference disappears into noise
+(asyncify raf 2.1–5.3 / distinct 0.2–0.8; JSPI raf 1.9–5.0 / distinct
+0.1–0.7; post-FPS heap 1.90 vs 1.73 GB). With <1 real redraw/s the 6 s
+windows count 1–5 frames, i.e. quantization noise. Reading: suspension
+overhead is a per-event-loop-turn cost — once per-frame GAL/geometry work is
+hundreds of ms, it no longer discriminates. vme-wren (~27 MB) is the size
+class where the backend visibly matters for interaction; jetson is the
+"both need render-side optimization" regime.
+
 **Memory checkpoints** (wasm linear memory; Chromium `usedJSHeapSize` tracked
 alongside, differences <10 %): boot 557 vs 387 MB; after vme-wren open 962 vs
 802 MB; unchanged after the FPS sweep on both arms.

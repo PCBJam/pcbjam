@@ -25,3 +25,10 @@
 {"arm":"jspi","sha256":"6f03e62d6d5619c3","when":"2026-08-14T09:52:24.000Z","section":"fps-vme","throttle":6,"rep":1,"rafFps":34.3,"distinctFps":3.3,"note":"glcanvas sampler re-run; when approximate"}
 {"arm":"jspi","sha256":"6f03e62d6d5619c3","when":"2026-08-14T09:52:30.000Z","section":"fps-vme","throttle":6,"rep":2,"rafFps":41.8,"distinctFps":5.3,"note":"glcanvas sampler re-run; when approximate"}
 {"arm":"jspi","sha256":"6f03e62d6d5619c3","when":"2026-08-14T09:52:30.100Z","section":"fps-vme-postmem","postFpsMem":{"wasmHeapBytes":801898496,"jsHeapBytes":64000000}}
+{"arm":"jspi","sha256":"6f03e62d6d5619c3","when":"2026-08-14T10:04:14.509Z","section":"fps-jetson","throttle":1,"rep":1,"rafFps":5,"distinctFps":0.7}
+{"arm":"jspi","sha256":"6f03e62d6d5619c3","when":"2026-08-14T10:04:21.557Z","section":"fps-jetson","throttle":1,"rep":2,"rafFps":4.1,"distinctFps":0.7}
+{"arm":"jspi","sha256":"6f03e62d6d5619c3","when":"2026-08-14T10:04:32.709Z","section":"fps-jetson","throttle":4,"rep":1,"rafFps":2.3,"distinctFps":0.4}
+{"arm":"jspi","sha256":"6f03e62d6d5619c3","when":"2026-08-14T10:04:40.639Z","section":"fps-jetson","throttle":4,"rep":2,"rafFps":1.9,"distinctFps":0.1}
+{"arm":"jspi","sha256":"6f03e62d6d5619c3","when":"2026-08-14T10:04:48.685Z","section":"fps-jetson","throttle":6,"rep":1,"rafFps":2.1,"distinctFps":0.1}
+{"arm":"jspi","sha256":"6f03e62d6d5619c3","when":"2026-08-14T10:04:55.534Z","section":"fps-jetson","throttle":6,"rep":2,"rafFps":4.3,"distinctFps":0.3}
+{"arm":"jspi","sha256":"6f03e62d6d5619c3","when":"2026-08-14T10:04:55.537Z","section":"fps-jetson-postmem","postFpsMem":{"wasmHeapBytes":1730805760,"jsHeapBytes":157000000}}

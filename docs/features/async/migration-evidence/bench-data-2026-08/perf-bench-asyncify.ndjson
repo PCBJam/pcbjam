@@ -18,3 +18,10 @@
 {"arm":"asyncify","sha256":"6dab493196d060d7","when":"2026-08-14T09:48:29.439Z","section":"fps-vme","throttle":6,"rep":2,"rafFps":34.3,"distinctFps":2.8}
 {"arm":"asyncify","sha256":"6dab493196d060d7","when":"2026-08-14T09:48:29.442Z","section":"fps-vme-postmem","postFpsMem":{"wasmHeapBytes":962330624,"jsHeapBytes":60300000}}
 {"arm":"asyncify","sha256":"6dab493196d060d7","when":"2026-08-14T09:48:46.855Z","section":"open-jetson","bytes":84806775,"outcome":"loaded","openMs":14584,"openPeakHeap":1904214016,"postOpenMem":{"wasmHeapBytes":1904214016,"jsHeapBytes":116000000}}
+{"arm":"asyncify","sha256":"6dab493196d060d7","when":"2026-08-14T10:05:39.841Z","section":"fps-jetson","throttle":1,"rep":1,"rafFps":4.4,"distinctFps":0.5}
+{"arm":"asyncify","sha256":"6dab493196d060d7","when":"2026-08-14T10:05:46.092Z","section":"fps-jetson","throttle":1,"rep":2,"rafFps":5.3,"distinctFps":0.8}
+{"arm":"asyncify","sha256":"6dab493196d060d7","when":"2026-08-14T10:05:52.980Z","section":"fps-jetson","throttle":4,"rep":1,"rafFps":2.1,"distinctFps":0.4}
+{"arm":"asyncify","sha256":"6dab493196d060d7","when":"2026-08-14T10:06:00.712Z","section":"fps-jetson","throttle":4,"rep":2,"rafFps":3.4,"distinctFps":0.6}
+{"arm":"asyncify","sha256":"6dab493196d060d7","when":"2026-08-14T10:06:06.843Z","section":"fps-jetson","throttle":6,"rep":1,"rafFps":2.5,"distinctFps":0.2}
+{"arm":"asyncify","sha256":"6dab493196d060d7","when":"2026-08-14T10:06:14.282Z","section":"fps-jetson","throttle":6,"rep":2,"rafFps":3.9,"distinctFps":0.7}
+{"arm":"asyncify","sha256":"6dab493196d060d7","when":"2026-08-14T10:06:14.285Z","section":"fps-jetson-postmem","postFpsMem":{"wasmHeapBytes":1904214016,"jsHeapBytes":177000000}}
