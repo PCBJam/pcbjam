@@ -216,6 +216,10 @@ same-origin serving works. Not fixed in the cleanup — tracked here.
 
 ## 10. Migration evidence
 
+- **A/B benchmark vs the asyncify build** (2026-08-14): build time / build
+  memory / bundle size / load / open / FPS / heap —
+  [`migration-evidence/jspi-vs-asyncify-bench-2026-08.md`](migration-evidence/jspi-vs-asyncify-bench-2026-08.md)
+  (raw data in `migration-evidence/bench-data-2026-08/`).
 - **Workflow results**: `migration-evidence/wf-result-11.json` /
   `wf-result-12.json` (the durable spike output; the rest of the
   `.jspi-assets/` spike tree was scratch and is gone — its ignore rule came

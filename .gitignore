@@ -40,6 +40,7 @@ wxwidgets-clean/
 /tests/node_modules/
 /tests/playwright-report/
 /tests/test-results/
+/tests/bench-results/
 /tests/pw-artifacts/
 /tests/.test-port
 /test-results/

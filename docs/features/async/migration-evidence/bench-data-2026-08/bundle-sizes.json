@@ -1,0 +1,66 @@
+{
+  "jspi": {
+    "kicad_editor.wasm": {
+      "raw": 98664038,
+      "gzip": 19469712,
+      "brotli": 14173019
+    },
+    "kicad_editor.js": {
+      "raw": 474692,
+      "gzip": 116955,
+      "brotli": 106125
+    },
+    "wx.js": {
+      "raw": 74281,
+      "gzip": 17356,
+      "brotli": 16439
+    },
+    "wx-dom.js": {
+      "raw": 63269,
+      "gzip": 16857,
+      "brotli": 15848
+    },
+    "images.tar.gz": {
+      "raw": 5370904,
+      "gzip": 5372562,
+      "brotli": 5114985
+    },
+    "TOTAL": {
+      "raw": 104647184,
+      "gzip": 24993442,
+      "brotli": 19426416
+    }
+  },
+  "asyncify": {
+    "kicad_editor.wasm": {
+      "raw": 118557371,
+      "gzip": 38473650,
+      "brotli": 25666194
+    },
+    "kicad_editor.js": {
+      "raw": 472325,
+      "gzip": 116872,
+      "brotli": 105662
+    },
+    "wx.js": {
+      "raw": 74281,
+      "gzip": 17356,
+      "brotli": 16439
+    },
+    "wx-dom.js": {
+      "raw": 63041,
+      "gzip": 16773,
+      "brotli": 15765
+    },
+    "images.tar.gz": {
+      "raw": 5370145,
+      "gzip": 5371803,
+      "brotli": 5160999
+    },
+    "TOTAL": {
+      "raw": 124537163,
+      "gzip": 43996454,
+      "brotli": 30965059
+    }
+  }
+}

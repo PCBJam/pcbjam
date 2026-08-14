@@ -43,6 +43,36 @@ export async function injectFileIntoMemfs(
 }
 
 /**
+ * Fetch a same-origin URL inside the page and write it into MEMFS.
+ *
+ * For large fixtures (tens of MB) the base64 round-trip through Playwright's
+ * JSON channel in injectFileIntoMemfs is the bottleneck — an in-page fetch
+ * from the static server (tests/apps is the serve root) keeps the bytes in
+ * the browser. Returns the byte count written.
+ */
+export async function fetchIntoMemfs(
+    page: Page,
+    url: string,                  // e.g. "/kicad/board/vme-wren.kicad_pcb"
+    memfsPath: string,
+): Promise<number> {
+    const memfsDir = memfsPath.replace(/\/[^/]+$/, '') || '/';
+    return await page.evaluate(
+        async ({ url, memfsDir, memfsPath }) => {
+            const res = await fetch(url);
+            if (!res.ok) throw new Error(`fetchIntoMemfs: ${url} -> HTTP ${res.status}`);
+            const data = new Uint8Array(await res.arrayBuffer());
+            // @ts-expect-error — Emscripten FS lives on window via Module
+            const FS = (window as any).FS;
+            FS.mkdirTree(memfsDir);
+            FS.writeFile(memfsPath, data);
+            console.log(`[KICAD] Fetched ${url} -> ${memfsPath} (${data.length} bytes)`);
+            return data.length;
+        },
+        { url, memfsDir, memfsPath },
+    );
+}
+
+/**
  * Convenience: read a file from the kicad/ submodule and inject it.
  */
 export async function injectFromSubmodule(

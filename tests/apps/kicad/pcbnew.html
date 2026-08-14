@@ -130,23 +130,28 @@
 
     // Seed a minimal default config before main() so STARTWIZARD finds
     // NeedsUserInput()==false and the first-run setup wizard never opens —
-    // same as eeschema.html / pl_editor.html.
+    // same as eeschema.html / pl_editor.html. Seeded for BOTH the current
+    // (10.0) and previous (9.99) settings versions: the perf-bench flow
+    // (pcbnew-large-perf.spec.ts) swaps in editor builds from other branches
+    // whose settings version differs, and an unseeded dir would send that
+    // binary into the wizard and skew every load-time number.
     var seedKicadConfig = function() {
-      var cfgDir = '/home/kicad/.config/kicad/kicad/10.0';
-      FS.mkdirTree(cfgDir);
-
       var writeIfAbsent = function(path, contents) {
         try { FS.stat(path); return; } catch (e) { /* absent — seed it */ }
         FS.writeFile(path, contents);
         console.log('[KICAD] Seeded ' + path);
       };
 
-      writeIfAbsent(cfgDir + '/kicad_common.json', JSON.stringify({
-        do_not_show_again: { update_check_prompt: true, data_collection_prompt: true }
-      }, null, 2));
-      writeIfAbsent(cfgDir + '/sym-lib-table', '(sym_lib_table\n  (version 7)\n)\n');
-      writeIfAbsent(cfgDir + '/fp-lib-table', '(fp_lib_table\n  (version 7)\n)\n');
-      writeIfAbsent(cfgDir + '/design-block-lib-table', '(design_block_lib_table\n  (version 7)\n)\n');
+      ['9.99', '10.0'].forEach(function(ver) {
+        var cfgDir = '/home/kicad/.config/kicad/kicad/' + ver;
+        FS.mkdirTree(cfgDir);
+        writeIfAbsent(cfgDir + '/kicad_common.json', JSON.stringify({
+          do_not_show_again: { update_check_prompt: true, data_collection_prompt: true }
+        }, null, 2));
+        writeIfAbsent(cfgDir + '/sym-lib-table', '(sym_lib_table\n  (version 7)\n)\n');
+        writeIfAbsent(cfgDir + '/fp-lib-table', '(fp_lib_table\n  (version 7)\n)\n');
+        writeIfAbsent(cfgDir + '/design-block-lib-table', '(design_block_lib_table\n  (version 7)\n)\n');
+      });
     };
 
     var Module = {
