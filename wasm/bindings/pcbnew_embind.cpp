@@ -276,7 +276,13 @@ json itemToJson( BOARD_ITEM* aItem )
         j["sy"]    = tr->GetStart().y;
         j["ex"]    = tr->GetEnd().x;
         j["ey"]    = tr->GetEnd().y;
-        j["width"] = tr->GetWidth();
+
+        // The layerless PCB_VIA::GetWidth() is an assert trap (padstack refactor); pass the
+        // whole-stack slot instead. applyChanged's layerless SetWidth writes the same slot.
+        if( aItem->Type() == PCB_VIA_T )
+            j["width"] = static_cast<PCB_VIA*>( aItem )->GetWidth( PADSTACK::ALL_LAYERS );
+        else
+            j["width"] = tr->GetWidth();
     }
 
     // Vias and zones reconstruct NATIVELY on `added` (the s-expr clipboard blob's `(kicad_pcb …)`

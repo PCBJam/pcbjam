@@ -999,6 +999,7 @@ export function WasmTool({
   const [status, setStatus] = React.useState("Loading tool…");
   const [logs, setLogs] = React.useState<string[]>([]);
   const [showLog, setShowLog] = React.useState(false);
+  const consolePanelRef = React.useRef<HTMLDivElement>(null);
   const [oomExhausted, setOomExhausted] = React.useState(false);
   // Terminal failure, rendered INDEPENDENTLY of `ready`. The boot overlay only
   // exists while `!ready`, so anything that killed the runtime after the editor
@@ -1095,6 +1096,36 @@ export function WasmTool({
   // Dev-time presence style tuner (VITE_PRESENCE_TUNER=1) — set once the wasm
   // exposes the style bridge, mounts the floating panel.
   const [tunerMod, setTunerMod] = React.useState<TunerModule | null>(null);
+
+  // wx's window-level keydown handler forwards Ctrl/Cmd+C to the wasm app and
+  // preventDefaults it, so the browser's native "copy selection" never runs —
+  // log text could be selected but not copied. When the selection lives in the
+  // console panel, intercept the chord in the CAPTURE phase (ahead of wx's
+  // bubble-phase listener) and stop propagation; the default copy still fires.
+  // A canvas mousedown would normally collapse a selection, but wx
+  // preventDefaults that too — mirror it, or a stale log selection would keep
+  // stealing the editor's own Ctrl+C.
+  React.useEffect(() => {
+    const selectionInConsole = () => {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed || !sel.anchorNode) return false;
+      return consolePanelRef.current?.contains(sel.anchorNode) ?? false;
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "c" && selectionInConsole())
+        e.stopPropagation();
+    };
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.target instanceof HTMLCanvasElement && selectionInConsole())
+        window.getSelection()?.removeAllRanges();
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("pointerdown", onPointerDown, true);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("pointerdown", onPointerDown, true);
+    };
+  }, []);
 
   const append = React.useCallback((msg: string) => {
     // Mirror into the React-independent fatal-screen ring: if React ever
@@ -2481,33 +2512,47 @@ export function WasmTool({
           must never end up underneath the thing reporting the failure. Forced
           visible on a fatal even with chrome hidden, for the same reason. */}
       {(!effectiveChromeHidden || fatal) && (
-        <div className="absolute bottom-0 left-0 right-0 z-40">
-          <div className="flex items-center bg-black/70">
+        /* Closed: a content-width tab pinned bottom-left (no right-0), so the
+           version badge and the app's bottom edge stay visible/clickable.
+           Open: the full-width footer panel. */
+        <div
+          ref={consolePanelRef}
+          className={
+            showLog ? "absolute bottom-0 left-0 right-0 z-40" : "absolute bottom-0 left-0 z-40"
+          }
+        >
+          {showLog ? (
+            <>
+              <div className="flex items-center bg-black/70">
+                <button
+                  className="flex items-center gap-1 px-3 py-1 font-mono text-xs text-white"
+                  onClick={() => setShowLog(false)}
+                >
+                  <ChevronDown size={14} /> console ({logs.length})
+                </button>
+                <button
+                  className="ml-auto px-3 py-1 font-mono text-xs text-white/70 hover:text-white"
+                  onClick={() => {
+                    void navigator.clipboard.writeText(logs.join("\n")).then(
+                      () => append("[console] copied to clipboard"),
+                      () => append("[console] clipboard copy failed"),
+                    );
+                  }}
+                >
+                  copy
+                </button>
+              </div>
+              <pre className="max-h-64 select-text cursor-text overflow-auto bg-black/85 p-3 font-mono text-[11px] leading-tight text-green-300">
+                {logs.join("\n")}
+              </pre>
+            </>
+          ) : (
             <button
-              className="flex items-center gap-1 px-3 py-1 font-mono text-xs text-white"
-              onClick={() => setShowLog((s) => !s)}
+              className="flex items-center gap-1 bg-black/70 px-3 py-1 font-mono text-xs text-white"
+              onClick={() => setShowLog(true)}
             >
-              {showLog ? <ChevronDown size={14} /> : <ChevronUp size={14} />} console
-              ({logs.length})
+              <ChevronUp size={14} /> console ({logs.length})
             </button>
-            {showLog && (
-              <button
-                className="ml-auto px-3 py-1 font-mono text-xs text-white/70 hover:text-white"
-                onClick={() => {
-                  void navigator.clipboard.writeText(logs.join("\n")).then(
-                    () => append("[console] copied to clipboard"),
-                    () => append("[console] clipboard copy failed"),
-                  );
-                }}
-              >
-                copy
-              </button>
-            )}
-          </div>
-          {showLog && (
-            <pre className="max-h-64 overflow-auto bg-black/85 p-3 font-mono text-[11px] leading-tight text-green-300">
-              {logs.join("\n")}
-            </pre>
           )}
         </div>
       )}
