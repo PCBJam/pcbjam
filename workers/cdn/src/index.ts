@@ -86,9 +86,21 @@ export default {
       headers.set("Content-Length", String(object.size));
     }
 
+    // The bucket stores artifacts PRE-COMPRESSED (publish-wasm --compress br,
+    // Content-Encoding in the object metadata). `encodeBody: "manual"` tells
+    // the runtime the body already matches the Content-Encoding header, so it
+    // passes both through untouched. The default "automatic" mode DROPS a
+    // user-set Content-Encoding and re-negotiates against the client's
+    // Accept-Encoding — behind prod's custom-domain edge that happened to
+    // round-trip, but on workers.dev it served the raw brotli bytes with NO
+    // encoding header: binary garbage where the browser expected JS/wasm.
+    // Firefox executed the garbage <script> to nothing (silently — onload
+    // still fires), leaving the editor glue inert: the second half of the
+    // "runtime did not initialize (no FS)" staging boot failure.
     return new Response(request.method === "HEAD" ? null : object.body, {
       status,
       headers,
+      encodeBody: "manual",
     });
   },
 };
