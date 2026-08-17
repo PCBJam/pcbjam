@@ -41,9 +41,17 @@ export default {
       );
     }
 
-    const object = await env.BUCKET.get(key, {
-      range: request.headers,
-    });
+    // Only ask R2 for a range when the request actually sent one: passing the
+    // headers unconditionally makes R2 report a DEFINED object.range (full
+    // span) even for range-less GETs, which stamped EVERY response 206 +
+    // Content-Range. Chrome shrugs at a 206 <script>; Firefox fires onload but
+    // refuses to EXECUTE it, so on hosts with no masking edge cache (staging's
+    // workers.dev) the editor glue never ran — "runtime did not initialize
+    // (no FS) in 90s" on every Firefox boot.
+    const object = await env.BUCKET.get(
+      key,
+      request.headers.has("Range") ? { range: request.headers } : {},
+    );
     if (!object) {
       return new Response("Not Found", { status: 404, headers: baseHeaders() });
     }
