@@ -41,16 +41,17 @@ export default {
       );
     }
 
-    // Only ask R2 for a range when the request actually sent one: passing the
-    // headers unconditionally makes R2 report a DEFINED object.range (full
-    // span) even for range-less GETs, which stamped EVERY response 206 +
-    // Content-Range. Chrome shrugs at a 206 <script>; Firefox fires onload but
-    // refuses to EXECUTE it, so on hosts with no masking edge cache (staging's
-    // workers.dev) the editor glue never ran — "runtime did not initialize
-    // (no FS) in 90s" on every Firefox boot.
+    // 206 must be gated on the REQUEST asking for a range, not on
+    // `object.range`: current workerd reports a DEFINED object.range (full
+    // span) even for a range-less get() — with OR without range options — so
+    // every plain GET went out as 206 + Content-Range. Chrome shrugs at a 206
+    // <script>; Firefox fires onload but refuses to EXECUTE it, so on hosts
+    // with no masking edge cache (staging's workers.dev) the editor glue never
+    // ran — "runtime did not initialize (no FS) in 90s" on every Firefox boot.
+    const rangeRequested = request.headers.has("Range");
     const object = await env.BUCKET.get(
       key,
-      request.headers.has("Range") ? { range: request.headers } : {},
+      rangeRequested ? { range: request.headers } : {},
     );
     if (!object) {
       return new Response("Not Found", { status: 404, headers: baseHeaders() });
@@ -66,7 +67,7 @@ export default {
     }
 
     let status = 200;
-    if (object.range) {
+    if (rangeRequested && object.range) {
       const suffix = "suffix" in object.range ? object.range.suffix : undefined;
       const length = suffix
         ? Math.min(suffix, object.size)
