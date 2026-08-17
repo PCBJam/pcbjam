@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import { parseToolParam, toolForFile, type Tool } from "@pcbjam/shared";
 import {
@@ -31,6 +32,12 @@ export function ToolPage() {
 
   const { data, isLoading, error } = useProject(slug);
   const { data: sourceDescriptor } = useSourceDescriptor(slug);
+  // Listing rows by path, handed to fetchFileBytes so the remote source can
+  // serve unchanged files from the local body cache (project-file-cache.ts).
+  const filesByPath = useMemo(
+    () => new Map((data?.files ?? []).map((f) => [f.path, f])),
+    [data],
+  );
 
   if (!tool) {
     return (
@@ -79,7 +86,9 @@ export function ToolPage() {
         projectId={data.project.id}
         files={data.files}
         targetPath={targetPath}
-        fetchBytes={(relPath) => fetchFileBytes(slug, relPath)}
+        fetchBytes={(relPath) =>
+          fetchFileBytes(slug, relPath, filesByPath.get(relPath))
+        }
         saveBytes={
           readOnly
             ? undefined

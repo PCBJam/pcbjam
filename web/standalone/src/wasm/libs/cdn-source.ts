@@ -111,6 +111,10 @@ export function cdnLibsSource(
               namespace: `kicad:${m.tag}:${libId}`,
               kind: "static",
               url: `${baseDir}/${encodeURIComponent(libId)}`,
+              // The tag is in the URL and the namespace, and publish-libs
+              // never republishes an existing tag — a stored snapshot IS
+              // current, so warm opens skip the per-lib manifest GET.
+              immutable: true,
             },
           ],
           ...opts,

@@ -18,6 +18,12 @@ import {
 import { client } from "./contract-client";
 import { idbProjectStore, type LocalProjectStore } from "./idb-project-store";
 import {
+  fileCacheValidator,
+  pruneProjectFileCache,
+  readCachedFileBytes,
+  writeCachedFileBytes,
+} from "./project-file-cache";
+import {
   SOURCE_DESCRIPTORS,
   type SourceDescriptor,
   deterministicUuid,
@@ -42,7 +48,17 @@ export interface ProjectSource {
   readonly readOnly: boolean;
   listProjects(): Promise<Project[]>;
   getProject(slug: string): Promise<ProjectWithFiles>;
-  fetchFileBytes(slug: string, relPath: string): Promise<Uint8Array>;
+  /**
+   * `meta` is the file's row from the CURRENT project listing, when the caller
+   * has one. It lets a source serve the bytes from its local body cache when
+   * the listed version vouches for them (project-file-cache.ts); without it
+   * every call is a plain fetch. Purely an optimization — callers may omit it.
+   */
+  fetchFileBytes(
+    slug: string,
+    relPath: string,
+    meta?: ProjectFile,
+  ): Promise<Uint8Array>;
   /** Present only on writable sources; absent ⇒ read-only (download on save). */
   uploadFileBytes?(
     slug: string,
@@ -81,9 +97,24 @@ function remoteProjectSource(): ProjectSource {
       });
       if (res.status === 404) throw new Error("project not found");
       if (res.status !== 200) throw new Error("failed to load project");
+      // Fresh listing = fresh cache truth: drop cached bodies this listing no
+      // longer vouches for (deleted paths, superseded revisions). Best-effort.
+      const valid = new Map<string, string>();
+      for (const f of res.body.files) {
+        const v = fileCacheValidator(f);
+        if (v) valid.set(f.path, v);
+      }
+      void pruneProjectFileCache(res.body.project.id, valid);
       return res.body;
     },
-    async fetchFileBytes(slug, relPath) {
+    async fetchFileBytes(slug, relPath, meta) {
+      // Serve from the browser-local body cache when the listing's version
+      // vouches for it — a warm load then fetches only files that changed.
+      const validator = meta ? fileCacheValidator(meta) : null;
+      if (validator && meta) {
+        const hit = await readCachedFileBytes(meta.projectId, relPath, validator);
+        if (hit) return hit;
+      }
       // credentials: session-cookie auth (see contract-client.ts). The static
       // gallery fetches below stay credential-less — a CDN's wildcard CORS
       // rejects credentialed requests.
@@ -101,7 +132,15 @@ function remoteProjectSource(): ProjectSource {
       });
       if (!res.ok) throw new Error(`download failed (${res.status}): ${relPath}`);
       const bytes = new Uint8Array(await res.arrayBuffer());
-      if (!isYdocResponse(res)) return bytes;
+      if (!isYdocResponse(res)) {
+        // The ydoc check re-guards the listing's hasYdoc: a room created
+        // between listing and fetch answers as ydoc, which must not be cached
+        // (its bytes move without a file-row change).
+        if (validator && meta) {
+          void writeCachedFileBytes(meta.projectId, relPath, validator, bytes);
+        }
+        return bytes;
+      }
       try {
         return new TextEncoder().encode(docToFile(ydocUpdateToKicadDoc(bytes)));
       } catch (err) {
@@ -246,7 +285,8 @@ function compositeProjectSource(
       return [...a, ...b.filter((p) => !localSlugs.has(p.slug))];
     },
     getProject: (slug) => route(slug).then((s) => s.getProject(slug)),
-    fetchFileBytes: (slug, p) => route(slug).then((s) => s.fetchFileBytes(slug, p)),
+    fetchFileBytes: (slug, p, meta) =>
+      route(slug).then((s) => s.fetchFileBytes(slug, p, meta)),
     uploadFileBytes: async (slug, p, bytes) => {
       const s = await route(slug);
       if (s.uploadFileBytes) return s.uploadFileBytes(slug, p, bytes);

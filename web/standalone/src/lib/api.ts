@@ -1,4 +1,4 @@
-import type { DriftReportBody, Project } from "@pcbjam/shared";
+import type { DriftReportBody, Project, ProjectFile } from "@pcbjam/shared";
 import { useQuery } from "@tanstack/react-query";
 import { API_BASE_URL, currentScope, libsSourceConfig } from "./config";
 import { client } from "./contract-client";
@@ -72,12 +72,18 @@ export function useProject(slug: string) {
   });
 }
 
-/** File bytes from the active source (backend stream, or the static CDN gallery). */
+/**
+ * File bytes from the active source (backend stream, or the static CDN
+ * gallery). Pass the file's row from the current listing as `meta` when you
+ * have it — it lets the remote source answer from its local body cache when
+ * the listed version vouches for the bytes (project-file-cache.ts).
+ */
 export function fetchFileBytes(
   slug: string,
   relPath: string,
+  meta?: ProjectFile,
 ): Promise<Uint8Array> {
-  return projectSource().fetchFileBytes(slug, relPath);
+  return projectSource().fetchFileBytes(slug, relPath, meta);
 }
 
 /**
