@@ -136,6 +136,9 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
   // mode, entry sheet) share ONE connection instead of opening the room twice.
   const connecting = new Map<string, Promise<Room>>();
   let activePath: string | null = null;
+  // destroy() ran — a connect resolving after it must tear its session down
+  // instead of registering a leaked socket+doc (findings C-1).
+  let destroyed = false;
 
   // Coalesce rapid navigations: only the LATEST requested sheet is actually bound, and
   // switches run one-at-a-time so concurrent `onSheetChanged` events can't interleave.
@@ -183,6 +186,13 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
         provider,
         room: collabRoomId(scopeId, projectId, sheetPath),
       });
+      if (destroyed) {
+        // The manager died while this connect was in flight (unmount during
+        // connectAll's warm fan-out) — the session must not outlive it.
+        session.provider.destroy();
+        session.doc.destroy();
+        throw new Error(`sheet manager destroyed while connecting ${sheetPath}`);
+      }
       // Invisible observer (read-only-viewer): drop the provider's initial
       // empty awareness state before anyone can see it.
       if (opts.readOnly) session.provider.awareness?.setLocalState(null);
@@ -231,6 +241,7 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
     // Detach the OLD binding FIRST (before any await): the editor already navigated to
     // the new sheet, so the old binding's observer must stop applying remote edits onto
     // what is now the wrong (new) active screen. Its provider/doc stay warm.
+    const hadActive = activePath !== null;
     if (activePath) {
       const old = rooms.get(activePath);
       if (old?.binding) {
@@ -240,8 +251,16 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
       }
     }
     activePath = null;
+    // Clear the HOST's per-sheet callbacks BEFORE the connect window too
+    // (findings C-4): presence push/release, comment pins, follow-user fit and
+    // drift checks were still subscribed to the OLD room while the new sheet
+    // connected and seeded — each could drive the editor (now showing the new
+    // sheet) from old-room state. onActiveChange(null) is the same host
+    // contract destroy() already uses; the host rebinds after the seed below.
+    if (hadActive) opts.onActiveChange?.(null);
 
     const room = await ensureRoom(sheetPath);
+    if (destroyed) return;
 
     // Activating: stop tracking parked updates and bind the (warm) doc to the editor.
     room.detachWatch?.();
@@ -282,7 +301,7 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
       clearTimeout(retryTimer);
       retryTimer = undefined;
     }
-    queue = queue
+    const attempt = queue
       .then(() => {
         // Superseded by a newer navigation — skip this stale switch. The editor's active
         // screen always reflects `requestedPath`, so we only bind when they agree (the
@@ -292,11 +311,18 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
           retryDelayMs = 2000; // bound succeeded — reset the backoff
         });
       })
-      .catch((err) => {
+      .catch((err: unknown) => {
         cwarn(`[sheet] switchTo(${sheetPath}) failed`, err);
+        // Terminal version skew (findings C-5): retrying cannot make an
+        // incompatible doc encoding bindable. No retry timer — rethrow so the
+        // caller surfaces it (boot converts it into the user-visible version
+        // error instead of reporting "connected" with no binding).
+        if ((err as { name?: string } | null)?.name === "SexprVersionError") {
+          throw err;
+        }
         // Still the sheet the editor shows and not yet bound → retry with backoff,
         // else the editor stays unbound and every edit silently never syncs.
-        if (requestedPath === sheetPath && activePath !== sheetPath) {
+        if (!destroyed && requestedPath === sheetPath && activePath !== sheetPath) {
           retryTimer = setTimeout(() => {
             retryTimer = undefined;
             if (requestedPath === sheetPath && activePath !== sheetPath) {
@@ -307,7 +333,10 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
           retryDelayMs = Math.min(retryDelayMs * 2, 30000);
         }
       });
-    return queue;
+    // The terminal rejection must reach the CALLER, but must not poison the
+    // serialization queue for later explicit navigation.
+    queue = attempt.catch(() => {});
+    return attempt;
   }
 
   async function onboard(sheetPath: string): Promise<void> {
@@ -353,6 +382,7 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
   }
 
   function destroy(): void {
+    destroyed = true;
     if (retryTimer) {
       clearTimeout(retryTimer);
       retryTimer = undefined;

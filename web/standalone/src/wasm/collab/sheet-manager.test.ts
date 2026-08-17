@@ -194,3 +194,88 @@ describe("sheet-manager warm pool", () => {
     expect(bindings[0]!.lastSeedOpts).toEqual({ editorMatchesDoc: true });
   });
 });
+
+describe("sheet-manager lifecycle hardening (findings C-1/C-4/C-5)", () => {
+  it("a connect resolving after destroy() is torn down, not registered (C-1)", async () => {
+    let release!: () => void;
+    const late: FakeSession = {
+      room: "late",
+      doc: makeDoc(),
+      provider: { destroy: vi.fn() },
+    };
+    connectKicadDoc.mockImplementationOnce(
+      () =>
+        new Promise((res) => {
+          release = () => res(late);
+        }),
+    );
+    const m = makeManager();
+    const warm = m.connectAll(["late.kicad_sch"]);
+    m.destroy();
+    release();
+    await warm; // connectAll swallows the (deliberate) post-destroy failure
+    expect(late.provider.destroy).toHaveBeenCalled();
+    expect(late.doc.destroy).toHaveBeenCalled();
+    expect(m.active()).toBeNull();
+  });
+
+  it("clears the host's per-sheet callbacks BEFORE the new room connects (C-4)", async () => {
+    const events: string[] = [];
+    const m = createSheetCollabManager({
+      mod: {} as never,
+      win: {} as never,
+      scopeId: "S",
+      projectId: "P",
+      provider: { kind: "none" } as never,
+      seedDocForPath: () => undefined,
+      onActiveChange: (active) =>
+        events.push(active ? `bind:${active.sheetPath}` : "clear"),
+      log: () => {},
+    });
+    await m.switchTo("a.kicad_sch");
+    expect(events).toEqual(["bind:a.kicad_sch"]);
+
+    // Gate sheet b's connect so the pre-connect window is observable.
+    let releaseB!: () => void;
+    connectKicadDoc.mockImplementationOnce(
+      ({ room }: { room: string }) =>
+        new Promise((res) => {
+          releaseB = () =>
+            res({ room, doc: makeDoc(), provider: { destroy: vi.fn() } });
+        }),
+    );
+    const sw = m.switchTo("b.kicad_sch");
+    await new Promise((r) => setTimeout(r, 0)); // let doSwitch reach the connect await
+    // The old sheet's presence/comments/follow/drift were cleared while b is
+    // STILL CONNECTING — the bleed window is closed.
+    expect(events).toEqual(["bind:a.kicad_sch", "clear"]);
+    releaseB();
+    await sw;
+    expect(events).toEqual(["bind:a.kicad_sch", "clear", "bind:b.kicad_sch"]);
+  });
+
+  it("switchTo rejects SexprVersionError terminally — no retry, queue stays usable (C-5)", async () => {
+    vi.useFakeTimers();
+    try {
+      const m = makeManager();
+      const skew = Object.assign(new Error("doc written by a newer encoding"), {
+        name: "SexprVersionError",
+      });
+      bindKicadCollab.mockImplementationOnce(() => {
+        throw skew;
+      });
+      await expect(m.switchTo("a.kicad_sch")).rejects.toBe(skew);
+
+      // Terminal: no backoff timer was armed (the old behavior retried 2s→30s
+      // forever and the returned promise never rejected).
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(bindKicadCollab).toHaveBeenCalledTimes(1);
+
+      // The serialization queue is not poisoned: explicit navigation works.
+      await m.switchTo("b.kicad_sch");
+      expect(m.active()?.sheetPath).toBe("b.kicad_sch");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

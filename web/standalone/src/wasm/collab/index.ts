@@ -125,20 +125,89 @@ export interface KicadDocSession {
   provider: YjsProvider;
 }
 
+/** The connect path exceeded its deadline (import + construct + initial sync). */
+export class CollabConnectTimeoutError extends Error {
+  constructor(room: string, timeoutMs: number) {
+    super(`collab connect to ${room} exceeded ${timeoutMs}ms`);
+    this.name = "CollabConnectTimeoutError";
+  }
+}
+
+const CONNECT_TIMEOUT_MS = 30_000;
+
 /**
  * Connect a fresh Y.Doc to a provider room and wait for its authoritative
  * initial state. Used standalone by the Y.Doc-load path (materialize the file
  * from the doc BEFORE any editor exists), and as the first half of
  * `startKicadCollab`.
+ *
+ * The deadline + abort signal cover the WHOLE path — the provider module's
+ * lazy import, provider construction, and the initial sync (findings C-3: a
+ * stalled chunk fetch or a `whenSynced` that never fires used to escape every
+ * timeout). On failure/timeout/abort, everything partially built is destroyed
+ * (findings C-1: no orphaned doc or socket), including a provider whose
+ * construction resolves only after the race was lost.
  */
 export async function connectKicadDoc(opts: {
   provider: ProviderConfig;
   room: string;
+  /** Owner teardown (unmount, boot failure) — cancels + destroys partials. */
+  signal?: AbortSignal;
+  /** Whole-path deadline; defaults to 30s. */
+  timeoutMs?: number;
 }): Promise<KicadDocSession> {
+  const timeoutMs = opts.timeoutMs ?? CONNECT_TIMEOUT_MS;
+  // An already-aborted owner never gets a session — even one that could
+  // connect instantly (Promise.race settles in array order for pre-settled
+  // promises, so the guard must run before any construction).
+  if (opts.signal?.aborted) {
+    throw opts.signal.reason ?? new Error("collab connect aborted");
+  }
   const doc = new Y.Doc();
-  const provider = await connectProvider(doc, opts.provider, { room: opts.room });
-  await provider.whenSynced();
-  return { doc, provider };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+
+  const fail = new Promise<never>((_, reject) => {
+    if (opts.signal?.aborted) {
+      reject(opts.signal.reason ?? new Error("collab connect aborted"));
+      return;
+    }
+    onAbort = () =>
+      reject(opts.signal?.reason ?? new Error("collab connect aborted"));
+    opts.signal?.addEventListener("abort", onAbort, { once: true });
+    timer = setTimeout(
+      () => reject(new CollabConnectTimeoutError(opts.room, timeoutMs)),
+      timeoutMs,
+    );
+  });
+  // The failure promise only ever loses a race on the success path — silence
+  // its rejection so a post-success abort can't surface as unhandled.
+  fail.catch(() => {});
+
+  const providerPromise = connectProvider(doc, opts.provider, {
+    room: opts.room,
+  });
+  providerPromise.catch(() => {}); // may lose the race and reject later
+
+  let provider: YjsProvider | undefined;
+  try {
+    provider = await Promise.race([providerPromise, fail]);
+    await Promise.race([provider.whenSynced(), fail]);
+    return { doc, provider };
+  } catch (err) {
+    if (provider) {
+      provider.destroy();
+    } else {
+      // Construction may still be in flight (or racing this very catch) —
+      // whenever it lands, the late provider self-destroys.
+      providerPromise.then((p) => p.destroy()).catch(() => {});
+    }
+    doc.destroy();
+    throw err;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    if (onAbort) opts.signal?.removeEventListener("abort", onAbort);
+  }
 }
 
 /**
@@ -162,7 +231,16 @@ export function attachKicadCollab(
   const binding = bindKicadCollab(session.doc, moduleItemsBridge(mod, win), {
     readOnly: opts?.readOnly,
   });
-  binding.seed(opts?.seedDoc, { editorMatchesDoc: opts?.editorMatchesDoc });
+  try {
+    binding.seed(opts?.seedDoc, { editorMatchesDoc: opts?.editorMatchesDoc });
+  } catch (err) {
+    // A partially-attached binding must not survive a seed throw (findings
+    // C-2): it already owns the global DOWN hook + doc observers, and the
+    // handle that could destroy it would never reach the caller. The SESSION
+    // stays alive — its owner decides (degrade / retry / teardown).
+    binding.destroy();
+    throw err;
+  }
   clog("attachKicadCollab: ready; doc items =", binding.items.size);
 
   return {

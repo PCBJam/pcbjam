@@ -182,6 +182,50 @@ describe("startSiblingRestage", () => {
       expect(connectKicadDoc).toHaveBeenCalledTimes(2);
     });
 
+    // C-6: a failed first dial must not latch forever — retry on backoff
+    // while a peer still has the sheet open.
+    it("retries a failed connect on backoff while the peer stays announced", async () => {
+      connectKicadDoc
+        .mockRejectedValueOnce(new Error("room down"))
+        .mockImplementation(({ room }: { room: string }) => {
+          const s = makeSession(room);
+          sessions.push(s);
+          return Promise.resolve(s);
+        });
+      const presence = fakePresence(["main.kicad_sch"]);
+      await start(["main.kicad_sch"], presence);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(connectKicadDoc).toHaveBeenCalledTimes(1);
+
+      // Roster churn alone must NOT re-dial (anti-flood invariant kept).
+      presence.announce(["main.kicad_sch"]);
+      presence.announce(["main.kicad_sch"]);
+      expect(connectKicadDoc).toHaveBeenCalledTimes(1);
+
+      // The 1s backoff timer re-dials and succeeds.
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(connectKicadDoc).toHaveBeenCalledTimes(2);
+      expect(sessions).toHaveLength(1);
+    });
+
+    it("stops retrying once the peer leaves and the linger elapses", async () => {
+      connectKicadDoc.mockRejectedValue(new Error("room down"));
+      const presence = fakePresence(["main.kicad_sch"]);
+      await start(["main.kicad_sch"], presence);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(connectKicadDoc).toHaveBeenCalledTimes(1);
+
+      // Backoff doubles: 1s → 2s while the peer stays.
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(connectKicadDoc).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(connectKicadDoc).toHaveBeenCalledTimes(3);
+
+      presence.announce([]); // peer leaves → linger releases the watch
+      await vi.advanceTimersByTimeAsync(600_000);
+      expect(connectKicadDoc).toHaveBeenCalledTimes(3); // no further dials
+    });
+
     it("a rejoin during the linger keeps the existing session", async () => {
       const presence = fakePresence(["main.kicad_sch"]);
       await start(["main.kicad_sch"], presence);

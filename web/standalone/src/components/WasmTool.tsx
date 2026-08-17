@@ -591,6 +591,8 @@ async function maybeConnectDocSession(
     scopeId: string;
     projectId: string;
     targetPath?: string;
+    /** Unmount abort — cancels the connect and destroys partials (C-1/C-3). */
+    signal?: AbortSignal;
     log: (m: string) => void;
   },
 ): Promise<{ session?: KicadDocSession; targetBytes?: Uint8Array }> {
@@ -599,7 +601,11 @@ async function maybeConnectDocSession(
 
   const { connectKicadDoc } = await import("@/wasm/collab");
   const room = collabRoomId(opts.scopeId, opts.projectId, opts.targetPath);
-  const session = await connectKicadDoc({ provider: yjsProviderConfig(), room });
+  const session = await connectKicadDoc({
+    provider: yjsProviderConfig(),
+    room,
+    signal: opts.signal,
+  });
 
   // Use the full doc state (meta + layout + items), NOT just item count: a
   // populated drawing sheet (pl_editor `.kicad_wks`) has zero uuid items, so an
@@ -792,7 +798,17 @@ async function startSheetCollab(
   // C++ navigation → rebind the active room to the now-shown sheet.
   registerSheetChangedHook(win as unknown as SheetChangedWindow, (abs) => {
     const rel = relativeProjectPath(opts.slug, abs);
-    if (rel) void manager.switchTo(rel);
+    // switchTo rejects on TERMINAL failures only (SexprVersionError — C-5);
+    // transient failures retry internally. A skewed sheet mid-session can't
+    // fail the whole boot anymore, so log it and leave the sheet unbound.
+    if (rel) {
+      manager.switchTo(rel).catch((err: unknown) => {
+        opts.log(
+          `[sheet] ${rel} needs a newer app version — collab disabled for this sheet: ${String(err)}`,
+        );
+        opts.onStatus("Collab: version skew on this sheet");
+      });
+    }
   });
 
   // C++ sheet creation ("Add Sheet") → the child .kicad_sch was just written to MEMFS by
@@ -808,7 +824,17 @@ async function startSheetCollab(
   // Warm every schematic file in the project so later sheet switches are instant.
   void manager.connectAll(sheetPaths);
 
-  if (opts.targetPath) await manager.switchTo(opts.targetPath);
+  if (opts.targetPath) {
+    try {
+      await manager.switchTo(opts.targetPath);
+    } catch (err) {
+      // switchTo only rejects on TERMINAL failures (SexprVersionError — C-5).
+      // The manager already owns the entry session + every warmed room; tear
+      // it down before surfacing, or the boot error leaks the pool (C-1).
+      manager.destroy();
+      throw err;
+    }
+  }
   opts.log(`[sheet] multi-room collab active (${sheetPaths.length} sheet(s) warmed)`);
   opts.onStatus("Collab: connected");
   return manager;
@@ -1078,6 +1104,52 @@ export function WasmTool({
   const [commentsSlot, setCommentsSlot] = React.useState<HTMLDivElement | null>(null);
   const [viewportState, setViewportState] = React.useState<ViewportState | null>(null);
   const commentsRef = React.useRef<CommentsController | null>(null);
+  // A doc session that connected but has not been ADOPTED by an owner yet
+  // (collab handle / sheet manager). Owned here so a boot failure, an
+  // open-never-settled degrade, or unmount can destroy it instead of leaking
+  // the socket + doc (findings C-1).
+  const pendingDocSessionRef = React.useRef<KicadDocSession | null>(null);
+  // Tear down every collab surface that dispatches into the wasm on ws/doc
+  // events. Shared by the unmount cleanup AND the terminal-error promote
+  // (findings C-7): after a terminal wasm death, a still-connected room kept
+  // delivering awareness/doc updates and each one re-entered the dead
+  // instance — an unbounded ticket storm underneath the fatal overlay.
+  const teardownCollab = React.useCallback(() => {
+    commentsRef.current?.destroy();
+    commentsRef.current = null;
+    followRef.current?.destroy();
+    followRef.current = null;
+    presenceBridgeRef.current?.destroy();
+    presenceBridgeRef.current = null;
+    presenceRef.current?.destroy();
+    presenceRef.current = null;
+    crossAppRef.current?.destroy();
+    crossAppRef.current = null;
+    siblingRestageRef.current?.destroy();
+    siblingRestageRef.current = null;
+    driftRef.current?.stop();
+    driftRef.current = null;
+    // Tears down every warm room's provider/doc (the only place providers are
+    // destroyed — switching sheets keeps them connected) and clears drift via
+    // onActiveChange(null).
+    sheetManagerRef.current?.destroy();
+    sheetManagerRef.current = null;
+    // The single-room (pcbnew/pl_editor) counterpart: binding + provider +
+    // doc. Without this the board room's socket survived navigation.
+    collabHandleRef.current?.destroy();
+    collabHandleRef.current = null;
+    collabDocRef.current = null;
+    const pending = pendingDocSessionRef.current;
+    pendingDocSessionRef.current = null;
+    if (pending) {
+      try {
+        pending.provider.destroy();
+        pending.doc.destroy();
+      } catch {
+        /* teardown is best-effort */
+      }
+    }
+  }, []);
   // Unread-comments rollup for the FAB badge (comments-ux 0001 C).
   const [commentsUnread, setCommentsUnread] = React.useState({ threads: 0, mentioned: false });
   const onCommentsUnread = React.useCallback(
@@ -1291,6 +1363,11 @@ export function WasmTool({
       );
       const rec = dumper.__wxWaitDump?.();
       if (rec) append(JSON.stringify(rec));
+      // Stop the ticket storm (findings C-7): every ws-driven collab ingress
+      // (remote applies, presence push, comment pins, follow fit, drift saves)
+      // re-armed on the next event and re-entered the DEAD instance behind
+      // the overlay. Terminal means the native lifetime is over — unhook it.
+      teardownCollab();
       setFatal(msg);
       setShowLog(true);
       // Arm the React-independent floor too: it stays invisible while our
@@ -1659,6 +1736,7 @@ export function WasmTool({
               scopeId,
               projectId,
               targetPath,
+              signal: presyncAbort.signal,
               log: append,
             });
           } catch (error) {
@@ -1773,6 +1851,11 @@ export function WasmTool({
         const docResult = await docSessionReady;
         if ("error" in docResult) throw docResult.error;
         const { session, targetBytes } = docResult;
+        // The session is connected but ownerless until a collab handle or the
+        // sheet manager adopts it below — register it so every failure exit
+        // (boot throw, open-never-settled, degrade, unmount) destroys it
+        // instead of leaking the socket + doc (findings C-1).
+        pendingDocSessionRef.current = session ?? null;
         const openResult = await driveProjectIntoTool(win, {
           tool,
           slug,
@@ -1844,7 +1927,14 @@ export function WasmTool({
         // Cross-app presence: the ROOM was joined back in the boot fan-out
         // (pure network + Y.Doc, no wasm) — only the handoff to the wasm-bound
         // presence below has to wait for the open. Settle it here.
-        crossAppRef.current = (await crossAppReady) ?? null;
+        const crossAppHandle = (await crossAppReady) ?? null;
+        if (disposedRef.current) {
+          // Unmounted while awaiting — cleanup already ran; adopting now would
+          // leak a live socket behind a dead component (findings C-1).
+          crossAppHandle?.destroy();
+          return;
+        }
+        crossAppRef.current = crossAppHandle;
         // Test/debug handle (mirrors __pcbjamComments): lets the e2e assert
         // the project-room peer view without driving pixels.
         (win as { __pcbjamCrossApp?: CrossAppHandle | null }).__pcbjamCrossApp =
@@ -1889,6 +1979,17 @@ export function WasmTool({
               log: append,
               onStatus: setStatus,
             })) ?? null;
+          if (sheetManagerRef.current) {
+            // The manager's room pool now owns the entry session (destroy()
+            // tears it down with every other warm room).
+            pendingDocSessionRef.current = null;
+          }
+          if (disposedRef.current) {
+            // Late handoff after unmount (findings C-1): cleanup already ran.
+            sheetManagerRef.current?.destroy();
+            sheetManagerRef.current = null;
+            return;
+          }
         } else {
           const collabHandle = await maybeStartCollab(win, {
             tool,
@@ -1902,6 +2003,16 @@ export function WasmTool({
             log: append,
             onStatus: setStatus,
           });
+          if (collabHandle) {
+            // The handle owns the session now (destroy() covers binding +
+            // provider + doc).
+            pendingDocSessionRef.current = null;
+          }
+          if (disposedRef.current) {
+            // Late handoff after unmount (findings C-1): cleanup already ran.
+            collabHandle?.destroy();
+            return;
+          }
           collabHandleRef.current = collabHandle ?? null;
           collabDocRef.current = collabHandle?.doc ?? null;
           startPresence(collabHandle?.provider, undefined, collabHandle?.doc);
@@ -1969,11 +2080,27 @@ export function WasmTool({
           }
         }
         };
+        // Degrading without an adoption must not strand the pre-connected doc
+        // session (findings C-1: the open-never-settled path was the most
+        // reproducible leak — a live socket + doc with no owner, forever).
+        const releasePendingDocSession = (why: string) => {
+          const pending = pendingDocSessionRef.current;
+          if (!pending) return;
+          pendingDocSessionRef.current = null;
+          try {
+            pending.provider.destroy();
+            pending.doc.destroy();
+          } catch {
+            /* best-effort */
+          }
+          append(`[collab] released unadopted doc session (${why})`);
+        };
         if (openResult === "failed") {
           // The load never settled (or a legacy-wasm open timed out): entering
           // the wasm now would race the parked open chain. Boot on without
           // collab/presence — the board stays viewable, saves still route.
           append("[collab] file open never settled — collab/presence disabled for this session");
+          releasePendingDocSession("open never settled");
         } else {
           try {
             await attachCollabAndPresence();
@@ -1983,7 +2110,10 @@ export function WasmTool({
             // Degrade, don't die: a residual wasm trap here (reentrancy during
             // some other parked chain) used to fail the whole boot.
             append(`[collab] attach failed — continuing without collab: ${String(err)}`);
+            releasePendingDocSession("attach failed");
           }
+          // A no-op attach (bridge missing / non-collab tool) adopts nothing.
+          releasePendingDocSession("not adopted");
         }
         // Deferred-realtime upgrade: the scope libs source opens its stacks
         // channel-less (no socket per org lib), so promote the libs the OPEN
@@ -2024,6 +2154,19 @@ export function WasmTool({
         append(dumpTrace());
         setStatus(`Error: ${String(err)}`);
         setFatal(String(err));
+        // A boot that died between the doc-room connect and its adoption
+        // (open failure, read-only lock, version skew) must not strand the
+        // live session behind the error overlay (findings C-1).
+        const pending = pendingDocSessionRef.current;
+        pendingDocSessionRef.current = null;
+        if (pending) {
+          try {
+            pending.provider.destroy();
+            pending.doc.destroy();
+          } catch {
+            /* best-effort */
+          }
+        }
       }
     })();
 
@@ -2041,30 +2184,8 @@ export function WasmTool({
       presyncAbort.abort();
       win.removeEventListener("keydown", swallowBrowserSave, true);
       win.removeEventListener("keydown", chromeHotkey, true);
-      commentsRef.current?.destroy();
-      commentsRef.current = null;
-      followRef.current?.destroy();
-      followRef.current = null;
-      presenceBridgeRef.current?.destroy();
-      presenceBridgeRef.current = null;
-      presenceRef.current?.destroy();
-      presenceRef.current = null;
-      crossAppRef.current?.destroy();
-      crossAppRef.current = null;
-      siblingRestageRef.current?.destroy();
-      siblingRestageRef.current = null;
-      driftRef.current?.stop();
-      driftRef.current = null;
-      // Tears down every warm room's provider/doc (the only place providers are
-      // destroyed — switching sheets keeps them connected) and clears drift via
-      // onActiveChange(null).
-      sheetManagerRef.current?.destroy();
-      sheetManagerRef.current = null;
-      // The single-room (pcbnew/pl_editor) counterpart: binding + provider +
-      // doc. Without this the board room's socket survived navigation.
-      collabHandleRef.current?.destroy();
-      collabHandleRef.current = null;
-      collabDocRef.current = null;
+      // Every collab surface + any not-yet-adopted doc session (C-1/C-7).
+      teardownCollab();
       // Close the lib SyncStacks this boot opened (mirror mux + any dedicated
       // sockets); IDB caches stay. Injected sources belong to the caller.
       ownedLibsSource?.dispose?.();

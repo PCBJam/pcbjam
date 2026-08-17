@@ -214,7 +214,23 @@ export function bindKicadCollab(
       changed: wire.changed.length,
       removed: wire.removed.length,
     });
-    bridge.applyItems(JSON.stringify(wire));
+    try {
+      bridge.applyItems(JSON.stringify(wire));
+    } catch (err) {
+      // Symmetric with the DOWN hook's backstop above (findings C-7): a throw
+      // here would otherwise unwind through Yjs's transaction cleanup inside
+      // the provider's applyUpdate. Log, then re-surface on a clean stack so
+      // the global terminal-error classifier (WasmTool promote) still sees a
+      // wasm death — without corrupting the doc's observer bookkeeping.
+      cwarn("⬆ remote Y change: apply to editor failed", err);
+      const report =
+        (globalThis as { reportError?: (e: unknown) => void }).reportError ??
+        ((e: unknown) =>
+          setTimeout(() => {
+            throw e;
+          }, 0));
+      report(err);
+    }
   };
   items.observeDeep(observer);
 

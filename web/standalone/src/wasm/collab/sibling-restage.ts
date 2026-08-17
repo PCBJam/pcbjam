@@ -52,9 +52,18 @@ interface Watch {
   session?: KicadDocSession;
   connecting?: Promise<void>;
   linger?: ReturnType<typeof setTimeout>;
-  /** Connect failed — don't re-dial on every roster change. */
-  failed?: boolean;
+  /**
+   * Connect failed — retry on a doubling-backoff timer (1s→30s), never on
+   * roster churn (findings C-6: a failed first dial used to latch `failed`
+   * forever, so a peer editing through a transient outage left MEMFS stale
+   * for the whole session).
+   */
+  retry?: ReturnType<typeof setTimeout>;
+  retryDelayMs?: number;
 }
+
+const RETRY_BASE_MS = 1000;
+const RETRY_MAX_MS = 30_000;
 
 export async function startSiblingRestage(opts: {
   win: ToolWindow;
@@ -174,9 +183,43 @@ export async function startSiblingRestage(opts: {
       if (flushPending && w.session) restageFromDoc(sheetPath, w.session.doc);
     }
     if (w.linger) clearTimeout(w.linger);
+    if (w.retry) clearTimeout(w.retry);
     w.session?.provider.destroy();
     w.session?.doc.destroy();
     watches.delete(sheetPath);
+  };
+
+  /** Is this sheet still announced by some peer right now? */
+  const wanted = (sheetPath: string): boolean =>
+    presence.peers().some((p) => p.state.sheetPath === sheetPath);
+
+  const dial = (sheetPath: string, watch: Watch): void => {
+    watch.connecting = (async () => {
+      try {
+        const session = await openSession(sheetPath);
+        if (session) {
+          watch.session = session;
+          watch.retryDelayMs = undefined; // success resets the backoff
+        }
+      } catch (err) {
+        log(`[sibling] room connect failed for ${sheetPath}: ${String(err)}`);
+        const delay = watch.retryDelayMs ?? RETRY_BASE_MS;
+        watch.retryDelayMs = Math.min(delay * 2, RETRY_MAX_MS);
+        if (!destroyed) {
+          watch.retry = setTimeout(() => {
+            watch.retry = undefined;
+            if (destroyed || watch.session || watch.connecting) return;
+            // Re-dial only while this exact watch is live and a peer still
+            // has the sheet open — a released/lingering watch stays quiet.
+            if (watches.get(sheetPath) === watch && wanted(sheetPath)) {
+              dial(sheetPath, watch);
+            }
+          }, delay);
+        }
+      } finally {
+        watch.connecting = undefined;
+      }
+    })();
   };
 
   const reconcile = () => {
@@ -187,7 +230,7 @@ export async function startSiblingRestage(opts: {
       if (sp && sheetSet.has(sp)) open.add(sp);
     }
     for (const sheetPath of open) {
-      let w = watches.get(sheetPath);
+      const w = watches.get(sheetPath);
       if (w?.linger) {
         clearTimeout(w.linger);
         w.linger = undefined;
@@ -195,17 +238,7 @@ export async function startSiblingRestage(opts: {
       if (!w) {
         const watch: Watch = {};
         watches.set(sheetPath, watch);
-        watch.connecting = (async () => {
-          try {
-            const session = await openSession(sheetPath);
-            if (session) watch.session = session;
-          } catch (err) {
-            watch.failed = true;
-            log(`[sibling] room connect failed for ${sheetPath}: ${String(err)}`);
-          } finally {
-            watch.connecting = undefined;
-          }
-        })();
+        dial(sheetPath, watch);
       }
     }
     for (const [sheetPath, w] of watches) {
