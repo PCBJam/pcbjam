@@ -517,3 +517,164 @@ describe("validity-revert marker → DOC_REVERTED_EVENT (kicad-validity 0001 B3)
     }
   });
 });
+
+/**
+ * A-4 deterministic same-item conflict reducer (findings group A; drift-trio
+ * S4/S4b divergence rebuilt at unit tier, per the recorded plan: hold two known
+ * same-item transactions, release them in a FIXED order, assert the Y.Docs
+ * converge FIRST, then assert every native projection matches the doc).
+ *
+ * Whole-item Yjs LWW may legitimately lose one concurrent value but must still
+ * converge — permanent editor divergence can only come from the bridge, and
+ * this harness removes every timing variable the e2e trio has.
+ */
+describe("A-4 reducer — held-relay same-item conflicts converge deterministically", () => {
+  /** Two Y.Docs whose relay is HELD: updates queue per direction and only
+   * cross on an explicit release. clientIDs are pinned so LWW arbitration —
+   * and therefore the winner — is deterministic run to run. */
+  function heldPair(): {
+    a: Y.Doc;
+    b: Y.Doc;
+    releaseAtoB: () => void;
+    releaseBtoA: () => void;
+    drain: () => void;
+  } {
+    const a = new Y.Doc();
+    const b = new Y.Doc();
+    a.clientID = 1;
+    b.clientID = 2;
+    const aToB: Uint8Array[] = [];
+    const bToA: Uint8Array[] = [];
+    a.on("update", (u: Uint8Array) => aToB.push(u));
+    b.on("update", (u: Uint8Array) => bToA.push(u));
+    const releaseAtoB = (): void => {
+      while (aToB.length) Y.applyUpdate(b, aToB.shift()!, "relay");
+    };
+    const releaseBtoA = (): void => {
+      while (bToA.length) Y.applyUpdate(a, bToA.shift()!, "relay");
+    };
+    // Applying a release can enqueue echo updates on the other lane (Yjs emits
+    // "update" for applied remote content too); drain until both lanes are dry.
+    const drain = (): void => {
+      while (aToB.length || bToA.length) {
+        releaseAtoB();
+        releaseBtoA();
+      }
+    };
+    return { a, b, releaseAtoB, releaseBtoA, drain };
+  }
+
+  const CONFLICT_FILE = `(kicad_wks (version 20220228) (generator "pl_editor")
+  (setup (textsize 1.5 1.5) (linewidth 0.15))
+  (rect (uuid "r-1") (name "target") (start 0 0 ltcorner) (end 0 0 rbcorner))
+  (rect (uuid "r-2") (name "bystander") (start 1 1 ltcorner) (end 2 2 rbcorner))
+)
+`;
+  const rectSexpr = (name: string): string =>
+    `(rect (uuid "r-1") (name "${name}") (start 0 0 ltcorner) (end 0 0 rbcorner))`;
+
+  function setupConverged() {
+    const held = heldPair();
+    const edA = new FakeEditor();
+    const edB = new FakeEditor();
+    const bindA = bindKicadCollab(held.a, edA);
+    const bindB = bindKicadCollab(held.b, edB);
+    const seedDoc = fileToDoc(CONFLICT_FILE);
+    Object.assign(edA.store, seedDoc.items);
+    bindA.seed(seedDoc);
+    held.drain(); // B's doc now holds the seed
+    bindB.seed(); // adopt
+    held.drain();
+    // Precondition: fully converged before the conflict is staged.
+    expect(docToFile(yToDoc(held.a))).toBe(docToFile(yToDoc(held.b)));
+    expect(edB.store["r-1"]).toBeDefined();
+    return { ...held, edA, edB, bindA, bindB };
+  }
+
+  /** Y-first convergence oracle, then native projections against the doc. */
+  function assertConverged(t: ReturnType<typeof setupConverged>): string {
+    const fileA = docToFile(yToDoc(t.a));
+    const fileB = docToFile(yToDoc(t.b));
+    // 1. The CRDT layer itself converged.
+    expect(fileA).toBe(fileB);
+    // 2. Each editor's native projection matches ITS OWN doc (bridge applied
+    //    everything), hence both editors match each other.
+    for (const [doc, ed] of [
+      [t.a, t.edA],
+      [t.b, t.edB],
+    ] as const) {
+      const docItems = yToDoc(doc).items;
+      expect(Object.keys(ed.store).sort()).toEqual(Object.keys(docItems).sort());
+      for (const uuid of Object.keys(docItems).filter((u) => docItems[u]!.parent === null)) {
+        expect(renderItem({ items: ed.store }, uuid)).toBe(renderItem({ items: docItems }, uuid));
+      }
+    }
+    return fileA;
+  }
+
+  it("value-vs-value: A→B then B→A release converges everywhere, one value wins", () => {
+    const t = setupConverged();
+    // Both actors commit a conflicting edit to the SAME item while the relay
+    // is held — the exact S4b shape (two clients racing setValue).
+    t.edA.localUpsert(rectSexpr("from-A"));
+    t.edB.localUpsert(rectSexpr("from-B"));
+    t.releaseAtoB();
+    t.releaseBtoA();
+    t.drain();
+    const file = assertConverged(t);
+    expect(/from-[AB]/.test(file)).toBe(true); // exactly one value survived
+    expect(file.includes("from-A") && file.includes("from-B")).toBe(false);
+  });
+
+  it("value-vs-value: the REVERSE release order converges to the SAME winner", () => {
+    const first = (() => {
+      const t = setupConverged();
+      t.edA.localUpsert(rectSexpr("from-A"));
+      t.edB.localUpsert(rectSexpr("from-B"));
+      t.releaseAtoB();
+      t.releaseBtoA();
+      t.drain();
+      return assertConverged(t);
+    })();
+    const t = setupConverged();
+    t.edA.localUpsert(rectSexpr("from-A"));
+    t.edB.localUpsert(rectSexpr("from-B"));
+    t.releaseBtoA(); // reversed
+    t.releaseAtoB();
+    t.drain();
+    // Delivery order must not change the arbitration (CRDT order-independence
+    // + pinned clientIDs): byte-identical converged file.
+    expect(assertConverged(t)).toBe(first);
+  });
+
+  it("move-vs-delete on the same item converges everywhere", () => {
+    const t = setupConverged();
+    t.edA.localUpsert(rectSexpr("moved-by-A")); // stand-in for a move commit
+    t.edB.localRemove("r-1");
+    t.releaseAtoB();
+    t.releaseBtoA();
+    t.drain();
+    const file = assertConverged(t);
+    // Winner is CRDT policy, not asserted — but the outcome must be one of the
+    // two staged states on every replica, never a mix.
+    const present = file.includes("moved-by-A");
+    const absent = !file.includes('"r-1"');
+    expect(present || absent).toBe(true);
+    expect(file.includes("bystander")).toBe(true); // the other item survives
+  });
+
+  it("conflict staged DURING a partially-released exchange still converges", () => {
+    const t = setupConverged();
+    // A's edit crosses to B first; B then edits the already-updated item while
+    // its own answer is still held — the "edit arrived mid-apply" interleave
+    // (bug-05 family) reduced to a deterministic schedule.
+    t.edA.localUpsert(rectSexpr("from-A"));
+    t.releaseAtoB();
+    t.edB.localUpsert(rectSexpr("from-B-after-seeing-A"));
+    t.releaseBtoA();
+    t.drain();
+    const file = assertConverged(t);
+    // B's edit is causally AFTER A's — it must win outright on both replicas.
+    expect(file.includes("from-B-after-seeing-A")).toBe(true);
+  });
+});
