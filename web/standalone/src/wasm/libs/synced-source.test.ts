@@ -3,6 +3,8 @@ import {
   encodeBundle,
   encodeFrames,
   sha256Hex,
+  SYNC_ACTION_HEADER,
+  SYNC_ACTION_RELOAD,
   type ServerMsg,
   type SyncManifest,
 } from "@pcbjam/shared";
@@ -62,9 +64,15 @@ async function fakeServer(seed: Record<string, string>) {
     arrayBuffer: async () => bytes.buffer,
   });
 
+  // Cutover simulation: `movedOnce` refuses the NEXT write with the 409 +
+  // reload-action answer a room gives after it stopped being the namespace's
+  // writer; `resolves` counts sync-stack resolutions (the retry re-resolves).
+  const state = { movedOnce: false, resolves: 0 };
+
   const fetchImpl = (async (input: unknown, init?: RequestInit) => {
     const url = String(input);
     if (url.endsWith("/sync-stack")) {
+      state.resolves += 1;
       return json({
         lib: { id: LIB_ID, name: "My Lib" },
         layers: [
@@ -85,6 +93,16 @@ async function fakeServer(seed: Record<string, string>) {
       );
     }
     if (url.startsWith(`${ROOM}/body/`) && init?.method === "PUT") {
+      if (state.movedOnce) {
+        state.movedOnce = false;
+        return {
+          ok: false,
+          status: 409,
+          headers: {
+            get: (h: string) => (h === SYNC_ACTION_HEADER ? SYNC_ACTION_RELOAD : null),
+          },
+        };
+      }
       const path = decodeURIComponent(url.slice(`${ROOM}/body/`.length));
       const body = new Uint8Array(init.body as ArrayBuffer | Uint8Array);
       bodies.set(path, body);
@@ -113,7 +131,7 @@ async function fakeServer(seed: Record<string, string>) {
     });
   }
 
-  return { fetchImpl, channel, remotePut };
+  return { fetchImpl, channel, remotePut, state };
 }
 
 function makeSource(server: Awaited<ReturnType<typeof fakeServer>>) {
@@ -239,6 +257,59 @@ describe("syncedLibsSource → editor reload bridge", () => {
  * LOCAL caches (peekNamespaces on the backend-named namespaces) + cold-byte
  * sums from the list envelope — no stack resolves, no bundle fetches.
  */
+describe("cutover 409 → re-resolve + retry (load-path-rework 0002)", () => {
+  it("saveItemBody retries once against the re-resolved room and succeeds", async () => {
+    const server = await fakeServer({ "symbol/R": "(r)" });
+    server.state.movedOnce = true;
+    const movedLibs: string[] = [];
+    const source = syncedLibsSource(LIB_ID, {
+      apiBase: API,
+      scope: "s",
+      user: "u",
+      fetchImpl: server.fetchImpl,
+      storeFactory: () => memStore(),
+      channelFactory: () => server.channel,
+      onStackMoved: (id) => movedLibs.push(id),
+    });
+
+    const ok = await source.saveItemBody!(LIB_ID, "symbol", "Mine", "(body)");
+
+    expect(ok).toBe(true);
+    // The refusal invalidated the cached descriptor and re-resolved the stack.
+    expect(movedLibs).toEqual([LIB_ID]);
+    expect(server.state.resolves).toBe(2);
+    source.dispose?.();
+  });
+
+  it("a persistent refusal fails the save after ONE retry", async () => {
+    const server = await fakeServer({ "symbol/R": "(r)" });
+    const alwaysMoved = ((input: unknown, init?: RequestInit) => {
+      // Every write refuses; reads/resolves pass through.
+      if (String(input).includes("/body/") && init?.method === "PUT") {
+        server.state.movedOnce = true;
+      }
+      return (server.fetchImpl as (i: unknown, x?: RequestInit) => unknown)(
+        input,
+        init,
+      );
+    }) as typeof fetch;
+    const source = syncedLibsSource(LIB_ID, {
+      apiBase: API,
+      scope: "s",
+      user: "u",
+      fetchImpl: alwaysMoved,
+      storeFactory: () => memStore(),
+      channelFactory: () => server.channel,
+    });
+
+    const ok = await source.saveItemBody!(LIB_ID, "symbol", "Mine", "(body)");
+
+    expect(ok).toBe(false);
+    expect(server.state.resolves).toBe(2); // initial + the one retry, no loop
+    source.dispose?.();
+  });
+});
+
 describe("syncedScopeLibsSource.syncState", () => {
   function scoped(libs: LibInfo[]) {
     const remote: LibsSource = {

@@ -8,6 +8,7 @@ import {
 } from "@pcbjam/shared";
 import {
   peekNamespaces,
+  SyncRoomMovedError,
   SyncStack,
   type ChannelFactory,
   type LayerDescriptor,
@@ -49,6 +50,12 @@ export function syncedLibsSource(
      * Returning undefined falls back to resolving this lib on its own.
      */
     stackFor?: (libId: string) => SyncStackDescriptor | null | undefined;
+    /**
+     * The room refused a write with the cutover 409 (SyncRoomMovedError): the
+     * cached batch-resolved descriptor is stale. The scope source drops it here
+     * so the retry's re-resolve hits the backend for a fresh one.
+     */
+    onStackMoved?: (libId: string) => void;
     /**
      * SyncStack realtime policy (see SyncStackOptions.realtime). The scope
      * source passes "shared-only" — a board session warming 150+ libs must not
@@ -195,20 +202,34 @@ export function syncedLibsSource(
       return bytes ? new TextDecoder().decode(bytes) : null;
     },
     async saveItemBody(_id, kind, name, body): Promise<boolean> {
-      const { stack } = await ensure();
       const path = pathOf(kind, name);
-      // A successful push fires exactly one change event (the WS self-echo is
-      // hash-deduped inside the layer), and the stack delivers it AFTER an
-      // async merged read — so the flag must outlive this call; the subscriber
-      // consumes it. A failed push fires none: clear the flag ourselves.
-      selfPushed.add(path);
-      try {
-        await stack.push(path, new TextEncoder().encode(body));
-        return true;
-      } catch (e) {
-        selfPushed.delete(path);
-        log(`[synced] save failed for ${kind}/${name}: ${String(e)}`);
-        return false;
+      const bytes = new TextEncoder().encode(body);
+      // Two attempts at most: the second only after a cutover 409 told us the
+      // room moved — the stack is re-resolved and the write retried against
+      // the room the fresh descriptor names (load-path-rework 0002 §3.3).
+      for (let attempt = 0; ; attempt++) {
+        const { stack } = await ensure();
+        // A successful push fires exactly one change event (the WS self-echo
+        // is hash-deduped inside the layer), and the stack delivers it AFTER
+        // an async merged read — so the flag must outlive this call; the
+        // subscriber consumes it. A failed push fires none: clear it ourselves.
+        selfPushed.add(path);
+        try {
+          await stack.push(path, bytes);
+          return true;
+        } catch (e) {
+          selfPushed.delete(path);
+          if (e instanceof SyncRoomMovedError && attempt === 0) {
+            log(`[synced] room moved for lib ${libId} — re-resolving stack`);
+            opts.onStackMoved?.(libId);
+            const stale = opened;
+            opened = null;
+            stale?.then((r) => r.stack.close()).catch(() => {});
+            continue;
+          }
+          log(`[synced] save failed for ${kind}/${name}: ${String(e)}`);
+          return false;
+        }
       }
     },
     dispose(): void {
@@ -345,6 +366,7 @@ export function syncedScopeLibsSource(
         // via the muxed team mirror channel.
         realtime: "shared-only",
         stackFor: (id) => (batchedStacks.has(id) ? batchedStacks.get(id) : undefined),
+        onStackMoved: (id) => batchedStacks.delete(id),
       });
       perLib.set(libId, src);
     }
