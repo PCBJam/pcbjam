@@ -1887,6 +1887,18 @@ export function WasmTool({
               ? (relPath) =>
                   relPath === targetPath ? Promise.resolve(targetBytes) : fetchBytes(relPath)
               : fetchBytes,
+          // Plain files stage via the project sync namespace — one bundle GET
+          // cold, a manifest diff warm (0001 §4 full). Backend projects only:
+          // the gallery/local sources have no sync routes and no CAS rows.
+          projectSync:
+            sourceDescriptor?.kind === "remote-rw" && scopeId !== "local"
+              ? {
+                  apiBase: API_BASE_URL,
+                  scope: currentScope(),
+                  scopeId,
+                  projectId,
+                }
+              : null,
           log: append,
           onStatus: setStatus,
           onFileProgress: (done, total) =>

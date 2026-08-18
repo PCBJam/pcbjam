@@ -1,5 +1,6 @@
 import type { Tool } from "@pcbjam/shared";
 import { FILELESS_TOOLS, toolForFile } from "@pcbjam/shared";
+import { SyncStack } from "@pcbjam/sync-client";
 import { defaultKicadPro } from "../lib/new-file";
 import { memfsFilePath, memfsProjectDir } from "./constants";
 import { mark } from "./load-trace";
@@ -9,10 +10,32 @@ import { openFileInTool } from "./open-flow";
 /**
  * The only thing the editor needs to know about a file to sync it into MEMFS:
  * its project-relative POSIX path. Both the contract loader (whose ProjectFile
- * is a superset of this) and the local-folder loader satisfy it.
+ * is a superset of this) and the local-folder loader satisfy it. The optional
+ * fields are the contract loader's collab/CAS overlay — when present they let
+ * staging route the file through the project sync namespace (plain uploaded
+ * files) vs the per-file negotiated fetch (ydoc-backed files).
  */
 export interface ToolFile {
   path: string;
+  revision?: number;
+  hasYdoc?: boolean;
+  isLive?: boolean;
+}
+
+/**
+ * The project-as-sync-namespace endpoints (load-path-rework 0001 §4 full):
+ * plain files stage through ONE bundle GET cold / a manifest diff warm,
+ * IDB-mirrored like a library. Absent (demo gallery, local folders, older
+ * backends) ⇒ every file takes the per-file path, exactly as before.
+ */
+export interface ProjectSyncConfig {
+  apiBase: string;
+  scope: string;
+  scopeId: string;
+  projectId: string;
+  /** Test seams (default: credentialed global fetch / IndexedDB stores). */
+  fetchImpl?: typeof fetch;
+  storeFactory?: ConstructorParameters<typeof SyncStack>[0]["storeFactory"];
 }
 
 export interface DriveOptions {
@@ -21,6 +44,7 @@ export interface DriveOptions {
   files: ToolFile[];
   targetPath?: string;
   fetchBytes: (relPath: string) => Promise<Uint8Array>;
+  projectSync?: ProjectSyncConfig | null;
   log: (msg: string) => void;
   onStatus: (text: string) => void;
   /** Per-file staging progress (files fetched+written so far, total) — drives
@@ -122,32 +146,111 @@ async function syncProjectToMemfs(win: ToolWindow, opts: DriveOptions): Promise<
 
   let staged = 0;
   opts.onFileProgress?.(0, opts.files.length);
-  const queue = [...opts.files];
+  const stageOne = (path: string, bytes: Uint8Array): void => {
+    restageFile(win, opts.slug, path, bytes, opts.log);
+    opts.onFileProgress?.(++staged, opts.files.length);
+    // 3D models: prefetch every model this board references (R2 → IDB → MEMFS)
+    // so the 3D viewer's first open resolves locally. Fire-and-forget — project
+    // open never waits on it; a ref that misses falls back to the C++ per-model
+    // ensure. No-op unless a model source is installed (bootKicadTool).
+    if (path.endsWith(".kicad_pcb")) {
+      const text = new TextDecoder().decode(bytes);
+      void prescanBoardModels(text).catch((e) =>
+        opts.log(`[3d] prescan failed: ${String(e)}`),
+      );
+    }
+  };
+
+  // Plain uploaded files stage through the project sync namespace when the
+  // backend offers one — one bundle GET cold, a manifest diff warm — and any
+  // file the namespace cannot vouch for falls back to the per-file path:
+  // ydoc-backed files (their bytes ride room materialization), the TARGET
+  // (its bytes may come from the connected doc room via the fetchBytes
+  // wrapper), and everything on any namespace failure at all.
+  const perFile = await (opts.projectSync
+    ? stageViaProjectSync(opts, stageOne)
+    : Promise.resolve(opts.files));
+
+  const queue = [...perFile];
   const worker = async (): Promise<void> => {
     for (let file = queue.shift(); file; file = queue.shift()) {
       const bytes = await opts.fetchBytes(file.path);
-      restageFile(win, opts.slug, file.path, bytes, opts.log);
-      opts.onFileProgress?.(++staged, opts.files.length);
-      // 3D models: prefetch every model this board references (R2 → IDB → MEMFS)
-      // so the 3D viewer's first open resolves locally. Fire-and-forget — project
-      // open never waits on it; a ref that misses falls back to the C++ per-model
-      // ensure. No-op unless a model source is installed (bootKicadTool).
-      if (file.path.endsWith(".kicad_pcb")) {
-        const text = new TextDecoder().decode(bytes);
-        void prescanBoardModels(text).catch((e) =>
-          opts.log(`[3d] prescan failed: ${String(e)}`),
-        );
-      }
+      stageOne(file.path, bytes);
     }
   };
   // One rejection fails the stage (same as the serial loop did), but let the
   // in-flight siblings settle first so a failure can't leave a fetch writing
   // into MEMFS after the caller has moved on.
   const results = await Promise.allSettled(
-    Array.from({ length: Math.min(STAGE_CONCURRENCY, opts.files.length) }, worker),
+    Array.from({ length: Math.min(STAGE_CONCURRENCY, queue.length) }, worker),
   );
   const failed = results.find((r) => r.status === "rejected");
   if (failed) throw (failed as PromiseRejectedResult).reason;
+}
+
+/**
+ * Stage every namespace-eligible file from the project sync stack, returning
+ * the files that still need the per-file path. Exported for tests.
+ */
+export async function stageViaProjectSync(
+  opts: Pick<DriveOptions, "slug" | "files" | "targetPath" | "log"> & {
+    projectSync?: ProjectSyncConfig | null;
+  },
+  stageOne: (path: string, bytes: Uint8Array) => void,
+): Promise<ToolFile[]> {
+  const sync = opts.projectSync;
+  if (!sync) return opts.files;
+  const eligible = opts.files.filter(
+    (f) =>
+      f.path !== opts.targetPath &&
+      !f.hasYdoc &&
+      !f.isLive &&
+      (f.revision ?? 0) > 0,
+  );
+  const rest = opts.files.filter((f) => !eligible.includes(f));
+  if (eligible.length === 0) return rest;
+
+  const baseFetch = sync.fetchImpl ?? fetch;
+  const credentialed: typeof fetch = (input, init) =>
+    baseFetch(input, { ...init, credentials: "include" });
+  const stack = new SyncStack({
+    layers: [
+      {
+        // Ids (stable) key the IDB cache; slugs (renameable) only address HTTP.
+        namespace: `project:${sync.scopeId}:${sync.projectId}`,
+        kind: "static",
+        url: `${sync.apiBase}/api/scopes/${encodeURIComponent(sync.scope)}/projects/${encodeURIComponent(opts.slug)}/sync`,
+      },
+    ],
+    fetchImpl: credentialed,
+    storeFactory: sync.storeFactory,
+  });
+  try {
+    await stack.open();
+    const all = await stack.readAll();
+    const missed: ToolFile[] = [];
+    for (const f of eligible) {
+      const bytes = all.get(f.path);
+      // The namespace manifest raced the project listing (file changed to
+      // ydoc-backed, or was just deleted/renamed): let the per-file path
+      // answer authoritatively.
+      if (!bytes) missed.push(f);
+      else stageOne(f.path, bytes);
+    }
+    if (missed.length) {
+      opts.log(
+        `[stage] ${missed.length} file(s) missed the sync namespace — per-file fallback`,
+      );
+    }
+    return [...rest, ...missed];
+  } catch (e) {
+    // Older backend (no sync routes), quota, decode failure — the whole set
+    // falls back to per-file staging, which is exactly the previous behavior.
+    opts.log(`[stage] project sync namespace unavailable (${String(e)}) — per-file staging`);
+    return opts.files;
+  } finally {
+    stack.close();
+  }
 }
 
 /**
