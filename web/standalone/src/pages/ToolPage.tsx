@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import { parseToolParam, toolForFile, type Tool } from "@pcbjam/shared";
+import { Loader2 } from "lucide-react";
 import {
   createProjectFileIfMissing,
   fetchFileBytes,
@@ -50,7 +51,15 @@ export function ToolPage() {
   }
 
   if (isLoading) {
-    return <div className="container py-10 text-muted-foreground">loading…</div>;
+    // Same look as WasmTool's boot overlay so the boot-request wait, the
+    // download screen and the editor read as ONE continuous load (no white
+    // flash between them).
+    return (
+      <div className="fixed inset-0 flex flex-col items-center justify-center gap-3 bg-[#1a1a2e] text-white">
+        <Loader2 className="animate-spin" size={32} />
+        <p className="font-mono text-sm text-white/80">Loading project…</p>
+      </div>
+    );
   }
   if (error || !data) {
     return (
