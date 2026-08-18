@@ -66,6 +66,7 @@ import {
   usedLibNicknames,
   type ToolFile,
 } from "@/wasm/kicad-runner";
+import { resolveSheetHierarchy } from "@/wasm/collab/sheet-hierarchy";
 import { dump as dumpTrace, mark } from "@/wasm/load-trace";
 import { errorMessage, isTerminalError } from "@/wasm/terminal-error";
 import { registerSaveHook, type SaveBytes } from "@/wasm/save-flow";
@@ -791,9 +792,27 @@ async function startSheetCollab(
         : undefined,
   });
 
-  const sheetPaths = opts.files
+  // Warm ONLY the opened hierarchy (root + transitive Sheetfile references),
+  // not every schematic in the project: a repo-as-project upload can hold
+  // dozens of unrelated boards' schematics that the wasm never loads — no
+  // in-memory copy, no divergence risk, no room needed (sheet-hierarchy.ts).
+  // A root we can't scope (fileless boot, unreadable staging) falls back to
+  // all project sheets — over-warming costs sockets, under-warming would cost
+  // collab. In-editor "Add Sheet" children are warmed by the created hook.
+  const allSheets = opts.files
     .filter((f) => f.path.endsWith(".kicad_sch"))
     .map((f) => f.path);
+  const sheetPaths =
+    opts.targetPath?.endsWith(".kicad_sch") && allSheets.includes(opts.targetPath)
+      ? resolveSheetHierarchy(
+          opts.targetPath,
+          (p) => {
+            const bytes = readStagedFile(win, opts.slug, p);
+            return bytes ? new TextDecoder().decode(bytes) : null;
+          },
+          allSheets,
+        )
+      : allSheets;
 
   // C++ navigation → rebind the active room to the now-shown sheet.
   registerSheetChangedHook(win as unknown as SheetChangedWindow, (abs) => {
