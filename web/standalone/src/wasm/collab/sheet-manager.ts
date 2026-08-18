@@ -175,7 +175,10 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
     }
   }
 
-  async function ensureRoom(sheetPath: string): Promise<Room> {
+  async function ensureRoom(
+    sheetPath: string,
+    connectOpts?: { passive?: boolean },
+  ): Promise<Room> {
     const existing = rooms.get(sheetPath);
     if (existing) return existing;
     const inflight = connecting.get(sheetPath);
@@ -185,6 +188,7 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
       const session = await connectKicadDoc({
         provider,
         room: collabRoomId(scopeId, projectId, sheetPath),
+        passive: connectOpts?.passive,
       });
       if (destroyed) {
         // The manager died while this connect was in flight (unmount during
@@ -203,6 +207,12 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
         editorMatchesDoc: false,
         dirty: false,
       };
+      // Gateway transport: a `touched` hint means the doc changed server-side
+      // while this subscription was passive — same catch-up contract as the
+      // parked-update watch.
+      session.provider.onTouched?.(() => {
+        room.dirty = true;
+      });
       rooms.set(sheetPath, room);
       log(`[sheet] warm room connected: ${sheetPath}`);
       // A room warmed after the first bind starts parked — give it a skeleton
@@ -261,6 +271,12 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
 
     const room = await ensureRoom(sheetPath);
     if (destroyed) return;
+    // Gateway transport: a passively-warmed sheet holds no doc state yet —
+    // activate() is the real sync barrier (no-op for other providers and on
+    // revisits). Runs BEFORE the watch detaches so catch-up updates still
+    // mark `dirty` for the adopt decision below.
+    await room.session.provider.activate?.();
+    if (destroyed) return;
 
     // Activating: stop tracking parked updates and bind the (warm) doc to the editor.
     room.detachWatch?.();
@@ -316,8 +332,11 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
         // Terminal version skew (findings C-5): retrying cannot make an
         // incompatible doc encoding bindable. No retry timer — rethrow so the
         // caller surfaces it (boot converts it into the user-visible version
-        // error instead of reporting "connected" with no binding).
-        if ((err as { name?: string } | null)?.name === "SexprVersionError") {
+        // error instead of reporting "connected" with no binding). A gateway
+        // subscription rejection (invalid-file 409 — load-path-rework 0003)
+        // is terminal the same way: the flag only clears on a new upload.
+        const name = (err as { name?: string } | null)?.name;
+        if (name === "SexprVersionError" || name === "CollabSubRejectedError") {
           throw err;
         }
         // Still the sheet the editor shows and not yet bound → retry with backoff,
@@ -352,21 +371,36 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
   function syncLayoutFromSave(sheetPath: string, fileText: string): void {
     const room = rooms.get(sheetPath);
     if (!room) return; // not a collab sheet (or still onboarding) — nothing to sync
-    try {
-      // Writing to a PARKED room's doc marks it dirty via startWatch — fine:
-      // the diff-on-rebind adopt makes the catch-up cost the real delta only.
-      if (syncLayoutToY(fileToDoc(fileText), room.doc, "layout-save")) {
-        clog(`[sheet] layout save-sync: ${sheetPath} updated`);
+    const write = (): void => {
+      try {
+        // Writing to a PARKED room's doc marks it dirty via startWatch — fine:
+        // the diff-on-rebind adopt makes the catch-up cost the real delta only.
+        if (syncLayoutToY(fileToDoc(fileText), room.doc, "layout-save")) {
+          clog(`[sheet] layout save-sync: ${sheetPath} updated`);
+        }
+      } catch (err) {
+        cwarn(`[sheet] layout save-sync failed for ${sheetPath}`, err);
       }
-    } catch (err) {
-      cwarn(`[sheet] layout save-sync failed for ${sheetPath}`, err);
+    };
+    // Gateway transport: a passively-warmed doc is empty — writing into it
+    // would push partial state. A save IS write demand, so sync first.
+    const activate = room.session.provider.activate?.();
+    if (activate) {
+      void activate.then(write).catch((err) => {
+        cwarn(`[sheet] layout save-sync activate failed for ${sheetPath}`, err);
+      });
+    } else {
+      write();
     }
   }
 
   async function connectAll(sheetPaths: string[]): Promise<void> {
     await Promise.all(
       sheetPaths.map((p) =>
-        ensureRoom(p).catch((err) => {
+        // Passive on the gateway (load-path-rework 0003): warm-all becomes
+        // pure registration — awareness + touched hints flow, but no
+        // BoardRoom wakes for a sheet nobody opens or edits.
+        ensureRoom(p, { passive: true }).catch((err) => {
           cwarn(`[sheet] failed to warm ${p}`, err);
           return null;
         }),

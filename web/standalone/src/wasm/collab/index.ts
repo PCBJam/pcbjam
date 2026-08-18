@@ -155,6 +155,11 @@ export async function connectKicadDoc(opts: {
   signal?: AbortSignal;
   /** Whole-path deadline; defaults to 30s. */
   timeoutMs?: number;
+  /** Gateway transport (load-path-rework 0003): register interest without
+   *  demanding doc state — the warm pool's parked sheets. `whenSynced` then
+   *  resolves on subscription, and `provider.activate?.()` is the real sync
+   *  barrier before any bind/read/write of the doc. */
+  passive?: boolean;
 }): Promise<KicadDocSession> {
   const timeoutMs = opts.timeoutMs ?? CONNECT_TIMEOUT_MS;
   // An already-aborted owner never gets a session — even one that could
@@ -186,6 +191,7 @@ export async function connectKicadDoc(opts: {
 
   const providerPromise = connectProvider(doc, opts.provider, {
     room: opts.room,
+    passive: opts.passive,
   });
   providerPromise.catch(() => {}); // may lose the race and reject later
 

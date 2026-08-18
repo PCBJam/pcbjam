@@ -1,5 +1,6 @@
 import type * as Y from "yjs";
 import { Awareness } from "y-protocols/awareness";
+import { parseCollabRoomId } from "@pcbjam/shared";
 import { connectBroadcastChannel } from "./broadcast-transport";
 import { connectAwarenessBroadcast } from "./awareness-bc";
 
@@ -27,6 +28,18 @@ export interface YjsProvider {
    * sibling channel. Absent for `none` — presence UI then renders nothing.
    */
   awareness?: Awareness;
+  /**
+   * Gateway transport only (load-path-rework 0003): upgrade a `passive`
+   * subscription to a real y-protocol participant and resolve once the doc
+   * holds the server state. Providers without it are always fully synced
+   * after `whenSynced` — callers treat absence as an already-synced no-op.
+   */
+  activate?(): Promise<void>;
+  /**
+   * Gateway transport only: the doc changed server-side while this
+   * subscription was passive (the sheet manager's parked-dirty flag).
+   */
+  onTouched?(cb: () => void): void;
 }
 
 export type ProviderKind =
@@ -154,17 +167,38 @@ async function hocuspocusProvider(
 /**
  * Connect a Y.Doc to the env-selected provider. Network libraries are imported
  * lazily so a deployment only ships the one it uses.
+ *
+ * `passive` (gateway transport only): register interest without demanding doc
+ * state — the sheet manager's warm pool. Other providers ignore it and stay
+ * fully synced, a harmless superset.
  */
 export async function connectProvider(
   doc: Y.Doc,
   config: ProviderConfig,
-  opts: { room: string },
+  opts: { room: string; passive?: boolean },
 ): Promise<YjsProvider> {
   switch (config.kind) {
     case "broadcastchannel":
       return broadcastChannelProvider(doc, opts.room, config.settleMs ?? 300);
-    case "partykit":
+    case "partykit": {
+      // Load-path-rework 0003: board/presence rooms ride the per-project
+      // gateway socket (one ws per project instead of one per room). The
+      // legacy per-room dial stays only for room ids that don't parse — an
+      // operator/debug shape the gateway can't address.
+      const parsed = parseCollabRoomId(opts.room);
+      if (parsed) {
+        const { GatewayDocFacade } = await import("./gateway");
+        return new GatewayDocFacade(doc, {
+          endpoint: requireEndpoint(config),
+          scopeId: parsed.scopeId,
+          projectId: parsed.projectId,
+          docPath: parsed.docPath,
+          token: config.params?.token,
+          passive: opts.passive,
+        });
+      }
       return partyKitProvider(doc, requireEndpoint(config), opts.room, config.params);
+    }
     case "hocuspocus":
       return hocuspocusProvider(doc, requireEndpoint(config), opts.room, config.params);
     case "none":
