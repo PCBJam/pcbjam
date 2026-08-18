@@ -310,6 +310,77 @@ describe("cutover 409 → re-resolve + retry (load-path-rework 0002)", () => {
   });
 });
 
+describe("boot preload (load-path-rework 0001 §6)", () => {
+  it("serves listLibs locally (server's kind rule) and skips the stack resolve", async () => {
+    const server = await fakeServer({ "symbol/R": "(r)" });
+    const failingResolve = ((input: unknown, init?: RequestInit) => {
+      if (String(input).includes("sync-stack")) {
+        throw new Error("resolve must not be called with a preloaded stack");
+      }
+      return (server.fetchImpl as (i: unknown, x?: RequestInit) => unknown)(
+        input,
+        init,
+      );
+    }) as typeof fetch;
+    const remoteStub = {
+      listLibs: () => {
+        throw new Error("remote listLibs must not be called");
+      },
+    } as unknown as LibsSource;
+
+    const source = syncedScopeLibsSource(remoteStub, {
+      apiBase: API,
+      scope: "s",
+      user: "u",
+      fetchImpl: failingResolve,
+      storeFactory: () => memStore(),
+      channelFactory: () => server.channel,
+      preloaded: {
+        libs: [
+          { id: LIB_ID, name: "My Lib", type: "org" },
+          {
+            id: "lib-sym",
+            name: "Symbols Only",
+            type: "origin",
+            kindCounts: { symbol: 12 },
+            sync: { namespace: "origin:lib-sym@v1", bytes: 42 },
+          },
+          {
+            id: "lib-fp",
+            name: "Footprints Only",
+            type: "origin",
+            kindCounts: { footprint: 7 },
+          },
+        ],
+        stacks: {
+          [LIB_ID]: {
+            lib: { id: LIB_ID, name: "My Lib" },
+            layers: [
+              { namespace: `org:${LIB_ID}`, kind: "live", url: ROOM, writable: true },
+            ],
+          },
+        },
+      },
+    });
+
+    // Kind filter matches the server: org libs always; origins by kindCounts.
+    const symbols = await source.listLibs!("symbol");
+    expect(symbols.map((l) => l.id).sort()).toEqual([LIB_ID, "lib-sym"]);
+    expect(symbols.find((l) => l.id === "lib-sym")!.sync).toEqual({
+      namespace: "origin:lib-sym@v1",
+      bytes: 42,
+    });
+    const footprints = await source.listLibs!("footprint");
+    expect(footprints.map((l) => l.id).sort()).toEqual([LIB_ID, "lib-fp"]);
+
+    // The preloaded stack answers the per-lib resolve: a save works with the
+    // resolve endpoint hard-failing.
+    const ok = await source.saveItemBody!(LIB_ID, "symbol", "Mine", "(body)");
+    expect(ok).toBe(true);
+    source.dispose?.();
+  });
+});
+
 describe("syncedScopeLibsSource.syncState", () => {
   function scoped(libs: LibInfo[]) {
     const remote: LibsSource = {

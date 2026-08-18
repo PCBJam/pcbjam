@@ -333,6 +333,20 @@ function splitPath(path: string): LibItemInfo {
  * "lazy materialization" deferred note) — same trade the lib-editor pages
  * already make.
  */
+/** A lib DTO handed over from the boot payload (structural — the wire shape
+ *  of `GET /libs`, which the boot endpoint embeds unfiltered). */
+export interface PreloadedLibDto {
+  id: string;
+  name: string;
+  description?: string | null;
+  type: string;
+  itemCount?: number;
+  /** Per-kind item counts — the client-side equivalent of the server's
+   *  `libHasKind` filter for `listLibs(kind)`. */
+  kindCounts?: Record<string, number>;
+  sync?: { namespace: string; bytes: number | null } | null;
+}
+
 export function syncedScopeLibsSource(
   remote: LibsSource,
   opts: {
@@ -341,6 +355,17 @@ export function syncedScopeLibsSource(
     user?: string;
     project?: string;
     log?: (msg: string) => void;
+    /**
+     * The boot payload's lib listing + batch-resolved stacks (load-path-rework
+     * 0001 §6): `listLibs` answers locally (kind-filtered the same way the
+     * server would) and the stack prefetch is already satisfied — a boot with
+     * this present makes ZERO lib listing/resolve requests. Absent ⇒ the
+     * individual endpoints, exactly as before.
+     */
+    preloaded?: {
+      libs: PreloadedLibDto[];
+      stacks: Record<string, SyncStackDescriptor | null>;
+    };
     fetchImpl?: typeof fetch;
     storeFactory?: (namespace: string) => LayerStore;
     channelFactory?: ChannelFactory;
@@ -352,6 +377,30 @@ export function syncedScopeLibsSource(
   // stale pin isn't retried one-by-one. Misses simply fall back per-lib, which
   // is also what happens against a backend predating the batch route.
   const batchedStacks = new Map<string, SyncStackDescriptor | null>();
+  if (opts.preloaded) {
+    for (const [id, stack] of Object.entries(opts.preloaded.stacks)) {
+      batchedStacks.set(id, stack);
+    }
+  }
+  const preloadedLibs = (kind?: string): LibInfo[] =>
+    (opts.preloaded?.libs ?? [])
+      .filter(
+        (l) =>
+          !kind ||
+          // Same rule the server applies: org libs and mirrors are
+          // kind-agnostic containers; origins/pins need >=1 item of the kind.
+          l.type === "org" ||
+          l.type === "mirror" ||
+          (l.kindCounts?.[kind] ?? 0) > 0,
+      )
+      .map((l) => ({
+        id: l.id,
+        name: l.name,
+        description: l.description ?? null,
+        type: l.type,
+        itemCount: l.itemCount,
+        sync: l.sync ?? null,
+      }));
   const forLib = (libId: string): LibsSource => {
     let src = perLib.get(libId);
     if (!src) {
@@ -408,8 +457,14 @@ export function syncedScopeLibsSource(
     }
   }
 
+  // Every internal listing goes through the preload too — syncState, presync
+  // and the realtime name-mapping otherwise each re-fetch the listing the
+  // boot payload already carried.
+  const listLibsPreferred = (kind?: string): Promise<LibInfo[]> =>
+    opts.preloaded ? Promise.resolve(preloadedLibs(kind)) : remote.listLibs(kind);
+
   return {
-    listLibs: (kind) => remote.listLibs(kind),
+    listLibs: (kind) => listLibsPreferred(kind),
     createLib: remote.createLib?.bind(remote),
     getFpIndex: remote.getFpIndex?.bind(remote),
     async syncState(kind): Promise<LibsSyncState | null> {
@@ -419,7 +474,7 @@ export function syncedScopeLibsSource(
       // is answerable from the local cache alone — no stack resolves, no
       // bundle fetches. A backend predating the `sync` field yields no
       // namespaces at all → null (unknown), never a fake all-cold answer.
-      const libs = await remote.listLibs(kind);
+      const libs = await listLibsPreferred(kind);
       const withNs = libs.filter(
         (l): l is LibInfo & { sync: { namespace: string; bytes?: number | null } } =>
           !!l.sync?.namespace,
@@ -457,7 +512,7 @@ export function syncedScopeLibsSource(
     saveItemBody: (libId, kind, name, body) =>
       forLib(libId).saveItemBody!(libId, kind, name, body),
     async presync(presyncOpts): Promise<void> {
-      const libs = await remote.listLibs(presyncOpts?.kind);
+      const libs = await listLibsPreferred(presyncOpts?.kind);
       const total = libs.length;
       let done = 0;
       presyncOpts?.onProgress?.({ done, total, current: "libraries" });
@@ -493,7 +548,7 @@ export function syncedScopeLibsSource(
       // has usually made the same call already). Names that don't resolve —
       // project-local table rows, stale nicknames — are simply not ours.
       const wanted = new Set(libNames);
-      const libs = (await remote.listLibs()).filter((l) => wanted.has(l.name));
+      const libs = (await listLibsPreferred()).filter((l) => wanted.has(l.name));
       opts.log?.(
         `[synced] realtime upgrade for ${libs.length}/${libNames.length} referenced lib(s)`,
       );

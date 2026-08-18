@@ -5,7 +5,7 @@ import {
   createProjectFileIfMissing,
   fetchFileBytes,
   uploadFileBytes,
-  useProject,
+  useProjectBoot,
   useSourceDescriptor,
 } from "@/lib/api";
 import { docSourceConfig } from "@/lib/config";
@@ -30,7 +30,9 @@ export function ToolPage() {
     : (parseToolParam(search.get("tool")) ?? (splat ? toolForFile(splat) : null));
   const targetPath = params.tool ? undefined : splat;
 
-  const { data, isLoading, error } = useProject(slug);
+  // Boot-endpoint first (one composed round-trip); getProject fallback inside.
+  const { data: bootData, isLoading, error } = useProjectBoot(slug);
+  const data = bootData?.data;
   const { data: sourceDescriptor } = useSourceDescriptor(slug);
   // Listing rows by path, handed to fetchFileBytes so the remote source can
   // serve unchanged files from the local body cache (project-file-cache.ts).
@@ -102,6 +104,7 @@ export function ToolPage() {
         docSource={docSource}
         sourceDescriptor={sourceDescriptor}
         readOnly={readOnly}
+        boot={bootData?.boot ?? null}
       />
     </PreflightGate>
   );

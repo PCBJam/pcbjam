@@ -311,7 +311,19 @@ export function modelsSourceConfig(): Model3dSource | null {
     : null;
 }
 
-export function libsSourceConfig(projectId?: string): LibsSource | null {
+/** The boot payload's lib hand-over (see wasm/libs/synced-source.ts). */
+export interface LibsBootPreload {
+  libs: import("@/wasm/libs/synced-source").PreloadedLibDto[];
+  stacks: Record<
+    string,
+    import("@pcbjam/shared").SyncStackDescriptor | null
+  >;
+}
+
+export function libsSourceConfig(
+  projectId?: string,
+  preload?: LibsBootPreload,
+): LibsSource | null {
   const kind = import.meta.env.VITE_LIBS_SOURCE ?? "remote";
   // "local" is the placeholder id for launches with no real backend project
   // (local folder, tool grid, lib-scoped open). It is NOT a project on the
@@ -338,6 +350,7 @@ export function libsSourceConfig(projectId?: string): LibsSource | null {
                   scope: currentScope(),
                   user: userSlug(),
                   project,
+                  preloaded: preload,
                   log: (m) => console.log(m),
                 },
               )

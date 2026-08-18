@@ -30,7 +30,7 @@ import {
 } from "@/lib/config";
 import { defaultFileName, newFileTemplate, withExtension } from "@/lib/new-file";
 import { redirectTargetFor } from "@/lib/redirect";
-import { loadSessionIdentity } from "@/lib/session-identity";
+import { loadSessionIdentity, seedSessionIdentity } from "@/lib/session-identity";
 import { setTheme, useThemeValue } from "@/lib/theme";
 import { bootKicadTool } from "@/wasm/boot";
 import {
@@ -954,6 +954,7 @@ export function WasmTool({
   libsSource,
   sourceDescriptor,
   readOnly = false,
+  boot = null,
 }: {
   tool: Tool;
   slug: string;
@@ -972,6 +973,13 @@ export function WasmTool({
    * — a specific backend lib, or a local `.kicad_sym`/`.kicad_mod` file.
    */
   libsSource?: LibsSource | null;
+  /**
+   * The composed boot payload (load-path-rework 0001 §6), when the page's ONE
+   * boot round-trip answered: seeds identity, the lib listing + stack
+   * resolves, and the project sync digest. Null ⇒ each consumer uses its
+   * individual endpoint — the pre-boot behavior.
+   */
+  boot?: import("@/lib/boot-payload").BootPayload | null;
   /** Fetch one project-relative file's bytes (contract loader or local folder). */
   fetchBytes: (relPath: string) => Promise<Uint8Array>;
   /**
@@ -1639,7 +1647,9 @@ export function WasmTool({
         // parallel with the WASM download; awaited after boot, before anything
         // binds presence/comments, so presenceUser()/userSlug() speak for the
         // authenticated user (anonymous/example backends resolve to null and
-        // the pre-auth slug fallback stays).
+        // the pre-auth slug fallback stays). A boot payload already carries
+        // the /api/me shape — seeding it makes this a resolved no-op flight.
+        if (boot?.me) seedSessionIdentity(boot.me);
         const identityReady = loadSessionIdentity(API_BASE_URL);
         // Resolve the per-tool asset base at runtime (CDN manifest → versioned
         // folder, or the flat local /wasm in dev). See wasm/wasm-assets.ts.
@@ -1647,9 +1657,15 @@ export function WasmTool({
         const base = meta.base;
         // One source instance, shared by the wasm provider AND the pre-sync below
         // (libsSourceConfig builds a fresh one each call — their SyncStack caches
-        // must be the same object for the warm-up to benefit the editor).
+        // must be the same object for the warm-up to benefit the editor). A boot
+        // payload pre-seeds its lib listing + stack resolves (zero lib HTTP).
         const source =
-          libsSource !== undefined ? libsSource : libsSourceConfig(projectId);
+          libsSource !== undefined
+            ? libsSource
+            : libsSourceConfig(
+                projectId,
+                boot ? { libs: boot.libs, stacks: boot.stacks } : undefined,
+              );
         if (libsSource === undefined) ownedLibsSource = source;
         // Download-consent gate (standalone-load-ux 0001): before pulling the
         // (large) cold wasm + lib bundles, say how many MB and wait for the OK.
@@ -1897,6 +1913,8 @@ export function WasmTool({
                   scope: currentScope(),
                   scopeId,
                   projectId,
+                  // Boot's fresh digest: a warm match stages with ZERO HTTP.
+                  digest: boot?.projectSync.digest,
                 }
               : null,
           log: append,

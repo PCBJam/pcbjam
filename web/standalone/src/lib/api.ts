@@ -1,6 +1,17 @@
-import type { DriftReportBody, Project, ProjectFile } from "@pcbjam/shared";
+import type {
+  DriftReportBody,
+  Project,
+  ProjectFile,
+  ProjectWithFiles,
+} from "@pcbjam/shared";
 import { useQuery } from "@tanstack/react-query";
-import { API_BASE_URL, currentScope, libsSourceConfig } from "./config";
+import {
+  API_BASE_URL,
+  currentScope,
+  libsSourceConfig,
+  PROJECT_SOURCE_KIND,
+} from "./config";
+import { fetchBootPayload, type BootPayload } from "./boot-payload";
 import { client } from "./contract-client";
 import type { LibInfo } from "@/wasm/libs/source";
 import { downloadBytes } from "./download";
@@ -69,6 +80,31 @@ export function useProject(slug: string) {
   return useQuery({
     queryKey: ["project", slug],
     queryFn: () => projectSource().getProject(slug),
+  });
+}
+
+/**
+ * The tool page's project query, boot-endpoint first (load-path-rework 0001
+ * §6): remote deployments try the ONE composed boot round-trip — its project
+ * half is exactly the getProject shape, and the extras (identity, libs,
+ * stacks, project sync digest) ride along for WasmTool. Any miss (older
+ * backend, a local-store slug answering 404, the static gallery) falls back
+ * to the active source's getProject with `boot: null`, which is exactly the
+ * pre-boot behavior everywhere downstream.
+ */
+export function useProjectBoot(slug: string) {
+  return useQuery({
+    queryKey: ["project-boot", slug],
+    queryFn: async (): Promise<{
+      data: ProjectWithFiles & { access?: "read" | "write" };
+      boot: BootPayload | null;
+    }> => {
+      if (PROJECT_SOURCE_KIND !== "static") {
+        const boot = await fetchBootPayload(currentScope(), slug);
+        if (boot) return { data: boot, boot };
+      }
+      return { data: await projectSource().getProject(slug), boot: null };
+    },
   });
 }
 

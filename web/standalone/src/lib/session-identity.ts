@@ -34,24 +34,38 @@ export function loadSessionIdentity(
     pending = fetch(`${apiBase}/api/me`, { credentials: "include" })
       .then((r) => (r.ok ? r.json() : null))
       .then((body: unknown) => {
-        const u = (
-          body as {
-            user?: { slug?: unknown; name?: unknown; email?: unknown } | null;
-          } | null
-        )?.user;
-        if (u && typeof u.slug === "string" && u.slug) {
-          const email = typeof u.email === "string" && u.email ? u.email : undefined;
-          identity = {
-            slug: u.slug,
-            name: (typeof u.name === "string" && u.name) || email || u.slug,
-            email,
-          };
-        }
+        adoptMePayload(body);
         return identity;
       })
       .catch(() => null);
   }
   return pending;
+}
+
+/**
+ * Seed the identity from an already-fetched `/api/me`-shaped payload (the boot
+ * endpoint's `me` — load-path-rework 0001 §6), making `loadSessionIdentity`'s
+ * own fetch a no-op resolved flight. Must run BEFORE it is first called.
+ */
+export function seedSessionIdentity(me: unknown): void {
+  adoptMePayload(me);
+  pending = Promise.resolve(identity);
+}
+
+function adoptMePayload(body: unknown): void {
+  const u = (
+    body as {
+      user?: { slug?: unknown; name?: unknown; email?: unknown } | null;
+    } | null
+  )?.user;
+  if (u && typeof u.slug === "string" && u.slug) {
+    const email = typeof u.email === "string" && u.email ? u.email : undefined;
+    identity = {
+      slug: u.slug,
+      name: (typeof u.name === "string" && u.name) || email || u.slug,
+      email,
+    };
+  }
 }
 
 /** Test-only: forget the cached identity + in-flight fetch. */

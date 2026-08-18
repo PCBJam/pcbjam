@@ -33,6 +33,13 @@ export interface ProjectSyncConfig {
   scope: string;
   scopeId: string;
   projectId: string;
+  /**
+   * The boot payload's fresh manifest digest (load-path-rework 0001 §6). It
+   * was computed from the same listing this boot just fetched, so trusting it
+   * is exactly as current as GETting /sync/manifest ourselves — a warm match
+   * makes project staging ZERO-request. Absent ⇒ one manifest GET, as before.
+   */
+  digest?: string;
   /** Test seams (default: credentialed global fetch / IndexedDB stores). */
   fetchImpl?: typeof fetch;
   storeFactory?: ConstructorParameters<typeof SyncStack>[0]["storeFactory"];
@@ -220,6 +227,7 @@ export async function stageViaProjectSync(
         namespace: `project:${sync.scopeId}:${sync.projectId}`,
         kind: "static",
         url: `${sync.apiBase}/api/scopes/${encodeURIComponent(sync.scope)}/projects/${encodeURIComponent(opts.slug)}/sync`,
+        digest: sync.digest,
       },
     ],
     fetchImpl: credentialed,

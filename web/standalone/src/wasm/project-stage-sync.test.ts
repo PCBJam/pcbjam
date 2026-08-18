@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { encodeBundle, type SyncManifest } from "@pcbjam/shared";
+import { encodeBundle, manifestDigest, type SyncManifest } from "@pcbjam/shared";
 import { memStore } from "@pcbjam/sync-client";
 import {
   stageViaProjectSync,
@@ -25,16 +25,27 @@ function fakeSyncServer(bodies: Record<string, string>) {
     frames.push([path, b]);
   }
   let bundleFetches = 0;
+  let manifestFetches = 0;
   const fetchImpl = (async (input: unknown) => {
     const url = String(input);
-    if (url.endsWith("/sync/manifest")) return Response.json(manifest);
+    if (url.endsWith("/sync/manifest")) {
+      manifestFetches += 1;
+      return Response.json(manifest);
+    }
     if (url.endsWith("/sync/bundle")) {
       bundleFetches += 1;
       return new Response(encodeBundle(manifest, frames) as BodyInit);
     }
     return new Response(null, { status: 404 });
   }) as typeof fetch;
-  return { fetchImpl, counters: { get bundleFetches() { return bundleFetches; } } };
+  return {
+    fetchImpl,
+    manifest,
+    counters: {
+      get bundleFetches() { return bundleFetches; },
+      get manifestFetches() { return manifestFetches; },
+    },
+  };
 }
 
 function syncConfig(fetchImpl: typeof fetch): ProjectSyncConfig {
@@ -116,6 +127,34 @@ describe("stageViaProjectSync", () => {
     );
     expect(staged).toEqual([]);
     expect(rest).toEqual(files);
+  });
+
+  it("a boot digest makes the WARM restage zero-request (load-path 0001 §6)", async () => {
+    const server = fakeSyncServer({ "a.txt": "A", "b.txt": "BB" });
+    const files: ToolFile[] = [
+      { path: "a.txt", revision: 1 },
+      { path: "b.txt", revision: 1 },
+    ];
+    const config = syncConfig(server.fetchImpl); // shared stores across runs
+    const cold: string[] = [];
+    await stageViaProjectSync(
+      { slug: "p", files, projectSync: config, log: () => {} },
+      (p) => cold.push(p),
+    );
+    expect(cold.sort()).toEqual(["a.txt", "b.txt"]);
+    expect(server.counters.bundleFetches).toBe(1);
+
+    // Warm, with the boot payload's fresh digest: the stored snapshot is
+    // affirmed without even the manifest GET.
+    const digest = await manifestDigest(server.manifest);
+    const warm: string[] = [];
+    await stageViaProjectSync(
+      { slug: "p", files, projectSync: { ...config, digest }, log: () => {} },
+      (p) => warm.push(p),
+    );
+    expect(warm.sort()).toEqual(["a.txt", "b.txt"]);
+    expect(server.counters.bundleFetches).toBe(1);
+    expect(server.counters.manifestFetches).toBe(0);
   });
 
   it("no sync config means the whole set is per-file (demo/local sources)", async () => {

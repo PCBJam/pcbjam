@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   loadSessionIdentity,
+  seedSessionIdentity,
   resetSessionIdentityForTest,
   sessionIdentity,
 } from "./session-identity";
@@ -68,5 +69,19 @@ describe("loadSessionIdentity", () => {
     ]);
     await loadSessionIdentity("http://api");
     expect(f).toHaveBeenCalledTimes(1);
+  });
+
+  it("a seeded boot payload makes loadSessionIdentity a no-fetch resolved flight", async () => {
+    const f = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValue(new Error("must not fetch"));
+    seedSessionIdentity({ user: { slug: "boots", name: "Boot User" } });
+    expect(await loadSessionIdentity("http://api")).toEqual({
+      slug: "boots",
+      name: "Boot User",
+      email: undefined,
+    });
+    expect(sessionIdentity()?.slug).toBe("boots");
+    expect(f).not.toHaveBeenCalled();
   });
 });
