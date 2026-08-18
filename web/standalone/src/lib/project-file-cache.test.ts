@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ProjectFile } from "@pcbjam/shared";
 import {
   fileCacheValidator,
+  isYdocValidator,
   pruneProjectFileCache,
   readCachedFileBytes,
   writeCachedFileBytes,
@@ -36,9 +37,25 @@ describe("fileCacheValidator", () => {
     expect(fileCacheValidator({ ...base, revision: undefined })).toBeNull();
   });
 
-  it("rejects ydoc-backed files — their bytes move without a row change", () => {
+  it("ydoc-backed + cold: the blob fingerprint is the validator", () => {
+    const v = fileCacheValidator({ ...base, hasYdoc: true, ydocTag: "etag-1" });
+    expect(v).toBe("y1:etag-1");
+    expect(isYdocValidator(v!)).toBe(true);
+    expect(isYdocValidator(fileCacheValidator(base)!)).toBe(false);
+    // Collab-only rows (revision 0 — never uploaded) are cacheable too: the
+    // blob IS their only source of truth.
+    expect(
+      fileCacheValidator({ ...base, revision: 0, hasYdoc: true, ydocTag: "e2" }),
+    ).toBe("y1:e2");
+  });
+
+  it("ydoc-backed but LIVE or untagged stays uncacheable", () => {
+    // Live: bytes are moving under an open room, no fingerprint can vouch.
+    expect(
+      fileCacheValidator({ ...base, hasYdoc: true, ydocTag: "e", isLive: true }),
+    ).toBeNull();
+    // Older backend without the ydocTag field: exactly the old behavior.
     expect(fileCacheValidator({ ...base, hasYdoc: true })).toBeNull();
-    expect(fileCacheValidator({ ...base, isLive: true })).toBeNull();
   });
 });
 

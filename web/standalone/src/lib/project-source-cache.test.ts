@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ProjectFile } from "@pcbjam/shared";
 // Real validator logic inside the mocked cache module — only the IDB-touching
 // functions are replaced (the node test env has no IndexedDB anyway).
-import { fileCacheValidator } from "./project-file-cache";
+import { fileCacheValidator, isYdocValidator } from "./project-file-cache";
 
 const PROJECT_ID = "0b7a4bfa-0000-5000-8000-0000000000aa";
 
@@ -21,6 +21,7 @@ const file = (over: Partial<ProjectFile> = {}): ProjectFile => ({
 function cacheMock() {
   return {
     fileCacheValidator,
+    isYdocValidator,
     readCachedFileBytes: vi.fn(async () => null as Uint8Array | null),
     writeCachedFileBytes: vi.fn(async () => {}),
     pruneProjectFileCache: vi.fn(async () => {}),
@@ -132,6 +133,91 @@ describe("remote source file-body cache", () => {
     const src = (await loadRemote(cache))();
     await src.fetchFileBytes("proj", "x.txt");
 
+    expect(cache.readCachedFileBytes).not.toHaveBeenCalled();
+    expect(cache.writeCachedFileBytes).not.toHaveBeenCalled();
+  });
+
+  it("ydoc + cold: caches the CONVERTED text under the blob-tag validator", async () => {
+    const { fileToDoc, docToY, docToFile } = await import("@pcbjam/shared");
+    const Y = await import("yjs");
+    const kdoc = fileToDoc("(kicad_sch (version 20230121))");
+    const ydoc = new Y.Doc();
+    docToY(kdoc, ydoc);
+    const update = Y.encodeStateAsUpdate(ydoc);
+    ydoc.destroy();
+
+    const cache = cacheMock();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        headers: {
+          get: (h: string) =>
+            h === "content-type" ? "application/x-pcbjam-ydoc" : null,
+        },
+        arrayBuffer: async () => update.buffer,
+      })),
+    );
+
+    const src = (await loadRemote(cache))();
+    const meta = file({ hasYdoc: true, ydocTag: "etag-77" });
+    const got = await src.fetchFileBytes("proj", meta.path, meta);
+
+    // The returned bytes are the client-side conversion of the update…
+    expect(new TextDecoder().decode(got)).toBe(docToFile(kdoc));
+    // …and exactly those bytes are cached under the y-form validator, so the
+    // next warm load skips the download AND the conversion.
+    const validator = fileCacheValidator(meta)!;
+    expect(isYdocValidator(validator)).toBe(true);
+    expect(cache.writeCachedFileBytes).toHaveBeenCalledWith(
+      PROJECT_ID,
+      meta.path,
+      validator,
+      got,
+    );
+  });
+
+  it("ydoc + unconvertible: the plain fallback is cached once per blob tag", async () => {
+    // The stale-v1-ydoc double-fetch: negotiation returns garbage, the client
+    // re-fetches server-materialized text. Caching THAT under the blob tag
+    // turns two fetches per load into two fetches per blob generation.
+    const cache = cacheMock();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        headers: {
+          get: (h: string) =>
+            h === "content-type" ? "application/x-pcbjam-ydoc" : null,
+        },
+        arrayBuffer: async () => new Uint8Array([0xde, 0xad]).buffer,
+      })
+      .mockResolvedValueOnce(plainResponse(new Uint8Array([40, 41])));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const src = (await loadRemote(cache))();
+    const meta = file({ hasYdoc: true, ydocTag: "etag-stale" });
+    const got = await src.fetchFileBytes("proj", meta.path, meta);
+
+    expect(Array.from(got)).toEqual([40, 41]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(cache.writeCachedFileBytes).toHaveBeenCalledWith(
+      PROJECT_ID,
+      meta.path,
+      fileCacheValidator(meta)!,
+      got,
+    );
+  });
+
+  it("ydoc + LIVE: no cache read or write — bytes are moving", async () => {
+    const cache = cacheMock();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => plainResponse(new Uint8Array([1]))),
+    );
+    const src = (await loadRemote(cache))();
+    const meta = file({ hasYdoc: true, ydocTag: "e", isLive: true });
+    await src.fetchFileBytes("proj", meta.path, meta);
     expect(cache.readCachedFileBytes).not.toHaveBeenCalled();
     expect(cache.writeCachedFileBytes).not.toHaveBeenCalled();
   });

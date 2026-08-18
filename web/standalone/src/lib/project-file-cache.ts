@@ -18,10 +18,15 @@ import type { ProjectFile } from "@pcbjam/shared";
  * equivalent or not, touches `updatedAt`, so the pair changes whenever the
  * bytes can have.
  *
- * Ydoc-backed files (`hasYdoc`/`isLive`) are never cached: their served bytes
- * come from room materialization, which moves without any file-row change.
- * Revision 0 / absent means no published CAS row (collab-only docs, minimal
- * backends) — also uncacheable.
+ * Ydoc-backed files use the `.ydoc` blob's content fingerprint instead
+ * (`ydocTag`, load-path-rework: the ydoc-etag validator): while the room is
+ * COLD its served bytes are a pure function of that blob, and the room's
+ * last-close flush lands BEFORE the live marker is deleted, so a cold tag is
+ * trustworthy. What we cache is the CONVERTED KiCad text — a warm load skips
+ * the download AND the ydoc→s-expr conversion. The validator embeds
+ * {@link YDOC_CONVERT_EPOCH} so shipping a converter change invalidates
+ * every converted body at once. LIVE files stay uncacheable (bytes are
+ * moving under an open room), as do plain files without a CAS revision.
  *
  * Raw IndexedDB, mirroring idb-project-store.ts: one out-of-line-keyed store,
  * key `projectId + NUL + path` so a project's entries form one contiguous key
@@ -43,13 +48,29 @@ interface CacheRecord {
 }
 
 /**
- * The cache validator for a listed file, or null when the file is uncacheable
- * (no CAS revision, or ydoc-backed so bytes move independently of the row).
+ * Bump when the client-side ydoc→KiCad-text conversion (`ydocUpdateToKicadDoc`
+ * + `docToFile`) can produce different output for the same blob — cached
+ * converted bodies are keyed under it.
+ */
+const YDOC_CONVERT_EPOCH = 1;
+
+/**
+ * The cache validator for a listed file, or null when the file is uncacheable:
+ * live (bytes moving under an open room), ydoc-backed without a blob
+ * fingerprint (older backend), or plain without a CAS revision.
  */
 export function fileCacheValidator(meta: ProjectFile): string | null {
+  if (meta.isLive) return null;
+  if (meta.hasYdoc) {
+    return meta.ydocTag ? `y${YDOC_CONVERT_EPOCH}:${meta.ydocTag}` : null;
+  }
   if (!meta.revision || meta.revision <= 0) return null;
-  if (meta.hasYdoc || meta.isLive) return null;
   return `${meta.revision}:${meta.updatedAt}`;
+}
+
+/** Is `validator` the ydoc-blob form (a converted-body entry is expected)? */
+export function isYdocValidator(validator: string): boolean {
+  return validator.startsWith(`y${YDOC_CONVERT_EPOCH}:`);
 }
 
 function hasIdb(): boolean {

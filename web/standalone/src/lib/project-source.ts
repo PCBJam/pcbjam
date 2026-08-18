@@ -19,6 +19,7 @@ import { client } from "./contract-client";
 import { idbProjectStore, type LocalProjectStore } from "./idb-project-store";
 import {
   fileCacheValidator,
+  isYdocValidator,
   pruneProjectFileCache,
   readCachedFileBytes,
   writeCachedFileBytes,
@@ -132,17 +133,31 @@ function remoteProjectSource(): ProjectSource {
       });
       if (!res.ok) throw new Error(`download failed (${res.status}): ${relPath}`);
       const bytes = new Uint8Array(await res.arrayBuffer());
+      // A converted ydoc body may be cached ONLY under the ydoc-form validator
+      // (blob fingerprint) — never under `revision:updatedAt`, whose row does
+      // not move with collab edits. This re-guards the listing's hasYdoc: a
+      // room created between listing and fetch answers as ydoc while the
+      // validator is still the revision form, and stays uncached.
+      const cacheYdocBody =
+        validator !== null && meta !== undefined && isYdocValidator(validator);
       if (!isYdocResponse(res)) {
-        // The ydoc check re-guards the listing's hasYdoc: a room created
-        // between listing and fetch answers as ydoc, which must not be cached
-        // (its bytes move without a file-row change).
+        // Plain body: correct for either validator form — for a ydoc-form one
+        // this is the server-materialized fallback of the same cold blob.
         if (validator && meta) {
           void writeCachedFileBytes(meta.projectId, relPath, validator, bytes);
         }
         return bytes;
       }
       try {
-        return new TextEncoder().encode(docToFile(ydocUpdateToKicadDoc(bytes)));
+        const text = new TextEncoder().encode(
+          docToFile(ydocUpdateToKicadDoc(bytes)),
+        );
+        // Cache the CONVERTED text: a warm load skips the download and the
+        // (measured ~2s on big boards) ydoc→s-expr conversion both.
+        if (cacheYdocBody && validator && meta) {
+          void writeCachedFileBytes(meta.projectId, relPath, validator, text);
+        }
+        return text;
       } catch (err) {
         // A ydoc we can't convert must not make the file undownloadable: retry
         // without negotiating and let the backend materialize it as before.
@@ -150,7 +165,13 @@ function remoteProjectSource(): ProjectSource {
         if (!plain.ok) {
           throw new Error(`download failed (${plain.status}): ${relPath} (${String(err)})`);
         }
-        return new Uint8Array(await plain.arrayBuffer());
+        const materialized = new Uint8Array(await plain.arrayBuffer());
+        // Caching the fallback under the blob tag ends the double-fetch for
+        // stale unconvertible ydocs — one per tag instead of two per load.
+        if (cacheYdocBody && validator && meta && !isYdocResponse(plain)) {
+          void writeCachedFileBytes(meta.projectId, relPath, validator, materialized);
+        }
+        return materialized;
       }
     },
     async uploadFileBytes(slug, relPath, bytes) {
