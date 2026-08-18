@@ -154,12 +154,11 @@ function loadScript(src: string): Promise<void> {
 }
 
 /**
- * DORMANT — nothing consumes this today. It built the value once passed as
- * `Module.mainScriptUrlOrBlob`, which emscripten 6 ignores: pthread child
- * workers spawn from `_scriptName` instead, which is same-origin-only. Kept
- * because the cross-origin (CDN) pthread fix — a KNOWN GAP, see
- * docs/features/async/23-jspi-runtime.md — will need exactly this plumbing:
- * a SAME-ORIGIN `blob:` worker that `importScripts()` the cross-origin glue.
+ * The pthread worker-script substitute consumed by
+ * {@link installPthreadWorkerRedirect} (formerly the dormant
+ * `mainScriptUrlOrBlob` plumbing — emscripten 6 dropped that option, closing
+ * the doc-23 §7 KNOWN GAP required this instead): a SAME-ORIGIN `blob:`
+ * worker that `importScripts()` the cross-origin glue.
  * `new Worker(<cross-origin URL>)` is a SecurityError, but a `blob:` URL
  * inherits the page origin (legal), and a classic worker's `importScripts` MAY
  * load a cross-origin script when the CDN sends
@@ -185,7 +184,7 @@ function isWasmDiagnostic(line: string): boolean {
   return line.startsWith("[wx-dispatch]") || line.startsWith("[wx-timer]");
 }
 
-function pthreadWorkerScript(
+export function pthreadWorkerScript(
   base: string,
   bundle: Bundle,
   traceMask?: string | null,
@@ -208,6 +207,55 @@ function pthreadWorkerScript(
   if (abs.origin === window.location.origin) return `${base}/${bundle}.js`;
   return new Blob([`importScripts(${JSON.stringify(abs.href)});`], {
     type: "text/javascript",
+  });
+}
+
+let workerRedirectInstalled = false;
+
+/** Test-only: clear the install latch (one boot per page in production). */
+export function resetWorkerRedirectForTest(): void {
+  workerRedirectInstalled = false;
+}
+
+/**
+ * Cross-origin (CDN) pthread spawn fix — closes the doc-23 §7 KNOWN GAP that
+ * broke the editor wherever the wasm is CDN-served (staging/prod platform):
+ * emscripten 6 spawns every pthread worker from `_scriptName` (the glue's
+ * absolute URL, captured at script execution) and offers no override, and
+ * `new Worker(<cross-origin URL>)` is a SecurityError — observed as the tool
+ * dying right after instantiation with zero pthreads spawned.
+ *
+ * The runtime gives us no hook, so take the one seam that exists: wrap
+ * `window.Worker` and redirect EXACTLY the glue-URL construction to the
+ * same-origin substitute from {@link pthreadWorkerScript}. Everything else
+ * (ngspice/occ service workers, third-party code) passes through untouched.
+ * Also the only way `?trace=` reaches pthread realms (the blob seeds
+ * `__KICAD_TRACE__` before importScripts), so it installs for the trace case
+ * even same-origin. One boot per page (see `booted`), so never uninstalled.
+ */
+export function installPthreadWorkerRedirect(
+  base: string,
+  bundle: Bundle,
+  traceMask?: string | null,
+): void {
+  const glueHref = new URL(`${base}/${bundle}.js`, window.location.href).href;
+  const crossOrigin = new URL(glueHref).origin !== window.location.origin;
+  if ((!crossOrigin && !traceMask) || workerRedirectInstalled) return;
+  workerRedirectInstalled = true;
+  const script = pthreadWorkerScript(base, bundle, traceMask);
+  const substitute =
+    typeof script === "string" ? script : URL.createObjectURL(script);
+  const NativeWorker = window.Worker;
+  window.Worker = new Proxy(NativeWorker, {
+    construct(target, args: [string | URL, WorkerOptions?]) {
+      let href: string;
+      try {
+        href = new URL(String(args[0]), window.location.href).href;
+      } catch {
+        href = String(args[0]);
+      }
+      return new target(href === glueHref ? substitute : args[0], args[1]);
+    },
   });
 }
 
@@ -676,6 +724,9 @@ async function doBoot(opts: BootOptions): Promise<void> {
   //               tool aborts at startup with "wxDomCreateControl is not defined".
   //   <tool>.js — the tool glue, whose execution captures currentScript.src as
   //               Emscripten's _scriptName.
+  // BEFORE the glue executes: pthread workers must spawn from a same-origin
+  // script when `base` is the cross-origin CDN (and carry the trace env).
+  installPthreadWorkerRedirect(base, bundle, traceMask);
   await loadScript(`${base}/wx.js`);
   await loadScript(`${base}/wx-dom.js`);
   await loadScript(`${base}/${bundle}.js`);
