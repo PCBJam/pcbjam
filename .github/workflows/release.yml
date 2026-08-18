@@ -77,6 +77,11 @@ jobs:
       build_3d_viewer: "ON"
       run_tests: true
       upload_output: true
+    secrets:
+      # Read-only R2 pair so the screenshot drift report runs on tag builds too
+      # (baselines live in R2 now; without these the fetch/compare steps skip).
+      CI_SCREENSHOTS_S3_ACCESS_KEY_ID: ${{ secrets.CI_SCREENSHOTS_S3_ACCESS_KEY_ID }}
+      CI_SCREENSHOTS_S3_SECRET_ACCESS_KEY: ${{ secrets.CI_SCREENSHOTS_S3_SECRET_ACCESS_KEY }}
 
   # 2) Publish the build to the CDN (content-addressed; unchanged tools reuse)
   #    and write manifest-<tag>.json. The slow step is brotli-q11 over ~300MB of

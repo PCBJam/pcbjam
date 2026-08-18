@@ -1,33 +1,40 @@
 /**
  * Baseline changelog (Discord trigger B) — no build, no GPU.
  *
- * On push to main, diff the committed baseline PNGs between two commits and post
- * a "Baseline changelog" to Discord: a triptych (old | new+boxes | heatmap) for
- * each CHANGED file, the image for each ADDED, and a titled line for each REMOVED.
- * "added / removed" only mean anything as a git-history diff, which is why this is
- * separate from the re-render drift gate.
+ * On push to main, diff the committed screenshot MANIFEST between two commits
+ * and post a "Baseline changelog" to Discord: a triptych (old | new+boxes |
+ * heatmap) for each CHANGED baseline, the image for each ADDED, and a titled
+ * line for each REMOVED. "added / removed" only mean anything as a git-history
+ * diff, which is why this is separate from the re-render drift gate.
+ *
+ * The PNGs themselves are not in git — each manifest entry pins a sha256 and
+ * the bytes are fetched from the R2 CAS bucket (objects are immutable, so the
+ * base rev's hashes are always still resolvable). Needs the read credential
+ * pair; a base rev whose manifest predates the R2 migration (v1) is skipped so
+ * the migration commit itself doesn't post hundreds of bogus entries.
  *
  * CLI (from tests/):
  *   tsx tools/screenshots/changelog.ts [--base REV] [--head REV] [--dry-run] [--force]
  */
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
 import { PNG } from 'pngjs';
-import { BASELINE_ROOT, DIFF_OUT_DIR, floorFor, labelText, splitKey, LABEL } from './config';
+import { DIFF_OUT_DIR, MANIFEST_PATH, MANIFEST_VERSION, floorFor, labelText, splitKey, LABEL, type Manifest } from './config';
 import { comparePair, type Report } from './compare';
-import { loadPng, savePng, withBottomLabel } from './image-ops';
+import { savePng, withBottomLabel } from './image-ops';
 import { buildSpecResolver } from './spec-map';
 import { buildAttachments, paginate, postMessage } from './post-discord';
+import { missingEnv, storeFromEnv, type R2Store } from './r2-store';
 
 function git(root: string, args: string[]): string {
     return execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' }).trim();
 }
 
-function gitBlob(root: string, rev: string, repoPath: string): Buffer | null {
+/** The screenshot manifest as committed at `rev`, or null if absent/unparsable. */
+function manifestAt(repoRoot: string, rev: string, repoPath: string): Manifest | null {
     try {
-        return execFileSync('git', ['-C', root, 'show', `${rev}:${repoPath}`], { maxBuffer: 1 << 28 });
+        return JSON.parse(execFileSync('git', ['-C', repoRoot, 'show', `${rev}:${repoPath}`], { encoding: 'utf8' })) as Manifest;
     } catch {
         return null;
     }
@@ -60,17 +67,41 @@ async function main(): Promise<void> {
         }
     }
 
-    // Repo-relative baseline root prefix (e.g. tests/baseline-screenshots).
-    const prefix = path.relative(repoRoot, path.join(cwd, BASELINE_ROOT));
-    const diff = git(repoRoot, ['diff', '--name-status', base, head, '--', prefix]);
-    if (!diff) {
+    // Repo-relative manifest path (e.g. tests/screenshot-manifest.json).
+    const manifestPath = path.relative(repoRoot, path.join(cwd, MANIFEST_PATH)).split(path.sep).join('/');
+    const baseManifest = manifestAt(repoRoot, base, manifestPath);
+    const headManifest = manifestAt(repoRoot, head, manifestPath);
+    if (headManifest?.version !== MANIFEST_VERSION) {
+        console.log('[changelog] head manifest is not v2 — nothing to diff');
+        return;
+    }
+    if (baseManifest?.version !== MANIFEST_VERSION) {
+        console.log('[changelog] base manifest predates the R2 migration — skipping (migration commit)');
+        return;
+    }
+
+    // Engine-qualified key (`<engine>/<name>`) → sha256, per rev.
+    const hashesOf = (m: Manifest): Map<string, string> =>
+        new Map(m.screenshots.map((e) => [`${e.engine}/${e.name}`, e.sha256]));
+    const baseHashes = hashesOf(baseManifest);
+    const headHashes = hashesOf(headManifest);
+    const added = [...headHashes.keys()].filter((k) => !baseHashes.has(k));
+    const removed = [...baseHashes.keys()].filter((k) => !headHashes.has(k));
+    const changed = [...headHashes.keys()].filter((k) => baseHashes.has(k) && baseHashes.get(k) !== headHashes.get(k));
+    if (!added.length && !removed.length && !changed.length) {
         console.log('[changelog] no baseline changes between', base.slice(0, 7), 'and', head);
+        return;
+    }
+
+    const store = storeFromEnv();
+    if (!store) {
+        console.error(`[changelog] R2 credentials required to fetch baseline bytes: set ${missingEnv().join(', ')}`);
+        process.exitCode = 1;
         return;
     }
 
     const outDir = path.join(cwd, DIFF_OUT_DIR);
     fs.mkdirSync(outDir, { recursive: true });
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'changelog-'));
     const report: Report = {
         generatedFor: process.env.GITHUB_SHA || head,
         changed: [],
@@ -81,53 +112,25 @@ async function main(): Promise<void> {
     };
     const { specFor } = buildSpecResolver(cwd);
 
-    // Load a git blob (a committed PNG at `rev`) as a decoded PNG, or null if absent.
-    const blobPng = (rev: string, p: string): PNG | null => {
-        const b = gitBlob(repoRoot, rev, p);
-        if (!b) return null;
-        const f = path.join(tmp, `${rev.slice(0, 7)}-${path.basename(p)}`);
-        fs.writeFileSync(f, b);
-        return loadPng(f);
-    };
-    // Engine-qualified key (`<engine>/<name>.png`) from a repo path under the baseline root.
-    const keyOf = (repoPath: string): string => path.relative(prefix, repoPath).split(path.sep).join('/');
+    const hashPng = async (s: R2Store, hash: string): Promise<PNG> => PNG.sync.read(await s.get(hash));
     // Save a single captioned image (added/removed) and record it in the report.
     const saveSingle = (img: PNG, key: string, status: 'added' | 'removed'): void => {
-        const suffix = status === 'added' ? 'added' : 'removed';
-        const rel = path.join(DIFF_OUT_DIR, `${key.replace('/', '_')}.${suffix}.png`);
+        const rel = path.join(DIFF_OUT_DIR, `${key.replace('/', '_')}.${status}.png`);
         savePng(path.join(cwd, rel), withBottomLabel(img, labelText(status, key, specFor(splitKey(key).name)), LABEL.colors[status]));
         report[status].push({ name: key, image: rel });
     };
 
-    for (const line of diff.split('\n')) {
-        const parts = line.split('\t');
-        const status = parts[0][0]; // M/A/D/R
-        const repoPath = parts[status === 'R' ? 2 : 1];
-        const oldPath = status === 'R' ? parts[1] : repoPath;
-        const key = keyOf(repoPath);
-
-        if (status === 'A' || status === 'R') {
-            const img = blobPng(head, repoPath);
-            if (img) saveSingle(img, key, 'added');
-            if (status === 'R') {
-                const oldImg = blobPng(base, oldPath);
-                if (oldImg) saveSingle(oldImg, keyOf(oldPath), 'removed');
-            }
-        } else if (status === 'D') {
-            const img = blobPng(base, repoPath);
-            if (img) saveSingle(img, key, 'removed');
-        } else {
-            // Modified: captioned triptych old vs new.
-            const oldImg = blobPng(base, repoPath);
-            const newImg = blobPng(head, repoPath);
-            if (!oldImg || !newImg) continue;
-            const { result, heatmap, triptych } = comparePair(oldImg, newImg, key, floorFor(key));
-            const triptychRel = path.join(DIFF_OUT_DIR, `${key.replace('/', '_')}.triptych.png`);
-            const heatmapRel = path.join(DIFF_OUT_DIR, `${key.replace('/', '_')}.heatmap.png`);
-            savePng(path.join(cwd, triptychRel), withBottomLabel(triptych, labelText('changed', key, specFor(splitKey(key).name)), LABEL.colors.changed));
-            savePng(path.join(cwd, heatmapRel), heatmap);
-            report.changed.push({ ...result, triptych: triptychRel, heatmap: heatmapRel });
-        }
+    for (const key of added) saveSingle(await hashPng(store, headHashes.get(key)!), key, 'added');
+    for (const key of removed) saveSingle(await hashPng(store, baseHashes.get(key)!), key, 'removed');
+    for (const key of changed) {
+        const oldImg = await hashPng(store, baseHashes.get(key)!);
+        const newImg = await hashPng(store, headHashes.get(key)!);
+        const { result, heatmap, triptych } = comparePair(oldImg, newImg, key, floorFor(key));
+        const triptychRel = path.join(DIFF_OUT_DIR, `${key.replace('/', '_')}.triptych.png`);
+        const heatmapRel = path.join(DIFF_OUT_DIR, `${key.replace('/', '_')}.heatmap.png`);
+        savePng(path.join(cwd, triptychRel), withBottomLabel(triptych, labelText('changed', key, specFor(splitKey(key).name)), LABEL.colors.changed));
+        savePng(path.join(cwd, heatmapRel), heatmap);
+        report.changed.push({ ...result, triptych: triptychRel, heatmap: heatmapRel });
     }
     report.changed.sort((a, b) => b.changedRatio - a.changedRatio);
 

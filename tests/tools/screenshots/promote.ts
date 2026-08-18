@@ -3,10 +3,17 @@
  *
  * CI's x86 render is the source of truth. This pulls a CI run's screenshots
  * (`gh run download`) — or a local dir via --from — and, for each one, overwrites
- * the committed baseline ONLY when the decoded pixels differ beyond the per-engine
- * floor. Unchanged baselines are left byte-identical (never re-encoded), so git
- * sees no churn. New shots are added; baselines with no render are reported as
- * removal candidates and only deleted with --prune.
+ * the cached baseline ONLY when the decoded pixels differ beyond the per-engine
+ * floor. Unchanged baselines keep their bytes (never re-encoded), so their hash —
+ * and therefore the manifest — sees no churn. New shots are added; baselines with
+ * no render are reported as removal candidates and only dropped with --prune.
+ *
+ * Baselines live in a private R2 bucket (content-addressed; see r2-store.ts).
+ * The flow is: sync the local cache from the committed manifest → build/apply
+ * the plan locally → upload the updated/added bytes to R2 → regenerate the
+ * manifest. Only the manifest diff is committed; R2 objects are immutable and
+ * never deleted (--prune removes the manifest entry, old commits still resolve).
+ * Needs the READ-WRITE credential pair (see tools/screenshots/README.md).
  *
  * CLI (from tests/):
  *   tsx tools/screenshots/promote.ts --run <ci-run-id> [--repo owner/repo] [--prune] [--dry-run]
@@ -19,8 +26,10 @@ import { execFileSync } from 'child_process';
 import { BASELINE_ROOT, MANIFEST_PATH, floorFor, isIgnored, listEngineKeys, splitKey, type Manifest } from './config';
 import { writeManifest } from './gen-manifest';
 import { diffImages, loadPng } from './image-ops';
+import { hashBytes, missingEnv, storeFromEnv, type R2Store } from './r2-store';
+import { loadManifestV2, pool, pullBaselines } from './r2-sync';
 
-/** key (`<engine>/<name>`) → absolute committed baseline path. */
+/** key (`<engine>/<name>`) → absolute cached baseline path. */
 function baselineIndex(root: string): Map<string, string> {
     const abs = path.join(root, BASELINE_ROOT);
     const index = new Map<string, string>();
@@ -84,11 +93,11 @@ function buildPlan(root: string, renderDir: string, manifest?: Manifest): { plan
             plan.updated.push(key);
             actions.push(() => fs.copyFileSync(src, existing)); // verbatim bytes, no re-encode → no churn
         } else {
-            plan.unchanged.push(key); // leave the committed file untouched
+            plan.unchanged.push(key); // leave the cached file untouched
         }
     }
 
-    // Removal candidates: a committed baseline the manifest expects but this render didn't produce.
+    // Removal candidates: a manifest-listed baseline this render didn't produce.
     for (const [key, abs] of baselines) {
         if (rendered.has(key)) continue;
         const { engine, name } = splitKey(key);
@@ -99,6 +108,16 @@ function buildPlan(root: string, renderDir: string, manifest?: Manifest): { plan
     }
 
     return { plan, apply: () => actions.forEach((a) => a()) };
+}
+
+/** Upload the applied updated/added baselines to R2 (skip-if-exists per hash). */
+async function uploadApplied(root: string, store: R2Store, keys: string[]): Promise<number> {
+    let uploaded = 0;
+    await pool(keys, 8, async (key) => {
+        const bytes = fs.readFileSync(path.join(root, BASELINE_ROOT, key));
+        if ((await store.put(hashBytes(bytes), bytes)) === 'uploaded') uploaded++;
+    });
+    return uploaded;
 }
 
 function parseArgs(argv: string[]): Record<string, string | boolean> {
@@ -114,7 +133,7 @@ function parseArgs(argv: string[]): Record<string, string | boolean> {
     return out;
 }
 
-function main(): void {
+async function main(): Promise<void> {
     const args = parseArgs(process.argv.slice(2));
     const root = process.cwd();
     if (!args.run && !args.from) {
@@ -122,6 +141,24 @@ function main(): void {
         process.exitCode = 2;
         return;
     }
+    // Fail fast BEFORE downloading anything: a promote that can't upload would
+    // otherwise leave the manifest referencing hashes that don't exist in R2.
+    const store = storeFromEnv();
+    if (!store) {
+        console.error(`[promote] R2 read-write credentials required: set ${missingEnv().join(', ')}`);
+        process.exitCode = 2;
+        return;
+    }
+    // The local tree is a cache — sync it to the committed manifest so the plan
+    // diffs against exactly what the manifest pins (a stale/absent cache would
+    // otherwise misreport adds/updates).
+    if (loadManifestV2(root)) {
+        const { downloaded, cached, deleted } = await pullBaselines(root, store);
+        console.log(`[promote] cache synced: downloaded=${downloaded} cached=${cached} deleted=${deleted}`);
+    } else {
+        console.warn(`[promote] ${MANIFEST_PATH} is not v2 — skipping cache sync (pre-migration tree?)`);
+    }
+
     const renderDir = args.from ? (args.from as string) : downloadRun(args.run as string, args.repo as string);
     const manifest = loadManifest(root);
     const { plan, apply } = buildPlan(root, renderDir, manifest);
@@ -135,18 +172,29 @@ function main(): void {
     for (const n of plan.removedCandidates) console.log(`  REMOVE? ${n}${args.prune ? ' (pruning)' : ' (use --prune to delete)'}`);
 
     if (args.dryRun) {
-        console.log('[promote] dry-run — no files written');
+        console.log('[promote] dry-run — no files written, nothing uploaded');
         return;
     }
     apply();
     if (args.prune) {
         const baselines = baselineIndex(root);
+        // Prune drops the local file (and, below, the manifest entry). The R2
+        // object is deliberately kept — old commits must still resolve it.
         for (const n of plan.removedCandidates) fs.rmSync(baselines.get(n)!, { force: true });
     }
+    // Upload BEFORE regenerating the manifest: a failure here leaves at worst an
+    // orphaned CAS object, never a committed manifest pointing at a missing hash.
+    const uploaded = await uploadApplied(root, store, [...plan.updated, ...plan.added]);
+    console.log(`[promote] uploaded ${uploaded} object(s) to R2`);
     // Keep the manifest in lockstep with the baseline tree — a stale manifest silently
     // disables removed-screenshot detection for anything added after the last regen.
     writeManifest(root);
-    console.log('[promote] done (manifest regenerated) — review `git status` and commit');
+    console.log(`[promote] done — commit the ${MANIFEST_PATH} diff (the only git-visible output)`);
 }
 
-if (require.main === module) main();
+if (require.main === module) {
+    main().catch((e) => {
+        console.error(`[promote] ${(e as Error).message}`);
+        process.exitCode = 1;
+    });
+}

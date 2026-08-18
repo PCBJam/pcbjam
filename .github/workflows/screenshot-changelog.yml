@@ -1,17 +1,19 @@
 name: screenshot-changelog
 
-# Discord trigger B: when a push to main changes committed baseline PNGs, post an
-# old | new+boxes | heatmap triptych per changed baseline (ADDED image / REMOVED
-# title too). No build, no GPU — it only diffs two git revisions of PNGs that are
-# already CI-rendered, so it runs in ~30s. Complements the re-render drift gate in
-# wasm-build.yml (which catches un-blessed renders); this is the human-facing feed
-# of intentional baseline updates as they land.
+# Discord trigger B: when a push to main changes the screenshot manifest (the
+# committed pin of every R2-stored baseline), post an old | new+boxes | heatmap
+# triptych per changed baseline (ADDED image / REMOVED title too). No build, no
+# GPU — it diffs two git revisions of the manifest and fetches the PNG bytes
+# from the R2 CAS bucket (immutable objects, so the old rev's hashes always
+# resolve), so it runs in ~30s. Complements the re-render drift gate in
+# wasm-build.yml (which catches un-blessed renders); this is the human-facing
+# feed of intentional baseline updates as they land.
 
 on:
   push:
     branches: [main]
     paths:
-      - 'tests/baseline-screenshots/**.png'
+      - 'tests/screenshot-manifest.json'
 
 concurrency:
   group: screenshot-changelog-${{ github.ref }}
@@ -23,7 +25,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # HEAD^ is needed to diff the tip commit's baseline changes. (A push of
+          # HEAD^ is needed to diff the tip commit's manifest changes. (A push of
           # multiple commits reports only the tip commit's baseline diff — fine for
           # a changelog; baseline refreshes are single commits in practice.)
           fetch-depth: 2
@@ -37,4 +39,7 @@ jobs:
         working-directory: tests
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          CI_SCREENSHOTS_S3_ENDPOINT: ${{ vars.CI_SCREENSHOTS_S3_ENDPOINT }}
+          CI_SCREENSHOTS_S3_ACCESS_KEY_ID: ${{ secrets.CI_SCREENSHOTS_S3_ACCESS_KEY_ID }}
+          CI_SCREENSHOTS_S3_SECRET_ACCESS_KEY: ${{ secrets.CI_SCREENSHOTS_S3_SECRET_ACCESS_KEY }}
         run: npm run screenshots:changelog

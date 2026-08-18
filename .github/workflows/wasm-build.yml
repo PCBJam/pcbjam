@@ -43,6 +43,13 @@ on:
       # screenshot/perf report step just no-ops there.
       DISCORD_WEBHOOK_URL:
         required: false
+      # Read-only S3 keypair for the private R2 screenshot-baseline bucket
+      # (pcbjam-ci-screenshots). Optional for the same reason: without them the
+      # baseline fetch skips and the compare gate no-ops (report-only pipeline).
+      CI_SCREENSHOTS_S3_ACCESS_KEY_ID:
+        required: false
+      CI_SCREENSHOTS_S3_SECRET_ACCESS_KEY:
+        required: false
 
 jobs:
   build-and-test:
@@ -304,10 +311,36 @@ jobs:
         working-directory: tests
         run: npm ci
 
+      # Baseline screenshots live in a private R2 bucket, pinned by the committed
+      # manifest; this cache keyed on the manifest hash makes most fetches a
+      # no-op (r2-sync hash-verifies every restored file, so a stale restore
+      # costs only the changed downloads).
+      - name: Cache screenshot baselines
+        if: inputs.run_tests
+        uses: actions/cache@v4
+        with:
+          path: tests/baseline-screenshots
+          key: baselines-${{ hashFiles('tests/screenshot-manifest.json') }}
+
+      # continue-on-error: the screenshot pipeline is deliberately report-only
+      # (see the report step) — an R2 outage must not fail the build. Without
+      # credentials (release.yml, fork PRs) r2-sync skips with a warning and
+      # compare.ts later no-ops for the same reason.
+      - name: Fetch screenshot baselines from R2
+        if: inputs.run_tests
+        continue-on-error: true
+        working-directory: tests
+        env:
+          CI_SCREENSHOTS_S3_ENDPOINT: ${{ vars.CI_SCREENSHOTS_S3_ENDPOINT }}
+          CI_SCREENSHOTS_S3_ACCESS_KEY_ID: ${{ secrets.CI_SCREENSHOTS_S3_ACCESS_KEY_ID }}
+          CI_SCREENSHOTS_S3_SECRET_ACCESS_KEY: ${{ secrets.CI_SCREENSHOTS_S3_SECRET_ACCESS_KEY }}
+        run: npm run screenshots:fetch
+
       # Cheap hygiene gates (no build needed): the determinism lint keeps the
-      # banned flake patterns out of the specs, the manifest check keeps
-      # screenshot-manifest.json in lockstep with the committed baselines
-      # (a stale manifest silently disables removed-screenshot detection), and
+      # banned flake patterns out of the specs, the manifest check validates
+      # screenshot-manifest.json (v2 schema, sorted/unique hashes) and fails if
+      # baseline PNGs are ever re-committed to git (credential-free — it never
+      # touches R2, so it gates secretless callers identically), and
       # the CI-coverage lint proves every spec file on disk is reachable from
       # the npm scripts THIS workflow invokes (a spec/project that CI never
       # runs is how the web suite once rotted unnoticed).

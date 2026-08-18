@@ -40,6 +40,11 @@ wxwidgets-clean/
 /tests/node_modules/
 /tests/playwright-report/
 /tests/test-results/
+# Baseline screenshots are a local cache fetched from R2 (tests/tools/screenshots/r2-sync.ts);
+# only tests/screenshot-manifest.json is committed. The .env holds a dev's
+# R2 keypair (r2-store.ts auto-loads it) — never commit it.
+/tests/baseline-screenshots/
+/tests/.env
 /tests/bench-results/
 /tests/pw-artifacts/
 /tests/.test-port

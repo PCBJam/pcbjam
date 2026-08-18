@@ -228,6 +228,16 @@ function main(): void {
         return;
     }
     const root = process.cwd();
+    // Baselines are a local cache fetched from R2 (`npm run screenshots:fetch`).
+    // When the manifest expects screenshots but the cache is empty — a secretless
+    // CI caller where the fetch step skipped, or a dev who hasn't fetched — skip
+    // the gate instead of misreporting every baseline as removed. No report.json
+    // is written; post-discord tolerates its absence.
+    const expected = loadManifest(root)?.screenshots.length ?? 0;
+    if (expected > 0 && listEngineKeys(path.join(root, BASELINE_ROOT)).length === 0) {
+        console.log('[compare] baseline cache is empty — run `npm run screenshots:fetch` (needs R2 credentials); skipping');
+        return;
+    }
     const report = classify(root, (args.sha as string) || process.env.GITHUB_SHA || null);
     fs.writeFileSync(path.join(root, DIFF_OUT_DIR, 'report.json'), JSON.stringify(report, null, 2));
     const { changed, added, removed, unchangedCount, driftLikely } = report;

@@ -12,14 +12,41 @@ import * as nodeFs from 'fs';
 import * as nodePath from 'path';
 
 /**
- * Committed baseline root. One PER-ENGINE subdirectory per browser family:
- * `baseline-screenshots/{chromium,firefox}/<name>.png`. Renders mirror the
- * layout (`test-results/<engine>/<name>.png`, written by stableShot/shotPath),
- * so each engine is gated against its OWN baselines — the old flat namespace
- * let two engines running the same spec overwrite each other's PNG, and the
- * surviving file was whichever parallel worker wrote last.
+ * Baseline root — a GITIGNORED local cache, one PER-ENGINE subdirectory per
+ * browser family: `baseline-screenshots/{chromium,firefox}/<name>.png`.
+ * Renders mirror the layout (`test-results/<engine>/<name>.png`, written by
+ * stableShot/shotPath), so each engine is gated against its OWN baselines —
+ * the old flat namespace let two engines running the same spec overwrite each
+ * other's PNG, and the surviving file was whichever parallel worker wrote last.
+ *
+ * The baseline PNGs are NOT committed: they live in a private R2 bucket,
+ * content-addressed by sha256, and the committed manifest
+ * (screenshot-manifest.json) is what pins each `<engine>/<name>` to a hash.
+ * `npm run screenshots:fetch` (tools/screenshots/r2-sync.ts) materializes this
+ * tree from the manifest; promote.ts uploads new hashes and rewrites the
+ * manifest — the manifest diff is the only thing that lands in git.
  */
 export const BASELINE_ROOT = 'baseline-screenshots';
+
+/** Manifest format version — bumped when baselines moved from git to R2. */
+export const MANIFEST_VERSION = 2;
+
+/** Default private R2 bucket holding the content-addressed baselines. */
+export const R2_DEFAULT_BUCKET = 'pcbjam-ci-screenshots';
+
+/** Key prefix for content-addressed objects: `sha256/<64-hex>.png`. */
+export const R2_KEY_PREFIX = 'sha256/';
+
+/**
+ * Env vars for the bucket's S3 API (read-only keypair in CI, read-write for
+ * devs running promote). Endpoint form: https://<account-id>.r2.cloudflarestorage.com
+ */
+export const R2_ENV = {
+    endpoint: 'CI_SCREENSHOTS_S3_ENDPOINT',
+    bucket: 'CI_SCREENSHOTS_S3_BUCKET',
+    accessKeyId: 'CI_SCREENSHOTS_S3_ACCESS_KEY_ID',
+    secretAccessKey: 'CI_SCREENSHOTS_S3_SECRET_ACCESS_KEY',
+} as const;
 
 /** Engine subdirectories the tooling recognizes (a browser family per dir). */
 export const ENGINES = ['chromium', 'firefox', 'webkit'] as const;
@@ -152,8 +179,18 @@ export function labelText(status: LabelStatus, key: string, spec: string | null)
     return spec ? `${head} · ${spec}` : head;
 }
 
-export type ManifestEntry = { name: string; engine: string };
-export type Manifest = { screenshots: ManifestEntry[] };
+/**
+ * One expected screenshot. `sha256` is the load-bearing field — it resolves the
+ * R2 object (`sha256/<hex>.png`) holding the baseline bytes; `bytes`/`width`/
+ * `height` are sanity metadata (cheap pre-hash check on fetch, dimension info
+ * in reviews).
+ */
+export type ManifestEntry = { name: string; engine: string; sha256: string; bytes: number; width: number; height: number };
+export type Manifest = {
+    version: number;
+    storage: { bucket: string; keyPrefix: string };
+    screenshots: ManifestEntry[];
+};
 
 /** Verdict floor for an engine-qualified key — the engine IS the key prefix now,
  *  no manifest lookup needed. */
