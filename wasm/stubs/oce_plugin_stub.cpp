@@ -67,11 +67,18 @@ EM_JS( void, js_occLoadModelStart, ( int aToken, const char* aModelPath ),
 {
     const modelPath = UTF8ToString( aModelPath );
 
-    const finish = ( cachePath ) => {
-        const n = lengthBytesUTF8( cachePath ) + 1;
-        const p = _malloc( n );
-        stringToUTF8( cachePath, p, n );
-        globalThis.__wxScheduler.resolveWait( aToken, p );
+    // E-8: all native work (the MEMFS cache write + the malloc'd path) runs
+    // inside the scheduler's completion gate — a dead or trapped instance
+    // drops the completion loudly instead of re-entering wasm, and a trap
+    // inside the prepare latches the instance terminal without resolving.
+    const finish = ( writeCache ) => {
+        globalThis.__wxScheduler.runWaitCompletion( 'OCC model completion', aToken, () => {
+            const cachePath = writeCache();
+            const n = lengthBytesUTF8( cachePath ) + 1;
+            const p = _malloc( n );
+            stringToUTF8( cachePath, p, n );
+            return p;
+        } );
     };
 
     let req;
@@ -100,22 +107,26 @@ EM_JS( void, js_occLoadModelStart, ( int aToken, const char* aModelPath ),
     }
 
     req.then( ( res ) => {
-        let cachePath = '';
+        finish( () => {
+            let cachePath = '';
 
-        if( res && res.ok && res.bytes && res.bytes.length )
-        {
-            cachePath = '/tmp/pcbjam_occ_model_cache.3dc';
-            FS.writeFile( cachePath, res.bytes );
-        }
-        else if( res && res.report )
-        {
-            console.error( '[pcbjam-occ] loadModel failed:', res.report );
-        }
+            if( res && res.ok && res.bytes && res.bytes.length )
+            {
+                cachePath = '/tmp/pcbjam_occ_model_cache.3dc';
+                FS.writeFile( cachePath, res.bytes );
+            }
+            else if( res && res.report )
+            {
+                console.error( '[pcbjam-occ] loadModel failed:', res.report );
+            }
 
-        finish( cachePath );
+            return cachePath;
+        } );
     } ).catch( ( e ) => {
+        // The gate makes this fallback inert after a trap or shutdown — it
+        // cannot repeat native work in a damaged instance.
         console.error( '[pcbjam-occ] loadModel request failed:', e );
-        finish( '' );
+        finish( () => '' );
     } );
 } )
 
@@ -225,6 +236,11 @@ SCENEGRAPH* oce3d_Load( char const* aFileName )
         return nullptr;
 
     const int token = wxWasmBeginWait( "occ" );
+
+    // Token 0 = the scheduler refused the wait (dead or terminal instance).
+    if( token <= 0 )
+        return nullptr;
+
     js_occLoadModelStart( token, aFileName );
 
     // The malloc'd path pointer rides the wait as an int32.

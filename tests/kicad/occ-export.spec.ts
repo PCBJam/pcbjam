@@ -1,8 +1,10 @@
 import type { Page } from '@playwright/test';
+import * as fs from 'fs';
+import * as path from 'path';
 import { test, expect } from './fixtures';
 import { clickMenuBarItem, clickMenuItem, waitForEditorReady, waitForRenderedByLabel, waitUntil, stableShot, settledShot } from '../e2e/utils/element-tracker';
 import { injectFromSubmodule } from './utils/fs-inject';
-import { waitForBoardLoaded } from './utils/board-ready';
+import { openBoardProgrammatically } from './utils/board-ready';
 
 /** Wait for a rendered popup menu to have its items (replaces a fixed post-menu-click sleep). */
 async function waitForMenuItems(page: Page): Promise<void> {
@@ -46,59 +48,63 @@ async function loadBoard(page: Page, testLogger: { consoleLogs: string[]; errors
     await injectFromSubmodule(page, `kicad/demos/${DEMO.dir}/${proFilename}`,
         `${PROJECT_DIR_MEMFS}/${proFilename}`);
 
-    expect(await clickMenuBarItem(page, 'File'), 'File menu should be findable').toBe(true);
-    await waitForMenuItems(page);
-    // Items register progressively while the popup paints — wait for the one
-    // we click (clickMenuItem is single-shot; the >3-items gate isn't enough).
-    await waitForRenderedByLabel(page, 'Open...', { elementType: 'menuitem' });
-    expect(await clickMenuItem(page, 'Open...'), 'Open… menu item should be findable').toBe(true);
-
-    await page.waitForFunction(() => {
-        const registry = window.wxElementRegistry;
-        return !!registry && registry.findAll({ visible: true })
-            .some((el) => el.typeName === 'wxFileDialog');
-    }, null, { timeout: 15000 });
-    // Wait for the filename text input to paint (the dialog object exists before its
-    // inner controls register; replaces a fixed 1000ms).
-    await waitUntil(page, () => {
-        const r = window.wxElementRegistry;
-        return !!r && r.findAll({ visible: true }).some((el) => el.typeName === 'wxTextCtrl' && el.name === 'text');
-    }, 'file dialog filename input');
-
-    const filenameInput = await page.evaluate(() => {
-        const registry = window.wxElementRegistry;
-        if (!registry) return null;
-        const text = registry.findAll({ visible: true })
-            .find((el) => el.typeName === 'wxTextCtrl' && el.name === 'text');
-        return text ? { x: text.centerX, y: text.centerY } : null;
-    });
-    expect(filenameInput, 'filename text input should be visible').not.toBeNull();
-    if (!filenameInput) throw new Error('filename text input not found');
-
-    await page.mouse.click(filenameInput.x, filenameInput.y);
-    // Documented interaction dwells: focus + typed-text registration have no observable signal.
-    await page.waitForTimeout(200); // eslint-disable-line -- documented interaction dwell
-    await page.keyboard.type(pcbFilename);
-    await page.waitForTimeout(300); // eslint-disable-line -- documented interaction dwell
-    await page.keyboard.press('Enter');
-
-    const result = await waitForBoardLoaded(page, testLogger, 60000);
+    const result = await openBoardProgrammatically(
+        page,
+        `${PROJECT_DIR_MEMFS}/${pcbFilename}`,
+        DEMO.stem,
+        testLogger,
+        60000,
+    );
     console.log(`[TEST] ${DEMO.name} board-ready result: ${result}`);
 }
 
-/** Click a visible wx button by label; returns whether it was found. */
-async function clickWxButton(page: Page, label: string): Promise<boolean> {
-    const pos = await page.evaluate((wanted: string) => {
+type WxButtonTarget = { x: number; y: number; domId: number | null };
+
+/** Resolve one visible wx button to its stable DOM identity and fallback point. */
+async function findWxButton(page: Page, label: string): Promise<WxButtonTarget | null> {
+    return page.evaluate((wanted: string) => {
         const registry = window.wxElementRegistry;
         if (!registry) return null;
         const el = registry.findAll({ visible: true })
             .find((e) => (e.label === wanted || e.label === `&${wanted}`)
                 && (e.typeName ?? '').includes('Button'));
-        return el ? { x: el.centerX, y: el.centerY } : null;
+        return el
+            ? { x: el.centerX, y: el.centerY, domId: el.domId && el.domId > 0 ? el.domId : null }
+            : null;
     }, label);
-    if (!pos) return false;
-    await page.mouse.click(pos.x, pos.y);
+}
+
+async function clickWxButtonTarget(page: Page, target: WxButtonTarget): Promise<void> {
+    if (target.domId) {
+        await page.locator(`[data-wx-dom-id="${target.domId}"]`).click();
+        return;
+    }
+
+    await page.mouse.click(target.x, target.y);
+}
+
+/** Click a visible wx button by label; returns whether it was found. */
+async function clickWxButton(page: Page, label: string): Promise<boolean> {
+    const target = await findWxButton(page, label);
+    if (!target) return false;
+    await clickWxButtonTarget(page, target);
     return true;
+}
+
+async function openStepExportDialog(page: Page): Promise<void> {
+    expect(await clickMenuBarItem(page, 'File'), 'File menu').toBe(true);
+    await waitForMenuItems(page);
+    await waitForRenderedByLabel(page, 'Export', { elementType: 'menuitem' });
+    expect(await clickMenuItem(page, 'Export'), 'Export submenu').toBe(true);
+    await waitForRenderedByLabel(page, 'STEP/GLB/BREP/XAO/PLY/STL...', { elementType: 'menuitem' });
+    expect(await clickMenuItem(page, 'STEP/GLB/BREP/XAO/PLY/STL...'),
+        'STEP export menu item').toBe(true);
+    await page.waitForFunction(() => {
+        const registry = window.wxElementRegistry;
+        return !!registry && registry.findAll({ visible: true })
+            .some((el) => (el.label === 'Export' || el.label === '&Export')
+                && (el.typeName ?? '').includes('Button'));
+    }, null, { timeout: 20000 });
 }
 
 test.describe('OCC export via occ_service worker', () => {
@@ -126,24 +132,8 @@ test.describe('OCC export via occ_service worker', () => {
 
         expect(occFetches, 'occ_service must NOT be fetched before the export').toHaveLength(0);
 
-        // File → Export → STEP/GLB/…
-        expect(await clickMenuBarItem(page, 'File'), 'File menu').toBe(true);
-        await waitForMenuItems(page);
-        await waitForRenderedByLabel(page, 'Export', { elementType: 'menuitem' });
-        expect(await clickMenuItem(page, 'Export'), 'Export submenu').toBe(true);
-        // Wait for the SUBMENU's item — waitForMenuItems(>3) is satisfied by
-        // the still-rendered File menu items before the submenu paints.
-        await waitForRenderedByLabel(page, 'STEP/GLB/BREP/XAO/PLY/STL...', { elementType: 'menuitem' });
-        expect(await clickMenuItem(page, 'STEP/GLB/BREP/XAO/PLY/STL...'),
-            'STEP export menu item').toBe(true);
-
-        // The (unchanged) DIALOG_EXPORT_STEP: wait for its Export button.
-        await page.waitForFunction(() => {
-            const registry = window.wxElementRegistry;
-            return !!registry && registry.findAll({ visible: true })
-                .some((el) => (el.label === 'Export' || el.label === '&Export')
-                    && (el.typeName ?? '').includes('Button'));
-        }, null, { timeout: 20000 });
+        // File → Export → STEP/GLB/… and the unchanged export dialog.
+        await openStepExportDialog(page);
         await stableShot(page, 'occ-export-dialog.png');
 
         expect(await clickWxButton(page, 'Export'), 'Export button click').toBe(true);
@@ -174,5 +164,166 @@ test.describe('OCC export via occ_service worker', () => {
         await clickWxButton(page, 'OK');
 
         await stableShot(page, 'occ-export-done.png');
+    });
+
+    test('worker decode fault settles concurrent native wait and the next export recovers', async ({ page, testLogger }) => {
+        await page.goto('/kicad/pcbnew.html');
+        await waitForEditorReady(page);
+        await loadBoard(page, testLogger);
+        // The exact open Promise and title/paint helper have completed. Keep a
+        // byte-stable baseline before opening a nested submenu.
+        await settledShot(page.locator('#canvas'), expect);
+        await openStepExportDialog(page);
+
+        const probeBoard = fs.readFileSync(
+            path.resolve(__dirname, '..', 'fixtures', 'demo', 'demo.kicad_pcb'),
+            'utf8',
+        );
+
+        // Start one direct service request before the dialog's native request.
+        // Both wait on the same lazy worker boot, then both post without a host
+        // mutex. The harness injects a messageerror only when both are in the
+        // generation's pending map, and the real worker is then terminated.
+        await page.evaluate((boardText: string) => {
+            const runtime = globalThis as any;
+            runtime.__occServiceTestHooks.messageErrorWhenPendingAtLeast(2);
+            runtime.__occParallelResult = null;
+            void runtime.occService.request({
+                kind: 'export',
+                board: new TextEncoder().encode(boardText),
+                jobJson: JSON.stringify({ format: 'step', export_components: false }),
+                fileName: 'parallel-probe.step',
+            }).then((res: unknown) => { runtime.__occParallelResult = res; });
+        }, probeBoard);
+
+        expect(await clickWxButton(page, 'Export'), 'first native Export button click').toBe(true);
+
+        await page.waitForFunction(
+            () => (globalThis as any).__occParallelResult !== null,
+            null,
+            { timeout: 30000 },
+        );
+        const parallelResult = await page.evaluate(
+            () => (globalThis as any).__occParallelResult as { ok: boolean; report?: string },
+        );
+        expect(parallelResult.ok, 'the parallel request must settle on generation failure').toBe(false);
+        expect(parallelResult.report, 'the exact messageerror reason reaches the caller')
+            .toContain('message decode failed');
+
+        // The C++ Export() request was the second request in the same failed
+        // generation. Its exact wx wait must close and show the native failure
+        // dialog instead of leaving the export handler parked.
+        await page.waitForFunction(() => {
+            const registry = window.wxElementRegistry;
+            if (!registry) return false;
+            const dialogs = registry.findAll({ visible: true })
+                .filter((el) => /Dialog/.test(el.typeName ?? ''));
+            return dialogs.length >= 2;
+        }, null, { timeout: 30000 });
+        await expect.poll(
+            () => page.evaluate(() => {
+                const scheduler = (globalThis as any).__wxScheduler;
+                return scheduler?.pendingWaits?.('occ') ?? -1;
+            }),
+            { message: 'the native OCC wait must be completed by fail-all', timeout: 10000 },
+        ).toBe(0);
+
+        const failed = await page.evaluate(() => {
+            const runtime = globalThis as any;
+            const rendered = runtime.wxElementRegistry?.findAllRendered?.({}) ?? [];
+            return {
+                labels: rendered.map((el: any) => el.label ?? el.text ?? '').filter(Boolean),
+                service: runtime.__occServiceTestHooks.snapshot(),
+            };
+        });
+        expect(failed.service.maxPending,
+            'two requests must coexist in one generation; worker requests are not serialized')
+            .toBeGreaterThanOrEqual(2);
+        expect(failed.service.requestsStarted,
+            'the direct probe and one native export must be the only provider entries').toBe(2);
+        expect(failed.service.requestsPosted,
+            'both failed-generation requests must reach the real worker transport').toBe(2);
+        expect(failed.service.workerGenerationsStarted,
+            'the two parallel requests must share one worker generation').toEqual([1]);
+        expect(failed.service.pending, 'fail-all must drain the failed generation').toBe(0);
+        expect(failed.service.retiredGenerations, 'generation 1 must be retired').toEqual([1]);
+        expect(failed.service.activeGeneration, 'the failed slot must be cleared').toBeNull();
+        expect(failed.service.armed, 'the one-shot fault must be consumed').toBe(false);
+        console.log(`[TEST-OCC] native fault dialog labels: ${JSON.stringify(failed.labels)}`);
+
+        // Resolve the parent action before dismissing the child, then reuse its
+        // exact DOM identity. This prevents a label/geometry re-query from
+        // turning the handback race into a click on some replacement control.
+        const retryExport = await findWxButton(page, 'Export');
+        expect(retryExport, 'the original parent Export button must remain registered').not.toBeNull();
+        expect(retryExport?.domId,
+            'the retry must target a stable DOM-backed wx button').toBeGreaterThan(0);
+
+        expect(await clickWxButton(page, 'OK'), 'dismiss native export failure').toBe(true);
+
+        // page.mouse.click() completes when the browser has delivered the OK
+        // input, not when the nested native modal has unwound.  The parent
+        // export dialog is intentionally non-interactive until that exact
+        // child lease closes.  Wait for the scheduler's observable modal
+        // count to return from {export + failure} to {export} before clicking
+        // through to the parent.
+        await expect.poll(
+            () => page.evaluate(() => {
+                const scheduler = (globalThis as any).__wxScheduler;
+                return scheduler?.pendingWaits?.('modal') ?? -1;
+            }),
+            { message: 'the failure child must retire before retrying its parent', timeout: 10000 },
+        ).toBe(1);
+
+        // The export dialog remains open. Its next request must create a fresh
+        // generation and complete through the actual OCC module.
+        if (!retryExport) throw new Error('parent Export button disappeared before retry');
+        await clickWxButtonTarget(page, retryExport);
+        await expect.poll(
+            () => page.evaluate(() => (globalThis as any)
+                .__occServiceTestHooks.snapshot().requestsStarted),
+            {
+                message: 'the exact parent retry must enter the OCC provider once',
+                timeout: 10000,
+            },
+        ).toBe(failed.service.requestsStarted + 1);
+        await expect.poll(
+            () => page.evaluate(() => (globalThis as any)
+                .__occServiceTestHooks.snapshot().activeGeneration),
+            { message: 'the retry must boot a replacement worker generation', timeout: 30000 },
+        ).toBe(2);
+        await page.waitForFunction(
+            () => ((window as any).__occExports?.length ?? 0) === 1,
+            null,
+            { timeout: 180000 },
+        );
+
+        const recovered = await page.evaluate(() => {
+            const runtime = globalThis as any;
+            return {
+                exports: runtime.__occExports,
+                service: runtime.__occServiceTestHooks.snapshot(),
+                schedulerDead: runtime.__wxScheduler?.dead === true,
+                occWaits: runtime.__wxScheduler?.pendingWaits?.('occ') ?? -1,
+            };
+        });
+        expect(recovered.exports).toHaveLength(1);
+        expect(recovered.exports[0].magic.startsWith('ISO-10303-21'), 'retry returns real STEP bytes')
+            .toBe(true);
+        expect(recovered.exports[0].size, 'retry returns a non-trivial STEP file')
+            .toBeGreaterThan(10_000);
+        expect(recovered.service.activeGeneration, 'retry must own a replacement generation').toBe(2);
+        expect(recovered.service.requestsStarted,
+            'the parent retry must add exactly one provider entry').toBe(3);
+        expect(recovered.service.requestsPosted,
+            'the parent retry must post exactly once to the replacement worker').toBe(3);
+        expect(recovered.service.workerGenerationsStarted,
+            'the retry must create exactly one replacement generation').toEqual([1, 2]);
+        expect(recovered.service.pending, 'replacement generation must quiesce').toBe(0);
+        expect(recovered.schedulerDead, 'the worker failure must not terminalize the editor').toBe(false);
+        expect(recovered.occWaits, 'the replacement native OCC wait must quiesce').toBe(0);
+
+        await page.waitForTimeout(1000); // eslint-disable-line -- documented interaction dwell
+        await clickWxButton(page, 'OK');
     });
 });
