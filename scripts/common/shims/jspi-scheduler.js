@@ -200,6 +200,13 @@
     earlyWaitResolves: 0,
 
     beginWait: function (kind) {
+      if (this.dead || this.terminal) {
+        // Refuse to mint a wait an unhealthy instance can never satisfy.
+        // Callers treat token 0 as "not started" (the C++ bridges bail);
+        // a stray waitPromise(0) settles immediately and warns.
+        this._note("beginWaitRefused", kind, 0);
+        return 0;
+      }
       var token = ++this.waitSeq;
       var entry = { kind: kind, resolved: false, resolve: null, promise: null };
       entry.promise = new Promise(function (resolve) { entry.resolve = resolve; });
@@ -272,6 +279,76 @@
     },
 
     dead: false,
+    // --- E-8: admission gate for delayed worker/MEMFS completions -----------
+    // `terminal` means the wasm instance TRAPPED (WebAssembly.RuntimeError or
+    // its cross-realm string equivalent): the heap may be mid-mutation, so no
+    // further native work (malloc / heap stores / FS writes) may run and no
+    // parked frame may be resumed into it. Distinct from `dead` (orderly
+    // shutdown). One-way.
+    terminal: false,
+    canTouchNative: function () { return !this.dead && !this.terminal; },
+    _terminalizeNativeTrap: function (site, e) {
+      var isTrap = (typeof WebAssembly !== "undefined"
+            && WebAssembly.RuntimeError
+            && e instanceof WebAssembly.RuntimeError)
+        || /unreachable|memory access out of bounds|index out of bounds|null function or function signature mismatch|Aborted\(/i
+            .test(String((e && e.message) || e));
+      if (!isTrap) return false;
+      if (!this.terminal) {
+        this.terminal = true;
+        this._note("terminal", site, 0);
+        console.error("[wx-scheduler] native trap in " + site
+          + " — instance is terminal; all further native completions are inert: "
+          + e);
+      }
+      return true;
+    },
+    // The one admission boundary for delayed completions that both touch
+    // native state and wake a parked waiter (the four worker/MEMFS completion
+    // sites: OCC export, OCC model, ngspice request, ngspice vector).
+    // `prepare` runs IMMEDIATELY, never queued — it owns the parked waiter's
+    // output pointers, and queuing it behind anything can deadlock the very
+    // frame this completion wakes. Disposition (every drop is loud, never
+    // silent):
+    //   stale/unknown token        -> drop + warn (late frame from a retired
+    //                                 worker generation)
+    //   dead or terminal instance  -> drop + warn, DO NOT resolve — resolving
+    //                                 resumes the suspended frame INSIDE the
+    //                                 damaged module
+    //   prepare() traps            -> latch terminal, DO NOT resolve
+    //   prepare() throws plain JS  -> resolve inertResult (fail the wait
+    //                                 rather than strand its parked frame in
+    //                                 a healthy instance)
+    runWaitCompletion: function (site, token, prepare, inertResult) {
+      var entry = this.waits.get(token);
+      if (!entry || entry.resolved) {
+        console.warn("[wx-scheduler] " + site + ": completion for stale wait "
+          + token + " dropped");
+        this._note("staleCompletion", site, token);
+        return false;
+      }
+      if (!this.canTouchNative()) {
+        console.warn("[wx-scheduler] " + site + ": completion dropped ("
+          + (this.terminal ? "terminal" : "dead") + " instance)");
+        this._note("inertCompletion", site, token);
+        return false;
+      }
+      var result;
+      try {
+        result = prepare();
+      } catch (e) {
+        if (this._terminalizeNativeTrap(site, e)) {
+          this._note("completionTrap", site, token);
+          return false;
+        }
+        console.error("[wx-scheduler] " + site + ": completion failed: " + e);
+        this._note("completionError", site, token);
+        this.resolveWait(token, inertResult == null ? 0 : inertResult | 0);
+        return false;
+      }
+      this.resolveWait(token, result | 0);
+      return true;
+    },
     shutdown: function (why) {
       this.dead = true;
       // S6 teardown contract: queued-but-

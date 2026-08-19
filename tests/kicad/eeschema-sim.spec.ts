@@ -36,8 +36,8 @@ async function loadRectifier(page: import('@playwright/test').Page): Promise<voi
     for (const f of PROJECT_FILES)
         await injectFileIntoMemfs(page, path.join(RECTIFIER_DIR, f), `${MEMFS_DIR}/${f}`);
 
-    await page.evaluate((sch: string) => {
-        (window as any).Module.kicadOpenFile(sch);
+    await page.evaluate(async (sch: string) => {
+        await (window as any).Module.kicadOpenFile(sch);
     }, `${MEMFS_DIR}/rectifier.kicad_sch`);
 
     await expect
@@ -67,12 +67,9 @@ async function openSimulator(page: import('@playwright/test').Page): Promise<str
     return simWin!;
 }
 
-// Run the loaded workbook's analysis and wait for the background run to
-// finish (the bg 'finished' event lands after ngspice's thread joins).
-async function runSimulation(page: import('@playwright/test').Page): Promise<void> {
-    const evtsBefore = await page.evaluate(
-        () => (window as any).__ngspiceEvents.length as number);
-
+// Run the loaded workbook's analysis and await the exact native run generation
+// only after its final plot, operating-point, and canvas refresh calls return.
+async function runSimulation(page: import('@playwright/test').Page): Promise<number> {
     // The simulator window div appears while the frame ctor is still
     // suspended in the init RPC; the toolbar registers its tools only after
     // init completes and the frame first paints. The Run tool's
@@ -90,13 +87,53 @@ async function runSimulation(page: import('@playwright/test').Page): Promise<voi
         }, { timeout: 60000 })
         .toBe(true);
 
+    const generationCheckpoint = await page.evaluate(() => {
+        const hooks = (globalThis as any).__ngspiceServiceTestHooks;
+        if (!hooks || typeof hooks.appliedGenerationCheckpoint !== 'function'
+            || typeof hooks.waitForAppliedGenerationAfter !== 'function') {
+            throw new Error('exact ngspice applied-generation hooks are missing');
+        }
+        return hooks.appliedGenerationCheckpoint() as number;
+    });
+
     expect(await clickByTooltip(page, 'Run Simulation', { elementType: 'tool' }),
         'Run tool').toBe(true);
 
-    await page.waitForFunction((n: number) => {
-        const evts = (window as any).__ngspiceEvents as Array<{ kind: string; finished?: boolean }>;
-        return evts.slice(n).some((e) => e.kind === 'bg' && e.finished === true);
-    }, evtsBefore, { timeout: 120000 });
+    const appliedReceipt = await page.evaluate(async (after: number) => {
+        const hooks = (globalThis as any).__ngspiceServiceTestHooks;
+        return await hooks.waitForAppliedGenerationAfter(after, 120000);
+    }, generationCheckpoint);
+    expect(appliedReceipt.generation, 'the clicked run published a newer applied generation')
+        .toBeGreaterThan(generationCheckpoint);
+
+    // The native receipt fires after the final refreshes. Additionally
+    // require the scheduler to hold no parked ngspice wait — a stale
+    // suspended frame here means the finish path leaked a wait. (The codex
+    // line awaited the execution owner's barrier; that machinery does not
+    // exist on the JSPI line, and wait drainage is its observable
+    // equivalent.)
+    await expect.poll(
+        () => page.evaluate(() => {
+            const scheduler = (globalThis as any).__wxScheduler;
+            return scheduler?.pendingWaits?.('ngspice') ?? -1;
+        }),
+        { message: 'no ngspice wait may stay parked after the applied receipt', timeout: 30000 },
+    ).toBe(0);
+
+    // Vector traffic is result validation only. It is deliberately not used as
+    // completion evidence because periodic OnSimRefresh(false) pulls can look
+    // identical to the final pull at the worker boundary.
+    const vectorReceipt = await page.evaluate(() =>
+        ((window as any).__ngspiceLog as Array<{
+            sequence: number; kind: string; error?: string; length?: number;
+        }>).find((entry) => entry.kind === 'get_vec_info'
+            && entry.error === undefined
+            && (entry.length ?? -1) >= 101) ?? null,
+    );
+    expect(vectorReceipt, 'the applied run returned a non-trivial successful vector')
+        .not.toBeNull();
+
+    return appliedReceipt.generation;
 }
 
 function distinctColors(png: PNG): number {
@@ -168,7 +205,9 @@ test.describe('eeschema simulator', () => {
         const charText = evts.flatMap((e) => e.lines ?? []).join('\n');
         expect(charText, 'no missing-model errors').not.toMatch(/unable to find definition/i);
 
-        // The plot pulled real vector data through get_vec_info.
+        // The exact final-refresh receipt and drained-waits check above prove
+        // this log entry belongs to a vector which reached the plot, not
+        // merely a worker response still waiting to copy into native memory.
         const vecPulls = await page.evaluate(() =>
             ((window as any).__ngspiceLog as Array<{ kind: string; length?: number }>)
                 .filter((l) => l.kind === 'get_vec_info' && (l.length ?? 0) > 100).length);
@@ -197,8 +236,10 @@ test.describe('eeschema simulator', () => {
         await loadRectifier(page);
         await openSimulator(page);
 
-        await runSimulation(page);
-        await runSimulation(page);
+        const firstGeneration = await runSimulation(page);
+        const secondGeneration = await runSimulation(page);
+        expect(secondGeneration, 'the second run has its own exact generation')
+            .toBeGreaterThan(firstGeneration);
 
         const finishCount = await page.evaluate(() =>
             ((window as any).__ngspiceEvents as Array<{ kind: string; finished?: boolean }>)

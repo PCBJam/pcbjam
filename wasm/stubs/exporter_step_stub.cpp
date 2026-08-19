@@ -66,12 +66,18 @@ EM_JS( void, js_occExportStart,
     const jobJson = UTF8ToString( aJobJson );
     const fileName = UTF8ToString( aFileName );
 
+    // E-8: all native work (malloc + heap writes) runs inside the scheduler's
+    // completion gate — a dead or trapped instance drops the completion
+    // loudly instead of re-entering wasm, and a trap inside the prepare
+    // latches the instance terminal without resolving the wait.
     const finish = ( res ) => {
-        const s = JSON.stringify( res || { ok: false, report: 'occ_service: no response' } );
-        const n = lengthBytesUTF8( s ) + 1;
-        const p = _malloc( n );
-        stringToUTF8( s, p, n );
-        globalThis.__wxScheduler.resolveWait( aToken, p );
+        globalThis.__wxScheduler.runWaitCompletion( 'OCC export completion', aToken, () => {
+            const s = JSON.stringify( res || { ok: false, report: 'occ_service: no response' } );
+            const n = lengthBytesUTF8( s ) + 1;
+            const p = _malloc( n );
+            stringToUTF8( s, p, n );
+            return p;
+        } );
     };
 
     let req;
@@ -168,6 +174,18 @@ bool EXPORTER_STEP::Export()
     const wxString downloadName = wxFileName( m_outputFile ).GetFullName();
 
     const int token = wxWasmBeginWait( "occ" );
+
+    // Token 0 = the scheduler refused the wait (dead or terminal instance):
+    // never start an RPC whose completion could not be admitted.
+    if( token <= 0 )
+    {
+        if( m_reporter )
+            m_reporter->Report( wxT( "occ_service: scheduler unavailable" ), RPT_SEVERITY_ERROR );
+
+        wxRemoveFile( wxString::FromUTF8( TMP_BOARD ) );
+        return false;
+    }
+
     js_occExportStart( token, TMP_BOARD, jobJson.c_str(), downloadName.utf8_string().c_str() );
 
     // The malloc'd JSON pointer rides the wait as an int32.

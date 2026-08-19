@@ -24,6 +24,14 @@ type SchedulerShape = {
   mutatorQueue: unknown[];
   mutatorsDelivered: number;
   dead: boolean;
+  terminal: boolean;
+  canTouchNative(): boolean;
+  runWaitCompletion(
+    site: string,
+    token: number,
+    prepare: () => number,
+    inertResult?: number,
+  ): boolean;
   shutdown(reason: string): void;
   enqueueAfter(fn: number, arg: number, ms: number): void;
   _openBusy(): boolean;
@@ -227,5 +235,123 @@ describe("N5: scheduler shim under flood", () => {
     await expect(S.waitPromise(token)).resolves.toBe(1);
     expect(S.resolveWait(99999, 0)).toBe(false);
     await expect(S.waitPromise(99999), "unknown token resolves 0").resolves.toBe(0);
+  });
+});
+
+describe("E-8: runWaitCompletion admission gate for worker completions", () => {
+  it("runs prepare immediately and resolves the wait with its result", async () => {
+    const S = loadShim({ busy: () => false });
+    const token = S.beginWait("occ");
+    let ran = false;
+    expect(
+      S.runWaitCompletion("test completion", token, () => {
+        ran = true;
+        return 42;
+      }),
+    ).toBe(true);
+    expect(ran, "prepare runs immediately, never queued").toBe(true);
+    await expect(S.waitPromise(token)).resolves.toBe(42);
+  });
+
+  it("drops a completion for a stale or already-resolved token, loudly", () => {
+    const S = loadShim({ busy: () => false });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const prepare = vi.fn(() => 1);
+      expect(S.runWaitCompletion("late frame", 99999, prepare)).toBe(false);
+      const token = S.beginWait("occ");
+      S.resolveWait(token, 7);
+      expect(S.runWaitCompletion("late frame", token, prepare)).toBe(false);
+      expect(prepare, "stale completions never touch native").not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledTimes(2);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("a dead instance admits no native work and does not resolve the wait", () => {
+    const S = loadShim({ busy: () => false });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const token = S.beginWait("ngspice");
+      S.shutdown("test");
+      expect(S.canTouchNative()).toBe(false);
+      const prepare = vi.fn(() => 1);
+      expect(S.runWaitCompletion("post-shutdown", token, prepare)).toBe(false);
+      expect(prepare).not.toHaveBeenCalled();
+      expect(S.waitEarlyResolved(token), "wait deliberately not resolved").toBe(0);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("a trap in prepare latches terminal and never resolves the wait", () => {
+    const S = loadShim({ busy: () => false });
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const token = S.beginWait("occ");
+      expect(
+        S.runWaitCompletion("trapping completion", token, () => {
+          throw new WebAssembly.RuntimeError("memory access out of bounds");
+        }),
+      ).toBe(false);
+      expect(S.terminal).toBe(true);
+      expect(S.canTouchNative()).toBe(false);
+      // Resolving would resume the parked frame INSIDE the trapped module.
+      expect(S.waitEarlyResolved(token)).toBe(0);
+      // Every later completion is inert…
+      const prepare = vi.fn(() => 1);
+      const token2Before = S.beginWait("occ");
+      expect(token2Before, "beginWait refuses on a terminal instance").toBe(0);
+      expect(S.runWaitCompletion("after trap", token, prepare)).toBe(false);
+      expect(prepare).not.toHaveBeenCalled();
+    } finally {
+      err.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
+  it("classifies cross-realm trap strings as terminal too", () => {
+    const S = loadShim({ busy: () => false });
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const token = S.beginWait("occ");
+      S.runWaitCompletion("cross-realm trap", token, () => {
+        throw new Error("RuntimeError: unreachable");
+      });
+      expect(S.terminal).toBe(true);
+      expect(S.waitEarlyResolved(token)).toBe(0);
+    } finally {
+      err.mockRestore();
+    }
+  });
+
+  it("a plain JS bug fails the wait with inertResult instead of stranding it", async () => {
+    const S = loadShim({ busy: () => false });
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const token = S.beginWait("ngspice");
+      expect(
+        S.runWaitCompletion(
+          "buggy completion",
+          token,
+          () => {
+            throw new TypeError("res.lines is not iterable");
+          },
+          1,
+        ),
+      ).toBe(false);
+      expect(S.terminal, "a JS bug is not a trap").toBe(false);
+      await expect(S.waitPromise(token), "wait fails instead of stranding").resolves.toBe(1);
+    } finally {
+      err.mockRestore();
+    }
+  });
+
+  it("beginWait refuses (token 0) on a dead instance", () => {
+    const S = loadShim({ busy: () => false });
+    S.shutdown("test");
+    expect(S.beginWait("occ")).toBe(0);
   });
 });

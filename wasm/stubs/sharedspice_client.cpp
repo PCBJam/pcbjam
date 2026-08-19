@@ -60,12 +60,17 @@ using nlohmann::json;
 // microtask (the early-resolve contract, doc 22 §10 Phase E retry entry).
 // clang-format off
 EM_JS( void, js_ngspice_request_start, ( int aToken, const char* aReqJson ), {
+    // E-8: the malloc + heap writes run inside the scheduler's completion
+    // gate — a dead or trapped instance drops the completion loudly instead
+    // of re-entering wasm.
     const finish = ( res ) => {
-        const s = JSON.stringify( res ?? {} );
-        const n = lengthBytesUTF8( s ) + 1;
-        const p = _malloc( n );
-        stringToUTF8( s, p, n );
-        globalThis.__wxScheduler.resolveWait( aToken, p );
+        globalThis.__wxScheduler.runWaitCompletion( 'ngspice request completion', aToken, () => {
+            const s = JSON.stringify( res ?? {} );
+            const n = lengthBytesUTF8( s ) + 1;
+            const p = _malloc( n );
+            stringToUTF8( s, p, n );
+            return p;
+        } );
     };
     let req;
     try {
@@ -90,7 +95,6 @@ EM_JS( void, js_ngspice_request_start, ( int aToken, const char* aReqJson ), {
 EM_JS( void, js_ngspice_get_vec_start,
        ( int aToken, const char* aName, int* aMeta, double** aReal, double** aComp,
          char** aVName ), {
-    const finish = ( status ) => globalThis.__wxScheduler.resolveWait( aToken, status );
     let req;
     try {
         const svc = globalThis.ngspiceService;
@@ -100,35 +104,41 @@ EM_JS( void, js_ngspice_get_vec_start,
     } catch( e ) {
         req = Promise.resolve( { error: String( e ) } );
     }
+    // E-8: every output-pointer write happens inside the scheduler's
+    // completion gate, so a dead or trapped instance is never written to.
+    // A plain JS failure inside the prepare resolves the inertResult (1 =
+    // transport error) so the parked caller fails instead of stranding.
     req.catch( ( e ) => ( { error: String( e ) } ) ).then( ( res ) => {
-        HEAP32[aMeta >> 2] = 0;
-        HEAPU32[aReal >> 2] = 0;
-        HEAPU32[aComp >> 2] = 0;
-        HEAPU32[aVName >> 2] = 0;
-        if( !res || res.error )
-            return finish( 1 );
-        if( !res.found )
-            return finish( 0 );
-        HEAP32[( aMeta >> 2 ) + 1] = res.vtype | 0;
-        HEAP32[( aMeta >> 2 ) + 2] = res.flags | 0;
-        HEAP32[( aMeta >> 2 ) + 3] = res.length | 0;
-        if( res.real && res.real.length ) {
-            const p = _malloc( res.real.length * 8 );
-            HEAPF64.set( res.real, p >> 3 );
-            HEAPU32[aReal >> 2] = p;
-        }
-        if( res.comp && res.comp.length ) {
-            const p = _malloc( res.comp.length * 8 );
-            HEAPF64.set( res.comp, p >> 3 );
-            HEAPU32[aComp >> 2] = p;
-        }
-        const s = res.vname || '';
-        const n = lengthBytesUTF8( s ) + 1;
-        const vp = _malloc( n );
-        stringToUTF8( s, vp, n );
-        HEAPU32[aVName >> 2] = vp;
-        HEAP32[aMeta >> 2] = 1;
-        finish( 0 );
+        globalThis.__wxScheduler.runWaitCompletion( 'ngspice vector completion', aToken, () => {
+            HEAP32[aMeta >> 2] = 0;
+            HEAPU32[aReal >> 2] = 0;
+            HEAPU32[aComp >> 2] = 0;
+            HEAPU32[aVName >> 2] = 0;
+            if( !res || res.error )
+                return 1;
+            if( !res.found )
+                return 0;
+            HEAP32[( aMeta >> 2 ) + 1] = res.vtype | 0;
+            HEAP32[( aMeta >> 2 ) + 2] = res.flags | 0;
+            HEAP32[( aMeta >> 2 ) + 3] = res.length | 0;
+            if( res.real && res.real.length ) {
+                const p = _malloc( res.real.length * 8 );
+                HEAPF64.set( res.real, p >> 3 );
+                HEAPU32[aReal >> 2] = p;
+            }
+            if( res.comp && res.comp.length ) {
+                const p = _malloc( res.comp.length * 8 );
+                HEAPF64.set( res.comp, p >> 3 );
+                HEAPU32[aComp >> 2] = p;
+            }
+            const s = res.vname || '';
+            const n = lengthBytesUTF8( s ) + 1;
+            const vp = _malloc( n );
+            stringToUTF8( s, vp, n );
+            HEAPU32[aVName >> 2] = vp;
+            HEAP32[aMeta >> 2] = 1;
+            return 0;
+        }, /* inertResult = */ 1 );
     } );
 } );
 
@@ -138,30 +148,60 @@ extern "C" int wxWasmYieldUntil( int aToken );
 
 // Event dispatcher: provider `{ evt }` frames -> KiCad's registered callbacks
 // via the exported pcbjam_ngspice_event (fresh wasm entries; see header
-// comment). Installed once, at first pcbjam_ngSpice_Init.
+// comment).
+//
+// E-5: the handler is bound to the EXACT installing module, not to whatever
+// `Module` lexically means when an event later arrives. Presence is not
+// identity: the old install-once guard let a replacement module (trap
+// recovery is module replacement — cross-ref G-8) keep the retired module's
+// handler, whose closure drove the dead instance's heap. Re-installation is
+// idempotent only for the same module; a different module replaces the
+// handler, and a superseded handler disarms itself.
 EM_JS( void, js_ngspice_install_events, (), {
-    if( globalThis.__ngspiceOnEvent )
+    const installingModule = Module;
+    const installed = globalThis.__ngspiceOnEvent;
+    if( installed && installed.__pcbjamNgspiceOwnerModule === installingModule )
         return;
-    globalThis.__ngspiceOnEvent = ( evt ) => {
+    const handler = ( evt ) => {
+        if( globalThis.__ngspiceOnEvent !== handler )
+            return; // superseded install — never drive a retired module
+        const sched = globalThis.__wxScheduler;
+        if( !sched || !sched.canTouchNative || !sched.canTouchNative() ) {
+            // E-8/M-2: a dead or terminal instance takes no native entry; the
+            // drop is loud, never silent.
+            console.warn( '[sharedspice_client] dropping ngspice event for a '
+                          + 'dead/terminal module' );
+            return;
+        }
         const call = ( kind, text, a, b ) => {
             let p = 0;
             if( text != null ) {
                 const n = lengthBytesUTF8( text ) + 1;
-                p = _malloc( n );
+                p = installingModule._malloc( n );
                 stringToUTF8( text, p, n );
             }
-            Module._pcbjam_ngspice_event( kind, p, a | 0, b | 0 );
+            installingModule._pcbjam_ngspice_event( kind, p, a | 0, b | 0 );
         };
-        if( evt.kind === 'char' || evt.kind === 'stat' ) {
-            for( const line of evt.lines || [] )
-                call( evt.kind === 'char' ? 0 : 1, line, 0, 0 );
-        } else if( evt.kind === 'bg' ) {
-            call( 2, null, evt.finished ? 1 : 0, 0 );
-        } else if( evt.kind === 'exit' ) {
-            call( 3, null, evt.status | 0,
-                  ( evt.immediate ? 1 : 0 ) | ( evt.quit ? 2 : 0 ) );
+        try {
+            if( evt.kind === 'char' || evt.kind === 'stat' ) {
+                for( const line of evt.lines || [] )
+                    call( evt.kind === 'char' ? 0 : 1, line, 0, 0 );
+            } else if( evt.kind === 'bg' ) {
+                call( 2, null, evt.finished ? 1 : 0, 0 );
+            } else if( evt.kind === 'exit' ) {
+                call( 3, null, evt.status | 0,
+                      ( evt.immediate ? 1 : 0 ) | ( evt.quit ? 2 : 0 ) );
+            }
+        } catch( e ) {
+            // A trap on this fresh entry poisons the instance: latch the
+            // terminal gate so no later completion re-enters it.
+            if( !sched._terminalizeNativeTrap
+                    || !sched._terminalizeNativeTrap( 'ngspice event entry', e ) )
+                throw e;
         }
     };
+    handler.__pcbjamNgspiceOwnerModule = installingModule;
+    globalThis.__ngspiceOnEvent = handler;
 } );
 // clang-format on
 
@@ -184,6 +224,12 @@ std::atomic<bool> s_bgRunning{ false };
 json rpc( const json& aReq )
 {
     const int token = wxWasmBeginWait( "ngspice" );
+
+    // Token 0 = the scheduler refused the wait (dead or terminal instance):
+    // never start an RPC whose completion could not be admitted.
+    if( token <= 0 )
+        return json{ { "error", "wx scheduler unavailable" } };
+
     js_ngspice_request_start( token, aReq.dump().c_str() );
 
     // The malloc'd JSON pointer rides the wait as an int32.
@@ -359,6 +405,24 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pcbjam_ngspice_event( int aKind, char* aTex
     std::free( aText );
 }
 
+// E-9: a destroyed NGSPICE must unregister its callbacks — a late worker
+// event otherwise reaches s_sendChar( text, 0, s_user ) with s_user pointing
+// at the destroyed object (use-after-free after simulator close; the E-7
+// run-generation gate sits downstream in the wx event queue and cannot cover
+// this entry). Identity-checked so a stale destructor never clears a
+// successor instance's registration.
+extern "C" EMSCRIPTEN_KEEPALIVE void pcbjam_ngspice_reset_callbacks( void* aUser )
+{
+    if( s_user != aUser )
+        return;
+
+    s_sendChar = nullptr;
+    s_sendStat = nullptr;
+    s_controlledExit = nullptr;
+    s_bgThreadRunning = nullptr;
+    s_user = nullptr;
+}
+
 // -------------------------------------------------------------------------
 // The sharedspice API surface NGSPICE::init_dll binds to
 // -------------------------------------------------------------------------
@@ -430,6 +494,11 @@ pvector_info pcbjam_ngGet_Vec_Info( char* aVecName )
     char*   vname = nullptr;
 
     const int token = wxWasmBeginWait( "ngspice" );
+
+    // Token 0 = the scheduler refused the wait (dead or terminal instance).
+    if( token <= 0 )
+        return nullptr;
+
     js_ngspice_get_vec_start( token, aVecName ? aVecName : "", meta, &real, &comp, &vname );
 
     if( wxWasmYieldUntil( token ) != 0 )
