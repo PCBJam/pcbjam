@@ -2,11 +2,11 @@
  * Minimal S3 client for the content-addressed screenshot-baseline bucket.
  *
  * Baselines live in a PRIVATE R2 bucket as immutable objects keyed by content
- * hash (`sha256/<hex>.png`); the committed manifest (screenshot-manifest.json)
- * maps `<engine>/<name>` to a hash, so any git commit resolves its exact
- * baselines. Auth is a bucket-scoped S3 keypair — read-only in CI, read-write
- * for devs (promote) — via the env vars in config.ts R2_ENV; see this
- * directory's README for where to get credentials.
+ * hash (`sha256/<hex>.png`); the R2-hosted manifest
+ * (baselines/pcbjam/manifest.json, written only by the morelli app) maps
+ * `<engine>/<name>` to a hash. Auth is a bucket-scoped S3 keypair — read-only
+ * for fetch, a separate write pair for CI's run uploads — via the env vars in
+ * config.ts R2_ENV; see this directory's README for where to get credentials.
  *
  * aws4fetch does the SigV4 signing (dependency-free; region is always "auto"
  * on R2). Objects are never deleted here — a baseline prune only edits the

@@ -75,7 +75,7 @@ manifest atomically (with provenance: which run/branch/user), and snapshots the
 previous manifest for revert.
 
 ## Activation checklist
-- [x] `screenshot-manifest.json` generated ({name, engine} authoritative — derived from the per-engine baseline tree).
+- [x] Baseline manifest migrated to R2 (`baselines/pcbjam/manifest.json`, {name, engine} authoritative — written by morelli).
 - [x] `scale:'device'`→`'css'` normalized (no-op at CI's DSF=1).
 1. Add the `DISCORD_WEBHOOK_URL` repo secret — until then everything is inert.
 2. Calibrate: run the suite twice in CI, `screenshots:noise` the two dirs, set `FLOORS` in `config.ts`.
