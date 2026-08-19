@@ -42,13 +42,19 @@ only) — not playwright directly. One spec on one engine:
   `toHaveScreenshot`. Raw `page.screenshot`/fs writers must route through
   `shotPath(page, 'name.png')` for the same engine scoping.
 - Comparison is offline and per-engine: `npm run screenshots:check` diffs
-  `test-results/<engine>/` against the committed baselines in
-  `tests/baseline-screenshots/<engine>/` (+ `3d-regression/`, `gal-regression/`).
-  `tests/screenshot-manifest.json` (regen: `npm run screenshots:manifest`) is the authoritative
-  {name, engine} list — CI fails the lint step if it drifts from the baseline tree.
+  `test-results/<engine>/` against the baselines in
+  `tests/baseline-screenshots/<engine>/` (+ the still-committed `3d-regression/`,
+  `gal-regression/`).
+- **Baselines live in the private R2 bucket `pcbjam-ci-screenshots`, not git**:
+  the committed `tests/screenshot-manifest.json` pins each `{name, engine}` to a
+  sha256, and `baseline-screenshots/` is a gitignored cache — materialize it with
+  `npm run screenshots:fetch` (needs the R2 credentials; see
+  `tools/screenshots/README.md`). CI's lint step validates the manifest and fails
+  if baseline PNGs are ever committed again.
 - **CI's Linux render is the source of truth**; baselines are promoted from CI
-  (`npm run screenshots:promote -- --run <ci-run-id>`). A local (Mac) check shows font/render
-  noise and is not the gate.
+  (`npm run screenshots:promote -- --run <ci-run-id>`, needs the read-write
+  credentials) — commit only the regenerated manifest diff, never PNGs. A local
+  (Mac) check shows font/render noise and is not the gate.
 - A continuously-animating state (timer, mid-slide) can't be a stable baseline — drop the shot.
 
 ## Retries

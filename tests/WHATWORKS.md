@@ -390,20 +390,22 @@ cd tests/apps && ./build-test-apps.sh
 ## Baseline Screenshots
 
 The test suite captures raw PNGs during test runs for visual regression testing,
-compared offline against committed per-engine baselines (the calibrated gate in
-`tools/screenshots/`).
+compared offline against per-engine baselines (the calibrated gate in
+`tools/screenshots/`). Baseline PNGs live in the private R2 bucket
+`pcbjam-ci-screenshots` (content-addressed by sha256); git commits only the
+manifest that pins them.
 
 ### Directory Structure
 
 ```
 tests/
-├── baseline-screenshots/
+├── baseline-screenshots/    # GITIGNORED cache of the R2 bucket (npm run screenshots:fetch)
 │   ├── chromium/            # Known-good references, Chromium render
 │   └── firefox/             # Known-good references, Firefox render
 ├── test-results/
 │   ├── chromium/            # Latest run's captures per engine
 │   └── firefox/
-└── screenshot-manifest.json  # Authoritative {name, engine} list
+└── screenshot-manifest.json  # Committed pin: {name, engine, sha256, …} per baseline
 ```
 
 Specs write via `stableShot(page, 'name.png')` / `shotPath(page, 'name.png')`
@@ -414,6 +416,7 @@ browser, so the same spec on two engines produces two independent captures.
 
 ```bash
 cd tests
+npm run screenshots:fetch   # materialize the baseline cache from R2 (idempotent)
 npm run screenshots:check
 ```
 
@@ -430,8 +433,8 @@ changed images restage, and the manifest regenerates automatically):
 
 ```bash
 cd tests
-npm run screenshots:promote -- --run <ci-run-id>
-git commit
+npm run screenshots:promote -- --run <ci-run-id>   # needs the read-write R2 keypair (tests/.env)
+git commit   # only screenshot-manifest.json changes — PNGs are uploaded to R2, never committed
 ```
 
 ### Running Tests with Screenshots
