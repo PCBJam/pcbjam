@@ -33,6 +33,11 @@ jobs:
       # too (baselines live in R2 now; without these the fetch/compare steps skip).
       CI_SCREENSHOTS_S3_ACCESS_KEY_ID: ${{ secrets.CI_SCREENSHOTS_S3_ACCESS_KEY_ID }}
       CI_SCREENSHOTS_S3_SECRET_ACCESS_KEY: ${{ secrets.CI_SCREENSHOTS_S3_SECRET_ACCESS_KEY }}
+      # Write pair so staging builds also upload their renders to
+      # runs/pcbjam/<run-id>/ — making them reviewable/promotable in morelli
+      # (https://pcbjam-morelli-staging.pcbjam-staging.workers.dev).
+      CI_SCREENSHOTS_S3_WRITE_ACCESS_KEY_ID: ${{ secrets.CI_SCREENSHOTS_S3_WRITE_ACCESS_KEY_ID }}
+      CI_SCREENSHOTS_S3_WRITE_SECRET_ACCESS_KEY: ${{ secrets.CI_SCREENSHOTS_S3_WRITE_SECRET_ACCESS_KEY }}
 
   publish-and-deploy:
     needs: build
