@@ -98,6 +98,21 @@ export class R2Store {
         await res.arrayBuffer().catch(() => undefined);
         return 'uploaded';
     }
+
+    /**
+     * Upload to an ARBITRARY key (the per-run uploads under runs/…, consumed by
+     * the morelli review app) — unlike put(), not content-addressed and always
+     * overwrites (workflow re-runs reuse the run id; last attempt wins).
+     */
+    async putKey(key: string, bytes: Buffer, contentType: string): Promise<void> {
+        const res = await this.fetchWithRetry(`${this.base}/${key}`, {
+            method: 'PUT',
+            body: bytes as unknown as BodyInit,
+            headers: { 'content-type': contentType },
+        });
+        if (res.status !== 200) throw new Error(`PUT ${key} → HTTP ${res.status}`);
+        await res.arrayBuffer().catch(() => undefined);
+    }
 }
 
 let envFileLoaded = false;

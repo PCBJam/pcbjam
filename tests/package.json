@@ -24,6 +24,7 @@
     "screenshots:changelog": "tsx tools/screenshots/changelog.ts",
     "screenshots:manifest": "tsx tools/screenshots/gen-manifest.ts",
     "screenshots:fetch": "tsx tools/screenshots/r2-sync.ts --pull",
+    "screenshots:upload-run": "tsx tools/screenshots/upload-run.ts",
     "screenshots:push": "tsx tools/screenshots/r2-sync.ts --push",
     "3d:compare": "tsx tools/screenshots/compare-dirs.ts",
     "3d:check": "tsx tools/screenshots/compare-dirs.ts --old 3d-regression/baseline --new 3d-regression/output/native --out 3d-regression/output/diff/native-self --floors 3d-regression/floors.json --level native-self --label 3d-native --fail-on-change",

@@ -50,6 +50,13 @@ on:
         required: false
       CI_SCREENSHOTS_S3_SECRET_ACCESS_KEY:
         required: false
+      # WRITE keypair for the per-run screenshot uploads (runs/pcbjam/<run-id>/,
+      # 30-day R2 lifecycle) consumed by the morelli review app. Optional for the
+      # same reason: without it the upload-run step just no-ops.
+      CI_SCREENSHOTS_S3_WRITE_ACCESS_KEY_ID:
+        required: false
+      CI_SCREENSHOTS_S3_WRITE_SECRET_ACCESS_KEY:
+        required: false
 
 jobs:
   build-and-test:
@@ -478,6 +485,27 @@ jobs:
             && [ "${{ steps.web_e2e.outcome }}" = "success" ]; } || E2E=fail
           npm run screenshots:check
           npm run screenshots:report -- --e2e "$E2E"
+
+      # Durable per-run screenshot store for the morelli review app: upload this
+      # run's renders + meta.json to runs/pcbjam/<run-id>/ in the R2 bucket
+      # (30-day lifecycle rule — GH artifacts stay the debugging archive, R2 is
+      # the promotion source). Runs AFTER the report step so compare.ts's
+      # report.json exists to embed. Needs the WRITE keypair (mapped onto the
+      # standard env names for this step only); without it the tool no-ops, so
+      # forks/secretless callers stay green. Never blocks a build.
+      - name: Upload run screenshots to R2
+        if: inputs.run_tests && !cancelled() && steps.e2e.outcome != 'skipped'
+        continue-on-error: true
+        working-directory: tests
+        env:
+          CI_SCREENSHOTS_S3_ENDPOINT: ${{ vars.CI_SCREENSHOTS_S3_ENDPOINT }}
+          CI_SCREENSHOTS_S3_ACCESS_KEY_ID: ${{ secrets.CI_SCREENSHOTS_S3_WRITE_ACCESS_KEY_ID }}
+          CI_SCREENSHOTS_S3_SECRET_ACCESS_KEY: ${{ secrets.CI_SCREENSHOTS_S3_WRITE_SECRET_ACCESS_KEY }}
+        run: |
+          E2E=pass
+          { [ "${{ steps.e2e.outcome }}" = "success" ] \
+            && [ "${{ steps.web_e2e.outcome }}" = "success" ]; } || E2E=fail
+          npm run screenshots:upload-run -- --e2e "$E2E"
 
       # FALLBACK on failure: a minimal text-only "CI failed" notice, only when the
       # rich screenshot report above did NOT post (build broke before the tests →
