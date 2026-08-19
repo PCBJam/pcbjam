@@ -30,7 +30,13 @@ export type ReferenceComparison = {
     meanChannelDiff: number;
 };
 
-/** Post-wizard pcbnew baseline screenshot (committed) and its toolbar region. */
+/**
+ * Post-wizard pcbnew LIGHT-MODE reference screenshot and its toolbar region.
+ * Deliberately COMMITTED to git — this is a spec-owned reference image the
+ * dark-mode spec diffs against in-process, NOT a promotable baseline (it is
+ * not in the R2 manifest and must not be moved there; deleting it broke the
+ * spec with ENOENT once — see the baselines-to-R2 migration).
+ */
 export const PCBNEW_REFERENCE = path.resolve(__dirname, '../../wizard-04-finish-headless.png');
 export const PCBNEW_HEADER_REGION: ReferenceRegion = {
     // maxDiffRatio counts every pixel differing by >16 in any channel, so it is dominated
