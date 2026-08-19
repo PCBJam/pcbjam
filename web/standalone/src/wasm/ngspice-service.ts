@@ -173,8 +173,8 @@ export function installNgspiceService(
         const queued = evtQueue.shift()!;
         evtQueueBytes -= queued.bytes;
         if (queued.generation !== slot.generation) continue;
+        // Queued frames were acked at enqueue (ownership was taken then).
         handler(queued.evt);
-        if (!ackEvent(slot, queued)) return;
       }
       handler(evt);
       ackEvent(slot, frame);
@@ -186,6 +186,12 @@ export function installNgspiceService(
       }
       evtQueue.push(frame);
       evtQueueBytes += bytes;
+      // Enqueueing IS taking ownership: the frame now lives in this bounded
+      // mirror queue, so its transport credit is released — otherwise a
+      // stream that starts before the C++ handler installs starves the
+      // worker's window forever. The queue caps above stay the pre-handler
+      // bound (M-6: count + bytes).
+      ackEvent(slot, frame);
     }
   };
 

@@ -357,8 +357,8 @@ export async function installNgspiceServiceStub(
                     const queued = evtQueue.shift()!;
                     evtQueueBytes -= queued.bytes;
                     if (queued.generation !== slot.generation) continue;
+                    // Queued frames were acked at enqueue (ownership taken then).
                     handler(queued.evt);
-                    if (!ackEvent(slot, queued)) return;
                 }
                 handler(evt);
                 ackEvent(slot, frame);
@@ -370,6 +370,10 @@ export async function installNgspiceServiceStub(
                 }
                 evtQueue.push(frame);
                 evtQueueBytes += bytes;
+                // Enqueueing IS taking ownership (mirrors the production
+                // service): release the transport credit so a pre-handler
+                // stream cannot starve the worker's window.
+                ackEvent(slot, frame);
             }
         };
 

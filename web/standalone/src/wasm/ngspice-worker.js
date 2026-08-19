@@ -58,18 +58,26 @@ const modP = NgspiceService({
 // either limit. bg/exit events flush first so relative order is preserved.
 // E-6: batches are cut at MAX_EVENT_BATCH_* and posting is gated by the
 // MAX_EVENT_UNACKED_* credit window — the host acks each frame with its exact
-// { sequence, bytes } after taking ownership.
+// { sequence, bytes } after taking ownership. A FULL window is backpressure,
+// not a fault: frames that cannot post are DEFERRED (bounded by the
+// MAX_DEFERRED_* caps) and drained in order as acks free credit — a busy main
+// thread mid-plot-apply must slow the stream down, never kill the simulator.
+// Only true overload (deferred caps exceeded) or an invalid ack is terminal.
 const EVT_CHAR = 0, EVT_STAT = 1, EVT_BG = 2, EVT_EXIT = 3;
 const MAX_EVENT_BATCH_LINES = 512;
 const MAX_EVENT_BATCH_UTF8_BYTES = 1024 * 1024;
 const MAX_EVENT_UNACKED_FRAMES = 64;
 const MAX_EVENT_UNACKED_UTF8_BYTES = 8 * 1024 * 1024;
+const MAX_DEFERRED_EVENTS = 512;
+const MAX_DEFERRED_UTF8_BYTES = 4 * 1024 * 1024;
 let pendingLines = null; // { kind, lines, utf8Bytes } of the open batch
 let flushQueued = false;
 let eventStreamFailure = null;
 let nextEventSequence = 1;
 let unackedEventBytes = 0;
 const unackedEvents = new Map();
+const deferredEvents = []; // [{ evt, eventBytes }] awaiting credit, FIFO
+let deferredEventBytes = 0;
 
 function utf8Bytes(text) {
   let bytes = 0;
@@ -139,29 +147,28 @@ function flushLines() {
 
 function stopEventStream(reason) {
   if (!eventStreamFailure) {
-    // Detach the not-yet-transferred batch before reporting terminal state.
-    // Frames already posted remain bounded by the unacknowledged credit set.
+    // Detach the not-yet-transferred batch and the deferred queue before
+    // reporting terminal state. Frames already posted remain bounded by the
+    // unacknowledged credit set.
     pendingLines = null;
     flushQueued = false;
+    deferredEvents.length = 0;
+    deferredEventBytes = 0;
     eventStreamFailure = reason;
     postMessage({ fatal: reason });
   }
   throw new RangeError(eventStreamFailure);
 }
 
-function postEvent(evt) {
-  const eventBytes = utf8Bytes(JSON.stringify(evt));
-  if (unackedEvents.size >= MAX_EVENT_UNACKED_FRAMES
-      || eventBytes > MAX_EVENT_UNACKED_UTF8_BYTES
-      || unackedEventBytes > MAX_EVENT_UNACKED_UTF8_BYTES - eventBytes) {
-    stopEventStream(
-      `ngspice event transport exceeded ${MAX_EVENT_UNACKED_FRAMES} frames or `
-        + `${MAX_EVENT_UNACKED_UTF8_BYTES} unacknowledged UTF-8 bytes`);
-  }
+function creditAvailable(eventBytes) {
+  return unackedEvents.size < MAX_EVENT_UNACKED_FRAMES
+    && unackedEventBytes <= MAX_EVENT_UNACKED_UTF8_BYTES - eventBytes;
+}
+
+function transmitEvent(evt, eventBytes) {
   if (nextEventSequence > Number.MAX_SAFE_INTEGER) {
     stopEventStream("ngspice event sequence space exhausted");
   }
-
   const eventSequence = nextEventSequence++;
   unackedEvents.set(eventSequence, eventBytes);
   unackedEventBytes += eventBytes;
@@ -171,6 +178,39 @@ function postEvent(evt) {
     unackedEvents.delete(eventSequence);
     unackedEventBytes -= eventBytes;
     stopEventStream(`ngspice event postMessage failed: ${String(error)}`);
+  }
+}
+
+function postEvent(evt) {
+  const eventBytes = utf8Bytes(JSON.stringify(evt));
+  if (eventBytes > MAX_EVENT_UNACKED_UTF8_BYTES) {
+    stopEventStream(
+      `ngspice event frame exceeds ${MAX_EVENT_UNACKED_UTF8_BYTES} UTF-8 bytes`);
+  }
+  // A full credit window defers the frame (FIFO — never overtake an already
+  // deferred frame). Deferral is bounded; exceeding the caps means the host
+  // has stopped consuming entirely, which IS terminal.
+  if (deferredEvents.length > 0 || !creditAvailable(eventBytes)) {
+    if (deferredEvents.length >= MAX_DEFERRED_EVENTS
+        || deferredEventBytes > MAX_DEFERRED_UTF8_BYTES - eventBytes) {
+      stopEventStream(
+        `ngspice event transport exceeded ${MAX_EVENT_UNACKED_FRAMES} in-flight `
+          + `frames plus ${MAX_DEFERRED_EVENTS} deferred events `
+          + `(${MAX_DEFERRED_UTF8_BYTES} deferred UTF-8 bytes)`);
+    }
+    deferredEvents.push({ evt, eventBytes });
+    deferredEventBytes += eventBytes;
+    return;
+  }
+  transmitEvent(evt, eventBytes);
+}
+
+function drainDeferredEvents() {
+  while (deferredEvents.length > 0
+      && creditAvailable(deferredEvents[0].eventBytes)) {
+    const next = deferredEvents.shift();
+    deferredEventBytes -= next.eventBytes;
+    transmitEvent(next.evt, next.eventBytes);
   }
 }
 
@@ -185,6 +225,7 @@ function acknowledgeEvent(ack) {
   }
   unackedEvents.delete(sequence);
   unackedEventBytes -= bytes;
+  drainDeferredEvents();
 }
 
 function onEmit(kind, text, a, b) {
