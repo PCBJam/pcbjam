@@ -7,6 +7,7 @@ import {
   USER_HEADER,
 } from "@pcbjam/shared";
 import {
+  onSyncRoomFrame,
   peekNamespaces,
   SyncRoomMovedError,
   SyncStack,
@@ -16,9 +17,11 @@ import {
 } from "@pcbjam/sync-client";
 import {
   LIB_ITEM_UPDATED_EVENT,
+  LIB_SET_CHANGED_EVENT,
   type LibInfo,
   type LibItemInfo,
   type LibItemUpdatedDetail,
+  type LibSetChangedDetail,
   type LibsSource,
   type LibsSyncState,
 } from "./source";
@@ -372,6 +375,23 @@ export function syncedScopeLibsSource(
   },
 ): LibsSource {
   const perLib = new Map<string, LibsSource>();
+
+  // Room-level `libset` frames (a peer created an org lib / changed pins —
+  // the scope room's announce broadcast): surface them to the chrome as
+  // LIB_SET_CHANGED_EVENT so it can offer "load the new library" without a
+  // reload. The session only ever dials its own team's scope room, so no
+  // URL filtering is needed; frames are advisory (the action re-lists).
+  const offRoomFrames = onSyncRoomFrame((_roomUrl, msg) => {
+    if (msg.t !== "libset" || typeof window === "undefined") return;
+    const detail: LibSetChangedDetail = {
+      op: msg.op,
+      libId: msg.libId,
+      name: msg.name,
+    };
+    opts.log?.(`[synced] lib set changed: ${msg.op} ${msg.name ?? msg.libId}`);
+    window.dispatchEvent(new CustomEvent(LIB_SET_CHANGED_EVENT, { detail }));
+  });
+
   // Stacks resolved in bulk by `prefetchStacks`. A hit means the per-lib source
   // makes NO resolve request; `null` records "backend says unresolvable" so a
   // stale pin isn't retried one-by-one. Misses simply fall back per-lib, which
@@ -539,6 +559,7 @@ export function syncedScopeLibsSource(
       );
     },
     dispose(): void {
+      offRoomFrames();
       for (const src of perLib.values()) src.dispose?.();
       perLib.clear();
     },

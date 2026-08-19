@@ -29,6 +29,7 @@
 #include <kiway.h>
 #include <kiway_player.h>
 #include <libraries/library_manager.h>
+#include <libraries/library_table.h>
 #include <mail_type.h>
 #include <pgm_base.h>
 
@@ -70,6 +71,74 @@ inline void reloadLibrary( std::string aKind, std::string aNickname )
         // plugins (and its mtime component never moves for a remote edit), so a
         // plain sync would skip the lib; the named node is rebuilt instead.
         // ExpressMail only delivers to frames that exist — no frame is created.
+        std::string payload( nick.utf8_str() );
+        top->Kiway().ExpressMail( fp ? FRAME_FOOTPRINT_EDITOR : FRAME_SCH_SYMBOL_EDITOR,
+                                  MAIL_RELOAD_LIB, payload );
+    } );
+}
+
+/**
+ * Add one PCBJAM lib-table row at RUNTIME and load it — the lib SET is
+ * otherwise frozen at boot (sym/fp-lib-table are written once in preRun).
+ * Used by the "a new team library appeared" flow: the JS side has already
+ * created the `/mnt/pcbjam/<id>` MEMFS placeholder; this inserts the row into
+ * the LIVE in-memory global table (the table FILE is only re-read by
+ * LoadGlobalTables, which would drop every adapter cache — deliberately not
+ * used), loads the entry through the provider bridge, and re-syncs any open
+ * editor tree. Idempotent: an existing nickname is a no-op.
+ *
+ * @param aKind "symbol" | "footprint" — which lib table gets the row.
+ * @param aNickname the lib-table row name (LibInfo.name on the JS side).
+ * @param aUri the virtual mount uri ("/mnt/pcbjam/<libId>").
+ */
+inline void addLibraryEntry( std::string aKind, std::string aNickname, std::string aUri )
+{
+    KIWAY_PLAYER* top =
+            wxTheApp ? dynamic_cast<KIWAY_PLAYER*>( wxTheApp->GetTopWindow() ) : nullptr;
+
+    if( !top )
+        return;
+
+    const bool     fp = aKind == "footprint";
+    const wxString nick = wxString::FromUTF8( aNickname.c_str() );
+    const wxString uri = wxString::FromUTF8( aUri.c_str() );
+
+    pcbjam_collab::runOnCoroutine( top, [top, fp, nick, uri]()
+    {
+        LIBRARY_MANAGER&         mgr = Pgm().GetLibraryManager();
+        const LIBRARY_TABLE_TYPE type =
+                fp ? LIBRARY_TABLE_TYPE::FOOTPRINT : LIBRARY_TABLE_TYPE::SYMBOL;
+
+        if( std::optional<LIBRARY_MANAGER_ADAPTER*> adapter = mgr.Adapter( type ); adapter )
+        {
+            LIBRARY_TABLE* table = ( *adapter )->GlobalTable();
+
+            if( !table )
+                return;
+
+            // Idempotent-cheap: a nickname that already has a row is done —
+            // content refresh is kicadLibsReload's job, and doing it here
+            // would let a re-announce trigger a pointless re-fat-load.
+            if( table->HasRow( nick ) )
+                return;
+
+            LIBRARY_TABLE_ROW& row = table->InsertRow();
+            row.SetNickname( nick );
+            row.SetURI( uri );
+            row.SetType( fp ? wxS( "PCBJAM_FP" ) : wxS( "PCBJAM" ) );
+        }
+        else
+        {
+            return;
+        }
+
+        // Bring the new row to LOADED through the JS provider bridge (GetRow
+        // walks the table on a cache miss, so the inserted row is found).
+        mgr.LoadLibraryEntry( type, nick );
+
+        // Open editor frames re-sync their tree; the nickname payload forces
+        // the named node's rebuild past the pinned-modify-hash gate (same
+        // reasoning as reloadLibrary above).
         std::string payload( nick.utf8_str() );
         top->Kiway().ExpressMail( fp ? FRAME_FOOTPRINT_EDITOR : FRAME_SCH_SYMBOL_EDITOR,
                                   MAIL_RELOAD_LIB, payload );

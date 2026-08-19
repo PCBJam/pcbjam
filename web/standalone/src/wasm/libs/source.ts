@@ -203,6 +203,13 @@ export const LIB_LOADING_EVENT = "pcbjam:lib-loading";
  * updated" (placed copies keep the previous version until updated explicitly).
  */
 export const LIB_ITEM_UPDATED_EVENT = "pcbjam:lib-item-updated";
+/**
+ * Fired when the TEAM'S LIB SET changed mid-session (a peer created an org
+ * lib, pinned/unpinned one — the scope room's `libset` broadcast). The lib
+ * table is frozen at boot, so the chrome offers a "load the new library"
+ * action (`addAnnouncedLib`) instead of requiring a reload.
+ */
+export const LIB_SET_CHANGED_EVENT = "pcbjam:lib-set-changed";
 
 export interface LibBusyDetail {
   busy: boolean;
@@ -229,6 +236,11 @@ export interface LibItemUpdatedDetail {
   names: string[];
   /** The subset placed in the open document (empty ⇒ informational only). */
   usedNames: string[];
+}
+export interface LibSetChangedDetail {
+  op: "add" | "remove" | "update";
+  libId: string;
+  name?: string;
 }
 
 function emitLibBusy(detail: LibBusyDetail): void {

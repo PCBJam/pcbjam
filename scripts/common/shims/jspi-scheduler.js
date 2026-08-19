@@ -172,7 +172,12 @@
     // (wxWasmYieldUntil inside the load) find a tracked record and get the
     // green-region spill-stack discipline. Embind names live on Module WITHOUT
     // the underscore prefix, hence the separate installer.
-    PARKER_NAMES: ["kicadOpenFile", "kicadOpenFiles", "kicadLibsReload"],
+    PARKER_NAMES: [
+      "kicadOpenFile",
+      "kicadOpenFiles",
+      "kicadLibsReload",
+      "kicadLibsAddEntry",
+    ],
     _wrapParkers: function () {
       var wrapped = 0;
       for (var i = 0; i < this.PARKER_NAMES.length; i++) {

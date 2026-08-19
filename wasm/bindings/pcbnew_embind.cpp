@@ -2451,6 +2451,9 @@ EMSCRIPTEN_BINDINGS(pcbnew) {
     function("kicadCollabTestClearSelection", &pcbCollabTestClearSelection);
     // Library reload after a remote (synced) lib edit — r2-idb-sync realtime.
     function("kicadLibsReload", &pcbjam_libs::reloadLibrary PCBJAM_PARKER_POLICY);
+    // Runtime lib-table row insert + load (a new team library appeared
+    // mid-session; the lib set is otherwise frozen at boot).
+    function("kicadLibsAddEntry", &pcbjam_libs::addLibraryEntry PCBJAM_PARKER_POLICY);
 #endif // !KICAD_MERGED_EMBIND
 }
 #endif

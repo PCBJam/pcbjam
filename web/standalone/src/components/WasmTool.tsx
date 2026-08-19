@@ -48,13 +48,22 @@ import {
   LIB_ERROR_EVENT,
   LIB_ITEM_UPDATED_EVENT,
   LIB_LOADING_EVENT,
+  LIB_SET_CHANGED_EVENT,
   type LibBusyDetail,
   type LibErrorDetail,
   type LibItemUpdatedDetail,
   type LibLoadingDetail,
+  type LibSetChangedDetail,
   type LibsSource,
   type LibsSyncState,
 } from "@/wasm/libs/source";
+import { addAnnouncedLib } from "@/wasm/libs/runtime-add";
+
+/** The libset toast's message once live-loading failed and reload is the offer. */
+function reloadFallbackMsg(notice: { detail: LibSetChangedDetail }): string {
+  const label = notice.detail.name ? `"${notice.detail.name}"` : "the new library";
+  return `Couldn't load ${label} into the running session — click to reload the editor.`;
+}
 import {
   MODELS_LOADING_EVENT,
   type ModelsLoadingDetail,
@@ -69,7 +78,7 @@ import {
 import { resolveSheetHierarchy } from "@/wasm/collab/sheet-hierarchy";
 import { dump as dumpTrace, mark } from "@/wasm/load-trace";
 import { errorMessage, isTerminalError } from "@/wasm/terminal-error";
-import { registerSaveHook, type SaveBytes } from "@/wasm/save-flow";
+import { registerSaveHook, type SaveBlock, type SaveBytes } from "@/wasm/save-flow";
 import type {
   KicadCollabHandle,
   KicadDocSession,
@@ -1110,6 +1119,24 @@ export function WasmTool({
   // The backend rolled this document back to its last valid state
   // (kicad-validity 0001 — DOC_REVERTED_EVENT from the collab binding).
   const [docReverted, setDocReverted] = React.useState<string | null>(null);
+  // A peer changed the team's lib SET mid-session (LIB_SET_CHANGED_EVENT —
+  // the scope room's `libset` broadcast). The lib table is frozen at boot, so
+  // the toast's click action loads the new lib live (addAnnouncedLib), with a
+  // reload fallback when the runtime bridge is missing.
+  const [libSetNotice, setLibSetNotice] = React.useState<{
+    message: string;
+    detail: LibSetChangedDetail;
+    mode: "load" | "reload";
+  } | null>(null);
+  // The one libs source instance the running editor uses (set by the boot
+  // effect) — the libset toast's action needs it to re-list and load.
+  const activeLibsSourceRef = React.useRef<LibsSource | null>(null);
+  // A save path entered the DURABLE blocked state (409 conflict / unknown
+  // commit state — save-flow's absorbing blockedPaths). Rendered as a
+  // persistent banner, never auto-dismissed: further Ctrl+S on the path is
+  // silently absorbed, so without this surface the user would keep "saving"
+  // into the void.
+  const [saveBlocked, setSaveBlocked] = React.useState<SaveBlock | null>(null);
   // Eager whole-library idb→wasm load in flight (the ~tens-of-seconds fat-load on
   // first chooser/editor open). Drives a full-cover overlay so the freeze reads as
   // "loading, just slow" rather than a hang. Null when idle; `done/total` count the
@@ -1262,6 +1289,19 @@ export function WasmTool({
     };
     const onItemUpdated = (e: Event) => {
       const d = (e as CustomEvent<LibItemUpdatedDetail>).detail;
+      // Footprints have no placed-usage bridge (kicadLibsSymbolUsage is
+      // symbol-only), so every applied peer edit is announced — silently
+      // refreshing the lib under the user was the worse failure mode.
+      if (d.kind === "footprint") {
+        if (d.names.length === 0) return;
+        const names = d.names.map((n) => `"${n}"`).join(", ");
+        setLibUpdate(
+          `${d.names.length === 1 ? "Footprint" : "Footprints"} ${names} in "${d.lib}" ` +
+            `${d.names.length === 1 ? "was" : "were"} updated by a collaborator — ` +
+            `placed copies keep the previous version until updated from the library.`,
+        );
+        return;
+      }
       // Only warn when the update touches something PLACED here — the library
       // tree already reflects updates to everything else.
       if (d.usedNames.length === 0) return;
@@ -1279,15 +1319,30 @@ export function WasmTool({
           `was detected${d?.reason ? ` (${d.reason})` : ""}. Recent edits may have been undone.`,
       );
     };
+    const onLibSet = (e: Event) => {
+      const d = (e as CustomEvent<LibSetChangedDetail>).detail;
+      // Only additions get a call to action — a removed lib's table row is
+      // inert until the next boot and needs no interruption.
+      if (d.op !== "add") return;
+      setLibSetNotice({
+        message: d.name
+          ? `A collaborator added library "${d.name}" — click to load it into this session.`
+          : `A collaborator added a new library — click to load it into this session.`,
+        detail: d,
+        mode: "load",
+      });
+    };
     window.addEventListener(LIB_BUSY_EVENT, onBusy);
     window.addEventListener(LIB_ERROR_EVENT, onError);
     window.addEventListener(LIB_ITEM_UPDATED_EVENT, onItemUpdated);
+    window.addEventListener(LIB_SET_CHANGED_EVENT, onLibSet);
     window.addEventListener(DOC_REVERTED_EVENT, onDocReverted);
     return () => {
       clearTimeout(busyTimer);
       window.removeEventListener(LIB_BUSY_EVENT, onBusy);
       window.removeEventListener(LIB_ERROR_EVENT, onError);
       window.removeEventListener(LIB_ITEM_UPDATED_EVENT, onItemUpdated);
+      window.removeEventListener(LIB_SET_CHANGED_EVENT, onLibSet);
       window.removeEventListener(DOC_REVERTED_EVENT, onDocReverted);
     };
   }, []);
@@ -1305,6 +1360,13 @@ export function WasmTool({
     const t = setTimeout(() => setLibUpdate(null), 10_000);
     return () => clearTimeout(t);
   }, [libUpdate]);
+
+  // Auto-dismiss the lib-set toast (long — it carries a click action).
+  React.useEffect(() => {
+    if (!libSetNotice) return;
+    const t = setTimeout(() => setLibSetNotice(null), 30_000);
+    return () => clearTimeout(t);
+  }, [libSetNotice]);
 
   // Auto-dismiss the doc-reverted toast (longest — the user should see it).
   React.useEffect(() => {
@@ -1679,6 +1741,7 @@ export function WasmTool({
                 boot ? { libs: boot.libs, stacks: boot.stacks } : undefined,
               );
         if (libsSource === undefined) ownedLibsSource = source;
+        activeLibsSourceRef.current = source;
         // Download-consent gate (standalone-load-ux 0001): before pulling the
         // (large) cold wasm + lib bundles, say how many MB and wait for the OK.
         // Runs only on versioned CDN deploys (`meta.ver` — flat dev roots and
@@ -1870,6 +1933,9 @@ export function WasmTool({
           ...(readOnly
             ? {}
             : {
+                // Durable per-path block (409 conflict / unknown commit
+                // state): surface it as the persistent save-blocked banner.
+                onBlocked: (block: SaveBlock) => setSaveBlocked(block),
                 // A sheet created mid-session ("Add Sheet") saves to a new .kicad_sch path the
                 // page-load file list can't contain — warm its collab room so it stays in sync.
                 onSaved: (relPath: string) => {
@@ -2625,10 +2691,26 @@ export function WasmTool({
         </div>
       )}
 
+      {/* A save path is durably BLOCKED (CAS conflict / unknown commit state) —
+          persistent full-width banner, no auto-dismiss: subsequent Ctrl+S on
+          the path is absorbed by the save lane, so this must stay visible. */}
+      {saveBlocked && (
+        <div
+          data-testid="save-blocked-banner"
+          className="absolute inset-x-0 top-0 z-40 bg-red-900/95 px-4 py-2 text-center text-xs font-medium text-red-100 shadow-lg"
+        >
+          {saveBlocked.message}
+        </div>
+      )}
+
+      {/* Top-center toast column: simultaneous notices stack instead of
+          overlapping (they all used to render at the same absolute spot). */}
+      <div className="absolute left-1/2 top-3 z-40 flex -translate-x-1/2 flex-col items-center gap-2">
+
       {/* Library error (e.g. a backend 404 on open) — auto-dismisses. */}
       {libError && (
         <button
-          className="absolute left-1/2 top-3 z-40 max-w-md -translate-x-1/2 rounded bg-red-950/95 px-3 py-2 text-center text-xs text-red-100 shadow-lg ring-1 ring-red-500/40"
+          className="max-w-md rounded bg-red-950/95 px-3 py-2 text-center text-xs text-red-100 shadow-lg ring-1 ring-red-500/40"
           onClick={() => setLibError(null)}
           title="Dismiss"
         >
@@ -2640,7 +2722,7 @@ export function WasmTool({
       {libUpdate && (
         <button
           data-testid="lib-update-toast"
-          className="absolute left-1/2 top-3 z-40 max-w-md -translate-x-1/2 rounded bg-amber-950/95 px-3 py-2 text-center text-xs text-amber-100 shadow-lg ring-1 ring-amber-500/40"
+          className="max-w-md rounded bg-amber-950/95 px-3 py-2 text-center text-xs text-amber-100 shadow-lg ring-1 ring-amber-500/40"
           onClick={() => setLibUpdate(null)}
           title="Dismiss"
         >
@@ -2648,17 +2730,55 @@ export function WasmTool({
         </button>
       )}
 
+      {/* A peer changed the team's lib set — click loads the new lib live
+          (kicadLibsAddEntry bridge), falling back to a reload offer. */}
+      {libSetNotice && (
+        <button
+          data-testid="lib-set-toast"
+          className="max-w-md rounded bg-sky-950/95 px-3 py-2 text-center text-xs text-sky-100 shadow-lg ring-1 ring-sky-500/40"
+          onClick={() => {
+            const notice = libSetNotice;
+            if (notice.mode === "reload") {
+              window.location.reload();
+              return;
+            }
+            const source = activeLibsSourceRef.current;
+            if (!source) {
+              setLibSetNotice({ ...notice, mode: "reload", message: reloadFallbackMsg(notice) });
+              return;
+            }
+            setLibSetNotice(null);
+            void addAnnouncedLib(source, notice.detail, (m) => console.log(m)).then(
+              (ok) => {
+                if (!ok) {
+                  setLibSetNotice({
+                    ...notice,
+                    mode: "reload",
+                    message: reloadFallbackMsg(notice),
+                  });
+                }
+              },
+            );
+          }}
+          title={libSetNotice.mode === "reload" ? "Reload" : "Load the new library"}
+        >
+          {libSetNotice.message}
+        </button>
+      )}
+
       {/* Backend rolled this doc back to the last valid state (kicad-validity). */}
       {docReverted && (
         <button
           data-testid="doc-reverted-toast"
-          className="absolute left-1/2 top-3 z-40 max-w-md -translate-x-1/2 rounded bg-orange-950/95 px-3 py-2 text-center text-xs text-orange-100 shadow-lg ring-1 ring-orange-500/40"
+          className="max-w-md rounded bg-orange-950/95 px-3 py-2 text-center text-xs text-orange-100 shadow-lg ring-1 ring-orange-500/40"
           onClick={() => setDocReverted(null)}
           title="Dismiss"
         >
           {docReverted}
         </button>
       )}
+
+      </div>
 
       </WasmErrorBoundary>
 

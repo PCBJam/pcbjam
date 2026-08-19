@@ -596,6 +596,9 @@ EMSCRIPTEN_BINDINGS(kicad_editor) {
     function("kicadCollabTestClearSelection", &collabTestClearSelection);
     // Library reload after a remote (synced) lib edit — r2-idb-sync realtime.
     function("kicadLibsReload", &pcbjam_libs::reloadLibrary PCBJAM_PARKER_POLICY);
+    // Runtime lib-table row insert + load (a new team library appeared
+    // mid-session; the lib set is otherwise frozen at boot).
+    function("kicadLibsAddEntry", &pcbjam_libs::addLibraryEntry PCBJAM_PARKER_POLICY);
     // Placed-instance count for a library symbol (schematic sessions only —
     // 0 from any other frame; drives the "symbol you are using was updated"
     // toast after a remote lib edit).
