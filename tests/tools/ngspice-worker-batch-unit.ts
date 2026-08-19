@@ -18,7 +18,7 @@ const workerSource = readFileSync(
 
 type Frame = {
   id?: number;
-  evt?: { kind: string; lines?: string[] };
+  evt?: { kind: string; lines?: string[]; finished?: boolean };
   fatal?: string;
   res?: { error?: string };
   eventSequence?: number;
@@ -150,8 +150,34 @@ assert.ok(
     <= 8 * 1024 * 1024,
 );
 assert.equal(storm.frames.filter((frame) => frame.fatal).length, 1);
-assert.match(storm.frames.find((frame) => frame.fatal)!.fatal!, /unacknowledged/);
+assert.match(storm.frames.find((frame) => frame.fatal)!.fatal!, /deferred/);
 console.log("ok   100,000 synchronous chunk attempts cannot exceed transport credit");
+
+// A FULL credit window is backpressure, not a fault: frames beyond the window
+// defer (bounded) and drain IN ORDER as acks free credit. The regression this
+// pins: the first shipped shape terminally stopped the stream at 64 in-flight
+// frames, killing a live simulation whenever the main thread lagged one
+// window behind (observed as "event transport exceeded 64 frames" ending the
+// eeschema second-run spec).
+const paced = await createWorkerHarness();
+for (let i = 0; i < 80; ++i) {
+  paced.emit(2, "", i % 2, 0); // bg toggles: one frame per emit, no batching
+}
+await Promise.resolve();
+assert.equal(paced.frames.filter((f) => f.fatal).length, 0,
+  "a full window with a live consumer must not be terminal");
+assert.equal(paced.frames.filter((f) => f.evt).length, 64,
+  "exactly the credit window is in flight");
+await acknowledgeAll(paced);
+await Promise.resolve();
+const pacedEvents = paced.frames.filter((f) => f.evt);
+assert.equal(pacedEvents.length, 80, "deferred frames drained after acks");
+assert.deepEqual(
+  pacedEvents.map((f) => f.evt!.finished),
+  Array.from({ length: 80 }, (_, i) => !(i % 2 === 0)),
+  "deferred frames preserve emission order",
+);
+console.log("ok   a full credit window defers and drains in order, never terminal");
 
 const oversize = await createWorkerHarness();
 assert.throws(

@@ -177,7 +177,12 @@ EM_JS( void, js_ngspice_install_events, (), {
             let p = 0;
             if( text != null ) {
                 const n = lengthBytesUTF8( text ) + 1;
-                p = installingModule._malloc( n );
+                // Bare closure exports: this EM_JS body is compiled into the
+                // installing module's glue closure, so _malloc/stringToUTF8
+                // ARE that exact module's (Module._malloc is not populated in
+                // this build). The identity guarantee is the handler capture
+                // plus the __ngspiceOnEvent self-disarm above.
+                p = _malloc( n );
                 stringToUTF8( text, p, n );
             }
             installingModule._pcbjam_ngspice_event( kind, p, a | 0, b | 0 );

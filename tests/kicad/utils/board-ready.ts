@@ -1,4 +1,7 @@
 import type { Page } from '@playwright/test';
+import { waitForCanvasStable } from '../../e2e/utils/element-tracker';
+
+export type RuntimeLogger = { consoleLogs: string[]; errors: string[] };
 
 /**
  * Wait for pcbnew to finish opening a board.
@@ -68,4 +71,71 @@ export async function waitForBoardLoaded(
     }
 
     throw new Error(`Timed out waiting for board to load after ${timeoutMs}ms`);
+}
+
+function assertExpectedBoard(expectedBoard: string): void {
+    if (!expectedBoard.trim()) {
+        throw new Error('Expected board identity must not be empty');
+    }
+}
+
+function assertNoNativeFailure(logger: RuntimeLogger | undefined, phase: string): void {
+    if (!logger) return;
+    const failure = [...logger.consoleLogs, ...logger.errors].find((line) =>
+        line.includes('Aborted(')
+        || line.includes('RuntimeError: unreachable')
+        || line.includes('memory access out of bounds')
+    );
+    if (failure) throw new Error(`WASM failed during ${phase}:\n${failure}`);
+}
+
+async function waitForBoardIdentityAndPaint(
+    page: Page,
+    expectedBoard: string,
+    timeoutMs: number,
+): Promise<void> {
+    assertExpectedBoard(expectedBoard);
+    await page.waitForFunction(
+        (expected: string) => {
+            const titleMatches = document.title.toLocaleLowerCase()
+                .includes(expected.toLocaleLowerCase());
+            const hasPcbFrame = (window.wxElementRegistry?.findAll({ visible: true }) ?? [])
+                .some((element) => element.name === 'PcbFrame');
+            return titleMatches && hasPcbFrame;
+        },
+        expectedBoard,
+        { timeout: timeoutMs },
+    );
+    await waitForCanvasStable(page, '#canvas', { timeout: timeoutMs });
+}
+
+/**
+ * Use the shell's exact owned-open Promise, then prove document identity and
+ * paint. No PcbFrame/no-dialog heuristic is involved. (Ported from the codex
+ * line; owner-free — the barrier-based waitForUiBoardReady was NOT taken.)
+ */
+export async function openBoardProgrammatically(
+    page: Page,
+    path: string,
+    expectedBoard: string,
+    logger?: RuntimeLogger,
+    timeoutMs = 60000,
+): Promise<string> {
+    assertExpectedBoard(expectedBoard);
+    const opened = await page.evaluate(async (boardPath: string) => {
+        const runtime = window as unknown as {
+            Module?: { kicadOpenFile?(path: string): Promise<boolean> | boolean };
+        };
+        if (typeof runtime.Module?.kicadOpenFile !== 'function') {
+            throw new Error('Module.kicadOpenFile is not installed');
+        }
+        return await runtime.Module.kicadOpenFile(boardPath);
+    }, path);
+    if (opened !== true) {
+        throw new Error(`Module.kicadOpenFile did not open ${path}: ${String(opened)}`);
+    }
+    assertNoNativeFailure(logger, `opening ${expectedBoard}`);
+    await waitForBoardIdentityAndPaint(page, expectedBoard, timeoutMs);
+    assertNoNativeFailure(logger, `painting ${expectedBoard}`);
+    return `opened and painted ${expectedBoard} from exact kicadOpenFile Promise`;
 }
