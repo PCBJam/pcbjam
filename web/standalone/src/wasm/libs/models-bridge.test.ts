@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   collectBoardModelFiles,
   ensureModelInMemfs,
@@ -139,6 +139,64 @@ describe("collectBoardModelFiles", () => {
   it("returns empty for a board without lib model refs", async () => {
     installFakes(() => true);
     expect(await collectBoardModelFiles("(kicad_pcb (version 1))")).toEqual([]);
+  });
+
+  it("makes an in-flight source result inert and starts no later ref after abort", async () => {
+    // repro for E-4: the prefetch abort must stop selection immediately and
+    // may not retain a body that resolves after the abort.
+    (globalThis as unknown as { window: unknown }).window ??= globalThis;
+    let resolveFirst!: (body: Uint8Array | null) => void;
+    const source: Model3dSource = {
+      getModelBody: vi.fn(
+        () => new Promise<Uint8Array | null>((resolve) => {
+          resolveFirst = resolve;
+        }),
+      ),
+      hasModel: async () => true,
+    };
+    installModel3dHandler(source, () => {});
+    const controller = new AbortController();
+    const retired = new Error("exact OCC prefetch retired");
+    const collection = collectBoardModelFiles(
+      '(model "AbortA.3dshapes/A.step")\n' +
+        '(model "AbortB.3dshapes/B.step")',
+      1,
+      controller.signal,
+    );
+
+    await vi.waitFor(() => expect(source.getModelBody).toHaveBeenCalledTimes(1));
+    controller.abort(retired);
+    resolveFirst(new Uint8Array([1, 2, 3]));
+
+    await expect(collection).rejects.toBe(retired);
+    expect(source.getModelBody).toHaveBeenCalledTimes(1);
+  });
+
+  it("never touches the editor MEMFS (pure source/IDB/network path)", async () => {
+    // repro for E-4: routing bodies through the editor heap added a stale
+    // native-completion tail after a prefetch timeout — the collect path must
+    // stay off FS entirely (the OCC worker stages bodies in its own MEMFS).
+    const fs = {
+      mkdirTree: vi.fn(),
+      writeFile: vi.fn(),
+      analyzePath: vi.fn(() => ({ exists: false })),
+      readFile: vi.fn(),
+    };
+    (globalThis as unknown as { window: unknown }).window ??= globalThis;
+    (globalThis as unknown as { FS: unknown }).FS = fs;
+    const source: Model3dSource = {
+      getModelBody: async (ref) => new TextEncoder().encode(`body:${ref}`),
+      hasModel: async () => true,
+    };
+    installModel3dHandler(source, () => {});
+    const models = await collectBoardModelFiles(
+      '(model "PureLib.3dshapes/M1.step")',
+    );
+    expect(models).toHaveLength(1);
+    expect(fs.mkdirTree).not.toHaveBeenCalled();
+    expect(fs.writeFile).not.toHaveBeenCalled();
+    expect(fs.readFile).not.toHaveBeenCalled();
+    expect(fs.analyzePath).not.toHaveBeenCalled();
   });
 });
 
