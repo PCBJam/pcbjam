@@ -45,58 +45,164 @@ export async function installOccServiceStub(page: Page): Promise<void> {
 
         (window as any).__occExports = [];
 
-        let workerP: Promise<Worker> | null = null;
-        const pending = new Map<number, (res: any) => void>();
-        let nextId = 1;
+        interface WorkerSlot {
+            generation: number;
+            worker?: Worker;
+            failed: boolean;
+            ready: Promise<WorkerSlot>;
+            /** The exact lifecycle transition used by Worker.onmessageerror. */
+            failDecode: () => void;
+        }
 
-        const ensureWorker = (): Promise<Worker> => {
-            if (!workerP) {
-                workerP = (async () => {
+        interface PendingRequest {
+            generation: number;
+            resolve: (res: any) => void;
+        }
+
+        let nextGeneration = 1;
+        let workerSlot: WorkerSlot | null = null;
+        const pending = new Map<number, PendingRequest>();
+        let nextId = 1;
+        let maxPending = 0;
+        let requestsStarted = 0;
+        let requestsPosted = 0;
+        const workerGenerationsStarted: number[] = [];
+        let armedFault: {
+            count: number;
+            kind: 'terminate' | 'messageerror';
+            report: string;
+        } | null = null;
+        const retiredGenerations: number[] = [];
+
+        const pendingInGeneration = (generation: number): number => {
+            let count = 0;
+            for (const request of pending.values()) {
+                if (request.generation === generation) count++;
+            }
+            return count;
+        };
+
+        const failPending = (generation: number, report: string): void => {
+            for (const [id, request] of pending) {
+                if (request.generation !== generation) continue;
+                pending.delete(id);
+                request.resolve({ ok: false, report });
+            }
+        };
+
+        const retireWorker = (slot: WorkerSlot, report: string): void => {
+            if (slot.failed) return;
+            slot.failed = true;
+            retiredGenerations.push(slot.generation);
+            failPending(slot.generation, report);
+            if (workerSlot === slot) workerSlot = null;
+            try {
+                slot.worker?.terminate();
+            } catch {
+                /* already gone */
+            }
+        };
+
+        const maybeTriggerArmedFault = (slot: WorkerSlot): void => {
+            if (!armedFault || slot.failed) return;
+            if (pendingInGeneration(slot.generation) < armedFault.count) return;
+            const { kind, report } = armedFault;
+            armedFault = null;
+            console.log(`[TEST-OCC] faulting generation ${slot.generation} (${kind}): ${report}`);
+            if (kind === 'messageerror' && slot.worker) {
+                // Synthetic dispatch on Worker is engine-dependent. Invoke
+                // the exact transition installed as the real event handler.
+                slot.failDecode();
+            } else {
+                // Worker.terminate() intentionally emits no error event, so
+                // the hook supplies the fatal lifecycle transition explicitly.
+                retireWorker(slot, report);
+            }
+        };
+
+        const ensureWorker = (): Promise<WorkerSlot> => {
+            if (!workerSlot) {
+                const slot = {
+                    generation: nextGeneration++,
+                    failed: false,
+                } as WorkerSlot;
+                workerGenerationsStarted.push(slot.generation);
+
+                slot.ready = (async () => {
                     const glue = new URL('occ_service.js', window.location.href).href;
                     console.log(`[TEST-OCC] booting occ_service from ${glue}`);
                     const worker = new Worker(URL.createObjectURL(new Blob(
                         [`self.OCC_GLUE_URL = ${JSON.stringify(glue)};\n`, workerSrc],
                         { type: 'text/javascript' })));
+                    slot.worker = worker;
+                    let rejectBoot: ((reason?: unknown) => void) | undefined;
+                    let removeBootListener: (() => void) | undefined;
+
+                    worker.onerror = (e) => {
+                        const report = `occ_service crashed: ${e.message || 'worker error'}`;
+                        console.error(`[TEST-OCC] ${report}; resetting service`);
+                        retireWorker(slot, report);
+                        removeBootListener?.();
+                        removeBootListener = undefined;
+                        const reject = rejectBoot;
+                        rejectBoot = undefined;
+                        reject?.(new Error(report));
+                    };
+                    slot.failDecode = () => {
+                        const report = 'occ_service transport failed: message decode failed';
+                        console.error(`[TEST-OCC] ${report}; resetting service`);
+                        retireWorker(slot, report);
+                        removeBootListener?.();
+                        removeBootListener = undefined;
+                        const reject = rejectBoot;
+                        rejectBoot = undefined;
+                        reject?.(new Error(report));
+                    };
+                    worker.onmessageerror = slot.failDecode;
                     worker.onmessage = (e) => {
+                        if (slot.failed || workerSlot !== slot) return;
                         const { id, res } = e.data ?? {};
                         if (typeof id !== 'number') return;
-                        const resolve = pending.get(id);
-                        if (resolve) { pending.delete(id); resolve(res); }
+                        const request = pending.get(id);
+                        if (request?.generation === slot.generation) {
+                            pending.delete(id);
+                            request.resolve(res);
+                        }
                     };
-                    // Legible boot: the old handshake could never reject on a
-                    // worker DEATH (importScripts throw, pthread spawn wedge,
-                    // OOM-kill) — the promise just hung until the spec's 180s
-                    // timeout with zero evidence. Surface worker errors and
-                    // bound the boot.
                     await new Promise<void>((resolve, reject) => {
-                        const fail = (msg: string) => {
-                            clearTimeout(timer);
-                            reject(new Error(msg));
-                        };
-                        const timer = setTimeout(
-                            () => fail('[TEST-OCC] occ_service boot timed out after 60s '
-                                + '(no ready/bootError from the worker)'), 60000);
+                        rejectBoot = reject;
                         const onFirst = (e: MessageEvent) => {
                             if (e.data?.ready) {
-                                worker.removeEventListener('message', onFirst);
-                                clearTimeout(timer);
+                                removeBootListener?.();
+                                removeBootListener = undefined;
+                                rejectBoot = undefined;
                                 resolve();
                             } else if (e.data?.bootError) {
-                                fail(`[TEST-OCC] occ_service bootError: ${e.data.bootError}`);
+                                removeBootListener?.();
+                                removeBootListener = undefined;
+                                rejectBoot = undefined;
+                                const report = `occ_service boot failed: ${String(e.data.bootError)}`;
+                                retireWorker(slot, report);
+                                reject(new Error(report));
                             }
                         };
                         worker.addEventListener('message', onFirst);
-                        worker.addEventListener('error', (e: any) => fail(
-                            `[TEST-OCC] occ_service worker error: ${e?.message ?? e} `
-                            + `(${e?.filename ?? '?'}:${e?.lineno ?? '?'})`));
-                        worker.addEventListener('messageerror', () => fail(
-                            '[TEST-OCC] occ_service worker messageerror (structured clone failed)'));
+                        removeBootListener = () => worker.removeEventListener('message', onFirst);
                     });
+                    if (slot.failed || workerSlot !== slot)
+                        throw new Error('occ_service worker retired during boot');
                     console.log('[TEST-OCC] occ_service ready');
-                    return worker;
-                })().catch((e) => { workerP = null; throw e; });
+                    return slot;
+                })().catch((e) => {
+                    // A late rejection from a retired generation cannot clear
+                    // the replacement slot created by a new request.
+                    retireWorker(slot, `occ_service unavailable: ${String(e)}`);
+                    throw e;
+                });
+
+                workerSlot = slot;
             }
-            return workerP;
+            return workerSlot.ready;
         };
 
         // Mirror of the app's collectBoardModelFiles, against the page's
@@ -127,21 +233,36 @@ export async function installOccServiceStub(page: Page): Promise<void> {
         };
 
         const request = async (req: any) => {
+            // Count provider entry before model collection or worker boot. This
+            // distinguishes "the wx button reached OCC" from a worker that was
+            // already active for some earlier request.
+            requestsStarted++;
             if (req.kind === 'export')
                 req.models = await collectModels(new TextDecoder().decode(req.board));
-            let worker: Worker;
+            let slot: WorkerSlot;
             try {
-                worker = await ensureWorker();
+                slot = await ensureWorker();
             } catch (e) {
                 return { ok: false, report: `occ_service unavailable: ${e}` };
             }
+            const worker = slot.worker;
+            if (!worker || slot.failed || workerSlot !== slot)
+                return { ok: false, report: 'occ_service worker is unavailable' };
             const id = nextId++;
             const transfer = req.kind === 'export'
                 ? [req.board.buffer, ...(req.models ?? []).map((m: any) => m.bytes.buffer)]
                 : [req.bytes.buffer];
             const res: any = await new Promise((resolve) => {
-                pending.set(id, resolve);
-                worker.postMessage({ id, req }, transfer);
+                pending.set(id, { generation: slot.generation, resolve });
+                maxPending = Math.max(maxPending, pendingInGeneration(slot.generation));
+                try {
+                    worker.postMessage({ id, req }, transfer);
+                    requestsPosted++;
+                    maybeTriggerArmedFault(slot);
+                } catch (error) {
+                    pending.delete(id);
+                    resolve({ ok: false, report: `occ_service request failed: ${String(error)}` });
+                }
             });
             if (req.kind === 'export') {
                 if (res.ok && res.bytes?.length) {
@@ -167,6 +288,39 @@ export async function installOccServiceStub(page: Page): Promise<void> {
                 return { ok: res.ok, report: res.report, fileName: res.fileName };
             }
             return res;
+        };
+
+        (globalThis as any).__occServiceTestHooks = {
+            /** Arm one deterministic host-side fault after N real posts. */
+            terminateWhenPendingAtLeast(count: number, report = 'occ_service test fault') {
+                if (!Number.isSafeInteger(count) || count < 1)
+                    throw new Error('pending threshold must be a positive safe integer');
+                armedFault = { count, kind: 'terminate', report };
+                if (workerSlot) maybeTriggerArmedFault(workerSlot);
+            },
+            /** Arm the real Worker's production-parity messageerror handler. */
+            messageErrorWhenPendingAtLeast(count: number) {
+                if (!Number.isSafeInteger(count) || count < 1)
+                    throw new Error('pending threshold must be a positive safe integer');
+                armedFault = {
+                    count,
+                    kind: 'messageerror',
+                    report: 'occ_service transport failed: message decode failed',
+                };
+                if (workerSlot) maybeTriggerArmedFault(workerSlot);
+            },
+            snapshot() {
+                return {
+                    activeGeneration: workerSlot?.generation ?? null,
+                    pending: pending.size,
+                    maxPending,
+                    requestsStarted,
+                    requestsPosted,
+                    workerGenerationsStarted: [...workerGenerationsStarted],
+                    retiredGenerations: [...retiredGenerations],
+                    armed: armedFault !== null,
+                };
+            },
         };
 
         (globalThis as any).occService = { request };

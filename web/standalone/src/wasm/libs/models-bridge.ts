@@ -195,21 +195,29 @@ export interface BoardModelFile {
 }
 
 /**
- * Prefetch + read back every lib model a board references, for shipping with
- * an occ_service export request — the worker is its own wasm module with its
- * own MEMFS, so the editor-side files are invisible there. Reuses
- * ensureModelInMemfs (IDB/R2-cached, coalesced, wrl→step format fallback);
- * the returned paths carry the staged file's REAL extension, deduplicated
- * (two refs can materialize to the same substituted body). Best-effort: a
- * ref the source can't serve is skipped (the exporter reports it missing).
- * Returns [] when 3D model delivery is not configured.
+ * Fetch every lib model a board references for an occ_service export. This is
+ * deliberately a pure source/IDB/network path (E-4): the OCC worker has a
+ * different MEMFS, so materializing and reading the bytes through the editor's
+ * native heap only adds a stale native-completion tail after an
+ * export-prefetch timeout. The returned paths carry the fetched file's real
+ * fallback extension and are deduplicated. Best-effort: missing models are
+ * skipped (the exporter reports them missing). An abort stops selection
+ * immediately and makes every already-started source result inert before it
+ * is retained. Returns [] when 3D model delivery is not configured.
  */
 export async function collectBoardModelFiles(
   boardText: string,
   concurrency = 6,
+  signal?: AbortSignal,
 ): Promise<BoardModelFile[]> {
-  const fs = toolFS();
-  if (!installedSource || !fs) return [];
+  if (!installedSource) return [];
+  const source = installedSource;
+  const isCurrent = () => source === installedSource;
+  const throwIfAborted = (): void => {
+    if (!signal?.aborted) return;
+    throw signal.reason ?? new DOMException("Model collection aborted", "AbortError");
+  };
+  throwIfAborted();
   const refs = scanModelRefs(boardText);
   if (!refs.length) return [];
 
@@ -217,25 +225,39 @@ export async function collectBoardModelFiles(
   const seen = new Set<string>();
   let idx = 0;
   const worker = async (): Promise<void> => {
-    while (idx < refs.length) {
+    while (true) {
+      throwIfAborted();
+      if (!isCurrent() || idx >= refs.length) return;
       const ref = refs[idx++]!;
-      try {
-        const abs = await ensureModelInMemfs(ref);
-        if (!abs || seen.has(abs)) continue;
-        seen.add(abs);
-        // FS.readFile copies out of the wasm heap — the buffer is safely
-        // transferable to the worker.
-        const bytes = fs.readFile(abs) as Uint8Array;
-        out.push({ path: abs.slice(MODELS_3D_ROOT.length + 1), bytes });
-      } catch {
-        // best-effort: a missing body surfaces as the exporter's own
-        // "Could not add 3D model" report warning, never a failed export
+      for (const candidate of refCandidates(ref)) {
+        let body: Uint8Array | null = null;
+        try {
+          body = await source.getModelBody(candidate);
+        } catch {
+          // Best-effort: try the next format. The exporter reports a miss if
+          // no candidate exists.
+        }
+        throwIfAborted();
+        if (!isCurrent()) return;
+        if (!body) continue;
+
+        if (!seen.has(candidate)) {
+          seen.add(candidate);
+          // The OCC worker receives this buffer as a transferable. Keep its
+          // ownership independent from any source/cache view.
+          out.push({ path: candidate, bytes: new Uint8Array(body) });
+        }
+        break;
       }
     }
   };
   await Promise.all(
-    Array.from({ length: Math.min(concurrency, refs.length) }, () => worker()),
+    Array.from(
+      { length: Math.min(Math.max(1, Math.trunc(concurrency)), refs.length) },
+      () => worker(),
+    ),
   );
+  throwIfAborted();
   installedLog(`[3d] export prefetch: ${out.length}/${refs.length} board model(s)`);
   return out;
 }
