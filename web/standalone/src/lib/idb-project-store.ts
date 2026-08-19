@@ -5,6 +5,7 @@ import {
   type ProjectWithFiles,
 } from "@pcbjam/shared";
 import type { ProjectSource } from "./project-source";
+import { SAVE_COMMITTED } from "../wasm/save-flow";
 import {
   SOURCE_DESCRIPTORS,
   deterministicUuid,
@@ -198,13 +199,16 @@ export function idbProjectStore(): LocalProjectStore {
       return v.bytes;
     },
 
-    async uploadFileBytes(slug, relPath, bytes): Promise<void> {
+    async uploadFileBytes(slug, relPath, bytes) {
       const d = await db();
       const tx = d.transaction(FILES, "readwrite");
       const rec: FileRecord = { slug, path: relPath, size: bytes.length, bytes };
       tx.objectStore(FILES).put(rec, fileKey(slug, relPath));
       await txDone(tx);
       await touch(d, slug);
+      // Local IDB is single-writer per browser profile — an awaited put IS the
+      // commit (SaveOutcome contract, findings D-2).
+      return SAVE_COMMITTED;
     },
 
     async hasProject(slug: string): Promise<boolean> {

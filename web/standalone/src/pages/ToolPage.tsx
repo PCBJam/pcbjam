@@ -103,7 +103,8 @@ export function ToolPage() {
         saveBytes={
           readOnly
             ? undefined
-            : (relPath, bytes) => uploadFileBytes(slug, relPath, bytes)
+            : (relPath, bytes, signal) =>
+                uploadFileBytes(slug, relPath, bytes, signal)
         }
         createFile={
           readOnly

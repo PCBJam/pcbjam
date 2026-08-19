@@ -879,7 +879,16 @@ function persistCreatedSheet(
     const bytes = win.FS?.readFile(memfsFilePath(slug, relPath));
     if (!(bytes instanceof Uint8Array)) return;
     void saveBytes(relPath, bytes)
-      .then(() => log(`[sheet] registered created subsheet ${relPath} (${bytes.length} bytes)`))
+      .then((outcome) => {
+        if (outcome.kind === "committed") {
+          log(`[sheet] registered created subsheet ${relPath} (${bytes.length} bytes)`);
+        } else {
+          cwarn(
+            `[sheet] upload of created subsheet ${relPath} did not commit`,
+            outcome,
+          );
+        }
+      })
       .catch((err) => cwarn(`[sheet] upload of created subsheet ${relPath} failed`, err));
   } catch (err) {
     cwarn(`[sheet] read of created subsheet ${relPath} failed`, err);
@@ -1636,6 +1645,9 @@ export function WasmTool({
     // cleanup below closes over it — and never rejected, so aborting mid-sync
     // leaks nothing and throws nothing.
     const presyncAbort = new AbortController();
+    // The save sink is a global slot (D-9): keep its teardown edge so a
+    // remount can't leave the dead mount uploading + publishing status.
+    let unregisterSaveHook: (() => void) | null = null;
     // The libs source THIS boot created (vs. one injected via props, which the
     // caller owns) — cleanup disposes it so its SyncStack sockets don't outlive
     // the editor.
@@ -1850,7 +1862,7 @@ export function WasmTool({
         // Read-only sessions register neither upload nor the save-driven room
         // writers (onSaved onboarding, onSavedText layout sync) — saves, were
         // any reachable past the wasm lock, stay MEMFS-only.
-        registerSaveHook(win, {
+        const saveHookHandle = registerSaveHook(win, {
           slug,
           saveBytes: readOnly ? undefined : saveBytes,
           log: append,
@@ -1881,6 +1893,7 @@ export function WasmTool({
                 },
               }),
         });
+        unregisterSaveHook = () => saveHookHandle.stop();
         // The room connect started in the fan-out above — settle it before
         // staging so the target file materializes from the doc when it has one.
         const docResult = await docSessionReady;
@@ -2233,6 +2246,9 @@ export function WasmTool({
       presyncAbort.abort();
       win.removeEventListener("keydown", swallowBrowserSave, true);
       win.removeEventListener("keydown", chromeHotkey, true);
+      // The global save sink must not outlive this mount (D-9).
+      unregisterSaveHook?.();
+      unregisterSaveHook = null;
       // Every collab surface + any not-yet-adopted doc session (C-1/C-7).
       teardownCollab();
       // Close the lib SyncStacks this boot opened (mirror mux + any dedicated

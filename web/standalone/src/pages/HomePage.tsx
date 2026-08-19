@@ -22,7 +22,7 @@ import { ToolGrid } from "@/components/ToolGrid";
 import { ProjectsSection } from "@/components/ProjectsSection";
 import { WaitlistForm } from "@/components/WaitlistForm";
 import { NewFileDialog } from "@/components/NewFileDialog";
-import type { SaveBytes } from "@/wasm/save-flow";
+import { SAVE_COMMITTED, type SaveBytes } from "@/wasm/save-flow";
 import { LocalProjectView, type LocalFile } from "@/components/LocalProjectView";
 import { StorageUsageCard } from "@/components/StorageUsageCard";
 import { WasmTool } from "@/components/WasmTool";
@@ -82,6 +82,8 @@ async function buildFsaProject(root: FileSystemDirectoryHandle): Promise<LocalPr
       const writable = await handle.createWritable();
       await writable.write(bytes as unknown as FileSystemWriteChunkType);
       await writable.close();
+      // An awaited close IS the local-disk commit (SaveOutcome contract).
+      return SAVE_COMMITTED;
     },
   };
 }
@@ -111,7 +113,10 @@ function buildLocalProject(fileList: FileList): LocalProject {
       return new Uint8Array(await f.arrayBuffer());
     },
     // A webkitdirectory FileList is read-only — saves become downloads.
-    saveBytes: async (relPath, bytes) => downloadBytes(relPath, bytes),
+    saveBytes: async (relPath, bytes) => {
+      downloadBytes(relPath, bytes);
+      return SAVE_COMMITTED;
+    },
   };
 }
 
