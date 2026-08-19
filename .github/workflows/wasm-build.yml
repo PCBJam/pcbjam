@@ -313,14 +313,19 @@ jobs:
 
       # Baseline screenshots live in a private R2 bucket, pinned by the committed
       # manifest; this cache keyed on the manifest hash makes most fetches a
-      # no-op (r2-sync hash-verifies every restored file, so a stale restore
-      # costs only the changed downloads).
+      # no-op. restore-keys makes a manifest change INCREMENTAL (restore the
+      # previous tree, download only the changed objects) instead of a full
+      # ~35MB re-download. A stale or partial restore is safe: r2-sync
+      # hash-verifies every file and deletes unlisted ones, and compare.ts
+      # refuses to gate against an incomplete cache.
       - name: Cache screenshot baselines
         if: inputs.run_tests
         uses: actions/cache@v4
         with:
           path: tests/baseline-screenshots
           key: baselines-${{ hashFiles('tests/screenshot-manifest.json') }}
+          restore-keys: |
+            baselines-
 
       # continue-on-error: the screenshot pipeline is deliberately report-only
       # (see the report step) — an R2 outage must not fail the build. Without

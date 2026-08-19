@@ -229,13 +229,18 @@ function main(): void {
     }
     const root = process.cwd();
     // Baselines are a local cache fetched from R2 (`npm run screenshots:fetch`).
-    // When the manifest expects screenshots but the cache is empty — a secretless
-    // CI caller where the fetch step skipped, or a dev who hasn't fetched — skip
-    // the gate instead of misreporting every baseline as removed. No report.json
-    // is written; post-discord tolerates its absence.
-    const expected = loadManifest(root)?.screenshots.length ?? 0;
-    if (expected > 0 && listEngineKeys(path.join(root, BASELINE_ROOT)).length === 0) {
-        console.log('[compare] baseline cache is empty — run `npm run screenshots:fetch` (needs R2 credentials); skipping');
+    // The gate only runs against a COMPLETE cache: a partial one (an R2 blip on
+    // a few objects — the CI fetch step is continue-on-error) would misreport
+    // the un-fetched baselines' renders as ADDED and silently disable removed-
+    // detection for them. Fully missing = fetch skipped (no credentials) or a
+    // dev who hasn't fetched. Either way skip without writing report.json —
+    // post-discord posts a distinct "gate SKIPPED" line when it's absent.
+    const gateManifest = loadManifest(root);
+    const wanted = (gateManifest?.screenshots ?? []).filter((e) => !isIgnored(`${e.engine}/${e.name}`));
+    const missing = wanted.filter((e) => !fs.existsSync(path.join(root, BASELINE_ROOT, e.engine, e.name)));
+    if (wanted.length && missing.length) {
+        const what = missing.length === wanted.length ? 'empty' : `INCOMPLETE (${missing.length}/${wanted.length} missing — partial fetch?)`;
+        console.log(`[compare] baseline cache is ${what} — run \`npm run screenshots:fetch\` (needs R2 credentials); skipping`);
         return;
     }
     const report = classify(root, (args.sha as string) || process.env.GITHUB_SHA || null);

@@ -22,16 +22,22 @@ import { R2Store, hashFile, missingEnv, storeFromEnv } from './r2-store';
 
 const CONCURRENCY = 16;
 
-/** Parse the committed manifest if it is the R2-backed v2 format, else null. */
+/** Parse the committed manifest if it is the R2-backed v2 format; null for a
+ *  pre-migration (v1/absent/unparsable) manifest. A NEWER version throws — old
+ *  tooling silently no-oping on a future format would disable the whole gate. */
 export function loadManifestV2(root: string): Manifest | null {
     const p = path.join(root, MANIFEST_PATH);
     if (!fs.existsSync(p)) return null;
+    let m: Manifest;
     try {
-        const m = JSON.parse(fs.readFileSync(p, 'utf8')) as Manifest;
-        return m.version === MANIFEST_VERSION ? m : null;
+        m = JSON.parse(fs.readFileSync(p, 'utf8')) as Manifest;
     } catch {
         return null;
     }
+    if (m.version > MANIFEST_VERSION) {
+        throw new Error(`${MANIFEST_PATH} is version ${m.version} but this tooling expects ${MANIFEST_VERSION} — update your checkout`);
+    }
+    return m.version === MANIFEST_VERSION ? m : null;
 }
 
 /** Run `fn` over `items` with at most `limit` in flight. */
@@ -65,7 +71,8 @@ export async function pullBaselines(
     const errors: string[] = [];
     await pool([...wanted.values()], CONCURRENCY, async (e) => {
         const dest = path.join(base, e.engine, e.name);
-        if (fs.existsSync(dest) && hashFile(dest) === e.sha256) {
+        // Size is a cheap pre-filter: only pay the full read + hash when it can match.
+        if (fs.existsSync(dest) && fs.statSync(dest).size === e.bytes && hashFile(dest) === e.sha256) {
             cached++;
             return;
         }

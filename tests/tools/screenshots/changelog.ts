@@ -31,13 +31,20 @@ function git(root: string, args: string[]): string {
     return execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' }).trim();
 }
 
-/** The screenshot manifest as committed at `rev`, or null if absent/unparsable. */
+/** The screenshot manifest as committed at `rev`. Returns null ONLY when the
+ *  file doesn't exist at that rev (pre-manifest era); any other git failure —
+ *  shallow clone, bad revision, moved path — throws loudly instead of being
+ *  mistaken for "predates the migration". Unparsable committed JSON also throws. */
 function manifestAt(repoRoot: string, rev: string, repoPath: string): Manifest | null {
+    let raw: string;
     try {
-        return JSON.parse(execFileSync('git', ['-C', repoRoot, 'show', `${rev}:${repoPath}`], { encoding: 'utf8' })) as Manifest;
-    } catch {
-        return null;
+        raw = execFileSync('git', ['-C', repoRoot, 'show', `${rev}:${repoPath}`], { encoding: 'utf8' });
+    } catch (e) {
+        const msg = ((e as { stderr?: Buffer }).stderr?.toString() ?? (e as Error).message).trim();
+        if (/does not exist in|exists on disk, but not in/i.test(msg)) return null;
+        throw new Error(`git show ${rev}:${repoPath} failed: ${msg}`);
     }
+    return JSON.parse(raw) as Manifest;
 }
 
 function parseArgs(argv: string[]): Record<string, string | boolean> {
@@ -71,8 +78,14 @@ async function main(): Promise<void> {
     const manifestPath = path.relative(repoRoot, path.join(cwd, MANIFEST_PATH)).split(path.sep).join('/');
     const baseManifest = manifestAt(repoRoot, base, manifestPath);
     const headManifest = manifestAt(repoRoot, head, manifestPath);
+    // A NEWER manifest than this tooling understands is a loud error, never a skip.
+    for (const [label, m] of [['head', headManifest], ['base', baseManifest]] as const) {
+        if (m && m.version > MANIFEST_VERSION) {
+            throw new Error(`${label} manifest is version ${m.version}, newer than this tooling (expects ${MANIFEST_VERSION}) — update the checkout`);
+        }
+    }
     if (headManifest?.version !== MANIFEST_VERSION) {
-        console.log('[changelog] head manifest is not v2 — nothing to diff');
+        console.log('[changelog] head manifest predates the R2 migration — nothing to diff');
         return;
     }
     if (baseManifest?.version !== MANIFEST_VERSION) {
@@ -93,10 +106,12 @@ async function main(): Promise<void> {
         return;
     }
 
+    // Tolerate missing credentials (warn + exit 0): this is a notification-only
+    // workflow — turning every manifest push red during a key rotation is worse
+    // than one missed changelog post. The warning names the fix.
     const store = storeFromEnv();
     if (!store) {
-        console.error(`[changelog] R2 credentials required to fetch baseline bytes: set ${missingEnv().join(', ')}`);
-        process.exitCode = 1;
+        console.warn(`[changelog] R2 credentials unset (${missingEnv().join(', ')}) — cannot fetch baseline bytes; skipping the changelog post`);
         return;
     }
 
@@ -112,7 +127,18 @@ async function main(): Promise<void> {
     };
     const { specFor } = buildSpecResolver(cwd);
 
-    const hashPng = async (s: R2Store, hash: string): Promise<PNG> => PNG.sync.read(await s.get(hash));
+    // One unresolvable object must not abort the whole post — skip that image
+    // (with a loud note) and keep reporting the rest, like the old git-blob
+    // path null-skipped unresolvable blobs.
+    const skipped: string[] = [];
+    const hashPng = async (s: R2Store, hash: string, key: string): Promise<PNG | null> => {
+        try {
+            return PNG.sync.read(await s.get(hash));
+        } catch (e) {
+            skipped.push(`${key}: ${(e as Error).message}`);
+            return null;
+        }
+    };
     // Save a single captioned image (added/removed) and record it in the report.
     const saveSingle = (img: PNG, key: string, status: 'added' | 'removed'): void => {
         const rel = path.join(DIFF_OUT_DIR, `${key.replace('/', '_')}.${status}.png`);
@@ -120,11 +146,18 @@ async function main(): Promise<void> {
         report[status].push({ name: key, image: rel });
     };
 
-    for (const key of added) saveSingle(await hashPng(store, headHashes.get(key)!), key, 'added');
-    for (const key of removed) saveSingle(await hashPng(store, baseHashes.get(key)!), key, 'removed');
+    for (const key of added) {
+        const img = await hashPng(store, headHashes.get(key)!, key);
+        if (img) saveSingle(img, key, 'added');
+    }
+    for (const key of removed) {
+        const img = await hashPng(store, baseHashes.get(key)!, key);
+        if (img) saveSingle(img, key, 'removed');
+    }
     for (const key of changed) {
-        const oldImg = await hashPng(store, baseHashes.get(key)!);
-        const newImg = await hashPng(store, headHashes.get(key)!);
+        const oldImg = await hashPng(store, baseHashes.get(key)!, key);
+        const newImg = await hashPng(store, headHashes.get(key)!, key);
+        if (!oldImg || !newImg) continue;
         const { result, heatmap, triptych } = comparePair(oldImg, newImg, key, floorFor(key));
         const triptychRel = path.join(DIFF_OUT_DIR, `${key.replace('/', '_')}.triptych.png`);
         const heatmapRel = path.join(DIFF_OUT_DIR, `${key.replace('/', '_')}.heatmap.png`);
@@ -133,6 +166,9 @@ async function main(): Promise<void> {
         report.changed.push({ ...result, triptych: triptychRel, heatmap: heatmapRel });
     }
     report.changed.sort((a, b) => b.changedRatio - a.changedRatio);
+    if (skipped.length) {
+        console.warn(`[changelog] skipped ${skipped.length} unresolvable image(s):\n  ${skipped.join('\n  ')}`);
+    }
 
     const sha7 = (process.env.GITHUB_SHA || head).slice(0, 7);
     let subject = '';
@@ -143,6 +179,7 @@ async function main(): Promise<void> {
         `🗂️ **Baseline changelog** · \`${sha7}\`` +
         (subject ? `\n> ${subject}` : '') +
         `\n${report.changed.length} changed, ${report.added.length} added, ${report.removed.length} removed` +
+        (skipped.length ? `\n⚠️ ${skipped.length} image(s) unresolvable in R2 — see the workflow log` : '') +
         (report.removed.length ? '\n➖ REMOVED: ' + report.removed.map((r) => `\`${r.name}\``).join(', ') : '');
 
     const { files, notes } = buildAttachments(cwd, report);

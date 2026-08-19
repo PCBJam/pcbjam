@@ -149,15 +149,20 @@ async function main(): Promise<void> {
         process.exitCode = 2;
         return;
     }
+    // Refuse a pre-migration checkout rather than warn: buildPlan would mark
+    // most renders "unchanged" (so never uploaded) while writeManifest pins
+    // their hashes anyway — committing a manifest that references objects R2
+    // doesn't have. Sync the checkout to a post-migration revision first.
+    if (!loadManifestV2(root)) {
+        console.error(`[promote] ${MANIFEST_PATH} is not the R2-backed v2 format — refusing to promote on a pre-migration checkout`);
+        process.exitCode = 2;
+        return;
+    }
     // The local tree is a cache — sync it to the committed manifest so the plan
     // diffs against exactly what the manifest pins (a stale/absent cache would
     // otherwise misreport adds/updates).
-    if (loadManifestV2(root)) {
-        const { downloaded, cached, deleted } = await pullBaselines(root, store);
-        console.log(`[promote] cache synced: downloaded=${downloaded} cached=${cached} deleted=${deleted}`);
-    } else {
-        console.warn(`[promote] ${MANIFEST_PATH} is not v2 — skipping cache sync (pre-migration tree?)`);
-    }
+    const { downloaded, cached, deleted } = await pullBaselines(root, store);
+    console.log(`[promote] cache synced: downloaded=${downloaded} cached=${cached} deleted=${deleted}`);
 
     const renderDir = args.from ? (args.from as string) : downloadRun(args.run as string, args.repo as string);
     const manifest = loadManifest(root);

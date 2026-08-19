@@ -134,7 +134,12 @@ function buildHeader(report: Report | null, perfBlock: string, meta: { sha?: str
     };
 
     lines.push('');
-    if (!report || (!report.changed.length && !report.added.length && !report.removed.length)) {
+    if (!report) {
+        // No report.json = the compare gate never ran (baseline fetch skipped or
+        // incomplete). Saying "no drift" here would make a disabled pipeline
+        // indistinguishable from a healthy one.
+        lines.push('⚠️ screenshot gate SKIPPED — no baseline comparison ran (R2 fetch skipped/failed; check CI_SCREENSHOTS_S3_* secrets and the fetch step log)');
+    } else if (!report.changed.length && !report.added.length && !report.removed.length) {
         lines.push('✅ no screenshot drift');
     } else if (report.driftLikely) {
         lines.push(`⚠️ **${report.changed.length} screenshots changed broadly** — looks like host env drift → re-promote (\`npm run screenshots:promote\`)`);
