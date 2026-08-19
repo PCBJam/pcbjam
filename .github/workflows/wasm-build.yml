@@ -318,19 +318,37 @@ jobs:
         working-directory: tests
         run: npm ci
 
-      # Baseline screenshots live in a private R2 bucket, pinned by the committed
-      # manifest; this cache keyed on the manifest hash makes most fetches a
-      # no-op. restore-keys makes a manifest change INCREMENTAL (restore the
-      # previous tree, download only the changed objects) instead of a full
-      # ~35MB re-download. A stale or partial restore is safe: r2-sync
-      # hash-verifies every file and deletes unlisted ones, and compare.ts
-      # refuses to gate against an incomplete cache.
+      # The baseline manifest lives in R2 (written only by the morelli review
+      # app + its seed script) — download it FIRST so this whole run pins to
+      # one manifest version and the cache step below can key on its hash.
+      # continue-on-error + the no-creds skip (which also deletes any stale
+      # local copy) keep secretless callers green — every later screenshot
+      # step then skips rather than gating on outdated baselines.
+      - name: Fetch baseline manifest from R2
+        if: inputs.run_tests
+        continue-on-error: true
+        working-directory: tests
+        env:
+          CI_SCREENSHOTS_S3_ENDPOINT: ${{ vars.CI_SCREENSHOTS_S3_ENDPOINT }}
+          CI_SCREENSHOTS_S3_ACCESS_KEY_ID: ${{ secrets.CI_SCREENSHOTS_S3_ACCESS_KEY_ID }}
+          CI_SCREENSHOTS_S3_SECRET_ACCESS_KEY: ${{ secrets.CI_SCREENSHOTS_S3_SECRET_ACCESS_KEY }}
+        run: npm run screenshots:fetch-manifest
+
+      # Baseline screenshots live in a private R2 bucket, pinned by the manifest
+      # fetched above; this cache keyed on the manifest hash makes most fetches
+      # a no-op (hashFiles evaluates at step run time, AFTER the fetch; a
+      # skipped fetch hashes to empty → restore-keys still warms the tree).
+      # restore-keys makes a manifest change INCREMENTAL (restore the previous
+      # tree, download only the changed objects) instead of a full ~35MB
+      # re-download. A stale or partial restore is safe: r2-sync hash-verifies
+      # every file and deletes unlisted ones, and compare.ts refuses to gate
+      # against an incomplete cache.
       - name: Cache screenshot baselines
         if: inputs.run_tests
         uses: actions/cache@v4
         with:
           path: tests/baseline-screenshots
-          key: baselines-${{ hashFiles('tests/screenshot-manifest.json') }}
+          key: baselines-${{ hashFiles('tests/.baseline-manifest.json') }}
           restore-keys: |
             baselines-
 
@@ -349,19 +367,17 @@ jobs:
         run: npm run screenshots:fetch
 
       # Cheap hygiene gates (no build needed): the determinism lint keeps the
-      # banned flake patterns out of the specs, the manifest check validates
-      # screenshot-manifest.json (v2 schema, sorted/unique hashes) and fails if
-      # baseline PNGs are ever re-committed to git (credential-free — it never
-      # touches R2, so it gates secretless callers identically), and
-      # the CI-coverage lint proves every spec file on disk is reachable from
-      # the npm scripts THIS workflow invokes (a spec/project that CI never
-      # runs is how the web suite once rotted unnoticed).
-      - name: Lint test determinism + screenshot manifest + CI coverage
+      # banned flake patterns out of the specs, and the CI-coverage lint proves
+      # every spec file on disk is reachable from the npm scripts THIS workflow
+      # invokes (a spec/project that CI never runs is how the web suite once
+      # rotted unnoticed). (The old screenshot-manifest --check gate went with
+      # the committed manifest — the manifest now lives in R2, written only by
+      # the morelli app, which validates on every promote.)
+      - name: Lint test determinism + CI coverage
         if: inputs.run_tests
         working-directory: tests
         run: |
           npm run lint:determinism
-          npm run screenshots:manifest -- --check
           npm run lint:ci-coverage
 
       - name: Install web workspace deps (collab bundle)

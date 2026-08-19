@@ -20,22 +20,27 @@ import * as nodePath from 'path';
  * other's PNG, and the surviving file was whichever parallel worker wrote last.
  *
  * The baseline PNGs are NOT committed: they live in a private R2 bucket,
- * content-addressed by sha256, and the committed manifest
- * (screenshot-manifest.json) is what pins each `<engine>/<name>` to a hash.
- * `npm run screenshots:fetch` (tools/screenshots/r2-sync.ts) materializes this
- * tree from the manifest; promote.ts uploads new hashes and rewrites the
- * manifest — the manifest diff is the only thing that lands in git.
+ * content-addressed by sha256, pinned by the R2-HOSTED manifest
+ * (baselines/pcbjam/manifest.json — nothing manifest-related is in git).
+ * `npm run screenshots:fetch-manifest && npm run screenshots:fetch`
+ * (tools/screenshots/r2-sync.ts) materializes this tree. Baselines are
+ * promoted from a CI run in the morelli review app
+ * (https://pcbjam-morelli-staging.pcbjam-staging.workers.dev) — the old
+ * promote.ts/git-manifest flow is retired.
  */
 export const BASELINE_ROOT = 'baseline-screenshots';
 
-/** Manifest format version — bumped when baselines moved from git to R2. */
-export const MANIFEST_VERSION = 2;
+/** Manifest format version — v3 = the R2-hosted manifest written by morelli (v2 was the committed-in-git era). */
+export const MANIFEST_VERSION = 3;
 
 /** Default private R2 bucket holding the content-addressed baselines. */
 export const R2_DEFAULT_BUCKET = 'pcbjam-ci-screenshots';
 
 /** Key prefix for content-addressed objects: `sha256/<64-hex>.png`. */
 export const R2_KEY_PREFIX = 'sha256/';
+
+/** The R2-hosted baseline manifest — THE source of truth. Written only by morelli (promote) and its seed script. */
+export const R2_BASELINES_MANIFEST_KEY = 'baselines/pcbjam/manifest.json';
 
 /**
  * Env vars for the bucket's S3 API (read-only keypair in CI, read-write for
@@ -80,8 +85,14 @@ export const RESULTS_DIR = 'test-results';
 /** Where compare.ts writes diff/heatmap/triptych artifacts (gitignored). */
 export const DIFF_OUT_DIR = 'test-results/screenshot-diff';
 
-/** The manifest that records every expected screenshot + which engine renders it. */
-export const MANIFEST_PATH = 'screenshot-manifest.json';
+/**
+ * Local, GITIGNORED copy of the R2-hosted baseline manifest, downloaded by
+ * `npm run screenshots:fetch-manifest` (r2-sync --manifest). Everything
+ * downstream (fetch, compare, verify) reads this file; its absence means "no
+ * manifest fetched" and the screenshot gate skips. Deliberately NOT inside
+ * test-results/ — Playwright wipes that dir at the start of every invocation.
+ */
+export const MANIFEST_PATH = '.baseline-manifest.json';
 
 /**
  * pixelmatch per-pixel settings.
@@ -185,10 +196,22 @@ export function labelText(status: LabelStatus, key: string, spec: string | null)
  * `height` are sanity metadata (cheap pre-hash check on fetch, dimension info
  * in reviews).
  */
-export type ManifestEntry = { name: string; engine: string; sha256: string; bytes: number; width: number; height: number };
+export type ManifestEntry = {
+    name: string;
+    engine: string;
+    sha256: string;
+    bytes: number;
+    width: number;
+    height: number;
+    /** morelli-side provenance (which run/branch/user promoted this) — opaque to the CI tooling. */
+    source?: unknown;
+};
 export type Manifest = {
     version: number;
+    pipeline?: string;
     storage: { bucket: string; keyPrefix: string };
+    updatedAt?: string;
+    updatedBy?: string;
     screenshots: ManifestEntry[];
 };
 

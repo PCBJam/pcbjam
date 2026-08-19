@@ -9,8 +9,8 @@
  * The gate mode classifies every screenshot into changed / added / removed /
  * unchanged, writes per-change triptych + heatmap PNGs and a machine-readable
  * report.json into DIFF_OUT_DIR, and (unless --fail-on-change) exits 0 so it can
- * run report-only first. post-discord.ts and the changelog workflow import the
- * exported helpers rather than re-deriving the diff.
+ * run report-only first. post-discord.ts imports the exported helpers rather
+ * than re-deriving the diff.
  */
 import * as fs from 'fs';
 import * as path from 'path';
@@ -236,7 +236,14 @@ function main(): void {
     // dev who hasn't fetched. Either way skip without writing report.json —
     // post-discord posts a distinct "gate SKIPPED" line when it's absent.
     const gateManifest = loadManifest(root);
-    const wanted = (gateManifest?.screenshots ?? []).filter((e) => !isIgnored(`${e.engine}/${e.name}`));
+    // No fetched manifest at all (creds absent, R2 down, or morelli never
+    // seeded) ⇒ the gate has no source of truth — skip rather than diff
+    // against whatever stale cache a previous run left behind.
+    if (!gateManifest) {
+        console.log(`[compare] no fetched ${MANIFEST_PATH} — run \`npm run screenshots:fetch-manifest\` (needs R2 credentials); skipping`);
+        return;
+    }
+    const wanted = gateManifest.screenshots.filter((e) => !isIgnored(`${e.engine}/${e.name}`));
     const missing = wanted.filter((e) => !fs.existsSync(path.join(root, BASELINE_ROOT, e.engine, e.name)));
     if (wanted.length && missing.length) {
         const what = missing.length === wanted.length ? 'empty' : `INCOMPLETE (${missing.length}/${wanted.length} missing — partial fetch?)`;

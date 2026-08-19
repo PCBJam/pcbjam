@@ -142,7 +142,7 @@ function buildHeader(report: Report | null, perfBlock: string, meta: { sha?: str
     } else if (!report.changed.length && !report.added.length && !report.removed.length) {
         lines.push('✅ no screenshot drift');
     } else if (report.driftLikely) {
-        lines.push(`⚠️ **${report.changed.length} screenshots changed broadly** — looks like host env drift → re-promote (\`npm run screenshots:promote\`)`);
+        lines.push(`⚠️ **${report.changed.length} screenshots changed broadly** — looks like host env drift → re-promote in morelli (https://pcbjam-morelli-staging.pcbjam-staging.workers.dev)`);
     } else {
         lines.push(
             `⚠️ **screenshot drift**: ${report.changed.length} changed${byEngine(report.changed)}, ` +

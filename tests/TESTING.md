@@ -46,15 +46,18 @@ only) — not playwright directly. One spec on one engine:
   `tests/baseline-screenshots/<engine>/` (+ the still-committed `3d-regression/`,
   `gal-regression/`).
 - **Baselines live in the private R2 bucket `pcbjam-ci-screenshots`, not git**:
-  the committed `tests/screenshot-manifest.json` pins each `{name, engine}` to a
-  sha256, and `baseline-screenshots/` is a gitignored cache — materialize it with
-  `npm run screenshots:fetch` (needs the R2 credentials; see
-  `tools/screenshots/README.md`). CI's lint step validates the manifest and fails
-  if baseline PNGs are ever committed again.
-- **CI's Linux render is the source of truth**; baselines are promoted from CI
-  (`npm run screenshots:promote -- --run <ci-run-id>`, needs the read-write
-  credentials) — commit only the regenerated manifest diff, never PNGs. A local
-  (Mac) check shows font/render noise and is not the gate.
+  the R2-hosted manifest `baselines/pcbjam/manifest.json` pins each
+  `{name, engine}` to a sha256, and `baseline-screenshots/` +
+  `.baseline-manifest.json` are gitignored caches — materialize them with
+  `npm run screenshots:fetch-manifest && npm run screenshots:fetch` (needs the
+  R2 credentials; see `tools/screenshots/README.md`). Nothing
+  screenshot-related is committed to git.
+- **CI's Linux render is the source of truth**; baselines are promoted from a
+  CI run in the morelli review app
+  (https://pcbjam-morelli-staging.pcbjam-staging.workers.dev) — CI uploads each
+  run's renders to R2 (30-day retention), morelli shows the diffs and writes
+  the manifest on Promote. A local (Mac) check shows font/render noise and is
+  not the gate.
 - A continuously-animating state (timer, mid-slide) can't be a stable baseline — drop the shot.
 
 ## Retries

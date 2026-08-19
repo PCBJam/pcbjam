@@ -1,31 +1,38 @@
 /**
  * Sync the local baseline-screenshots/ cache with the R2 CAS bucket.
  *
- * The committed manifest (screenshot-manifest.json) is the source of truth;
- * baseline-screenshots/ is a gitignored local cache materialized from it.
+ * The R2-HOSTED manifest (baselines/pcbjam/manifest.json, written only by the
+ * morelli review app + its seed script) is the source of truth. --manifest
+ * downloads it to the gitignored MANIFEST_PATH; everything downstream (--pull,
+ * --verify, compare.ts) reads that local copy, so a single fetch pins the
+ * whole run to one manifest version.
  *
  * CLI (from tests/):
- *   tsx tools/screenshots/r2-sync.ts --pull     # manifest → local tree (CI fetch step + local gate)
- *   tsx tools/screenshots/r2-sync.ts --push     # upload manifest entries missing in R2 (seeding)
+ *   tsx tools/screenshots/r2-sync.ts --manifest # R2 manifest → local .baseline-manifest.json
+ *   tsx tools/screenshots/r2-sync.ts --pull     # fetched manifest → local tree (CI fetch step + local gate)
  *   tsx tools/screenshots/r2-sync.ts --verify   # HEAD every manifest hash, exit 1 on any miss
  *
- * --pull without credentials (or with a pre-migration manifest) warns and
- * exits 0, so secretless callers of the reusable CI workflow (release.yml,
- * pcbjam deploy-staging.yml, fork PRs) stay green — compare.ts then skips its
- * gate for the same reason. With credentials, any 404/corrupt object is
- * collected and the run exits 1.
+ * --manifest and --pull without credentials warn and exit 0 — and --manifest
+ * DELETES a stale local manifest so the gate skips rather than comparing
+ * against outdated baselines. Secretless callers of the reusable CI workflow
+ * (release.yml, pcbjam deploy-staging.yml, fork PRs) therefore stay green;
+ * compare.ts skips its gate when no manifest was fetched. With credentials,
+ * any 404/corrupt object is collected and the run exits 1.
+ *
+ * (--push is gone with the git-manifest era: baseline bytes now enter the CAS
+ * only via morelli's promote, which copies them from the CI run uploads.)
  */
 import * as fs from 'fs';
 import * as path from 'path';
-import { BASELINE_ROOT, MANIFEST_PATH, MANIFEST_VERSION, listEngineKeys, type Manifest, type ManifestEntry } from './config';
+import { BASELINE_ROOT, MANIFEST_PATH, MANIFEST_VERSION, R2_BASELINES_MANIFEST_KEY, listEngineKeys, type Manifest, type ManifestEntry } from './config';
 import { R2Store, hashFile, missingEnv, storeFromEnv } from './r2-store';
 
 const CONCURRENCY = 16;
 
-/** Parse the committed manifest if it is the R2-backed v2 format; null for a
- *  pre-migration (v1/absent/unparsable) manifest. A NEWER version throws — old
- *  tooling silently no-oping on a future format would disable the whole gate. */
-export function loadManifestV2(root: string): Manifest | null {
+/** Parse the fetched manifest if it is the morelli-era v3 format; null when
+ *  absent/unparsable (→ the gate skips). A NEWER version throws — old tooling
+ *  silently no-oping on a future format would disable the whole gate. */
+export function loadManifest(root: string): Manifest | null {
     const p = path.join(root, MANIFEST_PATH);
     if (!fs.existsSync(p)) return null;
     let m: Manifest;
@@ -38,6 +45,25 @@ export function loadManifestV2(root: string): Manifest | null {
         throw new Error(`${MANIFEST_PATH} is version ${m.version} but this tooling expects ${MANIFEST_VERSION} — update your checkout`);
     }
     return m.version === MANIFEST_VERSION ? m : null;
+}
+
+/**
+ * Download the R2-hosted baseline manifest to MANIFEST_PATH (atomic tmp+rename).
+ * Returns false when it could not be fetched — in which case any stale local
+ * copy is removed, so downstream steps skip instead of using old baselines.
+ */
+export async function fetchManifest(root: string, store: R2Store): Promise<boolean> {
+    const dest = path.join(root, MANIFEST_PATH);
+    const bytes = await store.getKey(R2_BASELINES_MANIFEST_KEY);
+    if (!bytes) {
+        fs.rmSync(dest, { force: true });
+        console.warn(`[r2-sync] ${R2_BASELINES_MANIFEST_KEY} not found in R2 — no baselines (seed via morelli first)`);
+        return false;
+    }
+    const tmp = `${dest}.tmp-${process.pid}`;
+    fs.writeFileSync(tmp, bytes);
+    fs.renameSync(tmp, dest);
+    return true;
 }
 
 /** Run `fn` over `items` with at most `limit` in flight. */
@@ -60,8 +86,8 @@ export async function pullBaselines(
     root: string,
     store: R2Store
 ): Promise<{ downloaded: number; cached: number; deleted: number }> {
-    const manifest = loadManifestV2(root);
-    if (!manifest) throw new Error(`no v2 ${MANIFEST_PATH} — nothing to pull`);
+    const manifest = loadManifest(root);
+    if (!manifest) throw new Error(`no fetched ${MANIFEST_PATH} — run \`npm run screenshots:fetch-manifest\` first`);
     const base = path.join(root, BASELINE_ROOT);
     const wanted = new Map<string, ManifestEntry>();
     for (const e of manifest.screenshots) wanted.set(`${e.engine}/${e.name}`, e);
@@ -99,35 +125,10 @@ export async function pullBaselines(
     return { downloaded, cached, deleted };
 }
 
-/** Upload every manifest entry's local file to R2 (skipping hashes already present). */
-export async function pushBaselines(root: string, store: R2Store): Promise<{ uploaded: number; existing: number }> {
-    const manifest = loadManifestV2(root);
-    if (!manifest) throw new Error(`no v2 ${MANIFEST_PATH} — run \`npm run screenshots:manifest\` first`);
-    const base = path.join(root, BASELINE_ROOT);
-    let uploaded = 0;
-    let existing = 0;
-    const errors: string[] = [];
-    await pool(manifest.screenshots, CONCURRENCY, async (e) => {
-        const file = path.join(base, e.engine, e.name);
-        try {
-            if (!fs.existsSync(file)) throw new Error('local file missing');
-            const bytes = fs.readFileSync(file);
-            const hash = hashFile(file);
-            if (hash !== e.sha256) throw new Error(`local sha256 ${hash} ≠ manifest — regenerate the manifest`);
-            if ((await store.put(hash, bytes)) === 'uploaded') uploaded++;
-            else existing++;
-        } catch (err) {
-            errors.push(`${e.engine}/${e.name}: ${(err as Error).message}`);
-        }
-    });
-    if (errors.length) throw new Error(`${errors.length} upload(s) failed:\n  ${errors.join('\n  ')}`);
-    return { uploaded, existing };
-}
-
 /** HEAD every manifest hash; returns the missing keys. */
 export async function verifyBaselines(root: string, store: R2Store): Promise<string[]> {
-    const manifest = loadManifestV2(root);
-    if (!manifest) throw new Error(`no v2 ${MANIFEST_PATH}`);
+    const manifest = loadManifest(root);
+    if (!manifest) throw new Error(`no fetched ${MANIFEST_PATH} — run \`npm run screenshots:fetch-manifest\` first`);
     const missing: string[] = [];
     await pool(manifest.screenshots, CONCURRENCY, async (e) => {
         if (!(await store.exists(e.sha256))) missing.push(`${e.engine}/${e.name} (${e.sha256})`);
@@ -136,20 +137,27 @@ export async function verifyBaselines(root: string, store: R2Store): Promise<str
 }
 
 async function main(): Promise<void> {
-    const mode = process.argv.find((a) => a === '--pull' || a === '--push' || a === '--verify');
+    const mode = process.argv.find((a) => a === '--manifest' || a === '--pull' || a === '--verify');
     if (!mode) {
-        console.error('usage: r2-sync.ts --pull | --push | --verify');
+        console.error('usage: r2-sync.ts --manifest | --pull | --verify');
         process.exitCode = 2;
         return;
     }
     const root = process.cwd();
 
-    if (mode === '--pull' && !loadManifestV2(root)) {
-        console.log(`[r2-sync] ${MANIFEST_PATH} is not the R2-backed v2 format — nothing to fetch`);
-        return;
+    if (mode === '--pull' && !loadManifest(root)) {
+        console.log(`[r2-sync] no fetched ${MANIFEST_PATH} — skipping pull (run screenshots:fetch-manifest first)`);
+        return; // exit 0: manifest fetch skipped/failed → the gate skips, never gates on stale data
     }
     const store = storeFromEnv();
     if (!store) {
+        if (mode === '--manifest') {
+            // Delete a stale copy so the downstream gate SKIPS instead of
+            // comparing against whatever manifest a previous run left behind.
+            fs.rmSync(path.join(root, MANIFEST_PATH), { force: true });
+            console.log(`[r2-sync] R2 credentials unset (${missingEnv().join(', ')}) — skipping manifest fetch`);
+            return; // exit 0: secretless CI callers stay green
+        }
         if (mode === '--pull') {
             console.log(`[r2-sync] R2 credentials unset (${missingEnv().join(', ')}) — skipping baseline fetch`);
             return; // exit 0: secretless CI callers stay green
@@ -159,12 +167,14 @@ async function main(): Promise<void> {
         return;
     }
 
-    if (mode === '--pull') {
+    if (mode === '--manifest') {
+        if (await fetchManifest(root, store)) {
+            const manifest = loadManifest(root);
+            console.log(`[r2-sync] fetched ${MANIFEST_PATH}: ${manifest?.screenshots.length ?? 0} baselines (updated ${manifest?.updatedAt ?? '?'} by ${manifest?.updatedBy ?? '?'})`);
+        }
+    } else if (mode === '--pull') {
         const { downloaded, cached, deleted } = await pullBaselines(root, store);
         console.log(`[r2-sync] pull done: downloaded=${downloaded} cached=${cached} deleted=${deleted}`);
-    } else if (mode === '--push') {
-        const { uploaded, existing } = await pushBaselines(root, store);
-        console.log(`[r2-sync] push done: uploaded=${uploaded} already-present=${existing}`);
     } else {
         const missing = await verifyBaselines(root, store);
         if (missing.length) {

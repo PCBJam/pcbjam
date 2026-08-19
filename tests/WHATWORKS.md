@@ -405,7 +405,7 @@ tests/
 ├── test-results/
 │   ├── chromium/            # Latest run's captures per engine
 │   └── firefox/
-└── screenshot-manifest.json  # Committed pin: {name, engine, sha256, …} per baseline
+└── .baseline-manifest.json  # GITIGNORED copy of the R2-hosted manifest (npm run screenshots:fetch-manifest)
 ```
 
 Specs write via `stableShot(page, 'name.png')` / `shotPath(page, 'name.png')`
@@ -416,7 +416,8 @@ browser, so the same spec on two engines produces two independent captures.
 
 ```bash
 cd tests
-npm run screenshots:fetch   # materialize the baseline cache from R2 (idempotent)
+npm run screenshots:fetch-manifest   # download the R2-hosted baseline manifest
+npm run screenshots:fetch            # materialize the baseline cache from R2 (idempotent)
 npm run screenshots:check
 ```
 
@@ -428,14 +429,13 @@ detection is driven by the manifest). On each main push, CI posts the same repor
 ### Updating Baseline Screenshots
 
 CI's Linux render is the source of truth — never copy local (Mac) renders into
-the baselines. Promote from a CI run instead (churn-free: only meaningfully
-changed images restage, and the manifest regenerates automatically):
+the baselines. Promote from a CI run in the morelli review app instead
+(churn-free: identical images keep their provenance, and the R2-hosted manifest
+updates atomically — no git commit involved):
 
-```bash
-cd tests
-npm run screenshots:promote -- --run <ci-run-id>   # needs the read-write R2 keypair (tests/.env)
-git commit   # only screenshot-manifest.json changes — PNGs are uploaded to R2, never committed
-```
+1. Open https://pcbjam-morelli-staging.pcbjam-staging.workers.dev (GitHub sign-in).
+2. Pipeline `pcbjam` → pick the run → review the side-by-side/pixel diffs.
+3. Select the intended changes (or "Select all changed + added") → Promote.
 
 ### Running Tests with Screenshots
 

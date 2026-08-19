@@ -100,6 +100,21 @@ export class R2Store {
     }
 
     /**
+     * Download an ARBITRARY key (the R2-hosted baseline manifest) — unlike
+     * get(), not content-addressed, so no hash verification is possible; null
+     * on 404 so the caller can degrade like the no-credentials path.
+     */
+    async getKey(key: string): Promise<Buffer | null> {
+        const res = await this.fetchWithRetry(`${this.base}/${key}`, { method: 'GET' });
+        if (res.status === 404) {
+            await res.arrayBuffer().catch(() => undefined);
+            return null;
+        }
+        if (res.status !== 200) throw new Error(`GET ${key} → HTTP ${res.status}`);
+        return Buffer.from(await res.arrayBuffer());
+    }
+
+    /**
      * Upload to an ARBITRARY key (the per-run uploads under runs/…, consumed by
      * the morelli review app) — unlike put(), not content-addressed and always
      * overwrites (workflow re-runs reuse the run id; last attempt wins).
