@@ -10,8 +10,15 @@ import { APP_GIT_SHA, APP_TAG, LANDING_URL, REPO_URL } from "@/lib/config";
  * loaded editor. `fixed` keeps it viewport-anchored on every route; z-20 sits
  * under the editor's boot overlay (z-30) so it's hidden until the tool is up.
  */
+/** Display form of a build tag: any embedded full commit hash shortens to the
+ *  GitHub-style 7 chars ("staging-<40 hex>" → "staging-abc1234"); release tags
+ *  ("2.7.7") pass through untouched. Display only — links keep the full sha. */
+export function shortBuildTag(tag: string): string {
+  return tag.replace(/\b[0-9a-f]{12,40}\b/i, (h) => h.slice(0, 7));
+}
+
 export function VersionBadge() {
-  const tag = APP_TAG ?? "dev";
+  const tag = shortBuildTag(APP_TAG ?? "dev");
   const versionUrl = APP_GIT_SHA
     ? `${REPO_URL}/commit/${APP_GIT_SHA}`
     : APP_TAG
