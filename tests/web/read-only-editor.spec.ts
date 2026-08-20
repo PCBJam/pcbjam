@@ -10,9 +10,10 @@ test.describe.configure({ mode: 'serial' });
 /**
  * Read-only viewer e2e (read-only-viewer): `?readonly=1` boots the pcbnew
  * editor as a locked viewer — chrome force-hidden with no toggle, the
- * Cmd/Ctrl+\ chord inert, nothing selectable or deletable through the REAL
- * input paths (the kicad PCBJAM_READ_ONLY gates), zoom/pan alive — while a
- * writer tab on the same board (broadcastchannel room) stays fully editable.
+ * Cmd/Ctrl+\ chord inert, selection alive for INSPECTION (viewer-panels) but
+ * nothing editable through the REAL input paths (the kicad PCBJAM_READ_ONLY
+ * gates), zoom/pan alive — while a writer tab on the same board
+ * (broadcastchannel room) stays fully editable.
  *
  * The viewer boots FIRST on the fresh room (fresh browser context ⇒ empty
  * broadcastchannel room): a read-only binding must not seed it; the writer
@@ -33,6 +34,10 @@ type Mod = {
   kicadCollabTestClearSelection(): boolean;
   kicadCollabGetPos(id: string): string;
   kicadCollabTestMoveFirst(dx: number, dy: number): string;
+  // Layer bridge (viewer-panels).
+  kicadLayersGetState(): string;
+  kicadLayersSetVisible(id: number, visible: boolean): boolean | Promise<boolean>;
+  kicadLayersSetActive(id: number): boolean | Promise<boolean>;
 };
 type W = { Module: Mod };
 
@@ -118,7 +123,7 @@ test.afterAll(async () => {
   await viewer?.close();
 });
 
-test('viewer boots locked: chrome-less, nothing selectable, hotkey edits inert, zoom alive', async () => {
+test('viewer boots locked: chrome-less, selection inspect-only, hotkey edits inert, zoom alive', async () => {
   test.setTimeout(240_000);
 
   // Chrome force-hidden: no menubar, no console footer, no toggle — the
@@ -180,7 +185,7 @@ test('viewer boots locked: chrome-less, nothing selectable, hotkey edits inert, 
     .poll(
       async () =>
         (await selection(writer)).length > 0 ||
-        (await writer.getByText(/Show More Choices/).count()) > 0,
+        (await writer.locator('.wx-menu-popup').count()) > 0,
       {
         timeout: 20000,
         message: "writer's click should select the item or pop the clarify menu",
@@ -190,10 +195,79 @@ test('viewer boots locked: chrome-less, nothing selectable, hotkey edits inert, 
   await writer.keyboard.press('Escape'); // dismiss a clarify popup, drop any selection
   await writer.evaluate(() => (window as unknown as W).Module.kicadCollabTestClearSelection());
 
+  // Selection is LIVE for viewers (viewer-panels): the same real click that
+  // selects for the writer selects for the viewer too (or pops the clarify
+  // list when several items overlap) — the inspector panel consumes it.
+  // Everything downstream of the selection stays locked (probed below).
   const viewerClick = await screenPosOf(viewer, itemWorld);
   await viewer.mouse.click(viewerClick.x, viewerClick.y);
-  expect(await selection(viewer), 'viewer click on the item must select nothing').toEqual([]);
-  await expect(viewer.getByText(/Show More Choices/)).toHaveCount(0);
+  await expect
+    .poll(
+      async () =>
+        (await selection(viewer)).length > 0 ||
+        (await viewer.locator('.wx-menu-popup').count()) > 0,
+      {
+        timeout: 20000,
+        message: "viewer's click should select the item or pop the clarify menu",
+      },
+    )
+    .toBe(true);
+  await viewer.keyboard.press('Escape'); // dismiss a clarify popup, drop the selection
+  await viewer.evaluate(() => (window as unknown as W).Module.kicadCollabTestClearSelection());
+
+  // Right-click: the clarify (disambiguation) list stays ALLOWED for viewers
+  // — it is pure selection — but the CONTEXT menu that follows a resolved
+  // right-click must NOT open (it offers edit entries the action gate
+  // silently swallows). Positive control first: the writer's right-click
+  // (clarify entry 1 if ambiguous) opens the context menu.
+  // All popup probes scope to `.wx-menu-popup` — the hidden wx chrome keeps
+  // e.g. a "Properties" pane caption in the DOM, so a bare getByText count
+  // would false-positive on both pages.
+  const popupWithProperties = (pg: Page) =>
+    pg.locator('.wx-menu-popup').getByText(/Properties/).count();
+  // Any open wx popup — the clarify list has numbered rows but only shows
+  // "Show More Choices" when the collector held extra candidates, so the
+  // text is NOT a reliable marker.
+  const clarifyOpen = (pg: Page) =>
+    pg.locator('.wx-menu-popup').count();
+
+  await writer.mouse.click(writerClick.x, writerClick.y, { button: 'right' });
+  await expect
+    .poll(
+      async () => (await clarifyOpen(writer)) > 0 || (await popupWithProperties(writer)) > 0,
+      { timeout: 20000, message: "writer's right-click should open a menu" },
+    )
+    .toBe(true);
+  if ((await clarifyOpen(writer)) > 0 && (await popupWithProperties(writer)) === 0) {
+    await writer.locator('.wx-menu-popup > div').filter({ hasText: /^\s*1\s/ }).first().click(); // choose clarify entry 1
+  }
+  await expect
+    .poll(() => popupWithProperties(writer), {
+      timeout: 20000,
+      message: "writer's resolved right-click should open the context menu",
+    })
+    .toBeGreaterThan(0);
+  await writer.keyboard.press('Escape');
+  await writer.evaluate(() => (window as unknown as W).Module.kicadCollabTestClearSelection());
+
+  // Viewer, same gesture: the clarify list may resolve the selection, but
+  // no context menu follows — no popup remains (or reopens) after the choice.
+  await viewer.mouse.click(viewerClick.x, viewerClick.y, { button: 'right' });
+  await expect
+    .poll(
+      async () => (await clarifyOpen(viewer)) > 0 || (await selection(viewer)).length > 0,
+      { timeout: 20000, message: "viewer's right-click should reach selection" },
+    )
+    .toBe(true);
+  if ((await clarifyOpen(viewer)) > 0) {
+    await viewer.locator('.wx-menu-popup > div').filter({ hasText: /^\s*1\s/ }).first().click(); // choose clarify entry 1
+  }
+  // Documented interaction dwell: the context menu would open within a frame
+  // or two of the resolved selection — give it time, then assert it didn't.
+  await viewer.waitForTimeout(800); // dwell
+  await expect(viewer.locator('.wx-menu-popup')).toHaveCount(0);
+  await viewer.keyboard.press('Escape');
+  await viewer.evaluate(() => (window as unknown as W).Module.kicadCollabTestClearSelection());
 
   // Gate 1 (action allowlist): even with an item force-selected through the
   // test hook (AddItemToSel bypasses Selectable by design), the Delete hotkey
@@ -252,4 +326,130 @@ test("a writer's edits stream into the viewer live (and never the reverse)", asy
     .not.toBe(posBefore);
   // The viewer's board still matches the writer's (nothing flowed back).
   expect(await posOf(writer, itemId)).toBe(await posOf(viewer, itemId));
+});
+
+test('viewer panels: layer selector + selection inspector (viewer-panels)', async () => {
+  test.setTimeout(240_000);
+
+  const layersState = () =>
+    viewer.evaluate(
+      () =>
+        JSON.parse((window as unknown as W).Module.kicadLayersGetState()) as {
+          active: number;
+          layers: Array<{ id: number; name: string; copper: boolean; visible: boolean }>;
+        },
+    );
+
+  // ── layer panel ────────────────────────────────────────────────────────────
+  await openOverlayMenu(viewer);
+  await viewer.getByTestId('layers-panel-toggle').click();
+  await expect(viewer.getByTestId('layers-panel')).toBeVisible();
+  // Close the overlay menu (z-50) — it overlaps the panel's default anchor
+  // and would swallow the row clicks below.
+  await viewer.keyboard.press('Escape');
+  await expect(viewer.getByTestId('overlay-menu-panel')).toHaveCount(0);
+  await expect(viewer.locator('[data-testid="layer-row"]').first()).toBeVisible();
+
+  const st0 = await layersState();
+  expect(st0.layers.length, 'bridge lists the enabled layers').toBeGreaterThan(0);
+  const copper = st0.layers.filter((l) => l.copper);
+  expect(copper.length, 'demo board has F.Cu + B.Cu').toBeGreaterThanOrEqual(2);
+  const target = copper.find((l) => l.id !== st0.active) ?? copper[0]!;
+  const row = viewer.locator(`[data-testid="layer-row"][data-layer-id="${target.id}"]`);
+
+  // Eye toggle hides/shows the layer — confirmed through the bridge (the
+  // apply runs on the wasm coroutine; the panel updates from the C++ push).
+  await row.getByTestId('layer-visibility').click();
+  await expect
+    .poll(async () => (await layersState()).layers.find((l) => l.id === target.id)?.visible, {
+      timeout: 15000,
+      message: 'eye toggle should hide the layer',
+    })
+    .toBe(false);
+  await row.getByTestId('layer-visibility').click();
+  await expect
+    .poll(async () => (await layersState()).layers.find((l) => l.id === target.id)?.visible, {
+      timeout: 15000,
+      message: 'second toggle should show the layer again',
+    })
+    .toBe(true);
+
+  // Row click sets the ACTIVE layer.
+  await row.getByTestId('layer-activate').click();
+  await expect
+    .poll(async () => (await layersState()).active, { timeout: 15000 })
+    .toBe(target.id);
+
+  // Drag by the header — the shared draggable-panel behavior (position also
+  // persists via localStorage, covered by useDraggablePanel's unit tests and
+  // the comments panel spec).
+  const before = (await viewer.getByTestId('layers-panel').boundingBox())!;
+  const hb = (await viewer.getByTestId('layers-panel-header').boundingBox())!;
+  await viewer.mouse.move(hb.x + hb.width / 2, hb.y + hb.height / 2);
+  await viewer.mouse.down();
+  await viewer.mouse.move(hb.x + hb.width / 2 - 120, hb.y + hb.height / 2 + 90, { steps: 5 });
+  await viewer.mouse.up();
+  const after = (await viewer.getByTestId('layers-panel').boundingBox())!;
+  expect(Math.round(after.x - before.x)).toBe(-120);
+  expect(Math.round(after.y - before.y)).toBe(90);
+
+  // Close it before the canvas click below — a floating panel over the item
+  // would swallow the click.
+  await viewer.getByTestId('layers-panel-close').click();
+  await expect(viewer.getByTestId('layers-panel')).toHaveCount(0);
+
+  // ── selection inspector ────────────────────────────────────────────────────
+  // A REAL canvas click selects for the viewer (viewer-panels); the store
+  // keeps the selection, so the inspector may open after the click.
+  const itemId = await writer.evaluate(() =>
+    (window as unknown as W).Module.kicadCollabTestSelectFirst(),
+  );
+  const itemWorld = await posOf(writer, itemId);
+  await writer.evaluate(() => (window as unknown as W).Module.kicadCollabTestClearSelection());
+
+  const pt = await screenPosOf(viewer, itemWorld);
+  await viewer.mouse.click(pt.x, pt.y);
+  await expect
+    .poll(
+      async () =>
+        (await selection(viewer)).length > 0 ||
+        (await viewer.locator('.wx-menu-popup').count()) > 0,
+      { timeout: 20000, message: 'viewer click should select or pop the clarify list' },
+    )
+    .toBe(true);
+  // Overlapping items popped the clarify list — pick the first entry.
+  if ((await viewer.locator('.wx-menu-popup').count()) > 0) {
+    await viewer.locator('.wx-menu-popup > div').filter({ hasText: /^\s*1\s/ }).first().click();
+    await expect
+      .poll(async () => (await selection(viewer)).length, { timeout: 15000 })
+      .toBeGreaterThan(0);
+  }
+
+  await openOverlayMenu(viewer);
+  await viewer.getByTestId('inspector-panel-toggle').click();
+  await expect(viewer.getByTestId('inspector-panel')).toBeVisible();
+  // Close the covering overlay menu WITHOUT Escape — the allowlisted
+  // cancelInteractive would clear the selection the inspector is about to
+  // show. The FAB toggle never touches the canvas.
+  await viewer.getByTestId('overlay-menu-fab').click();
+  await expect(viewer.getByTestId('overlay-menu-panel')).toHaveCount(0);
+  // The already-made selection renders with real property rows (every item
+  // type yields at least one of these labels).
+  await expect
+    .poll(() => viewer.getByTestId('inspector-item').count(), {
+      timeout: 20000,
+      message: 'inspector should list the selected item',
+    })
+    .toBeGreaterThan(0);
+  await expect(viewer.getByTestId('inspector-item').first()).toContainText(
+    /Position|Start|Net|Layer/,
+  );
+
+  await viewer.screenshot({ path: shotPath(viewer, 'web-viewer-panels.png'), scale: 'css' });
+
+  // Close + clear: Esc drops the selection, the inspector empties live.
+  await viewer.keyboard.press('Escape');
+  await viewer.evaluate(() => (window as unknown as W).Module.kicadCollabTestClearSelection());
+  await viewer.getByTestId('inspector-panel-close').click();
+  await expect(viewer.getByTestId('inspector-panel')).toHaveCount(0);
 });

@@ -31,6 +31,8 @@
 #include <richio.h>
 #include <tools/pcb_selection.h>
 #include <tools/pcb_selection_tool.h>
+#include <settings/color_settings.h>
+#include <widgets/appearance_controls.h>
 #include <geometry/shape_poly_set.h>
 #include <geometry/shape_line_chain.h>
 #include <geometry/eda_angle.h>
@@ -1681,6 +1683,119 @@ void pcbSetDarkChrome( bool aDark )
     pcbjam_theme::setDarkChromeFlag( aDark );
 }
 
+// ── Layer bridge (viewer-panels) ─────────────────────────────────────────────
+// The React layer panel's read/toggle surface for canvas-only sessions (the wx
+// Appearance pane is chrome-hidden there). Per-layer visibility has no
+// TOOL_ACTION, so the setter bodies mirror KiCad's IPC handlers
+// (pcbnew/api/api_handler_pcb.cpp handleSetVisibleLayers/handleSetActiveLayer —
+// compiled into this image but unreachable, nng transport stubbed). Both
+// setters are view-only state: nothing touches the document or the save path
+// (visibility persists to the .kicad_prl on native, nowhere here).
+
+// Full layer state as one JSON payload:
+//   { "active": int, "layers": [{ id, name, canonical, copper, visible, color }] }
+// in UI order (the wx Appearance panel's), colors from the live COLOR_SETTINGS
+// so the panel's swatches match the canvas theme.
+static json layersStateJson( PCB_EDIT_FRAME* aFrame )
+{
+    BOARD*          board  = aFrame->GetBoard();
+    COLOR_SETTINGS* colors = aFrame->GetColorSettings();
+
+    json layers = json::array();
+
+    for( PCB_LAYER_ID layer : board->GetEnabledLayers().UIOrder() )
+    {
+        layers.push_back( json{
+                { "id", static_cast<int>( layer ) },
+                { "name", pcbjam_collab::toUtf8( board->GetLayerName( layer ) ) },
+                { "canonical", pcbjam_collab::toUtf8( BOARD::GetStandardLayerName( layer ) ) },
+                { "copper", IsCopperLayer( layer ) },
+                { "visible", board->IsLayerVisible( layer ) },
+                { "color", colors ? pcbjam_collab::toUtf8( colors->GetColor( layer ).ToCSSString() )
+                                  : std::string() } } );
+    }
+
+    return json{ { "active", static_cast<int>( aFrame->GetActiveLayer() ) },
+                 { "layers", layers } };
+}
+
+// Post-apply push: window.kicadCollab.onLayersState — the panel updates
+// event-driven instead of polling (both setters apply on the coroutine, so a
+// synchronous re-read right after the embind call would still see old state).
+static void emitLayersState( PCB_EDIT_FRAME* aFrame )
+{
+    std::string s = layersStateJson( aFrame ).dump();
+    EM_ASM( {
+        if( window.kicadCollab && window.kicadCollab.onLayersState )
+            window.kicadCollab.onLayersState( UTF8ToString( $0 ) );
+    }, s.c_str() );
+}
+
+std::string pcbLayersGetState()
+{
+    PCB_EDIT_FRAME* fr = pcbFrame();
+
+    if( !fr )
+        return "";
+
+    return layersStateJson( fr ).dump();
+}
+
+// Show/hide ONE layer. Validated synchronously (frame up, layer enabled);
+// the apply itself runs on the coroutine like every other view mutation
+// from JS, then pushes the fresh state to onLayersState.
+bool pcbLayersSetVisible( int aLayer, bool aVisible )
+{
+    PCB_EDIT_FRAME* fr = pcbFrame();
+
+    if( !fr )
+        return false;
+
+    PCB_LAYER_ID layer = static_cast<PCB_LAYER_ID>( aLayer );
+
+    if( !fr->GetBoard()->GetEnabledLayers().Contains( layer ) )
+        return false;
+
+    pcbjam_collab::runOnCoroutine( fr, [fr, layer, aVisible]() {
+        BOARD* board = fr->GetBoard();
+        LSET   visible = board->GetVisibleLayers();
+
+        visible.set( layer, aVisible );
+        board->SetVisibleLayers( visible );
+
+        // Keep the (chrome-hidden but alive) wx Appearance pane in sync —
+        // same follow-ups as the IPC handler.
+        if( APPEARANCE_CONTROLS* panel = fr->GetAppearancePanel() )
+            panel->OnBoardChanged();
+
+        fr->GetCanvas()->SyncLayersVisibility( board );
+        fr->Refresh();
+        emitLayersState( fr );
+    } );
+
+    return true;
+}
+
+bool pcbLayersSetActive( int aLayer )
+{
+    PCB_EDIT_FRAME* fr = pcbFrame();
+
+    if( !fr )
+        return false;
+
+    PCB_LAYER_ID layer = static_cast<PCB_LAYER_ID>( aLayer );
+
+    if( !fr->GetBoard()->GetEnabledLayers().Contains( layer ) )
+        return false;
+
+    pcbjam_collab::runOnCoroutine( fr, [fr, layer]() {
+        fr->SetActiveLayer( layer, /* aForceRedraw */ true );
+        emitLayersState( fr );
+    } );
+
+    return true;
+}
+
 // Tuner helper: a VARIED demo-selection set — labeled uuid groups (smallest +
 // largest footprint, the two busiest nets' track segments) so the style
 // preview shows the real range of shapes instead of two overlapping items.
@@ -2382,6 +2497,11 @@ EMSCRIPTEN_BINDINGS(pcbnew) {
 
     // Programmatic save of the in-memory board (round-trip tests, README §A).
     function("kicadSaveBoard", &kicadSaveBoard);
+    // Layer bridge (viewer-panels) — pcbnew-only names, merged-image safe
+    // (null-frame no-op when eeschema is the live frame).
+    function("kicadLayersGetState", &pcbLayersGetState);
+    function("kicadLayersSetVisible", &pcbLayersSetVisible);
+    function("kicadLayersSetActive", &pcbLayersSetActive);
     // pcbnew-only test helper (no eeschema counterpart — name is not shared).
     function("kicadCollabTestItemBlob", &kicadCollabTestItemBlob);
     // pcbnew-only ysync-review repro hooks (names not shared with eeschema).

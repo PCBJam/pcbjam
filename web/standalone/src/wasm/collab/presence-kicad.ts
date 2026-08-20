@@ -1,5 +1,6 @@
 import { symbolUuidFromFootprintPath } from "@pcbjam/shared";
 import { clog } from "./debug";
+import { publishLocalSelection } from "./local-selection";
 import type { PresenceHandle, PresencePeer } from "./presence";
 import type { CrossAppHandle } from "./cross-app";
 import { contestedReleases, remoteLocks, type LockClient } from "./lock-tiebreak";
@@ -156,6 +157,8 @@ export function bindKicadPresence(opts: {
       ownSelection = parsed.uuids;
       presence.setSelection(parsed.uuids);
       crossApp?.setSelection(parsed.uuids, parsed.fpPaths);
+      // Local mirror (viewer-panels): the SelectionInspector renders from it.
+      publishLocalSelection(parsed);
     },
     onCursor: (x, y, active) => {
       presence.setCursor(active ? { x, y } : null);
@@ -202,6 +205,7 @@ export function bindKicadPresence(opts: {
       ownSelection = seed.uuids;
       presence.setSelection(seed.uuids);
       crossApp?.setSelection(seed.uuids, seed.fpPaths);
+      publishLocalSelection(seed);
     }
   } catch {
     /* bridge present but frame not up yet — the first emit will seed */

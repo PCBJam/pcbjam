@@ -100,6 +100,7 @@
       "kicadCollabSetViewport", "kicadCollabFitViewport",
       "kicadCollabReleaseSelection", "kicadSetColorTheme",
       "kicadSaveBoard", "kicadSaveSchematic", "kicadSaveDrawingSheet",
+      "kicadLayersSetVisible", "kicadLayersSetActive",
     ],
     mutatorQueue: [],
     mutatorsWrapped: 0,

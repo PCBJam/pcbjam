@@ -15,7 +15,7 @@ import {
   type KicadDoc,
   type Tool,
 } from "@pcbjam/shared";
-import { ChevronDown, ChevronUp, Download, Eye, EyeOff, Loader2, Moon, PanelsTopLeft, Sun } from "lucide-react";
+import { ChevronDown, ChevronUp, Crosshair, Download, Eye, EyeOff, Layers, Loader2, Moon, PanelsTopLeft, Sun } from "lucide-react";
 import {
   API_BASE_URL,
   APP_URL,
@@ -121,6 +121,9 @@ import {
   overlayRowClass,
 } from "@/components/OverlayMenu";
 import { hasTunerBridge, PresenceTuner, type TunerModule } from "@/components/PresenceTuner";
+import { hasLayersBridge, LayerPanel, type LayersModule } from "@/components/LayerPanel";
+import { SelectionInspector } from "@/components/SelectionInspector";
+import { bindLocalSelectionFeed } from "@/wasm/collab/local-selection";
 import {
   createSheetCollabManager,
   registerSheetChangedHook,
@@ -155,6 +158,11 @@ function chromeSetter(win: Window): ((show: boolean) => boolean) | null {
     ?.kicadSetChrome;
   return typeof fn === "function" ? (fn as (show: boolean) => boolean) : null;
 }
+
+// Viewer panels (viewer-panels): floating layer selector + selection
+// inspector open-state persistence, mirroring the comments panel's keys.
+const LAYERS_OPEN_KEY = "pcbjam:layers-panel-open";
+const INSPECTOR_OPEN_KEY = "pcbjam:inspector-panel-open";
 
 // Tooltip only — the matcher accepts both chords on any platform.
 const CHROME_HOTKEY_LABEL =
@@ -1167,6 +1175,43 @@ export function WasmTool({
   const [commentsSlot, setCommentsSlot] = React.useState<HTMLDivElement | null>(null);
   const [viewportState, setViewportState] = React.useState<ViewportState | null>(null);
   const commentsRef = React.useRef<CommentsController | null>(null);
+  // Viewer panels (viewer-panels): the SelectionInspector's data doc — the
+  // bound collab doc (pcbnew: the board room; eeschema: the ACTIVE sheet's
+  // room, re-pointed on navigation). Null without a doc room (?collab=0).
+  const [panelDoc, setPanelDoc] = React.useState<Y.Doc | null>(null);
+  // Read-only sessions never bind presence, so the inspector's selection
+  // store is fed by this minimal local handler (+ the C++ input hooks).
+  const localSelectionRef = React.useRef<{ destroy(): void } | null>(null);
+  const [layersOpen, setLayersOpenState] = React.useState<boolean>(() => {
+    try {
+      return localStorage.getItem(LAYERS_OPEN_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const setLayersOpen = React.useCallback((v: boolean) => {
+    setLayersOpenState(v);
+    try {
+      localStorage.setItem(LAYERS_OPEN_KEY, v ? "1" : "0");
+    } catch {
+      /* private mode */
+    }
+  }, []);
+  const [inspectorOpen, setInspectorOpenState] = React.useState<boolean>(() => {
+    try {
+      return localStorage.getItem(INSPECTOR_OPEN_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const setInspectorOpen = React.useCallback((v: boolean) => {
+    setInspectorOpenState(v);
+    try {
+      localStorage.setItem(INSPECTOR_OPEN_KEY, v ? "1" : "0");
+    } catch {
+      /* private mode */
+    }
+  }, []);
   // A doc session that connected but has not been ADOPTED by an owner yet
   // (collab handle / sheet manager). Owned here so a boot failure, an
   // open-never-settled degrade, or unmount can destroy it instead of leaking
@@ -1178,6 +1223,9 @@ export function WasmTool({
   // delivering awareness/doc updates and each one re-entered the dead
   // instance — an unbounded ticket storm underneath the fatal overlay.
   const teardownCollab = React.useCallback(() => {
+    localSelectionRef.current?.destroy();
+    localSelectionRef.current = null;
+    setPanelDoc(null);
     commentsRef.current?.destroy();
     commentsRef.current = null;
     followRef.current?.destroy();
@@ -2096,6 +2144,7 @@ export function WasmTool({
                 crossAppRef.current?.setDocPath(activeRoom?.sheetPath);
                 startPresence(activeRoom?.provider, activeRoom?.sheetPath, activeRoom?.doc);
                 startComments(activeRoom?.doc);
+                setPanelDoc(activeRoom?.doc ?? null);
                 if (activeRoom && !readOnly) {
                   driftRef.current = startDriftDetection({
                     doc: activeRoom.doc,
@@ -2149,6 +2198,7 @@ export function WasmTool({
           collabDocRef.current = collabHandle?.doc ?? null;
           startPresence(collabHandle?.provider, undefined, collabHandle?.doc);
           startComments(collabHandle?.doc);
+          setPanelDoc(collabHandle?.doc ?? null);
           // Live sibling mirror (project-sync 0001 bug 3): keep the schematic
           // files a PCB session syncs from fresh in MEMFS, instead of the
           // one-shot boot snapshot. Same opt-out as the room collab; read-only
@@ -2210,6 +2260,17 @@ export function WasmTool({
               log: append,
             });
           }
+        }
+        // Viewer selection feed (viewer-panels): read-only sessions never
+        // bind presence (no room, no awareness), so the SelectionInspector's
+        // store is fed by a minimal onSelection handler + the C++ canvas
+        // input hooks. Edit sessions get the same store fed from
+        // bindKicadPresence's handler instead.
+        if (readOnly && (tool === "pcbnew" || tool === "eeschema")) {
+          localSelectionRef.current = bindLocalSelectionFeed({
+            mod: win.Module,
+            win: win as unknown as PresenceKicadWindow,
+          });
         }
         };
         // Degrading without an adoption must not strand the pre-connected doc
@@ -2337,6 +2398,14 @@ export function WasmTool({
     () => (ready ? chromeSetter(window) : null),
     [ready],
   );
+
+  // Layer bridge (viewer-panels), pcbnew sessions only — the merged bundle
+  // exports the names for every frame, but they no-op on a non-PCB frame.
+  const layersMod = React.useMemo<LayersModule | null>(() => {
+    if (!ready || tool !== "pcbnew") return null;
+    const mod = (window as { Module?: unknown }).Module;
+    return hasLayersBridge(mod) ? mod : null;
+  }, [ready, tool]);
 
   // Apply the chrome-visibility state to the wasm frame. A LAYOUT effect with
   // a synchronous first attempt: `ready` unmounts the opaque boot overlay in
@@ -2610,6 +2679,33 @@ export function WasmTool({
           )}
 
           <OverlayMenuSection label="View">
+            {/* Viewer panels (viewer-panels): canvas-only stand-ins for the
+                chrome-hidden wx panes — available to viewers and to editors
+                in hide-UI mode alike. */}
+            {effectiveChromeHidden && layersMod && (
+              <button
+                data-testid="layers-panel-toggle"
+                aria-pressed={layersOpen}
+                className={overlayRowClass}
+                title="Board layers — visibility and active layer"
+                onClick={() => setLayersOpen(!layersOpen)}
+              >
+                <Layers size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
+                <span>{layersOpen ? "Hide layers" : "Layers"}</span>
+              </button>
+            )}
+            {effectiveChromeHidden && (tool === "pcbnew" || tool === "eeschema") && (
+              <button
+                data-testid="inspector-panel-toggle"
+                aria-pressed={inspectorOpen}
+                className={overlayRowClass}
+                title="Properties of the selected items"
+                onClick={() => setInspectorOpen(!inspectorOpen)}
+              >
+                <Crosshair size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
+                <span>{inspectorOpen ? "Hide inspector" : "Inspector"}</span>
+              </button>
+            )}
             {setChromeFn !== null && !readOnly && (
               <button
                 data-testid="chrome-toggle"
@@ -2666,6 +2762,19 @@ export function WasmTool({
           }))}
         />
       )}
+
+      {/* Viewer panels (viewer-panels): floating layer selector + selection
+          inspector for canvas-only sessions — the React stand-ins for the wx
+          Appearance/Properties panes that kicadSetChrome(false) hides. */}
+      {ready && effectiveChromeHidden && layersOpen && layersMod && (
+        <LayerPanel mod={layersMod} onClose={() => setLayersOpen(false)} />
+      )}
+      {ready &&
+        effectiveChromeHidden &&
+        inspectorOpen &&
+        (tool === "pcbnew" || tool === "eeschema") && (
+          <SelectionInspector doc={panelDoc} onClose={() => setInspectorOpen(false)} />
+        )}
 
       {/* DEV: presence style tuner (VITE_PRESENCE_TUNER=1). */}
       {ready && tunerMod && <PresenceTuner mod={tunerMod} tool={tool} />}
