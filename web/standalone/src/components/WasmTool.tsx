@@ -1909,9 +1909,13 @@ export function WasmTool({
           onWasmInstantiated: () => markWasmDownloaded(meta.bundle, meta.ver),
           libsSource: source,
           enumerateGate,
-          // 3D models: lazy per-board source (null unless the CDN manifest is
-          // configured) — feeds the board prescan + the viewer's ensure fallback.
-          modelsSource: modelsSourceConfig(),
+          // 3D models: lazy per-board source (null unless a model backing is
+          // configured) — feeds the board prescan + the viewer's ensure
+          // fallback. Registry mode reuses the boot payload's lib listing +
+          // stack resolves (zero extra model requests on a preloaded boot).
+          modelsSource: modelsSourceConfig(
+            boot ? { libs: boot.libs, stacks: boot.stacks } : undefined,
+          ),
           // footprint_editor/symbol_editor load the pcbnew/eeschema bundle; the
           // frame token tells its single_top launcher which editor frame to open.
           frame: TOOL_FRAME[tool],

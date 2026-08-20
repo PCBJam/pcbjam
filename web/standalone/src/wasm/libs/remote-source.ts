@@ -44,7 +44,13 @@ export function remoteLibsSource(
       if (res.status !== 200) return [];
       return res.body.map((l) => ({
         id: l.id,
-        name: l.name,
+        // The backend's collision-safe MOUNT nickname is the one string that
+        // flows everywhere KiCad-facing (lib tables, reload/add-entry calls,
+        // toasts): mapping it into `name` at this boundary keeps every
+        // consumer on the same identifier. Two visible same-name libs would
+        // otherwise emit duplicate lib-table rows, and KiCad resolves
+        // nicknames first-match-wins — the loser is silently shadowed.
+        name: l.nickname ?? l.name,
         description: l.description ?? null,
         type: l.type,
         itemCount: l.itemCount,

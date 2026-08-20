@@ -1,4 +1,8 @@
 import { SyncStack, type SyncStackOptions } from "@pcbjam/sync-client";
+import {
+  fetchSyncStacks,
+  type SyncStackDescriptor,
+} from "@pcbjam/shared";
 
 /**
  * Read-only source of 3D model bodies (`.wrl` / `.step`), addressed by the
@@ -94,6 +98,134 @@ export function cdnModelsSource(
         throw e;
       });
       stacks.set(libId, p);
+    }
+    return p;
+  };
+
+  return {
+    async getModelBody(ref: string): Promise<Uint8Array | null> {
+      const split = splitRef(ref);
+      if (!split) return null;
+      try {
+        const stack = await openStack(split.lib);
+        return stack ? await stack.read(split.path) : null;
+      } catch {
+        return null; // missing models render as absent, never break the viewer
+      }
+    },
+    async hasModel(ref: string): Promise<boolean> {
+      const split = splitRef(ref);
+      if (!split) return false;
+      try {
+        const stack = await openStack(split.lib);
+        if (!stack) return false;
+        return (await stack.list()).some((e) => e.path === split.path);
+      } catch {
+        return false;
+      }
+    },
+  };
+}
+
+/** The subset of the boot payload registryModelsSource consumes. */
+export interface RegistryModelsPreload {
+  libs: Array<{
+    id: string;
+    name: string;
+    kindCounts?: Record<string, number>;
+  }>;
+  stacks: Record<string, SyncStackDescriptor | null>;
+}
+
+/**
+ * Registry-backed `Model3dSource`: the official 3D models as first-class
+ * kind='model3d' origin libs served by the closed registry (chunked
+ * packages3D ingest). The backend's sync-stack for a model lib is a single
+ * read-only SPARSE layer over the public origin routes — exactly the client
+ * machinery {@link cdnModelsSource} uses, so bodies fetch lazily per board
+ * reference and cache in IDB under `origin:<libId>@<versionId>` (per-version
+ * persistence for free).
+ *
+ * Model refs address libs by NAME (`(model "Battery.3dshapes/…")`): the index
+ * comes from the boot payload's lib list (zero extra requests) filtered to
+ * model3d, with a `GET /libs?kind=model3d` fallback for boots without the
+ * preload; stacks come from the preloaded batch resolve, falling back to the
+ * batch endpoint per lib.
+ */
+export function registryModelsSource(
+  cfg: {
+    apiBase: string;
+    scope: string;
+    preloaded?: RegistryModelsPreload;
+  },
+  opts?: Pick<SyncStackOptions, "fetchImpl" | "storeFactory">,
+): Model3dSource {
+  const fetchImpl = opts?.fetchImpl ?? fetch;
+  const enc = encodeURIComponent;
+
+  let indexP: Promise<Map<string, string>> | null = null;
+  const loadIndex = (): Promise<Map<string, string>> => {
+    if (!indexP) {
+      // Never cache a rejection (cdn-source precedent): a transient failure
+      // must not poison every later model read.
+      indexP = (async () => {
+        if (cfg.preloaded) {
+          return new Map(
+            cfg.preloaded.libs
+              .filter((l) => (l.kindCounts?.["model3d"] ?? 0) > 0)
+              .map((l) => [l.name, l.id]),
+          );
+        }
+        const r = await fetchImpl(
+          `${cfg.apiBase}/api/scopes/${enc(cfg.scope)}/libs?kind=model3d`,
+          { credentials: "include" } as RequestInit,
+        );
+        if (!r.ok) throw new Error(`model3d lib listing ${r.status}`);
+        const libs = (await r.json()) as Array<{ id: string; name: string }>;
+        return new Map(libs.map((l) => [l.name, l.id]));
+      })().catch((e) => {
+        indexP = null;
+        throw e;
+      });
+    }
+    return indexP;
+  };
+
+  const stackDescs = new Map<string, SyncStackDescriptor | null>(
+    Object.entries(cfg.preloaded?.stacks ?? {}),
+  );
+  const descFor = async (
+    libId: string,
+  ): Promise<SyncStackDescriptor | null> => {
+    if (stackDescs.has(libId)) return stackDescs.get(libId) ?? null;
+    const resolved = await fetchSyncStacks({
+      url: `${cfg.apiBase}/api/scopes/${enc(cfg.scope)}/libs/sync-stacks`,
+      libIds: [libId],
+      fetchImpl,
+    });
+    const desc = resolved.get(libId) ?? null;
+    stackDescs.set(libId, desc);
+    return desc;
+  };
+
+  // One lazily-opened stack per lib NAME (what model refs address).
+  const stacks = new Map<string, Promise<SyncStack | null>>();
+  const openStack = (libName: string): Promise<SyncStack | null> => {
+    let p = stacks.get(libName);
+    if (!p) {
+      p = (async () => {
+        const libId = (await loadIndex()).get(libName);
+        if (!libId) return null; // unknown lib
+        const desc = await descFor(libId);
+        if (!desc || desc.layers.length === 0) return null;
+        const stack = new SyncStack({ layers: desc.layers, ...opts });
+        await stack.open();
+        return stack;
+      })().catch((e) => {
+        stacks.delete(libName); // a failed open must stay retryable
+        throw e;
+      });
+      stacks.set(libName, p);
     }
     return p;
   };

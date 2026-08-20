@@ -341,6 +341,9 @@ function splitPath(path: string): LibItemInfo {
 export interface PreloadedLibDto {
   id: string;
   name: string;
+  /** Collision-safe MOUNT nickname the backend assigned (see libSchema) —
+   *  preferred over `name` for everything KiCad-facing. */
+  nickname?: string;
   description?: string | null;
   type: string;
   itemCount?: number;
@@ -415,7 +418,9 @@ export function syncedScopeLibsSource(
       )
       .map((l) => ({
         id: l.id,
-        name: l.name,
+        // Same boundary rule as remote-source.listLibs: the backend's
+        // collision-safe mount nickname IS the lib's name from here on.
+        name: l.nickname ?? l.name,
         description: l.description ?? null,
         type: l.type,
         itemCount: l.itemCount,

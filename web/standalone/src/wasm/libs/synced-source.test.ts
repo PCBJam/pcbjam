@@ -379,6 +379,42 @@ describe("boot preload (load-path-rework 0001 §6)", () => {
     expect(ok).toBe(true);
     source.dispose?.();
   });
+
+  it("prefers the backend's collision-safe mount nickname over the raw name", async () => {
+    const server = await fakeServer({ "symbol/R": "(r)" });
+    const source = syncedScopeLibsSource({} as unknown as LibsSource, {
+      apiBase: API,
+      scope: "s",
+      user: "u",
+      fetchImpl: server.fetchImpl,
+      storeFactory: () => memStore(),
+      channelFactory: () => server.channel,
+      preloaded: {
+        libs: [
+          // A pinned community lib colliding with a kicad origin: the backend
+          // deduped it; the client must mount the deduped nickname (KiCad
+          // resolves lib-table nicknames first-match-wins — a duplicate row
+          // would be silently shadowed).
+          {
+            id: "lib-pin",
+            name: "Device",
+            nickname: "Device--wurth-kicad",
+            type: "origin",
+            kindCounts: { symbol: 3 },
+          },
+          // No collision ⇒ nickname absent ⇒ raw name.
+          { id: "lib-kicad", name: "Device", type: "origin", kindCounts: { symbol: 9 } },
+        ],
+        stacks: {},
+      },
+    });
+    const libs = await source.listLibs!("symbol");
+    expect(libs.find((l) => l.id === "lib-pin")!.name).toBe(
+      "Device--wurth-kicad",
+    );
+    expect(libs.find((l) => l.id === "lib-kicad")!.name).toBe("Device");
+    source.dispose?.();
+  });
 });
 
 describe("syncedScopeLibsSource.syncState", () => {

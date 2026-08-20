@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { sha256Hex, type SyncManifest } from "@pcbjam/shared";
+import {
+  sha256Hex,
+  type SyncManifest,
+  type SyncStackDescriptor,
+} from "@pcbjam/shared";
 import { memStore, type LayerStore } from "@pcbjam/sync-client";
-import { cdnModelsSource } from "./models-source";
+import { cdnModelsSource, registryModelsSource } from "./models-source";
 
 const MANIFEST_URL = "https://cdn.test/libs/kicad-models/9.0.9/manifest.json";
 const BASE = "https://cdn.test/libs/kicad-models/9.0.9";
@@ -116,5 +120,130 @@ describe("cdnModelsSource", () => {
     expect(await src.hasModel("Resistor_THT.3dshapes/R_Disc.wrl")).toBe(true);
     expect(await src.hasModel("Resistor_THT.3dshapes/nope.wrl")).toBe(false);
     expect(cdn.counters.blobFetches).toBe(0);
+  });
+});
+
+const API = "https://api.test";
+const LIB_ID = "lib-uuid-1";
+const VERSION = "ver-uuid-1";
+const ORIGIN_BASE = `${API}/api/scopes/s/libs/origins/${LIB_ID}/${VERSION}`;
+
+/** The registry's serving shape: sparse origin layer over the public routes. */
+async function fakeRegistry() {
+  const bodies: Record<string, Uint8Array> = {
+    "model3d/Clip.step": enc.encode("STEP Clip"),
+    "model3d/Clip.wrl": enc.encode("#VRML Clip"),
+  };
+  const entries: SyncManifest["entries"] = {};
+  for (const [path, body] of Object.entries(bodies)) {
+    entries[path] = { hash: await sha256Hex(body), size: body.length, mtime: 0 };
+  }
+  const manifest: SyncManifest = { version: 1, entries };
+  const descriptor: SyncStackDescriptor = {
+    lib: { id: LIB_ID, name: "Battery" },
+    layers: [
+      {
+        namespace: `origin:${LIB_ID}@${VERSION}`,
+        kind: "sparse",
+        url: ORIGIN_BASE,
+        bodyUrlTemplate: `${ORIGIN_BASE}/body/{path}`,
+      },
+    ],
+  };
+
+  let listFetches = 0;
+  let resolveFetches = 0;
+  let bodyFetches = 0;
+  const json = (obj: unknown) => ({ ok: true, json: async () => obj });
+  const fetchImpl = (async (url: string, init?: RequestInit) => {
+    if (url === `${API}/api/scopes/s/libs?kind=model3d`) {
+      listFetches += 1;
+      return json([{ id: LIB_ID, name: "Battery" }]);
+    }
+    if (url === `${API}/api/scopes/s/libs/sync-stacks`) {
+      resolveFetches += 1;
+      const { libIds } = JSON.parse(String(init?.body)) as { libIds: string[] };
+      return json({
+        stacks: Object.fromEntries(
+          libIds.map((id) => [id, id === LIB_ID ? descriptor : null]),
+        ),
+      });
+    }
+    if (url === `${ORIGIN_BASE}/manifest`) return json(manifest);
+    const m = url.match(new RegExp(`^${ORIGIN_BASE}/body/(.+)$`));
+    if (m) {
+      const body = bodies[decodeURIComponent(m[1]!)];
+      if (body) {
+        bodyFetches += 1;
+        return { ok: true, arrayBuffer: async () => body.buffer };
+      }
+    }
+    return { ok: false, status: 404 };
+  }) as unknown as typeof fetch;
+
+  return {
+    fetchImpl,
+    descriptor,
+    counters: {
+      get listFetches() {
+        return listFetches;
+      },
+      get resolveFetches() {
+        return resolveFetches;
+      },
+      get bodyFetches() {
+        return bodyFetches;
+      },
+    },
+  };
+}
+
+describe("registryModelsSource", () => {
+  it("preloaded boot: zero listing/resolve requests, bodies fetched sparsely", async () => {
+    const reg = await fakeRegistry();
+    const src = registryModelsSource(
+      {
+        apiBase: API,
+        scope: "s",
+        preloaded: {
+          libs: [
+            { id: LIB_ID, name: "Battery", kindCounts: { model3d: 2 } },
+            // A footprint lib of the SAME name must be ignored by the model
+            // index (kind is part of origin identity — near-1:1 name overlap).
+            { id: "lib-fp", name: "Battery", kindCounts: { footprint: 9 } },
+          ],
+          stacks: { [LIB_ID]: reg.descriptor },
+        },
+      },
+      { fetchImpl: reg.fetchImpl, storeFactory: storeMap() },
+    );
+
+    const body = await src.getModelBody("Battery.3dshapes/Clip.step");
+    expect(dec.decode(body!)).toBe("STEP Clip");
+    expect(reg.counters.listFetches).toBe(0);
+    expect(reg.counters.resolveFetches).toBe(0);
+    expect(reg.counters.bodyFetches).toBe(1); // only the asked-for model
+
+    await src.getModelBody("Battery.3dshapes/Clip.step");
+    expect(reg.counters.bodyFetches).toBe(1); // cached in the layer store
+    expect(await src.hasModel("Battery.3dshapes/Clip.wrl")).toBe(true);
+    expect(reg.counters.bodyFetches).toBe(1); // manifest-only answer
+  });
+
+  it("no preload: lists model3d libs and batch-resolves the stack, once each", async () => {
+    const reg = await fakeRegistry();
+    const src = registryModelsSource(
+      { apiBase: API, scope: "s" },
+      { fetchImpl: reg.fetchImpl, storeFactory: storeMap() },
+    );
+
+    const body = await src.getModelBody("Battery.3dshapes/Clip.wrl");
+    expect(dec.decode(body!)).toBe("#VRML Clip");
+    await src.getModelBody("Battery.3dshapes/Clip.step");
+    expect(reg.counters.listFetches).toBe(1);
+    expect(reg.counters.resolveFetches).toBe(1);
+
+    expect(await src.getModelBody("NoSuchLib.3dshapes/m.wrl")).toBeNull();
+    expect(await src.getModelBody("not-a-model-ref")).toBeNull();
   });
 });

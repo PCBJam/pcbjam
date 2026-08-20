@@ -136,7 +136,11 @@ import { colorForUser, type PresenceUser } from "@pcbjam/shared";
 import { sessionIdentity } from "@/lib/session-identity";
 import type { ProviderConfig, ProviderKind } from "@/wasm/collab";
 import { cdnLibsSource } from "@/wasm/libs/cdn-source";
-import { cdnModelsSource, type Model3dSource } from "@/wasm/libs/models-source";
+import {
+  cdnModelsSource,
+  registryModelsSource,
+  type Model3dSource,
+} from "@/wasm/libs/models-source";
 import { remoteLibsSource } from "@/wasm/libs/remote-source";
 import { scopedLibsSource } from "@/wasm/libs/scoped-source";
 import type { LibsSource } from "@/wasm/libs/source";
@@ -304,9 +308,30 @@ export const CDN_MODELS_MANIFEST_URL =
   import.meta.env.VITE_MODELS_MANIFEST_URL || null;
 
 /** The 3D model source for a tool boot (null ⇒ models disabled). One instance
- *  per call — WasmTool keeps a single instance per boot like the libs source. */
-export function modelsSourceConfig(): Model3dSource | null {
-  return CDN_MODELS_MANIFEST_URL
+ *  per call — WasmTool keeps a single instance per boot like the libs source.
+ *
+ *  `VITE_MODELS_SOURCE` picks the backing:
+ *    - "cdn" (default whenever VITE_MODELS_MANIFEST_URL is set — today's
+ *      behavior): the published CDN blob layout.
+ *    - "registry": the closed registry's kind='model3d' origin libs (chunked
+ *      packages3D ingest), served as sparse sync layers; the boot payload's
+ *      lib list + stack resolves feed it so a preloaded boot makes zero model
+ *      listing/resolve requests.
+ */
+export function modelsSourceConfig(
+  preload?: LibsBootPreload,
+): Model3dSource | null {
+  const mode =
+    import.meta.env.VITE_MODELS_SOURCE ??
+    (CDN_MODELS_MANIFEST_URL ? "cdn" : "off");
+  if (mode === "registry") {
+    return registryModelsSource({
+      apiBase: API_BASE_URL,
+      scope: currentScope(),
+      preloaded: preload,
+    });
+  }
+  return mode === "cdn" && CDN_MODELS_MANIFEST_URL
     ? cdnModelsSource(CDN_MODELS_MANIFEST_URL)
     : null;
 }
