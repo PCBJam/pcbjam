@@ -1182,12 +1182,17 @@ export function WasmTool({
   // Read-only sessions never bind presence, so the inspector's selection
   // store is fed by this minimal local handler (+ the C++ input hooks).
   const localSelectionRef = React.useRef<{ destroy(): void } | null>(null);
+  // Read-only sessions boot with BOTH panels open as collapsed headers
+  // (viewer-panels): discoverable without a trip through the menu; a stored
+  // per-browser choice wins over the default.
   const [layersOpen, setLayersOpenState] = React.useState<boolean>(() => {
     try {
-      return localStorage.getItem(LAYERS_OPEN_KEY) === "1";
+      const stored = localStorage.getItem(LAYERS_OPEN_KEY);
+      if (stored !== null) return stored === "1";
     } catch {
-      return false;
+      /* private mode */
     }
+    return readOnly === true;
   });
   const setLayersOpen = React.useCallback((v: boolean) => {
     setLayersOpenState(v);
@@ -1199,10 +1204,12 @@ export function WasmTool({
   }, []);
   const [inspectorOpen, setInspectorOpenState] = React.useState<boolean>(() => {
     try {
-      return localStorage.getItem(INSPECTOR_OPEN_KEY) === "1";
+      const stored = localStorage.getItem(INSPECTOR_OPEN_KEY);
+      if (stored !== null) return stored === "1";
     } catch {
-      return false;
+      /* private mode */
     }
+    return readOnly === true;
   });
   const setInspectorOpen = React.useCallback((v: boolean) => {
     setInspectorOpenState(v);
@@ -2767,13 +2774,21 @@ export function WasmTool({
           inspector for canvas-only sessions — the React stand-ins for the wx
           Appearance/Properties panes that kicadSetChrome(false) hides. */}
       {ready && effectiveChromeHidden && layersOpen && layersMod && (
-        <LayerPanel mod={layersMod} onClose={() => setLayersOpen(false)} />
+        <LayerPanel
+          mod={layersMod}
+          defaultCollapsed={readOnly}
+          onClose={() => setLayersOpen(false)}
+        />
       )}
       {ready &&
         effectiveChromeHidden &&
         inspectorOpen &&
         (tool === "pcbnew" || tool === "eeschema") && (
-          <SelectionInspector doc={panelDoc} onClose={() => setInspectorOpen(false)} />
+          <SelectionInspector
+            doc={panelDoc}
+            defaultCollapsed={readOnly}
+            onClose={() => setInspectorOpen(false)}
+          />
         )}
 
       {/* DEV: presence style tuner (VITE_PRESENCE_TUNER=1). */}

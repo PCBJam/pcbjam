@@ -37,12 +37,16 @@ const MAX_ITEMS = 20;
 
 export function SelectionInspector({
   doc,
+  defaultCollapsed,
   onClose,
 }: {
   /** The bound collab doc (pcbnew: the board room; eeschema: the ACTIVE
    *  sheet's room). Null when no doc room is bound (?collab=0) — the panel
    *  then shows selection counts only. */
   doc: Y.Doc | null;
+  /** Boot state when no per-browser choice is stored (read-only sessions
+   *  start as a collapsed header — viewer-panels). */
+  defaultCollapsed?: boolean;
   onClose: () => void;
 }) {
   const rootRef = React.useRef<HTMLDivElement | null>(null);
@@ -53,10 +57,12 @@ export function SelectionInspector({
   });
   const [collapsed, setCollapsedState] = React.useState<boolean>(() => {
     try {
-      return localStorage.getItem(PANEL_COLLAPSED_KEY) === "1";
+      const stored = localStorage.getItem(PANEL_COLLAPSED_KEY);
+      if (stored !== null) return stored === "1";
     } catch {
-      return false;
+      /* private mode */
     }
+    return defaultCollapsed === true;
   });
   const setCollapsed = (v: boolean) => {
     setCollapsedState(v);
@@ -103,11 +109,12 @@ export function SelectionInspector({
 
   const count = selection.uuids.length;
 
-  // Default anchor: below the overlay-menu FAB, clear of the layer panel's
-  // default (right 12 / top 56, w-64) — stack under it.
+  // Default anchor: TOP-LEFT (the layer panel owns the top-right stack under
+  // the overlay-menu FAB). Clear of the transient status chip (left-3 top-3,
+  // pointer-events-none anyway).
   const style: React.CSSProperties = drag.pos
     ? { left: drag.pos.x, top: drag.pos.y }
-    : { right: 12, top: 96 };
+    : { left: 12, top: 12 };
 
   return (
     <div

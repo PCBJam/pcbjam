@@ -154,6 +154,25 @@ test('viewer boots locked: chrome-less, selection inspect-only, hotkey edits ine
   await expect(writer.locator('[data-testid="chrome-toggle"]')).toBeVisible();
   await expect(writer.getByTestId('view-only-pill')).toHaveCount(0);
 
+  // Viewer-panels boot defaults: both panels come up OPEN as COLLAPSED
+  // headers (inspector anchored top-LEFT, layers top-right) — then close
+  // them so the click probes below can't land on a header. The panels test
+  // re-opens them through the overlay-menu toggles. First close the still-
+  // open overlay menu (z-50) — it covers the layers header's close button.
+  await viewer.getByTestId('overlay-menu-fab').click();
+  await expect(viewer.getByTestId('overlay-menu-panel')).toHaveCount(0);
+  await expect(viewer.getByTestId('layers-panel')).toBeVisible();
+  await expect(viewer.getByTestId('inspector-panel')).toBeVisible();
+  await expect(viewer.getByTestId('layers-panel-list')).toHaveCount(0);
+  await expect(viewer.getByTestId('inspector-panel-list')).toHaveCount(0);
+  const inspectorBox = (await viewer.getByTestId('inspector-panel').boundingBox())!;
+  expect(inspectorBox.x, 'inspector defaults to the top-left').toBeLessThan(100);
+  expect(inspectorBox.y, 'inspector defaults to the top-left').toBeLessThan(60);
+  await viewer.getByTestId('layers-panel-close').click();
+  await viewer.getByTestId('inspector-panel-close').click();
+  await expect(viewer.getByTestId('layers-panel')).toHaveCount(0);
+  await expect(viewer.getByTestId('inspector-panel')).toHaveCount(0);
+
   // No presence/comments surfaces for a viewer.
   await expect(viewer.locator('[data-testid="presence-roster"]')).toHaveCount(0);
   expect(
@@ -348,6 +367,9 @@ test('viewer panels: layer selector + selection inspector (viewer-panels)', asyn
   // and would swallow the row clicks below.
   await viewer.keyboard.press('Escape');
   await expect(viewer.getByTestId('overlay-menu-panel')).toHaveCount(0);
+  // Reopened panels keep the read-only default: collapsed — expand.
+  await viewer.getByTestId('layers-panel-collapse').click();
+  await expect(viewer.getByTestId('layers-panel-list')).toBeVisible();
   await expect(viewer.locator('[data-testid="layer-row"]').first()).toBeVisible();
 
   const st0 = await layersState();
@@ -433,6 +455,10 @@ test('viewer panels: layer selector + selection inspector (viewer-panels)', asyn
   // show. The FAB toggle never touches the canvas.
   await viewer.getByTestId('overlay-menu-fab').click();
   await expect(viewer.getByTestId('overlay-menu-panel')).toHaveCount(0);
+  // Still collapsed by default — expand (this is a header-button click, it
+  // never touches the canvas or the selection).
+  await viewer.getByTestId('inspector-panel-collapse').click();
+  await expect(viewer.getByTestId('inspector-panel-list')).toBeVisible();
   // The already-made selection renders with real property rows (every item
   // type yields at least one of these labels).
   await expect

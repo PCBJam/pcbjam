@@ -78,7 +78,17 @@ export function parseLayersState(json: string): LayersState | null {
   }
 }
 
-export function LayerPanel({ mod, onClose }: { mod: LayersModule; onClose: () => void }) {
+export function LayerPanel({
+  mod,
+  defaultCollapsed,
+  onClose,
+}: {
+  mod: LayersModule;
+  /** Boot state when no per-browser choice is stored (read-only sessions
+   *  start as a collapsed header — viewer-panels). */
+  defaultCollapsed?: boolean;
+  onClose: () => void;
+}) {
   const rootRef = React.useRef<HTMLDivElement | null>(null);
   const drag = useDraggablePanel({
     storageKey: PANEL_POS_KEY,
@@ -87,10 +97,12 @@ export function LayerPanel({ mod, onClose }: { mod: LayersModule; onClose: () =>
   });
   const [collapsed, setCollapsedState] = React.useState<boolean>(() => {
     try {
-      return localStorage.getItem(PANEL_COLLAPSED_KEY) === "1";
+      const stored = localStorage.getItem(PANEL_COLLAPSED_KEY);
+      if (stored !== null) return stored === "1";
     } catch {
-      return false;
+      /* private mode */
     }
+    return defaultCollapsed === true;
   });
   const setCollapsed = (v: boolean) => {
     setCollapsedState(v);
@@ -201,22 +213,12 @@ export function LayerPanel({ mod, onClose }: { mod: LayersModule; onClose: () =>
                 state.active === l.id ? "bg-sky-500/10 dark:bg-sky-400/10" : ""
               }`}
             >
-              {/* Row body sets the ACTIVE layer (the wx Appearance pane's
-                  click semantics); the eye toggles visibility. */}
-              <button
-                data-testid="layer-activate"
-                className="flex min-w-0 flex-1 items-center gap-2 text-left hover:text-sky-600 dark:hover:text-sky-300"
-                title={`Make ${l.name} the active layer`}
-                onClick={() => setActive(l.id)}
-              >
-                <span
-                  className="h-3 w-3 shrink-0 rounded-sm ring-1 ring-inset ring-black/20 dark:ring-white/25"
-                  style={l.color ? { backgroundColor: l.color } : undefined}
-                />
-                <span className={`truncate ${state.active === l.id ? "font-semibold" : ""}`}>
-                  {l.name}
-                </span>
-              </button>
+              {/* KiCad Appearance-pane row order: color swatch, eye, name.
+                  The name sets the ACTIVE layer; the eye toggles visibility. */}
+              <span
+                className="h-3 w-3 shrink-0 rounded-sm ring-1 ring-inset ring-black/20 dark:ring-white/25"
+                style={l.color ? { backgroundColor: l.color } : undefined}
+              />
               <button
                 data-testid="layer-visibility"
                 aria-pressed={l.visible}
@@ -229,6 +231,16 @@ export function LayerPanel({ mod, onClose }: { mod: LayersModule; onClose: () =>
                 }`}
               >
                 {l.visible ? <Eye size={13} /> : <EyeOff size={13} />}
+              </button>
+              <button
+                data-testid="layer-activate"
+                className="min-w-0 flex-1 text-left hover:text-sky-600 dark:hover:text-sky-300"
+                title={`Make ${l.name} the active layer`}
+                onClick={() => setActive(l.id)}
+              >
+                <span className={`block truncate ${state.active === l.id ? "font-semibold" : ""}`}>
+                  {l.name}
+                </span>
               </button>
             </div>
           ))}
