@@ -26,12 +26,19 @@ type ProtocolWindow = KicadItemsWindow & {
   };
 };
 
-function setup(opts: { ownerAcquired?: boolean; ackTimeoutMs?: number } = {}) {
+function setup(
+  opts: {
+    ownerAcquired?: boolean;
+    ackTimeoutMs?: number;
+    submission?: () => unknown;
+  } = {},
+) {
   const submitted: string[] = [];
   const mod: ProtocolModule = {
     kicadCollabSnapshotItems: () => EMPTY_WIRE,
     kicadCollabApplyItems: (json) => {
       submitted.push(json);
+      return opts.submission?.();
     },
     kicadCollabSetItemsOwner: vi.fn(() => opts.ownerAcquired ?? true),
     kicadCollabReleaseItemsOwner: vi.fn(),
@@ -171,6 +178,44 @@ describe("moduleItemsBridge — acknowledged owner-scoped protocol", () => {
       // releases the owner and cannot reject the same request a second time.
       expect(() => bridge.destroy()).not.toThrow();
       expect(mod.kicadCollabReleaseItemsOwner).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("starts the ACK deadline only after an open-deferred submission reaches native", async () => {
+    vi.useFakeTimers();
+    try {
+      let releaseSubmission!: () => void;
+      const { bridge } = setup({
+        ackTimeoutMs: 25,
+        submission: () =>
+          new Promise<void>((resolve) => {
+            releaseSubmission = resolve;
+          }),
+      });
+      const completion = bridge.applyItems(EMPTY_WIRE);
+      let outcome: unknown = "pending";
+      void completion.then(
+        () => {
+          outcome = "resolved";
+        },
+        (error: unknown) => {
+          outcome = error;
+        },
+      );
+
+      await vi.advanceTimersByTimeAsync(250);
+      expect(outcome, "time queued behind open is not native ACK time").toBe("pending");
+
+      releaseSubmission();
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(25);
+      expect(outcome).toMatchObject({
+        status: "ack-timeout",
+        retryable: false,
+      });
+      bridge.destroy();
     } finally {
       vi.useRealTimers();
     }
