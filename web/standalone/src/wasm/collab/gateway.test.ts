@@ -325,6 +325,50 @@ describe("gateway connection — mux + reconnect", () => {
     expect(ws2.frames().some((f) => f.type === 0)).toBe(true);
   });
 
+  it("reconnect uploads edits authored while the socket was down", async () => {
+    newProject();
+    const clientDoc = new Y.Doc();
+    const serverDoc = new Y.Doc();
+    const facade = new GatewayDocFacade(clientDoc, facadeOpts("offline.kicad_sch"));
+    track(facade, clientDoc, serverDoc);
+
+    const ws1 = FakeWebSocket.instances.at(-1)!;
+    ws1.open();
+    const ch = ws1.controls()[0]!.ch;
+    const initialStep1 = ws1.frames().find((f) => f.type === 0)!;
+    ws1.receiveFrame(ch, step2From(serverDoc, initialStep1.frame));
+    await facade.whenSynced();
+
+    vi.useFakeTimers();
+    cleanups.push(() => vi.useRealTimers());
+    ws1.drop();
+    clientDoc.getMap("m").set("offline-intent", "must-reach-server");
+
+    const resynced = facade.whenSynced();
+    vi.advanceTimersByTime(1_000);
+    const ws2 = FakeWebSocket.instances.at(-1)!;
+    ws2.open();
+
+    // Drive every client sync frame through a real y-protocol server-side
+    // decoder and return any response. A download-only Step1/Step2 exchange
+    // can resolve `whenSynced()` while leaving the offline client struct absent
+    // from the server; this assertion prevents that false-durable state.
+    for (const { frame, type } of ws2.frames()) {
+      if (type !== 0) continue;
+      const decoder = decoding.createDecoder(frame.slice());
+      decoding.readVarUint(decoder); // MESSAGE_SYNC
+      const encoder = encoding.createEncoder();
+      encoding.writeVarUint(encoder, 0);
+      syncProtocol.readSyncMessage(decoder, encoder, serverDoc, "test-client");
+      if (encoding.length(encoder) > 1) {
+        ws2.receiveFrame(ch, encoding.toUint8Array(encoder));
+      }
+    }
+
+    await resynced;
+    expect(serverDoc.getMap("m").get("offline-intent")).toBe("must-reach-server");
+  });
+
   it("destroying the last facade closes the shared socket", () => {
     newProject();
     const doc = new Y.Doc();
