@@ -32,6 +32,7 @@ interface ProjectionFailure {
 interface CollabProbe {
   applyRemoteLayout(fileText: string): boolean;
   applyRemoteDoc(fileText: string): void;
+  corruptAuthoritativeItemBody(uuid: string): void;
   projectionFailures(): ProjectionFailure[];
   layoutHead(fileText: string, head: string): string;
 }
@@ -73,6 +74,19 @@ function layoutHead(
       ),
     { fileText, head },
   );
+}
+
+function replaceWidthBeforeUuid(text: string, uuid: string, width: string): string {
+  const uuidToken = `(uuid "${uuid}")`;
+  const uuidAt = text.indexOf(uuidToken);
+  if (uuidAt < 0) throw new Error(`missing ${uuidToken}`);
+  const itemAt = text.lastIndexOf("(wire", uuidAt);
+  const widthAt = text.lastIndexOf("(width ", uuidAt);
+  const widthEnd = text.indexOf(")", widthAt);
+  if (itemAt < 0 || widthAt < itemAt || widthEnd < 0) {
+    throw new Error(`wire ${uuid} has no width before its uuid`);
+  }
+  return `${text.slice(0, widthAt)}(width ${width})${text.slice(widthEnd + 1)}`;
 }
 
 test.beforeAll(() => {
@@ -376,6 +390,104 @@ test.describe("Yjs native-emission ordering recovery", () => {
     const recoveredDrift = await drift(recovered, recoveryCfg);
     expect(recoveredDrift, "fresh native save has zero drift from authoritative Y").toBeNull();
     expect(await probe(recovered), "fresh owner stays live").toEqual([]);
+
+    expect(
+      [...testLogger.consoleLogs, ...testLogger.errors].some((line) => line.includes("Aborted(")),
+      "no Wasm abort",
+    ).toBe(false);
+    await recovered.close();
+  });
+});
+
+test.describe("Yjs malformed-authority recovery", () => {
+  test.describe.configure({ timeout: 420_000 });
+
+  test("emits repair-first failure, freezes native, and recovers only after corrective Y", async ({
+    page,
+    context,
+    testLogger,
+  }) => {
+    const room = `ysync-malformed-authority-${test.info().workerIndex}`;
+
+    await bootOpen(page, TRIO_SCH);
+    // Seed authority from the native writer's own normalized form so later
+    // drift checks isolate this test's repair instead of KiCad formatting.
+    const lastGoodNative = await modelText(page, TRIO_SCH);
+    await startV2(page, { room, seedText: lastGoodNative });
+    const lastGoodAuthority = await renderDoc(page);
+    expect(lastGoodAuthority.err).toBeUndefined();
+    const correctedFixture = replaceWidthBeforeUuid(lastGoodAuthority.ok!, WIRE1, "0.73");
+    expect(correctedFixture, "corrective fixture changes the corrupt target domain").not.toBe(
+      lastGoodAuthority.ok,
+    );
+
+    // Simulate a raw peer that bypasses the typed writer and corrupts one active
+    // v3 item. The Y transaction itself must return normally; the observer owns
+    // containment and emits the terminal boundary asynchronously/synchronously.
+    await page.evaluate((uuid) => {
+      (window as unknown as { KicadCollabV2: CollabProbe }).KicadCollabV2.corruptAuthoritativeItemBody(
+        uuid,
+      );
+    }, WIRE1);
+
+    await expect.poll(() => probe(page), { timeout: 10_000, intervals: [50] }).toHaveLength(1);
+    expect((await probe(page))[0]).toMatchObject({
+      kind: "invalid-y-state",
+      status: "materialization-failed",
+      recovery: "repair-yjs-before-recreate",
+    });
+    expect(
+      (await renderDoc(page)).err,
+      "the malformed room cannot produce a file for fresh-Wasm hydration",
+    ).toBeDefined();
+    expect(await modelText(page, TRIO_SCH), "retired native remains exactly last-good").toBe(
+      lastGoodNative,
+    );
+
+    // Prove that an immediate reload/recreate is not recovery: another real
+    // Wasm instance joining the same malformed room hits the same repair-first
+    // terminal boundary and keeps the fixture it managed to open locally.
+    const premature = await context.newPage();
+    await bootOpen(premature, TRIO_SCH);
+    await startV2(premature, { room, editorMatchesDoc: true });
+    await expect.poll(() => probe(premature), { timeout: 10_000, intervals: [50] }).toHaveLength(1);
+    expect((await probe(premature))[0]).toMatchObject({
+      kind: "invalid-y-state",
+      status: "materialization-failed",
+      recovery: "repair-yjs-before-recreate",
+    });
+    expect((await renderDoc(premature)).err).toBeDefined();
+    await premature.close();
+
+    // A privileged/raw corrective room update must first restore materializable
+    // Y. The retired owner remains absorbing even after authority is healthy.
+    await page.evaluate((text) => {
+      (window as unknown as { KicadCollabV2: CollabProbe }).KicadCollabV2.applyRemoteDoc(text);
+    }, correctedFixture);
+    await expect
+      .poll(async () => (await renderDoc(page)).ok, { timeout: 10_000, intervals: [100] })
+      .toContain("(width 0.73)");
+    const correctedAuthority = await renderDoc(page);
+    expect(correctedAuthority.err).toBeUndefined();
+    expect(await probe(page), "repair does not revive or re-fail the retired owner").toHaveLength(1);
+    expect(await modelText(page, TRIO_SCH), "old native is inert after room repair").toBe(
+      lastGoodNative,
+    );
+
+    // Only now can a fresh native owner hydrate from the corrected authority.
+    const recoveryCfg: ToolCfg = { ...TRIO_SCH, fixture: correctedAuthority.ok! };
+    const recovered = await context.newPage();
+    await bootOpen(recovered, recoveryCfg);
+    await startV2(recovered, { room, editorMatchesDoc: true });
+    await expect
+      .poll(async () => (await renderDoc(recovered)).ok, {
+        timeout: 15_000,
+        intervals: [200],
+      })
+      .toBe(correctedAuthority.ok);
+    expect(await modelText(recovered, recoveryCfg)).toContain("(width 0.73)");
+    expect(await drift(recovered, recoveryCfg), "fresh native matches repaired Y exactly").toBeNull();
+    expect(await probe(recovered), "corrected authority keeps the fresh owner live").toEqual([]);
 
     expect(
       [...testLogger.consoleLogs, ...testLogger.errors].some((line) => line.includes("Aborted(")),

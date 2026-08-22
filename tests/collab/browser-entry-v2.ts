@@ -23,6 +23,7 @@ import {
   driftDocDelta,
   fileToDoc,
   isEmptyKicadDelta,
+  kicadItemsMap,
   syncLayoutToY,
   upsertDocToY,
   yToDoc,
@@ -158,6 +159,18 @@ function applyRemoteDoc(fileText: string): void {
   upsertDocToY(fileToDoc(fileText), handle().doc, "e2e-remote-doc");
 }
 
+/**
+ * Test-only raw-peer corruption. This deliberately bypasses every authenticated
+ * writer API so the production binding must contain an unmaterializable Y state
+ * without letting its observer throw through the provider transaction.
+ */
+function corruptAuthoritativeItemBody(uuid: string): void {
+  const doc = handle().doc;
+  const item = kicadItemsMap(doc).get(uuid);
+  if (!item) throw new Error(`cannot corrupt missing authoritative item ${uuid}`);
+  doc.transact(() => item.set("body", "not-a-slot-tree"), "e2e-malformed-authority");
+}
+
 /** Terminal projection failures observed from the production window event. */
 function observedProjectionFailures(): NativeProjectionFailure[] {
   return projectionFailures.map((failure) => ({ ...failure }));
@@ -238,6 +251,7 @@ declare global {
       applyConcurrentRootCreations: typeof applyConcurrentRootCreations;
       applyRemoteLayout: typeof applyRemoteLayout;
       applyRemoteDoc: typeof applyRemoteDoc;
+      corruptAuthoritativeItemBody: typeof corruptAuthoritativeItemBody;
       projectionFailures: typeof observedProjectionFailures;
       layoutHead: typeof layoutHead;
       nativeWireThroughY: typeof nativeSnapshotThroughY;
@@ -253,6 +267,7 @@ window.KicadCollabV2 = {
   applyConcurrentRootCreations,
   applyRemoteLayout,
   applyRemoteDoc,
+  corruptAuthoritativeItemBody,
   projectionFailures: observedProjectionFailures,
   layoutHead,
   nativeWireThroughY: nativeSnapshotThroughY,
