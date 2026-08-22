@@ -8,14 +8,23 @@ import {
   kicadMetaMap,
   parseItemsWireDelta,
   renderItem,
+  scalar,
   SEXPR_VERSION_CURRENT,
   sexprToItems,
+  unquoteAtom,
+  wireLibSymbols,
   ydocHasState,
   ydocSexprVersion,
   yToDoc,
   type KicadItem,
 } from "@pcbjam/shared";
-import { bindKicadCollab, DOC_REVERTED_EVENT, SexprVersionError, type KicadItemsBridge } from "./kicad-binding";
+import {
+  bindKicadCollab,
+  DOC_REVERTED_EVENT,
+  SexprVersionError,
+  type KicadItemsBridge,
+  type NativeProjectionFailure,
+} from "./kicad-binding";
 
 /**
  * A fake editor implementing the v2 items bridge over an in-memory flattened
@@ -25,6 +34,7 @@ import { bindKicadCollab, DOC_REVERTED_EVENT, SexprVersionError, type KicadItems
  */
 class FakeEditor implements KicadItemsBridge {
   store: Record<string, KicadItem> = {};
+  libraries: Record<string, string> = {};
   applied: string[] = []; // raw JSON of every applyItems call (echo assertions)
   destroyCalls = 0;
   private emit: ((json: string) => void) | null = null;
@@ -32,10 +42,15 @@ class FakeEditor implements KicadItemsBridge {
   snapshotItems(): string {
     const roots = Object.entries(this.store)
       .filter(([, it]) => it.parent === null)
-      .map(([uuid]) => ({
-        sexpr: renderItem({ items: this.store }, uuid),
-        parent: null,
-      }));
+      .map(([uuid, item]) => {
+        let sexpr = renderItem({ items: this.store }, uuid);
+        const encodedLibId = scalar(item.body, "lib_id");
+        const definition = encodedLibId
+          ? this.libraries[unquoteAtom(encodedLibId)]
+          : undefined;
+        if (definition) sexpr = `(lib_symbols ${definition}) ${sexpr}`;
+        return { sexpr, parent: null };
+      });
     return JSON.stringify({ added: roots, changed: [], removed: [] });
   }
 
@@ -66,7 +81,9 @@ class FakeEditor implements KicadItemsBridge {
   }
 
   private applyToStore(json: string): void {
-    const delta = itemsWireToDelta(parseItemsWireDelta(json), this.store);
+    const wire = parseItemsWireDelta(json);
+    Object.assign(this.libraries, wireLibSymbols(wire));
+    const delta = itemsWireToDelta(wire, this.store);
     for (const it of [...delta.added, ...delta.updated]) {
       const { uuid, ...item } = it;
       this.store[uuid] = item;
@@ -319,6 +336,88 @@ describe("bindKicadCollab — two editors over relayed Y.Docs", () => {
 describe("lib_symbols flow through the binding (miss 08A)", () => {
   const DEF = `(symbol "Device:R" (property "Reference" "R" (at 2 0 90)))`;
   const INSTANCE = `(symbol (lib_id "Device:R") (at 100 50 0) (uuid "sym-1"))`;
+  const WRITER_DEF = `(symbol "Device:R" (pin_names (offset 0)) (property "Reference" "R" (at 2 0 90)))`;
+  const CAP_DEF = `(symbol "Device:C" (property "Reference" "C" (at 2 0 90)))`;
+  const CAP_INSTANCE = `(symbol (lib_id "Device:C") (at 120 50 0) (uuid "sym-2"))`;
+
+  function fileWithDefinition(definition: string): string {
+    return `(kicad_sch
+      (version 20231120)
+      (lib_symbols ${definition})
+      ${INSTANCE})`;
+  }
+
+  function fileBackedPair(definition = WRITER_DEF): {
+    a: Y.Doc;
+    b: Y.Doc;
+    edA: FakeEditor;
+    edB: FakeEditor;
+    failuresB: NativeProjectionFailure[];
+  } {
+    const { a, b } = pair();
+    const edA = new FakeEditor();
+    const edB = new FakeEditor();
+    seedEditor(edA, INSTANCE);
+    seedEditor(edB, INSTANCE);
+    edA.libraries["Device:R"] = WRITER_DEF;
+    edB.libraries["Device:R"] = WRITER_DEF;
+    const failuresB: NativeProjectionFailure[] = [];
+    const bindA = bindKicadCollab(a, edA);
+    const bindB = bindKicadCollab(b, edB, {
+      onProjectionFailure: (failure) => failuresB.push(failure),
+    });
+    const seedDoc = fileToDoc(fileWithDefinition(definition));
+    bindA.seed(seedDoc);
+    bindB.seed(seedDoc);
+    edA.applied.length = 0;
+    edB.applied.length = 0;
+    return { a, b, edA, edB, failuresB };
+  }
+
+  it("canonicalizes file-seeded definitions to the native writer snapshot", () => {
+    const doc = new Y.Doc();
+    const editor = new FakeEditor();
+    seedEditor(editor, INSTANCE);
+    editor.libraries["Device:R"] = WRITER_DEF;
+
+    bindKicadCollab(doc, editor).seed(fileToDoc(fileWithDefinition(DEF)));
+
+    expect(kicadLibSymbolsMap(doc).get("Device:R")).toBe(WRITER_DEF);
+  });
+
+  it("does not retire peers when the first symbol edit carries writer-normalized context", () => {
+    const { edA, edB, failuresB } = fileBackedPair(DEF);
+
+    edA.localUpsert(
+      `(lib_symbols ${WRITER_DEF}) ${INSTANCE.replace("(at 100 50 0)", "(at 101 50 0)")}`,
+    );
+
+    expect(failuresB).toEqual([]);
+    expect(scalar(edB.store["sym-1"]!.body, "at")).toBe("101");
+  });
+
+  it("hot-applies a newly used library definition with its new symbol root", () => {
+    const { edA, edB, failuresB } = fileBackedPair();
+
+    edA.localUpsert(`(lib_symbols ${CAP_DEF}) ${CAP_INSTANCE}`, null, "added");
+
+    expect(failuresB).toEqual([]);
+    expect(edB.store["sym-2"]).toBeDefined();
+    expect(edB.libraries["Device:C"]).toBe(CAP_DEF);
+  });
+
+  it("still requires rehydration for a definition-only change with no covering symbol wire", () => {
+    const { a, failuresB } = fileBackedPair();
+
+    kicadLibSymbolsMap(a).set("Device:C", CAP_DEF);
+
+    expect(failuresB).toEqual([
+      expect.objectContaining({
+        kind: "non-item-structure",
+        recovery: "recreate-from-yjs",
+      }),
+    ]);
+  });
 
   it("an emitted placement's definition is stored and re-rendered for the peer", () => {
     const { a, b } = pair();
