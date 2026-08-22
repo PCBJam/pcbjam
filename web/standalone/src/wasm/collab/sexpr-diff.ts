@@ -9,11 +9,10 @@
  *      parens, quoted strings with escapes, bare atoms). No KiCad semantics.
  *   2. Index "item" nodes by uuid: any list node with a direct `(uuid "X")` child
  *      is an item keyed by `X`. Nested items are collected too.
- *   3. Compare order-insensitively, strictly on values: the two item SETS must
- *      have the same uuid keys, and for each shared uuid the two nodes must be
- *      equal as multisets of normalized children (reordering of sibling
- *      properties / items is allowed; any added / removed / value-changed token
- *      is a diff).
+ *   3. Compare canonical parsed structure with ORDER PRESERVED by default. The
+ *      two item sets must have the same uuid keys, and every shared item's
+ *      anonymous content must match exactly. Callers may opt into one audited
+ *      writer-normalization class: UUID-bearing sibling items may reorder.
  *   4. Emit `{ equal, added, removed, changed }` for readable failures.
  *
  * IMPORTANT — compare like-for-like. This is only false-positive-free when both
@@ -22,10 +21,8 @@
  * a saved file against decomposed-scalar Y.Doc fields would need a per-type
  * field↔token map — exactly the trap this comparator avoids by construction.
  *
- * Tradeoff of the multiset rule: positional scalar tuples (e.g. `(at X Y)`) are
- * compared as a multiset, so a pure X↔Y swap with otherwise-equal values would
- * not be flagged. Acceptable for same-serializer inputs (the serializer emits a
- * consistent order on both sides); revisit if a value-swap drift class appears.
+ * The exception never covers anonymous repeated heads or positional atoms, so
+ * `(at 1 2)` → `(at 2 1)` and `(pts (xy A) (xy B))` → the reverse are drift.
  *
  * No imports — usable from standalone app code (`@/wasm/collab/sexpr-diff`) and
  * from the Playwright specs (relative import) alike.
@@ -62,7 +59,20 @@ export interface SexprDiffOptions {
    *  for known-volatile serializer output (e.g. "generator_version"). Declared
    *  explicitly so drift is never hidden silently. */
   ignoreTokens?: string[];
+  /** Explicit writer-normalized order classes. Exact order is the default. */
+  ignoreOrderClasses?: readonly SexprOrderClass[];
 }
+
+export type SexprOrderClass = "uuid-item-siblings";
+
+/**
+ * KiCad may reorder independently identified sibling objects while saving. A
+ * real board reopen moved one track block while preserving all 533 UUID item
+ * nodes and every anonymous field. Keep this opt-in and centralized: widening
+ * it requires new writer evidence and a focused counterexample test.
+ */
+export const KICAD_WRITER_NORMALIZED_SEXPR_ORDER: readonly SexprOrderClass[] =
+  Object.freeze(["uuid-item-siblings"] as const);
 
 // ── Parser ──────────────────────────────────────────────────────────────────
 
@@ -163,56 +173,92 @@ function isIgnored(node: SNode, ignore: Set<string>): boolean {
   return Array.isArray(node) && typeof node[0] === "string" && ignore.has(node[0]);
 }
 
-/** Canonical string of a node: atoms verbatim, lists as `(` + sorted children + `)`. */
-function canonical(node: SNode, ignore: Set<string>): string {
-  if (!Array.isArray(node)) return node;
-  const kids = node
-    .filter((c) => !isIgnored(c, ignore))
-    .map((c) => canonical(c, ignore))
-    .sort();
-  return "(" + kids.join(" ") + ")";
+type CanonicalNode =
+  | { atom: string }
+  | { item: string }
+  | { list: CanonicalNode[]; unorderedItems?: string[] };
+
+interface CanonicalContext {
+  ignore: Set<string>;
+  commonItems: Set<string>;
+  unorderedUuidSiblings: boolean;
 }
 
-/** Group an item's direct children by head keyword, as canonical strings. */
-function groupByHead(node: SNode[], ignore: Set<string>): Map<string, string[]> {
-  const groups = new Map<string, string[]>();
-  for (const c of node) {
-    if (isIgnored(c, ignore)) continue;
-    const head = Array.isArray(c) && typeof c[0] === "string" ? c[0] : "·atom";
-    const list = groups.get(head) ?? [];
-    list.push(canonical(c, ignore));
-    groups.set(head, list);
+/**
+ * Normalize without losing order. A direct UUID-bearing child becomes a
+ * reference marker: its body is checked under its own UUID, while this marker
+ * proves membership/parentage and, unless opted out, sibling order.
+ */
+function normalizeNode(node: SNode, ctx: CanonicalContext): CanonicalNode {
+  if (!Array.isArray(node)) return { atom: node };
+  const ordered: CanonicalNode[] = [];
+  const unorderedItems: string[] = [];
+  for (const child of node) {
+    if (isIgnored(child, ctx.ignore)) continue;
+    if (Array.isArray(child)) {
+      const id = directUuid(child);
+      if (id !== null) {
+        // Membership differences are already represented by added/removed.
+        // Omitting non-common markers also preserves callers' explicit ability
+        // to filter a known writer-omitted UUID without a duplicate parent diff.
+        if (!ctx.commonItems.has(id)) continue;
+        if (ctx.unorderedUuidSiblings) unorderedItems.push(id);
+        else ordered.push({ item: id });
+        continue;
+      }
+    }
+    ordered.push(normalizeNode(child, ctx));
   }
-  return groups;
+  return unorderedItems.length === 0
+    ? { list: ordered }
+    : { list: ordered, unorderedItems: unorderedItems.sort() };
+}
+
+function canonical(node: SNode, ctx: CanonicalContext): string {
+  return JSON.stringify(normalizeNode(node, ctx));
+}
+
+function canonicalForms(forms: SNode[], ctx: CanonicalContext): string {
+  return JSON.stringify(
+    forms.filter((node) => !isIgnored(node, ctx.ignore)).map((node) => normalizeNode(node, ctx)),
+  );
+}
+
+function renderNode(node: SNode): string {
+  return Array.isArray(node) ? `(${node.map(renderNode).join(" ")})` : node;
+}
+
+function nodeHead(node: SNode | undefined): string {
+  return Array.isArray(node) && typeof node[0] === "string" ? node[0] : "·atom";
 }
 
 /** Per-property changes between two item nodes sharing a uuid. */
-function diffItem(uuid: string, a: SNode[], b: SNode[], ignore: Set<string>): SexprChange[] {
-  const ga = groupByHead(a, ignore);
-  const gb = groupByHead(b, ignore);
-  const heads = new Set<string>([...ga.keys(), ...gb.keys()]);
+function diffItem(
+  uuid: string,
+  a: SNode[],
+  b: SNode[],
+  ctx: CanonicalContext,
+): SexprChange[] {
+  const as = a.filter((node) => !isIgnored(node, ctx.ignore));
+  const bs = b.filter((node) => !isIgnored(node, ctx.ignore));
   const out: SexprChange[] = [];
-
-  for (const head of heads) {
-    const as = (ga.get(head) ?? []).slice().sort();
-    const bs = (gb.get(head) ?? []).slice().sort();
-
-    // Multiset difference of the canonical child strings under this head.
-    const countB = new Map<string, number>();
-    for (const s of bs) countB.set(s, (countB.get(s) ?? 0) + 1);
-    const onlyA: string[] = [];
-    for (const s of as) {
-      const c = countB.get(s) ?? 0;
-      if (c > 0) countB.set(s, c - 1);
-      else onlyA.push(s);
+  const max = Math.max(as.length, bs.length);
+  for (let index = 0; index < max; index++) {
+    const left = as[index];
+    const right = bs[index];
+    if (
+      left !== undefined &&
+      right !== undefined &&
+      canonical(left, ctx) === canonical(right, ctx)
+    ) {
+      continue;
     }
-    const onlyB: string[] = [];
-    for (const [s, c] of countB) for (let k = 0; k < c; k++) onlyB.push(s);
-
-    const max = Math.max(onlyA.length, onlyB.length);
-    for (let k = 0; k < max; k++) {
-      out.push({ uuid, path: head, a: onlyA[k] ?? null, b: onlyB[k] ?? null });
-    }
+    out.push({
+      uuid,
+      path: nodeHead(left ?? right),
+      a: left === undefined ? null : renderNode(left),
+      b: right === undefined ? null : renderNode(right),
+    });
   }
   return out;
 }
@@ -227,10 +273,20 @@ function diffItem(uuid: string, a: SNode[], b: SNode[], ignore: Set<string>): Se
  */
 export function sexprDiff(a: string, b: string, opts: SexprDiffOptions = {}): SexprDiffResult {
   const ignore = new Set(opts.ignoreTokens ?? []);
+  const formsA = parseSexpr(a);
+  const formsB = parseSexpr(b);
   const itemsA = new Map<string, SNode[]>();
   const itemsB = new Map<string, SNode[]>();
-  collectItems(parseSexpr(a), itemsA);
-  collectItems(parseSexpr(b), itemsB);
+  collectItems(formsA, itemsA);
+  collectItems(formsB, itemsB);
+
+  const commonItems = new Set([...itemsA.keys()].filter((id) => itemsB.has(id)));
+  const orderClasses = new Set(opts.ignoreOrderClasses ?? []);
+  const ctx: CanonicalContext = {
+    ignore,
+    commonItems,
+    unorderedUuidSiblings: orderClasses.has("uuid-item-siblings"),
+  };
 
   const removed: string[] = [];
   const added: string[] = [];
@@ -242,9 +298,21 @@ export function sexprDiff(a: string, b: string, opts: SexprDiffOptions = {}): Se
   for (const [id, na] of itemsA) {
     const nb = itemsB.get(id);
     if (!nb) continue;
-    if (canonical(na, ignore) !== canonical(nb, ignore)) {
-      changed.push(...diffItem(id, na, nb, ignore));
+    if (canonical(na, ctx) !== canonical(nb, ctx)) {
+      changed.push(...diffItem(id, na, nb, ctx));
     }
+  }
+
+  // UUID item bodies are represented by identity markers in this skeleton, so
+  // this independently checks root metadata, ownership and ordering without
+  // duplicating every nested item-body change under its parent.
+  if (canonicalForms(formsA, ctx) !== canonicalForms(formsB, ctx)) {
+    changed.push({
+      uuid: "·document",
+      path: "·document",
+      a: formsA.map(renderNode).join(" "),
+      b: formsB.map(renderNode).join(" "),
+    });
   }
 
   const equal = added.length === 0 && removed.length === 0 && changed.length === 0;

@@ -19,6 +19,7 @@ import {
   driftDocDelta,
   fileToDoc,
   isEmptyKicadDelta,
+  KICAD_WRITER_NORMALIZED_ITEM_REFERENCE_ORDER,
   type Tool,
   ydocSexprVersion,
   yToDoc,
@@ -62,9 +63,9 @@ const MAX_REPORTS_PER_SESSION = 20;
 /**
  * djb2 over the drift-defining JSON — dedupe key, not a security hash.
  *
- * `diff.reordered` and `layoutReordered` are excluded on purpose: they are not
- * drift, and v2's order churn would otherwise change the key on every pass and
- * defeat the "report a stable divergence once" rule.
+ * `diff.reordered` remains for report compatibility. `layoutReordered` is the
+ * one audited UUID-item-reference normalization and is excluded on purpose, so
+ * writer churn cannot defeat the "report a stable divergence once" rule.
  */
 function driftKey(body: DriftReportBody): string {
   const { reordered: _reordered, ...diff } = body.diff;
@@ -145,11 +146,15 @@ export function startDriftDetection(opts: DriftDetectOptions): DriftDetector {
 
     const wasmDoc = fileToDoc(text);
     const ydocDoc = yToDoc(opts.doc);
-    // Order-only differences go to `diff.reordered` / `layoutReordered`: y-sexpr
-    // v2 reorders legitimately, so they are noise, not divergence (kicad-delta.ts).
+    // Item content is exact. The only ignored order class is the explicit,
+    // writer-audited UUID-bearing layout-item normalization.
     const diff = driftDocDelta(ydocDoc, wasmDoc);
     // driftDocDelta covers items only; flag layout/preamble divergence separately.
-    const layoutRelation = compareSlots(ydocDoc.layout, wasmDoc.layout);
+    const layoutRelation = compareSlots(
+      ydocDoc.layout,
+      wasmDoc.layout,
+      KICAD_WRITER_NORMALIZED_ITEM_REFERENCE_ORDER,
+    );
     const layoutChanged = layoutRelation === "different";
     const layoutReordered = layoutRelation === "reordered";
     const metaChanged = ydocDoc.root !== wasmDoc.root;

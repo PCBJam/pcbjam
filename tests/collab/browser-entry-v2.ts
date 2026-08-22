@@ -23,6 +23,7 @@ import {
   driftDocDelta,
   fileToDoc,
   isEmptyKicadDelta,
+  KICAD_WRITER_NORMALIZED_ITEM_REFERENCE_ORDER,
   kicadItemsMap,
   syncLayoutToY,
   upsertDocToY,
@@ -192,10 +193,10 @@ export interface DriftSummary {
   added: string[];
   updated: string[];
   removed: string[];
-  /** Order-only item churn — surfaced for triage, NOT drift (kicad-delta.ts). */
+  /** Compatibility field; production item comparison is exact. */
   reordered: string[];
   layoutChanged: boolean;
-  /** Order-only layout churn — likewise not report-worthy on its own. */
+  /** Audited UUID item-reference layout churn; anonymous layout order is drift. */
   layoutReordered: boolean;
   metaChanged: boolean;
 }
@@ -206,8 +207,9 @@ export interface DriftSummary {
  * primitives only — drift-detect itself pulls `@/lib/api`, so it can't be
  * bundled here. Serializes the live model via the tool's save fn, diffs it
  * against the room doc with the PRODUCTION comparator (driftDocDelta +
- * compareSlots — order-only churn goes to reordered/layoutReordered and does
- * not make a report, matching ysync 0010); null means editor ≡ doc.
+ * compareSlots). Item bodies are exact; only UUID item-reference order in the
+ * layout can land in layoutReordered and stay out of a report. Null means
+ * editor ≡ doc under that explicit writer-normalization policy.
  */
 function driftReport(saveFn: string, scratchPath: string): DriftSummary | null {
   const w = window as unknown as {
@@ -231,7 +233,11 @@ function driftReport(saveFn: string, scratchPath: string): DriftSummary | null {
   const wasmDoc = fileToDoc(text);
   const ydocDoc = yToDoc(handle().doc);
   const diff = driftDocDelta(ydocDoc, wasmDoc);
-  const layoutRelation = compareSlots(ydocDoc.layout, wasmDoc.layout);
+  const layoutRelation = compareSlots(
+    ydocDoc.layout,
+    wasmDoc.layout,
+    KICAD_WRITER_NORMALIZED_ITEM_REFERENCE_ORDER,
+  );
   const layoutChanged = layoutRelation === "different";
   const metaChanged = ydocDoc.root !== wasmDoc.root;
   // layoutReordered deliberately outside the gate — same as computeDrift.

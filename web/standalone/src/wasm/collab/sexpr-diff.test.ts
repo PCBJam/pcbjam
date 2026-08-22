@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { parseSexpr, sexprDiff } from "./sexpr-diff";
+import {
+  KICAD_WRITER_NORMALIZED_SEXPR_ORDER,
+  parseSexpr,
+  sexprDiff,
+} from "./sexpr-diff";
 
 // A tiny item helper: a list node `(type (uuid "ID") <props…>)` as text.
 const item = (type: string, id: string, ...props: string[]) =>
@@ -39,10 +43,26 @@ describe("sexprDiff — equality", () => {
     expect(sexprDiff(a, b).equal).toBe(false);
   });
 
+  it("can ignore the audited UUID-bearing sibling writer normalization", () => {
+    const a = `(root ${item("seg", "u1", "(x 1)")} ${item("seg", "u2", "(x 2)")})`;
+    const b = `(root ${item("seg", "u2", "(x 2)")} ${item("seg", "u1", "(x 1)")})`;
+    expect(
+      sexprDiff(a, b, {
+        ignoreOrderClasses: KICAD_WRITER_NORMALIZED_SEXPR_ORDER,
+      }).equal,
+    ).toBe(true);
+  });
+
   it("is exact by default when properties within an item are reordered", () => {
     const a = `(root ${item("seg", "u1", "(x 1)", "(y 2)", "(layer F)")})`;
     const b = `(root ${item("seg", "u1", "(layer F)", "(y 2)", "(x 1)")})`;
     expect(sexprDiff(a, b).equal).toBe(false);
+    expect(
+      sexprDiff(a, b, {
+        ignoreOrderClasses: KICAD_WRITER_NORMALIZED_SEXPR_ORDER,
+      }).equal,
+      "UUID sibling normalization must not widen to anonymous properties",
+    ).toBe(false);
   });
 
   it("whitespace differences are irrelevant", () => {
@@ -53,6 +73,19 @@ describe("sexprDiff — equality", () => {
 });
 
 describe("sexprDiff — changes", () => {
+  it("catches non-UUID document structure instead of comparing item sets only", () => {
+    const a = `(root (paper "A4") ${item("seg", "u1", "(x 1)")})`;
+    const b = `(root (paper "A3") ${item("seg", "u1", "(x 1)")})`;
+    const r = sexprDiff(a, b);
+    expect(r.equal).toBe(false);
+    expect(r.changed).toContainEqual({
+      uuid: "·document",
+      path: "·document",
+      a,
+      b,
+    });
+  });
+
   it("catches a positional tuple swap", () => {
     const a = `(root ${item("footprint", "u1", "(at 1 2)")})`;
     const b = `(root ${item("footprint", "u1", "(at 2 1)")})`;
@@ -71,6 +104,12 @@ describe("sexprDiff — changes", () => {
     expect(r.changed.some((change) => change.uuid === "u1" && change.path === "pts")).toBe(
       true,
     );
+    expect(
+      sexprDiff(a, b, {
+        ignoreOrderClasses: KICAD_WRITER_NORMALIZED_SEXPR_ORDER,
+      }).equal,
+      "UUID sibling normalization must not widen to anonymous xy children",
+    ).toBe(false);
   });
 
   it("catches a single changed value with uuid + path + a/b", () => {
@@ -79,7 +118,7 @@ describe("sexprDiff — changes", () => {
     const r = sexprDiff(a, b);
     expect(r.equal).toBe(false);
     expect(r.changed).toHaveLength(1);
-    expect(r.changed[0]).toMatchObject({ uuid: "u1", path: "y", a: "(2 y)", b: "(9 y)" });
+    expect(r.changed[0]).toMatchObject({ uuid: "u1", path: "y", a: "(y 2)", b: "(y 9)" });
   });
 
   it("distinguishes a quoted string from the same bare token", () => {
@@ -115,8 +154,8 @@ describe("sexprDiff — changes", () => {
     expect(r.equal).toBe(false);
     // The nested pad's value change surfaces under its own uuid…
     expect(r.changed.some((c) => c.uuid === "p1" && c.path === "size")).toBe(true);
-    // …and the parent footprint differs too (it contains the pad subtree).
-    expect(r.changed.some((c) => c.uuid === "f1")).toBe(true);
+    // …without duplicating the child-body change under the parent footprint.
+    expect(r.changed.some((c) => c.uuid === "f1")).toBe(false);
   });
 });
 

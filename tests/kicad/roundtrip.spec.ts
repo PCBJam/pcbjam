@@ -2,7 +2,10 @@ import { execSync } from "node:child_process";
 import path from "node:path";
 import type { BrowserContext, Page } from "@playwright/test";
 import { test, expect } from "./fixtures";
-import { sexprDiff } from "../../web/standalone/src/wasm/collab/sexpr-diff";
+import {
+  KICAD_WRITER_NORMALIZED_SEXPR_ORDER,
+  sexprDiff,
+} from "../../web/standalone/src/wasm/collab/sexpr-diff";
 
 /**
  * Round-trip integration tests (feature 0004; v2 items wire since ysync 0008
@@ -17,10 +20,9 @@ import { sexprDiff } from "../../web/standalone/src/wasm/collab/sexpr-diff";
  *   →  save (REGEN)
  *   →  assert sexprDiff(ORIG, REGEN).equal
  *
- * Both ORIG and REGEN come out of the SAME tool serializer, so `sexprDiff` (which
- * compares uuid-keyed items as multisets of normalized children) is false-positive
- * free by construction — non-item structure (setup, layers, paper) carries no uuid
- * and is intentionally not compared.
+ * Both ORIG and REGEN come out of the SAME tool serializer. `sexprDiff` compares
+ * exact parsed structure and this suite opts into only KiCad's observed
+ * UUID-bearing sibling reorder; anonymous fields and tuples remain ordered.
  *
  * The empty fixture shares the full fixture's top-level identity uuid(s) (where a
  * tool has one, e.g. the schematic root) so only the synced ITEMS differ between
@@ -465,7 +467,10 @@ test.describe("round trip: file → yjs → file", () => {
 
   test("pl_editor preserves items through a yjs round trip", async ({ context, testLogger }) => {
     const { orig, regen } = await roundTrip(context, PL);
-    const diff = sexprDiff(orig, regen, { ignoreTokens: PL.ignoreTokens });
+    const diff = sexprDiff(orig, regen, {
+      ignoreTokens: PL.ignoreTokens,
+      ignoreOrderClasses: KICAD_WRITER_NORMALIZED_SEXPR_ORDER,
+    });
     expect(
       diff.equal,
       `round trip lost data:\n${JSON.stringify(diff, null, 2)}`,
@@ -475,7 +480,10 @@ test.describe("round trip: file → yjs → file", () => {
 
   test("eeschema preserves items through a yjs round trip", async ({ context, testLogger }) => {
     const { orig, regen } = await roundTrip(context, SCH);
-    const diff = sexprDiff(orig, regen, { ignoreTokens: SCH.ignoreTokens });
+    const diff = sexprDiff(orig, regen, {
+      ignoreTokens: SCH.ignoreTokens,
+      ignoreOrderClasses: KICAD_WRITER_NORMALIZED_SEXPR_ORDER,
+    });
     expect(
       diff.equal,
       `round trip lost data:\n${JSON.stringify(diff, null, 2)}`,
@@ -491,7 +499,10 @@ test.describe("round trip: file → yjs → file", () => {
     testLogger,
   }) => {
     const { orig, regen } = await roundTrip(context, PCB_FP);
-    const diff = sexprDiff(orig, regen, { ignoreTokens: PCB_FP.ignoreTokens });
+    const diff = sexprDiff(orig, regen, {
+      ignoreTokens: PCB_FP.ignoreTokens,
+      ignoreOrderClasses: KICAD_WRITER_NORMALIZED_SEXPR_ORDER,
+    });
     expect(
       diff.equal,
       `round trip lost data:\n${JSON.stringify(diff, null, 2)}`,
@@ -528,7 +539,10 @@ test.describe("round trip: file → yjs → file", () => {
     "pcbnew preserves items through a yjs round trip",
     async ({ context, testLogger }) => {
       const { orig, regen } = await roundTrip(context, PCB);
-      const diff = sexprDiff(orig, regen, { ignoreTokens: PCB.ignoreTokens });
+      const diff = sexprDiff(orig, regen, {
+        ignoreTokens: PCB.ignoreTokens,
+        ignoreOrderClasses: KICAD_WRITER_NORMALIZED_SEXPR_ORDER,
+      });
       expect(
         diff.equal,
         `round trip lost data:\n${JSON.stringify(diff, null, 2)}`,
