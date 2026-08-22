@@ -18,6 +18,42 @@ export interface NonItemProjectionState {
   readonly libraries: Readonly<Record<string, string>>;
 }
 
+/** Runtime ledger form; snapshot-seeded item-only rooms have no hard layout. */
+export interface NativeNonItemProjectionState {
+  readonly hardSignature: string | null;
+  readonly libraries: Readonly<Record<string, string>>;
+}
+
+/**
+ * Advance the native non-item ledger from one completed native save.
+ *
+ * `desired` is the complete authoritative Y view after save-sync, but it may
+ * also contain peer definitions that the saved native snapshot has not applied
+ * yet. Therefore only definition keys actually mutated by that exact
+ * `layout-save` transaction are acknowledged. A layout/root change is likewise
+ * acknowledged only when the transaction authored hard structure. Remaining
+ * mismatches stay visible to the projector and force apply/recreate instead of
+ * being silently blessed by coexistence in Y.
+ */
+export function accountNativeLayoutSave(
+  native: NativeNonItemProjectionState,
+  desired: NativeNonItemProjectionState,
+  touchedLibraryIds: Iterable<string>,
+  hardStructureAuthored: boolean,
+): NativeNonItemProjectionState {
+  const libraries = { ...native.libraries };
+  for (const id of touchedLibraryIds) {
+    if (Object.hasOwn(desired.libraries, id)) libraries[id] = desired.libraries[id]!;
+    else delete libraries[id];
+  }
+  return {
+    hardSignature: hardStructureAuthored
+      ? desired.hardSignature
+      : native.hardSignature,
+    libraries,
+  };
+}
+
 /**
  * Canonical signature for the part of a KiCad document the item bridge cannot
  * hot-apply. Top-level UUID item references are deliberately ignored: their

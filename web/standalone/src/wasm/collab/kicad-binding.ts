@@ -47,7 +47,9 @@ import {
   type NativeItemsProtocolWindow,
 } from "./native-items-bridge";
 import {
+  accountNativeLayoutSave,
   nonItemProjectionState,
+  type NativeNonItemProjectionState,
   type NonItemProjectionState,
 } from "./projection-structure";
 
@@ -193,10 +195,7 @@ export function bindKicadCollab(
    * signature denotes an editor-snapshot room with no file-backed root/layout;
    * libraries are still exact and must never be silently ignored.
    */
-  interface RuntimeNonItemState {
-    readonly hardSignature: string | null;
-    readonly libraries: Readonly<Record<string, string>>;
-  }
+  type RuntimeNonItemState = NativeNonItemProjectionState;
   let nativeNonItems: RuntimeNonItemState | null = null;
   let projectionDirty = false;
   let projectionInFlight = false;
@@ -872,23 +871,44 @@ export function bindKicadCollab(
     }
     if (!seeded) return;
 
-    const touchesNonItems = events.some((event) => {
+    const touchedLayoutSaveLibraries = new Set<string>();
+    let layoutSaveAuthoredHardStructure = false;
+    let touchesNonItems = false;
+    for (const event of events) {
       const path = event.path;
       // A top-level active-pointer swap is the complete structure. Below the
       // active state, only the `items` subtree is hot-applicable.
-      return path.length < 2 || path[0] !== "active" || path[1] !== "items";
-    });
-    if (txn.origin === ORIGIN || txn.origin === "layout-save") {
+      const touches = path.length < 2 || path[0] !== "active" || path[1] !== "items";
+      if (!touches) continue;
+      touchesNonItems = true;
+      if (path.length >= 2 && path[0] === "active" && path[1] === "libsymbols") {
+        for (const id of event.changes.keys.keys()) touchedLayoutSaveLibraries.add(id);
+      } else {
+        layoutSaveAuthoredHardStructure = true;
+      }
+    }
+    if (txn.origin === ORIGIN) return;
+    if (txn.origin === "layout-save") {
       if (touchesNonItems) {
         try {
+          if (nativeNonItems === null) {
+            throw new Error("layout save has no native non-item baseline");
+          }
           const target = projectionView().nonItems;
-          nativeNonItems = {
-            hardSignature: target.hardSignature,
-            libraries: { ...target.libraries },
-          };
+          nativeNonItems = accountNativeLayoutSave(
+            nativeNonItems,
+            target,
+            touchedLayoutSaveLibraries,
+            layoutSaveAuthoredHardStructure,
+          );
         } catch (err) {
-          failAuthoritativeState(err);
+          failProjection("native-baseline", err);
+          return;
         }
+        // Any peer library/item state merely coexisting in the Y transaction
+        // remains outside the ledger above. Let the normal projector either
+        // apply and ACK it or retire this native owner; never bless it here.
+        queueMicrotask(requestProjection);
       }
       return;
     }
