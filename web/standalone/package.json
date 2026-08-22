@@ -10,6 +10,8 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "e2e:preview": "node scripts/build-preview.mjs",
+    "formal:yjs:generate": "node ../../formal/yjs/generate-projection-kernel.mjs",
+    "formal:yjs:check": "node ../../formal/yjs/generate-projection-kernel.mjs --check",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
@@ -26,6 +28,7 @@
     "@sentry/browser": "^10.69.0",
     "@tanstack/react-query": "^5.62.11",
     "@ts-rest/core": "^3.52.1",
+    "bignumber.js": "9.3.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "emoji-mart": "^5.6.0",

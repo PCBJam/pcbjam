@@ -1,0 +1,54 @@
+name: Yjs formal model
+
+on:
+  push:
+    paths:
+      - "formal/yjs/**"
+      - "web/standalone/src/wasm/collab/generated/**"
+      - "web/standalone/src/wasm/collab/projection-kernel.test.ts"
+      - "web/standalone/package.json"
+      - "web/pnpm-lock.yaml"
+      - ".github/workflows/yjs-formal.yml"
+  pull_request:
+    paths:
+      - "formal/yjs/**"
+      - "web/standalone/src/wasm/collab/generated/**"
+      - "web/standalone/src/wasm/collab/projection-kernel.test.ts"
+      - "web/standalone/package.json"
+      - "web/pnpm-lock.yaml"
+      - ".github/workflows/yjs-formal.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install web dependencies
+        working-directory: web
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+
+      - name: Install pinned Dafny
+        uses: dafny-lang/setup-dafny-action@v1.9.1
+        with:
+          dafny-version: "4.11.0"
+
+      - name: Verify proofs and generated artifact
+        working-directory: web
+        run: pnpm --filter @pcbjam/standalone formal:yjs:check
+
+      - name: Exercise all generated decisions
+        working-directory: web
+        run: >-
+          pnpm --filter @pcbjam/standalone exec vitest run
+          src/wasm/collab/projection-kernel.test.ts
