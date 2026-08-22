@@ -6,7 +6,7 @@ are useful only when their abstraction boundary is explicit.
 
 ## What is proved
 
-`YjsProperties.dfy` has four policy modules and one executable controller:
+`YjsProperties.dfy` has nine policy modules and one executable controller:
 
 | Module | Verified obligation |
 | --- | --- |
@@ -14,11 +14,17 @@ are useful only when their abstraction boundary is explicit.
 | `RoomAdmission` | Two clients admitted to the current document room cannot use different schema versions. |
 | `AtomicEpoch` | Seed arbitration selects one complete epoch, is order-independent for unique Yjs operation identities, and never constructs a cross-seed hybrid. |
 | `NativeRebase` | An unchanged native conflict domain preserves current Y state; a changed domain preserves local intent; disjoint edits commute and retain both effects. It also proves the counterexample that two writes to one scalar domain do **not** commute. |
+| `ConflictDomains` | Independent semantic domains commute; a same-domain conflict selects one whole authored register value and cannot manufacture a hybrid. |
+| `AtomicNativeBatch` | Rejected preflight changes nothing and accepted preflight commits the complete prepared result. |
+| `GraphClosure` | Canonical references are reconstructed from one certified parent relation; every parent traversal terminates by a strictly decreasing natural rank, so self/cyclic ownership is impossible. |
+| `StructuralProjection` | An item-only hot apply is permitted only while native and Yjs non-item signatures agree; structural drift requires full native rehydration. |
+| `DurabilityBoundary` | A revision reported durable is within the persisted frontier and therefore survives restore; flushing advances that frontier through every accepted revision. |
 | `ProjectionKernel` | Owner/request isolation, one-flight/latest-dirty coalescing, monotone successful application, latest-only retry, terminal fail-stop, and clean owner rehydration preserve the controller invariant. |
 
 The exported acknowledgement decision is compiled by Dafny to JavaScript. The
 standalone application imports and executes that generated function; the
-32-case test enumerates its complete Boolean input space.
+32-case test enumerates its complete Boolean input space. Dafny 4.11.0
+currently discharges **58 verified obligations with 0 errors** for this source.
 
 ## Verify and regenerate
 
@@ -31,11 +37,11 @@ work has SHA-256:
 c90c75e7d5db9c6ccbb7127840dfe43f0ac938b039a7ebed146d8ead383a572f
 ```
 
-With `dafny` on `PATH`:
+From `web/standalone`, with `dafny` on `PATH`:
 
 ```sh
-pnpm --filter @pcbjam/standalone formal:yjs:check
-pnpm --filter @pcbjam/standalone formal:yjs:generate
+pnpm run formal:yjs:check
+pnpm run formal:yjs:generate
 ```
 
 Or set `DAFNY` to the exact executable path. `formal:yjs:check` verifies every

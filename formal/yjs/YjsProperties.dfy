@@ -157,6 +157,233 @@ module NativeRebase {
   {}
 }
 
+module ConflictDomains {
+  // One register is one complete authored value in one declared semantic
+  // conflict domain. `stamp` abstracts Yjs's globally ordered operation ID.
+  // Keeping the complete value in the register is the no-hybrid rule.
+  datatype Register = Register(stamp: nat, value: int)
+
+  predicate CompatibleIdentity(a: Register, b: Register)
+  {
+    a.stamp != b.stamp || a == b
+  }
+
+  function Select(a: Register, b: Register): Register
+  {
+    if a.stamp >= b.stamp then a else b
+  }
+
+  datatype TwoDomains = TwoDomains(first: Register, second: Register)
+
+  function WriteFirst(s: TwoDomains, value: Register): TwoDomains
+  {
+    TwoDomains(Select(s.first, value), s.second)
+  }
+
+  function WriteSecond(s: TwoDomains, value: Register): TwoDomains
+  {
+    TwoDomains(s.first, Select(s.second, value))
+  }
+
+  lemma AConflictSelectsOneWholeAuthoredValue(a: Register, b: Register)
+    ensures Select(a, b) == a || Select(a, b) == b
+  {}
+
+  lemma ConflictSelectionIsCommutative(a: Register, b: Register)
+    requires CompatibleIdentity(a, b)
+    ensures Select(a, b) == Select(b, a)
+  {}
+
+  lemma ConflictSelectionIsAssociative(a: Register, b: Register, c: Register)
+    requires CompatibleIdentity(a, b)
+    requires CompatibleIdentity(a, c)
+    requires CompatibleIdentity(b, c)
+    ensures Select(Select(a, b), c) == Select(a, Select(b, c))
+  {}
+
+  lemma IndependentDomainWritesCommute(s: TwoDomains,
+                                       first: Register,
+                                       second: Register)
+    ensures WriteFirst(WriteSecond(s, second), first)
+         == WriteSecond(WriteFirst(s, first), second)
+  {}
+}
+
+module AtomicNativeBatch {
+  // Validation/preparation is pure. The native mutation boundary receives
+  // either a completely prepared next state or keeps the exact previous one.
+  datatype NativeState = NativeState(digest: int)
+  datatype PreparedBatch = PreparedBatch(resultDigest: int)
+
+  function Commit(before: NativeState, prepared: PreparedBatch,
+                  valid: bool): NativeState
+  {
+    if valid then NativeState(prepared.resultDigest) else before
+  }
+
+  lemma RejectedBatchChangesNothing(before: NativeState,
+                                    prepared: PreparedBatch)
+    ensures Commit(before, prepared, false) == before
+  {}
+
+  lemma AcceptedBatchCommitsTheCompletePreparedResult(before: NativeState,
+                                                       prepared: PreparedBatch)
+    ensures Commit(before, prepared, true)
+         == NativeState(prepared.resultDigest)
+  {}
+}
+
+module GraphClosure {
+  datatype Owner = Root | Parent(item: nat)
+
+  // `rank` is a well-founded certificate emitted by the pure canonicalizer:
+  // every parent has a strictly smaller rank than its child. It connects the
+  // practical visited-set implementation to a compact mathematical reason
+  // that every parent traversal terminates.
+  predicate ParentCertificate(items: set<nat>,
+                              owner: map<nat, Owner>,
+                              rank: map<nat, nat>)
+  {
+    owner.Keys == items
+    && rank.Keys == items
+    && forall item :: item in items ==>
+      match owner[item]
+        case Root => true
+        case Parent(parent) =>
+          parent in items && rank[parent] < rank[item]
+  }
+
+  datatype Graph = Graph(items: set<nat>,
+                         owner: map<nat, Owner>,
+                         references: map<nat, Owner>,
+                         rank: map<nat, nat>)
+
+  predicate Closed(g: Graph)
+  {
+    ParentCertificate(g.items, g.owner, g.rank)
+    && g.references.Keys == g.items
+    && forall item :: item in g.items ==>
+      g.references[item] == g.owner[item]
+  }
+
+  function CanonicalProjection(items: set<nat>,
+                               owner: map<nat, Owner>,
+                               rank: map<nat, nat>): Graph
+    requires ParentCertificate(items, owner, rank)
+  {
+    // One source of truth: reconstruct every reference from the selected
+    // owner relation instead of independently merging parent and reference.
+    Graph(items, owner, owner, rank)
+  }
+
+  function ParentDepth(items: set<nat>,
+                       owner: map<nat, Owner>,
+                       rank: map<nat, nat>,
+                       item: nat): nat
+    requires ParentCertificate(items, owner, rank)
+    requires item in items
+    decreases rank[item]
+  {
+    match owner[item]
+      case Root => 0
+      case Parent(parent) => 1 + ParentDepth(items, owner, rank, parent)
+  }
+
+  lemma CanonicalProjectionIsClosed(items: set<nat>,
+                                    owner: map<nat, Owner>,
+                                    rank: map<nat, nat>)
+    requires ParentCertificate(items, owner, rank)
+    ensures Closed(CanonicalProjection(items, owner, rank))
+  {}
+
+  lemma ACertifiedItemCannotParentItself(items: set<nat>,
+                                         owner: map<nat, Owner>,
+                                         rank: map<nat, nat>,
+                                         item: nat)
+    requires ParentCertificate(items, owner, rank)
+    requires item in items
+    ensures owner[item] != Parent(item)
+  {}
+
+  lemma ACertifiedGraphHasNoTwoCycle(items: set<nat>,
+                                     owner: map<nat, Owner>,
+                                     rank: map<nat, nat>,
+                                     a: nat, b: nat)
+    requires ParentCertificate(items, owner, rank)
+    requires a in items && b in items
+    requires owner[a] == Parent(b)
+    ensures owner[b] != Parent(a)
+  {}
+}
+
+module StructuralProjection {
+  datatype Action = HotApplyItems | RehydrateNative
+
+  // The item bridge cannot hot-apply metadata, root-layout or definition-only
+  // changes. A mismatched non-item signature therefore crosses an explicit
+  // rehydration boundary instead of leaving native silently stale.
+  function Decide(nativeNonItems: int, yNonItems: int): Action
+  {
+    if nativeNonItems == yNonItems then HotApplyItems else RehydrateNative
+  }
+
+  lemma EqualStructureMayUseTheItemBridge(signature: int)
+    ensures Decide(signature, signature) == HotApplyItems
+  {}
+
+  lemma StructuralDriftNeverClaimsAHotApply(a: int, b: int)
+    requires a != b
+    ensures Decide(a, b) == RehydrateNative
+  {}
+}
+
+module DurabilityBoundary {
+  datatype Store = Store(accepted: nat, durable: nat)
+
+  ghost predicate Invariant(s: Store)
+  {
+    s.durable <= s.accepted
+  }
+
+  function Accept(s: Store, revision: nat): Store
+    requires Invariant(s)
+    requires revision >= s.accepted
+    ensures Invariant(Accept(s, revision))
+  {
+    Store(revision, s.durable)
+  }
+
+  function Flush(s: Store): Store
+    requires Invariant(s)
+    ensures Invariant(Flush(s))
+    ensures Flush(s).durable == s.accepted
+  {
+    Store(s.accepted, s.accepted)
+  }
+
+  function ReportedDurable(s: Store, revision: nat): bool
+  {
+    revision <= s.durable
+  }
+
+  function Restore(s: Store): nat
+  {
+    s.durable
+  }
+
+  lemma AReportedDurableRevisionSurvivesRestore(s: Store, revision: nat)
+    requires Invariant(s)
+    requires ReportedDurable(s, revision)
+    ensures revision <= Restore(s)
+  {}
+
+  lemma FlushMakesEveryAcceptedRevisionDurable(s: Store, revision: nat)
+    requires Invariant(s)
+    requires revision <= s.accepted
+    ensures ReportedDurable(Flush(s), revision)
+  {}
+}
+
 module ProjectionKernel {
   datatype Action = Ignore | Idle | StartLatest | RetryLatest | Terminal
   datatype Flight = NoFlight | InFlight(owner: nat, request: nat, revision: nat)
