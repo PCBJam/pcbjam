@@ -31,7 +31,10 @@ import {
   type Slot,
 } from "@pcbjam/shared";
 import { clog, cwarn } from "./debug";
-import { decideProjectionAck } from "./generated/projection-kernel.js";
+import {
+  decideNativeEmission,
+  decideProjectionAck,
+} from "./generated/projection-kernel.js";
 import {
   createNativeItemsBridge,
   NativeItemsApplyError,
@@ -74,6 +77,7 @@ export interface NativeProjectionFailure {
   readonly kind:
     | "native-apply"
     | "native-baseline"
+    | "native-emission-order"
     | "non-item-structure"
     | "internal-policy";
   readonly message: string;
@@ -494,6 +498,20 @@ export function bindKicadCollab(
       nativeShadow = null;
       return;
     }
+    const emissionAction = decideNativeEmission(projectionInFlight);
+    const failAmbiguousEmission = (cause?: unknown): boolean => {
+      if (emissionAction !== 4) return false;
+      const detail = cause instanceof Error ? ` (${cause.message})` : "";
+      failProjection(
+        "native-emission-order",
+        new Error(
+          "native emitted an item transition before the outstanding projection " +
+            `was acknowledged; its order is ambiguous${detail}`,
+        ),
+        "emission-before-ack",
+      );
+      return true;
+    };
     if (readOnly) {
       // The UI normally gates this. If it is bypassed, rebaseline what actually
       // changed and let doc authority project back over it.
@@ -501,6 +519,7 @@ export function bindKicadCollab(
         failProjection("native-baseline", new Error("read-only recovery snapshot failed"));
         return;
       }
+      if (failAmbiguousEmission()) return;
       requestProjection();
       return;
     }
@@ -509,6 +528,7 @@ export function bindKicadCollab(
       wire = parseItemsWireDelta(json);
     } catch (err) {
       cwarn("⬇ onItems from wasm: UNPARSEABLE", err, json);
+      if (failAmbiguousEmission(err)) return;
       if (refreshNativeShadow("unparseable local edit recovery") === null) {
         failProjection("native-baseline", err);
         return;
@@ -538,7 +558,10 @@ export function bindKicadCollab(
       // The editor has already committed its local operation before emitting.
       // Record that actual state even when the rebased Y delta is a no-op.
       nativeShadow = local;
-      if (isEmptyKicadDelta(delta) && Object.keys(defs).length === 0) return;
+      if (isEmptyKicadDelta(delta) && Object.keys(defs).length === 0) {
+        failAmbiguousEmission();
+        return;
+      }
       clog("⬇ onItems (local edit):", {
         added: delta.added.length,
         updated: delta.updated.length,
@@ -548,12 +571,18 @@ export function bindKicadCollab(
         applyDeltaToY(doc, delta, ORIGIN);
         upsertLibSymbolsToY(doc, defs, ORIGIN);
       }, ORIGIN);
+      // A native emission before ACK violates the ordering contract. We still
+      // preserve its parseable intent above, but cannot know whether it belongs
+      // before or after the submitted wire. The generated policy therefore
+      // retires this generation instead of guessing a shadow and echoing.
+      if (failAmbiguousEmission()) return;
       // A stale local snapshot may need a corrective projection (the disjoint
       // remote fields preserved by the rebase). Avoid re-entering native code
       // from inside its own emit callback.
       queueMicrotask(requestProjection);
     } catch (err) {
       cwarn("⬇ onItems from wasm: batch failed to apply", err);
+      if (failAmbiguousEmission(err)) return;
       if (refreshNativeShadow("local batch recovery") === null) {
         failProjection("native-baseline", err);
         return;

@@ -218,14 +218,16 @@ describe("P0: native projection is level-triggered and acknowledged", () => {
     expect(scalar(editor.store["seg-1"]!.body, "width")).toBe("0.55");
   });
 
-  it("accounts for a native normalization emitted before the apply acknowledgement", async () => {
-    const { a, editor } = setup();
+  it("preserves then fail-stops a native normalization emitted before acknowledgement", async () => {
+    const failures: NativeProjectionFailure[] = [];
+    const { a, editor } = setup((failure) => failures.push(failure));
 
     // Native accepts the authored spelling, normalizes it during the queued
     // apply, emits that committed normalization, and only then ACKs. The
     // normalization is a native transition after the submitted wire; it must
-    // become the acknowledged shadow instead of being overwritten by the
-    // pre-normalized submission and projected forever.
+    // cannot be ordered safely against the submitted wire. Preserve the
+    // parseable normalization in Y, then retire this generation instead of
+    // overwriting its shadow and projecting forever.
     setSegmentField(a, "width", "0.400");
     expect(editor.pending).toHaveLength(1);
     editor.releaseOneWithNativeEmission(
@@ -236,7 +238,15 @@ describe("P0: native projection is level-triggered and acknowledged", () => {
 
     expect(scalar(yToDoc(a).items["seg-1"]!.body, "width")).toBe("0.4");
     expect(scalar(editor.store["seg-1"]!.body, "width")).toBe("0.4");
-    expect(editor.submitted, "normalization must reach a fixed point after one ACK").toHaveLength(1);
+    expect(failures).toEqual([
+      expect.objectContaining({
+        kind: "native-emission-order",
+        status: "emission-before-ack",
+        recovery: "recreate-from-yjs",
+      }),
+    ]);
+    expect(editor.destroyCalls).toBe(1);
+    expect(editor.submitted, "ambiguous normalization must never echo").toHaveLength(1);
     expect(editor.pending).toHaveLength(0);
   });
 

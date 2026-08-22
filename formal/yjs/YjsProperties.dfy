@@ -444,6 +444,17 @@ module ProjectionKernel {
     else Terminal
   }
 
+  // Native item emissions are ordered with respect to acknowledged projection
+  // tickets. An emission observed while a ticket is still in flight has no
+  // trustworthy before/after relation to that ticket: treating it as either
+  // side of the acknowledged shadow can manufacture an infinite normalization
+  // echo or swallow a concurrent local edit. Preserve the emitted intent at
+  // the data layer, then retire this native generation.
+  function NativeEmissionDecision(projectionInFlight: bool): Action
+  {
+    if projectionInFlight then Terminal else Idle
+  }
+
   function Ack(s: State, ackOwner: nat, ackRequest: nat,
                ok: bool, retryable: bool): (State, Action)
     requires Invariant(s)
@@ -535,6 +546,14 @@ module ProjectionKernel {
     ensures Ack(s, ackOwner, ackRequest, false, false).0.flight.NoFlight?
   {}
 
+  lemma InFlightNativeEmissionIsTerminal()
+    ensures NativeEmissionDecision(true) == Terminal
+  {}
+
+  lemma IdleNativeEmissionMayPublish()
+    ensures NativeEmissionDecision(false) == Idle
+  {}
+
   method ExportAckDecision(ownerMatches: bool, requestMatches: bool,
                            dirty: bool, ok: bool, retryable: bool)
       returns (action: int)
@@ -551,5 +570,18 @@ module ProjectionKernel {
       case StartLatest => 2
       case RetryLatest => 3
       case Terminal => 4;
+  }
+
+
+  method ExportNativeEmissionDecision(projectionInFlight: bool)
+      returns (action: int)
+    ensures action == 1 || action == 4
+    ensures projectionInFlight ==> action == 4
+    ensures !projectionInFlight ==> action == 1
+  {
+    action := match NativeEmissionDecision(projectionInFlight)
+      case Idle => 1
+      case Terminal => 4
+      case _ => 4;
   }
 }

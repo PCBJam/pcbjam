@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { decideProjectionAck } from "./generated/projection-kernel.js";
+import {
+  decideNativeEmission,
+  decideProjectionAck,
+} from "./generated/projection-kernel.js";
 
 const bools = [false, true] as const;
 
@@ -47,5 +50,10 @@ describe("verified projection acknowledgement kernel", () => {
     expect(decideProjectionAck(true, true, false, true, false)).toBe(1);
     expect(decideProjectionAck(true, true, true, false, true)).toBe(3);
     expect(decideProjectionAck(true, true, true, false, false)).toBe(4);
+  });
+
+  it("terminalizes a native emission whose order relative to an in-flight apply is ambiguous", () => {
+    expect(decideNativeEmission(false)).toBe(1);
+    expect(decideNativeEmission(true)).toBe(4);
   });
 });

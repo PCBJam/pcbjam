@@ -103,6 +103,19 @@ const adapter =
     "  }",
     "  return action;",
     "}",
+    "",
+    "// Native emissions are safe to publish normally only when no projection",
+    "// ticket is awaiting acknowledgement. The decision is verified in Dafny.",
+    "export function decideNativeEmission(projectionInFlight) {",
+    "  const encoded = ProjectionKernel.__default.ExportNativeEmissionDecision(",
+    "    projectionInFlight,",
+    "  );",
+    "  const action = Number(encoded.toString());",
+    "  if (action !== 1 && action !== 4) {",
+    "    throw new Error(`verified projection kernel returned invalid emission action ${action}`);",
+    "  }",
+    "  return action;",
+    "}",
   ].join("\n") + "\n";
 
 const expectedJavaScript = banner + generated + adapter;
@@ -117,6 +130,10 @@ const expectedDeclarations =
     "  ok: boolean,",
     "  retryable: boolean,",
     "): ProjectionAckAction;",
+    "export type NativeEmissionAction = 1 | 4;",
+    "export declare function decideNativeEmission(",
+    "  projectionInFlight: boolean,",
+    "): NativeEmissionAction;",
   ].join("\n") + "\n";
 
 if (checkOnly) {
