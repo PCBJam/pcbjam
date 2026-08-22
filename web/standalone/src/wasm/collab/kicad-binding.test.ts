@@ -5,6 +5,7 @@ import {
   fileToDoc,
   itemsWireToDelta,
   kicadLibSymbolsMap,
+  kicadMetaMap,
   parseItemsWireDelta,
   renderItem,
   SEXPR_VERSION_CURRENT,
@@ -487,7 +488,7 @@ describe("validity-revert marker → DOC_REVERTED_EVENT (kicad-validity 0001 B3)
       bindKicadCollab(a, edA).seed();
 
       // The "backend" writes the marker on the peer doc; it relays over.
-      const meta = b.getMap("kdoc_meta");
+      const meta = kicadMetaMap(b);
       b.transact(() => {
         meta.set("revertNonce", "job-1");
         meta.set("revertReason", "unbalanced (");

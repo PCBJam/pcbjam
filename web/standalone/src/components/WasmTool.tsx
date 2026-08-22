@@ -106,7 +106,11 @@ import {
   startSiblingRestage,
   type SiblingRestageHandle,
 } from "@/wasm/collab/sibling-restage";
-import { DOC_REVERTED_EVENT } from "@/wasm/collab/kicad-binding";
+import {
+  DOC_REVERTED_EVENT,
+  NATIVE_PROJECTION_FAILED_EVENT,
+  type NativeProjectionFailure,
+} from "@/wasm/collab/kicad-binding";
 import {
   createComments,
   hasCommentsBridge,
@@ -1537,6 +1541,14 @@ export function WasmTool({
       if (!isTerminalError(e.reason, msg)) return;
       promote("unhandled rejection", msg);
     };
+    const onProjectionFailure = (e: Event) => {
+      const failure = (e as CustomEvent<NativeProjectionFailure>).detail;
+      promote(
+        "native projection",
+        `${failure?.message ?? "native projection entered an unknown state"} ` +
+          "Reload to recreate the editor from authoritative Yjs state.",
+      );
+    };
     // With PROXY_TO_PTHREAD, main()/wx/timers — and therefore every wasm
     // trap in this family — throw INSIDE a pthread worker. A worker's uncaught
     // error fires an ErrorEvent on the Worker OBJECT, never on `window`, so the
@@ -1562,12 +1574,14 @@ export function WasmTool({
     window.Worker = PatchedWorker;
     window.addEventListener("error", onError);
     window.addEventListener("unhandledrejection", onRejection);
+    window.addEventListener(NATIVE_PROJECTION_FAILED_EVENT, onProjectionFailure);
     return () => {
       window.Worker = NativeWorker;
       window.removeEventListener("error", onError);
       window.removeEventListener("unhandledrejection", onRejection);
+      window.removeEventListener(NATIVE_PROJECTION_FAILED_EVENT, onProjectionFailure);
     };
-  }, [append]);
+  }, [append, teardownCollab]);
 
   React.useEffect(() => {
     const win = window as ToolWindow;
@@ -2921,14 +2935,14 @@ export function WasmTool({
         >
           <p className="font-mono text-4xl text-white/90">:(</p>
           <p className="font-mono text-sm text-white">
-            The editor hit an unrecoverable error and stopped.
+            This editor instance stopped to protect the document.
           </p>
           <p className="max-w-lg px-6 text-center font-mono text-xs text-blue-100/90">
             {fatal}
           </p>
           <p className="max-w-md px-6 text-center font-mono text-xs text-blue-200/60">
             The console below records what was loading when this happened —
-            please copy it into a bug report.
+            reload to create a fresh editor from the shared document.
           </p>
           <div className="flex gap-2">
             <button
