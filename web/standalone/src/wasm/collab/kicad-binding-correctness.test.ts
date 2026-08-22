@@ -1,17 +1,24 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import * as Y from "yjs";
 import {
   applyDeltaToY,
   fileToDoc,
   itemsWireToDelta,
+  kicadItemsMap,
   parseItemsWireDelta,
   renderItem,
   scalar,
   sexprToItems,
+  syncLayoutToY,
   yToDoc,
   type KicadItem,
 } from "@pcbjam/shared";
-import { bindKicadCollab, type KicadItemsBridge } from "./kicad-binding";
+import {
+  bindKicadCollab,
+  type KicadItemsBridge,
+  type NativeProjectionFailure,
+} from "./kicad-binding";
+import { NativeItemsApplyError } from "./native-items-bridge";
 
 const BASE = `(kicad_pcb
   (version 20241229)
@@ -25,6 +32,7 @@ const BASE = `(kicad_pcb
 interface PendingApply {
   json: string;
   complete(): void;
+  fail(error: unknown): void;
 }
 
 /**
@@ -36,24 +44,30 @@ class DeferredEditor implements KicadItemsBridge {
   store: Record<string, KicadItem> = {};
   readonly submitted: string[] = [];
   readonly pending: PendingApply[] = [];
+  snapshotCalls = 0;
+  destroyCalls = 0;
   private emit: ((json: string) => void) | null = null;
+  private destroyed = false;
 
   constructor(text: string) {
     Object.assign(this.store, fileToDoc(text).items);
   }
 
   snapshotItems(): string {
+    this.snapshotCalls += 1;
     const roots = Object.entries(this.store)
       .filter(([, item]) => item.parent === null)
       .map(([uuid]) => ({ sexpr: renderItem({ items: this.store }, uuid), parent: null }));
     return JSON.stringify({ added: roots, changed: [], removed: [] });
   }
 
-  applyItems(json: string): void {
+  applyItems(json: string): Promise<void> {
     this.submitted.push(json);
     let resolve!: () => void;
-    const completion = new Promise<void>((done) => {
+    let reject!: (error: unknown) => void;
+    const completion = new Promise<void>((done, failed) => {
       resolve = done;
+      reject = failed;
     });
     this.pending.push({
       json,
@@ -61,11 +75,9 @@ class DeferredEditor implements KicadItemsBridge {
         this.applyToStore(json);
         resolve();
       },
+      fail: reject,
     });
-    // Current production types say void even though the JSPI scheduler may
-    // return a Promise.  Returning it through the void boundary reproduces the
-    // ignored-completion bug without changing production code in the red commit.
-    return completion as unknown as void;
+    return completion;
   }
 
   onItems(cb: (json: string) => void): void {
@@ -82,6 +94,19 @@ class DeferredEditor implements KicadItemsBridge {
     const next = this.pending.shift();
     if (!next) throw new Error("no pending native apply");
     next.complete();
+  }
+
+  rejectOne(error: unknown): void {
+    const next = this.pending.shift();
+    if (!next) throw new Error("no pending native apply");
+    next.fail(error);
+  }
+
+  destroy(): void {
+    if (this.destroyed) return;
+    this.destroyed = true;
+    this.destroyCalls += 1;
+    this.emit = null;
   }
 
   private applyToStore(json: string): void {
@@ -103,7 +128,12 @@ function relayedPair(): { a: Y.Doc; b: Y.Doc } {
   return { a, b };
 }
 
-function setup(): { a: Y.Doc; b: Y.Doc; editor: DeferredEditor } {
+function setup(onProjectionFailure?: (failure: NativeProjectionFailure) => void): {
+  a: Y.Doc;
+  b: Y.Doc;
+  binding: ReturnType<typeof bindKicadCollab>;
+  editor: DeferredEditor;
+} {
   const { a, b } = relayedPair();
   const seed = fileToDoc(BASE);
   // Seed before binding, then copy the full initial state like provider sync.
@@ -117,9 +147,9 @@ function setup(): { a: Y.Doc; b: Y.Doc; editor: DeferredEditor } {
   seedDoc.destroy();
 
   const editor = new DeferredEditor(BASE);
-  const binding = bindKicadCollab(b, editor);
+  const binding = bindKicadCollab(b, editor, { onProjectionFailure });
   binding.seed(undefined, { editorMatchesDoc: true });
-  return { a, b, editor };
+  return { a, b, binding, editor };
 }
 
 function setSegmentField(ydoc: Y.Doc, head: string, atom: string): void {
@@ -155,6 +185,93 @@ describe("P0: native projection is level-triggered and acknowledged", () => {
     await Promise.resolve();
     expect(scalar(editor.store["seg-1"]!.body, "width")).toBe("100");
   });
+
+  it("advances the shadow from the exact acknowledged wire without an ACK-time snapshot", async () => {
+    const { a, editor } = setup();
+    const baselineSnapshots = editor.snapshotCalls;
+
+    setSegmentField(a, "width", "0.55");
+    expect(editor.pending).toHaveLength(1);
+    editor.releaseOne();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(editor.snapshotCalls, "ACK must not destructively redefine the native base").toBe(
+      baselineSnapshots,
+    );
+    expect(scalar(editor.store["seg-1"]!.body, "width")).toBe("0.55");
+  });
+
+  it("retries only an explicit no-mutation failure and retries the latest desired state", async () => {
+    vi.useFakeTimers();
+    try {
+      const { a, editor } = setup();
+      setSegmentField(a, "width", "0.4");
+      editor.rejectOne(
+        new NativeItemsApplyError("busy", true, "test-owner", "request-1"),
+      );
+      setSegmentField(a, "width", "0.9");
+      await Promise.resolve();
+
+      await vi.advanceTimersByTimeAsync(25);
+      expect(editor.submitted).toHaveLength(2);
+      expect(editor.pending).toHaveLength(1);
+      editor.releaseOne();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(scalar(editor.store["seg-1"]!.body, "width")).toBe("0.9");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("terminalizes unknown native state, detaches ingress, and never retries", async () => {
+    vi.useFakeTimers();
+    try {
+      const failures: NativeProjectionFailure[] = [];
+      const { a, editor } = setup((failure) => failures.push(failure));
+      setSegmentField(a, "width", "0.4");
+      editor.rejectOne(
+        new NativeItemsApplyError("ack-timeout", false, "test-owner", "request-1"),
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(failures).toEqual([
+        expect.objectContaining({
+          kind: "native-apply",
+          status: "ack-timeout",
+          recovery: "recreate-from-yjs",
+        }),
+      ]);
+      expect(editor.destroyCalls).toBe(1);
+      setSegmentField(a, "width", "0.8");
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(editor.submitted, "terminal is absorbing").toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("P0: non-item native projection is explicit", () => {
+  it("requires fresh-instance rehydration for a remote layout-only change", () => {
+    const failures: NativeProjectionFailure[] = [];
+    const { a, editor } = setup((failure) => failures.push(failure));
+    const changed = fileToDoc(
+      BASE.replace("(version 20241229)", '(version 20241229)\n  (paper "A3")'),
+    );
+
+    expect(syncLayoutToY(changed, a, "remote-layout")).toBe(true);
+    expect(failures).toEqual([
+      expect.objectContaining({
+        kind: "non-item-structure",
+        recovery: "recreate-from-yjs",
+      }),
+    ]);
+    expect(editor.submitted, "an item-only bridge must not pretend layout was applied").toEqual([]);
+    expect(editor.destroyCalls).toBe(1);
+  });
 });
 
 describe("P0: native publications rebase from the acknowledged shadow", () => {
@@ -181,7 +298,7 @@ describe("P1: malformed raw Y is contained", () => {
     const before = editor.snapshotItems();
 
     expect(() => {
-      const item = a.getMap<Y.Map<unknown>>("kdoc_items").get("seg-1")!;
+      const item = kicadItemsMap(a).get("seg-1")!;
       item.set("body", "not-a-slot-tree");
     }).not.toThrow();
 
