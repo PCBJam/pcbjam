@@ -33,6 +33,7 @@ type NativeModule = {
   kicadCollabSetItemsOwner(owner: string): boolean;
   kicadCollabReleaseItemsOwner(owner: string): void;
   kicadTestSetItemsApplyPark(ms: number): void;
+  kicadCollabGetPos(uuid: string): string;
 };
 
 async function boot(page: Page): Promise<void> {
@@ -140,5 +141,99 @@ test("programmatic open waits for an owner-scoped items commit suspended in flig
       line.includes("Aborted("),
     ),
     "no Wasm abort/UAF while open waits for the suspended commit",
+  ).toBe(false);
+});
+
+test("a malformed or identity-overlapping native batch rejects without partial mutation", async ({
+  page,
+  testLogger,
+}) => {
+  test.setTimeout(180_000);
+  await boot(page);
+
+  const result = await page.evaluate(
+    async ({ content, uuid }) => {
+      const runtime = window as unknown as {
+        FS: { mkdirTree(path: string): void; writeFile(path: string, data: string): void };
+        Module: NativeModule;
+        kicadCollab?: { onItemsApplied?: (json: string) => void };
+      };
+      const dir = "/home/kicad/documents";
+      try {
+        runtime.FS.mkdirTree(dir);
+      } catch {
+        // Exists from a previous test.
+      }
+      const path = `${dir}/atomic-items.kicad_pcb`;
+      runtime.FS.writeFile(path, content);
+      await Promise.resolve(runtime.Module.kicadOpenFile(path));
+      runtime.Module.kicadCollabSnapshotItems();
+
+      const owner = "atomic-e2e-owner";
+      const acquired = runtime.Module.kicadCollabSetItemsOwner(owner);
+      const acknowledgements: Array<{ status: string; requestId: string }> = [];
+      runtime.kicadCollab = {
+        ...runtime.kicadCollab,
+        onItemsApplied: (json) => acknowledgements.push(JSON.parse(json)),
+      };
+      const before = runtime.Module.kicadCollabGetPos(uuid);
+      const validChanged = {
+        sexpr: `(segment (start 40 40) (end 45 40) (width 0.2) (layer "F.Cu") (net 0) (uuid "${uuid}"))`,
+        parent: null,
+      };
+
+      runtime.Module.kicadCollabApplyItems(
+        JSON.stringify({
+          added: [],
+          changed: [validChanged, { sexpr: "(not-a-kicad-item", parent: null }],
+          removed: [],
+          _pcbjam: { requestId: "malformed-tail", ownerGeneration: owner },
+        }),
+      );
+
+      const firstDeadline = performance.now() + 20_000;
+      while (
+        !acknowledgements.some((ack) => ack.requestId === "malformed-tail") &&
+        performance.now() < firstDeadline
+      )
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      const afterMalformed = runtime.Module.kicadCollabGetPos(uuid);
+
+      runtime.Module.kicadCollabApplyItems(
+        JSON.stringify({
+          added: [validChanged],
+          changed: [validChanged],
+          removed: [],
+          _pcbjam: { requestId: "overlapping-id", ownerGeneration: owner },
+        }),
+      );
+
+      const secondDeadline = performance.now() + 20_000;
+      while (
+        !acknowledgements.some((ack) => ack.requestId === "overlapping-id") &&
+        performance.now() < secondDeadline
+      )
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      const afterOverlap = runtime.Module.kicadCollabGetPos(uuid);
+      runtime.Module.kicadCollabReleaseItemsOwner(owner);
+      return { acknowledgements, acquired, afterMalformed, afterOverlap, before };
+    },
+    { content: board(FIRST_UUID, 10), uuid: FIRST_UUID },
+  );
+
+  expect(result.acquired).toBe(true);
+  expect(result.acknowledgements).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ requestId: "malformed-tail", status: "invalid" }),
+      expect.objectContaining({ requestId: "overlapping-id", status: "invalid" }),
+    ]),
+  );
+  expect(result.afterMalformed, "valid prefix was not partially committed").toBe(result.before);
+  expect(result.afterOverlap, "cross-category UUID was not staged twice").toBe(result.before);
+  expect(
+    [...testLogger.consoleLogs, ...testLogger.errors].some((line) =>
+      line.includes("Aborted("),
+    ),
+    "invalid batches do not trap/double-delete",
   ).toBe(false);
 });
