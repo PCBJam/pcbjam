@@ -33,16 +33,16 @@ describe("sexprDiff — equality", () => {
     expect(sexprDiff(a, a).equal).toBe(true);
   });
 
-  it("reordered items are equal (keyed by uuid)", () => {
+  it("is exact by default when uuid-bearing siblings are reordered", () => {
     const a = `(root ${item("seg", "u1", "(x 1)")} ${item("seg", "u2", "(x 2)")})`;
     const b = `(root ${item("seg", "u2", "(x 2)")} ${item("seg", "u1", "(x 1)")})`;
-    expect(sexprDiff(a, b).equal).toBe(true);
+    expect(sexprDiff(a, b).equal).toBe(false);
   });
 
-  it("reordered properties within an item are equal", () => {
+  it("is exact by default when properties within an item are reordered", () => {
     const a = `(root ${item("seg", "u1", "(x 1)", "(y 2)", "(layer F)")})`;
     const b = `(root ${item("seg", "u1", "(layer F)", "(y 2)", "(x 1)")})`;
-    expect(sexprDiff(a, b).equal).toBe(true);
+    expect(sexprDiff(a, b).equal).toBe(false);
   });
 
   it("whitespace differences are irrelevant", () => {
@@ -53,6 +53,26 @@ describe("sexprDiff — equality", () => {
 });
 
 describe("sexprDiff — changes", () => {
+  it("catches a positional tuple swap", () => {
+    const a = `(root ${item("footprint", "u1", "(at 1 2)")})`;
+    const b = `(root ${item("footprint", "u1", "(at 2 1)")})`;
+    const r = sexprDiff(a, b);
+    expect(r.equal).toBe(false);
+    expect(r.changed.some((change) => change.uuid === "u1" && change.path === "at")).toBe(
+      true,
+    );
+  });
+
+  it("catches a reorder of anonymous repeated heads", () => {
+    const a = `(root ${item("poly", "u1", "(pts (xy 0 0) (xy 5 0))")})`;
+    const b = `(root ${item("poly", "u1", "(pts (xy 5 0) (xy 0 0))")})`;
+    const r = sexprDiff(a, b);
+    expect(r.equal).toBe(false);
+    expect(r.changed.some((change) => change.uuid === "u1" && change.path === "pts")).toBe(
+      true,
+    );
+  });
+
   it("catches a single changed value with uuid + path + a/b", () => {
     const a = `(root ${item("seg", "u1", "(x 1)", "(y 2)")})`;
     const b = `(root ${item("seg", "u1", "(x 1)", "(y 9)")})`;
