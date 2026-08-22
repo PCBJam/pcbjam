@@ -52,6 +52,40 @@ const SCH: ToolCfg = {
   fns: [],
 };
 
+const PL_BASE = `(kicad_wks
+\t(version 20220228)
+\t(generator "pl_editor")
+\t(generator_version "9.0")
+\t(setup
+\t\t(textsize 1.5 1.5)
+\t\t(linewidth 0.15)
+\t\t(textlinewidth 0.15)
+\t\t(left_margin 10)
+\t\t(right_margin 10)
+\t\t(top_margin 10)
+\t\t(bottom_margin 10)
+\t)
+)
+`;
+
+const PL_LEFT = PL_BASE.replace(
+  "\n)\n",
+  `\n\t(rect (uuid "${UUID}") (name left-rect) (start 11 12 ltcorner) (end 31 42 rbcorner))\n)\n`,
+);
+
+const PL_RIGHT = PL_BASE.replace(
+  "\n)\n",
+  `\n\t(tbtext "RIGHT-TEXT" (uuid "${UUID}") (name right-text) (pos 70 80 ltcorner) (font (size 2 3)))\n)\n`,
+);
+
+const PL: ToolCfg = {
+  html: "pl_editor.html",
+  ext: "kicad_wks",
+  saveFn: "kicadSaveDrawingSheet",
+  fixture: PL_BASE,
+  fns: [],
+};
+
 function occurrences(text: string, pattern: RegExp): number {
   return [...text.matchAll(pattern)].length;
 }
@@ -79,10 +113,116 @@ function expectOneCompleteAuthoredItem(text: string, source: string): void {
   ).toHaveLength(1);
 }
 
+function expectOneCompletePlItem(text: string, source: string): void {
+  expect(occurrences(text, /\(version \d+\)/g), `${source}: one root version`).toBe(1);
+  expect(occurrences(text, new RegExp(UUID, "g")), `${source}: one root UUID`).toBe(1);
+  expect(occurrences(text, /\((?:rect|tbtext)\b/g), `${source}: one root item`).toBe(1);
+
+  // PL's writer quotes names and drops the default `rbcorner` anchor. Accept
+  // those native normalizations while still requiring every semantic field
+  // from one branch and forbidding fields from the other branch.
+  const completeLeft =
+    text.includes("(rect") &&
+    /\(name "?left-rect"?\)/.test(text) &&
+    text.includes("(start 11 12 ltcorner)") &&
+    /\(end 31 42(?: rbcorner)?\)/.test(text) &&
+    !text.includes("RIGHT-TEXT") &&
+    !text.includes("(pos 70 80") &&
+    !text.includes("(font (size 2 3))");
+  const completeRight =
+    text.includes('(tbtext "RIGHT-TEXT"') &&
+    /\(name "?right-text"?\)/.test(text) &&
+    text.includes("(pos 70 80 ltcorner)") &&
+    text.includes("(font (size 2 3))") &&
+    !text.includes("(start 11 12") &&
+    !text.includes("(end 31 42");
+
+  expect(
+    [completeLeft, completeRight].filter(Boolean),
+    `${source}: output must equal one complete authored conflict domain`,
+  ).toHaveLength(1);
+}
+
+function applyConcurrentRootsWithDeadline(
+  page: Parameters<typeof modelText>[0],
+  left: string,
+  right: string,
+  timeoutMs: number,
+): Promise<string> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const projection = page.evaluate(
+    ({ leftText, rightText }) => {
+      const collab = (window as unknown as {
+        KicadCollabV2: {
+          applyConcurrentRootCreations(leftDoc: string, rightDoc: string): string;
+        };
+      }).KicadCollabV2;
+      return collab.applyConcurrentRootCreations(leftText, rightText);
+    },
+    { leftText: left, rightText: right },
+  );
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`concurrent root projection did not return within ${timeoutMs}ms`)),
+      timeoutMs,
+    );
+  });
+  return Promise.race([projection, deadline]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
+  });
+}
+
 test.beforeAll(() => {
   execSync("node collab/build.mjs", {
     cwd: path.resolve(__dirname, ".."),
     stdio: "inherit",
+  });
+});
+
+test.describe("Yjs conflict domains — PL native late projection", () => {
+  test.describe.configure({ timeout: 90_000 });
+
+  test("same-UUID rect-vs-tbtext selects one complete native item without looping", async ({
+    context,
+    testLogger,
+  }) => {
+    const room = `ysync-conflict-domain-pl-${test.info().workerIndex}`;
+    const producer = await context.newPage();
+    let projectionAttempts = 0;
+    producer.on("console", (message) => {
+      if (message.text().includes("desired Y state → apply to editor")) projectionAttempts += 1;
+    });
+
+    try {
+      await bootOpen(producer, PL);
+      await startV2(producer, { room, seedText: PL_BASE });
+
+      const merged = await applyConcurrentRootsWithDeadline(
+        producer,
+        PL_LEFT,
+        PL_RIGHT,
+        20_000,
+      );
+      expectOneCompletePlItem(merged, "PL merged Y.Doc");
+
+      await expect
+        .poll(async () => (await modelText(producer, PL)).includes(UUID), {
+          timeout: 20_000,
+          intervals: [300],
+        })
+        .toBe(true);
+
+      const native = await modelText(producer, PL);
+      expectOneCompletePlItem(native, "PL late native save");
+      expect(projectionAttempts, "PL projection must reach a fixed point").toBeLessThanOrEqual(3);
+
+      const roomDoc = await renderDoc(producer);
+      expect(roomDoc.err, "PL room must materialize").toBeUndefined();
+      expect(roomDoc.ok).toBe(merged);
+      expect(hasAbort(testLogger), "no Wasm abort").toBe(false);
+    } finally {
+      await producer.close({ runBeforeUnload: false });
+    }
   });
 });
 
