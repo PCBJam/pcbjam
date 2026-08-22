@@ -160,11 +160,14 @@ describe("moduleItemsBridge — acknowledged owner-scoped protocol", () => {
     );
   });
 
-  it("terminally rejects a missing acknowledgement and leaves destroy safe", async () => {
+  it("treats unknown native state as terminal: no retry, late commit, or teardown wedge", async () => {
     vi.useFakeTimers();
     try {
-      const { bridge, mod } = setup({ ackTimeoutMs: 25 });
+      const { ack, bridge, mod, submitted } = setup({ ackTimeoutMs: 25 });
       const completion = bridge.applyItems(EMPTY_WIRE);
+      const wire = JSON.parse(submitted[0]!) as {
+        _pcbjam: { requestId: string; ownerGeneration: string };
+      };
       const outcome = expect(completion).rejects.toMatchObject({
         name: "NativeItemsApplyError",
         status: "ack-timeout",
@@ -174,8 +177,18 @@ describe("moduleItemsBridge — acknowledged owner-scoped protocol", () => {
       await vi.advanceTimersByTimeAsync(25);
       await outcome;
 
-      // The timeout has already removed/settled the ticket; teardown only
-      // releases the owner and cannot reject the same request a second time.
+      expect(submitted, "a terminal unknown-state failure is never retried").toHaveLength(1);
+      expect(() =>
+        ack({
+          requestId: wire._pcbjam.requestId,
+          ownerGeneration: wire._pcbjam.ownerGeneration,
+          status: "applied",
+        }),
+      ).not.toThrow();
+
+      // The timeout removed the ticket, so a late native tail cannot revive a
+      // stale commit. Teardown only releases the owner and cannot settle the
+      // same request twice or wedge while the Wasm instance is being retired.
       expect(() => bridge.destroy()).not.toThrow();
       expect(mod.kicadCollabReleaseItemsOwner).toHaveBeenCalledTimes(1);
     } finally {
@@ -196,7 +209,7 @@ describe("moduleItemsBridge — acknowledged owner-scoped protocol", () => {
       });
       const completion = bridge.applyItems(EMPTY_WIRE);
       let outcome: unknown = "pending";
-      void completion.then(
+      void Promise.resolve(completion).then(
         () => {
           outcome = "resolved";
         },

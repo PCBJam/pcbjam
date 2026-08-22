@@ -40,6 +40,7 @@
 #include <view/view.h>
 #include <view/view_overlay.h>
 #include <chrono>
+#include <exception>
 #include <wx/event.h>
 #include <sch_item.h>
 #include <sch_line.h>
@@ -59,6 +60,8 @@
 #include <tool/coroutine.h>
 #include <pcbjam_remote_lock.h>
 #include "collab_common.h"
+#include "collab_items_protocol.h"
+#include "collab_items_validation.h"
 #include "open_gate.h"
 #include "collab_presence_core.h"
 #include "collab_presence_style.h"
@@ -84,7 +87,12 @@ using json = nlohmann::json;
 #ifndef KICAD_MERGED_EMBIND
 bool kicadOpenFile( std::string path )
 {
-    // Held across every suspension of the load; see open_gate.h.
+    pcbjam_open::IntentGuard intent;
+    pcbjam_collab::waitForApplyDrain();
+
+    if( pcbjam_open::testStopOpenAfterApplyDrain() )
+        return false;
+
     pcbjam_open::BusyGuard busy;
 
     if( pcbjam_open::testParkMs() > 0 )
@@ -983,143 +991,241 @@ void doApply( SCH_EDIT_FRAME* aFrame, const json& aDelta )
 // sheet (sch_editor_control.cpp Paste pattern) — then the loaded items are detached,
 // matched by uuid against the live model (replace), lib-relinked for symbols, and
 // committed. Runs inside the apply COROUTINE (see kicadCollabApplyItems).
-void doApplyItems( SCH_EDIT_FRAME* aFrame, const json& aWire )
+bool doApplyItems( SCH_EDIT_FRAME* aFrame, SCH_SCREEN* aTargetScreen, const json& aWire,
+                   std::string& aError )
 {
     SCHEMATIC& sch = aFrame->Schematic();
+
+    if( !aTargetScreen || !pcbjam_collab::validateRootLiftedItemsWire( aWire, aError ) )
+    {
+        if( aError.empty() )
+            aError = "eeschema screen is unavailable";
+
+        return false;
+    }
+
+    struct ParsedUpsert
+    {
+        std::unique_ptr<SCH_ITEM> item;
+        std::string               uuid;
+    };
+
+    std::vector<std::string> removedIds;
+    std::vector<std::string> addedIds;
+    std::vector<std::string> changedIds;
+    std::vector<std::string> addedTreeIds;
+    std::vector<std::string> changedTreeIds;
+    std::vector<ParsedUpsert> added;
+    std::vector<ParsedUpsert> changed;
+
+    for( const json& rid : aWire.value( "removed", json::array() ) )
+        removedIds.push_back( rid.get<std::string>() );
+
+    auto parseCategory = [&]( const char* aCategory, std::vector<ParsedUpsert>& aParsed,
+                              std::vector<std::string>& aRootIds,
+                              std::vector<std::string>& aTreeIds ) -> bool
+    {
+        for( const json& entry : aWire.value( aCategory, json::array() ) )
+        {
+            std::string sexpr = entry.at( "sexpr" ).get<std::string>();
+
+            // Parse into a throwaway sheet exactly like clipboard paste does.
+            SCH_SHEET   tempSheet;
+            SCH_SCREEN* tempScreen = new SCH_SCREEN( &sch );
+            tempSheet.SetScreen( tempScreen );
+
+            STRING_LINE_READER reader( sexpr, wxT( "collab-items" ) );
+            SCH_IO_KICAD_SEXPR plugin;
+
+            try
+            {
+                plugin.LoadContent( reader, &tempSheet );
+            }
+            catch( ... )
+            {
+                aError = std::string( "eeschema rejected " ) + aCategory + " item blob";
+                return false;
+            }
+
+            std::vector<SCH_ITEM*> loaded;
+
+            for( SCH_ITEM* item : tempScreen->Items() )
+                loaded.push_back( item );
+
+            if( loaded.size() != 1 )
+            {
+                aError = std::string( "eeschema " ) + aCategory
+                         + " wire entry must contain exactly one root item";
+                return false;
+            }
+
+            SCH_ITEM* item = loaded.front();
+
+            // Resolve a symbol's library definition while the temporary
+            // screen (and its embedded lib_symbols cache) still exists.
+            if( item->Type() == SCH_SYMBOL_T )
+            {
+                auto*    sym = static_cast<SCH_SYMBOL*>( item );
+                wxString lookup = sym->GetLibId().Format().wx_str();
+
+                if( !sym->UseLibIdLookup() )
+                    lookup = sym->GetSchSymbolLibraryName();
+
+                LIB_SYMBOL* lib = nullptr;
+                auto&       tempLibs = tempScreen->GetLibSymbols();
+                auto        tempIt = tempLibs.find( lookup );
+
+                if( tempIt != tempLibs.end() )
+                    lib = new LIB_SYMBOL( *tempIt->second );
+                else
+                {
+                    auto& liveLibs = aTargetScreen->GetLibSymbols();
+                    auto  liveIt = liveLibs.find( lookup );
+
+                    if( liveIt != liveLibs.end() )
+                        lib = new LIB_SYMBOL( *liveIt->second );
+                }
+
+                if( !lib )
+                {
+                    aError = "eeschema symbol is missing its library definition";
+                    return false;
+                }
+
+                sym->SetLibSymbol( lib );
+            }
+
+            tempScreen->Remove( item ); // transfer ownership out of tempSheet
+            item->SetParent( &sch );
+
+            std::unique_ptr<SCH_ITEM> parsed( item );
+            std::string uuid = toUtf8( parsed->m_Uuid.AsString() );
+            aRootIds.push_back( uuid );
+            aTreeIds.push_back( uuid );
+            parsed->RunOnChildren(
+                    [&]( SCH_ITEM* aChild )
+                    {
+                        aTreeIds.push_back( toUtf8( aChild->m_Uuid.AsString() ) );
+                    }, RECURSE_MODE::RECURSE );
+            aParsed.push_back( { std::move( parsed ), std::move( uuid ) } );
+        }
+
+        return true;
+    };
+
+    // Complete parsing, library relinking, and identity validation happen
+    // before any SCH_COMMIT entry is staged.
+    if( !parseCategory( "added", added, addedIds, addedTreeIds )
+        || !parseCategory( "changed", changed, changedIds, changedTreeIds )
+        || !pcbjam_collab::validateItemsBatchIds( removedIds, addedTreeIds,
+                                                   changedTreeIds, aError ) )
+        return false;
+
+    auto requireTargetScreen = [&]( const KIID& aId, const std::string& aUuid ) -> bool
+    {
+        SCH_SHEET_PATH path;
+
+        if( sch.ResolveItem( aId, &path, /*allowNull*/ true )
+            && path.LastScreen() != aTargetScreen )
+        {
+            aError = "eeschema UUID resolves outside the active sheet: " + aUuid;
+            return false;
+        }
+
+        return true;
+    };
+
+    for( const std::string& uuid : removedIds )
+    {
+        if( !requireTargetScreen( KIID( wxString::FromUTF8( uuid.c_str() ) ), uuid ) )
+            return false;
+    }
+
+    for( const ParsedUpsert& parsed : added )
+    {
+        if( !requireTargetScreen( parsed.item->m_Uuid, parsed.uuid ) )
+            return false;
+    }
+
+    for( const ParsedUpsert& parsed : changed )
+    {
+        if( !requireTargetScreen( parsed.item->m_Uuid, parsed.uuid ) )
+            return false;
+    }
 
     s_applyingRemote = true;
 
     SCH_COMMIT commit( aFrame );
     bool       staged = false;
 
-    std::vector<std::string> touched;   // uuids this apply acts on (targeted rebaseline)
+    std::vector<std::string> touched;
+    std::set<SCH_ITEM*>      removedItems;
 
-    // Owned by nobody once the SKIP_UNDO commit detaches them — freed after Push
-    // (fields are hidden, not detached, so excluded). See doApply.
-    std::vector<SCH_ITEM*> removedItems;
-
-    for( const json& rid : aWire.value( "removed", json::array() ) )
+    for( const std::string& uuid : removedIds )
     {
         SCH_SHEET_PATH path;
-        KIID           id( wxString::FromUTF8( rid.get<std::string>().c_str() ) );
-
-        touched.push_back( rid.get<std::string>() );
+        KIID           id( wxString::FromUTF8( uuid.c_str() ) );
+        touched.push_back( uuid );
 
         if( SCH_ITEM* item = sch.ResolveItem( id, &path, /*allowNull*/ true ) )
         {
-            commit.Remove( item, path.LastScreen() );
+            commit.Remove( item, aTargetScreen );
 
             if( item->Type() != SCH_FIELD_T )
-                removedItems.push_back( item );
+                removedItems.insert( item );
 
             staged = true;
         }
     }
 
-    auto upsert = [&]( const json& w )
+    auto stageUpserts = [&]( std::vector<ParsedUpsert>& aParsed )
     {
-        std::string sexpr = w.value( "sexpr", "" );
-
-        if( sexpr.find_first_not_of( " \t\r\n" ) == std::string::npos )
-            return;
-
-        // Parse into a throwaway sheet exactly like clipboard paste does. The screen
-        // is heap-allocated and owned by the sheet (freed with it).
-        SCH_SHEET   tempSheet;
-        SCH_SCREEN* tempScreen = new SCH_SCREEN( &sch );
-        tempSheet.SetScreen( tempScreen );
-
-        STRING_LINE_READER reader( sexpr, wxT( "collab-items" ) );
-        SCH_IO_KICAD_SEXPR plugin;
-
-        try
+        for( ParsedUpsert& parsed : aParsed )
         {
-            plugin.LoadContent( reader, &tempSheet );
-        }
-        catch( ... )
-        {
-            EM_ASM( { console.log( "[collab] eeschema applyItems: blob parse failed" ); } );
-            return;
-        }
-
-        // Resolve a symbol's LIB_SYMBOL: prefer the blob's own (lib_symbols …) cache
-        // (a clipboard-style blob carries it), else the live screen's — peers share
-        // the same document so the definition is normally already present.
-        auto findLib = [&]( SCH_SYMBOL* aSym ) -> LIB_SYMBOL*
-        {
-            wxString lookup = aSym->GetLibId().Format().wx_str();
-
-            if( !aSym->UseLibIdLookup() )
-                lookup = aSym->GetSchSymbolLibraryName();
-
-            auto& tlibs = tempScreen->GetLibSymbols();
-            auto  ti    = tlibs.find( lookup );
-
-            if( ti != tlibs.end() )
-                return new LIB_SYMBOL( *ti->second );
-
-            auto& libs = aFrame->GetScreen()->GetLibSymbols();
-            auto  li   = libs.find( lookup );
-
-            if( li != libs.end() )
-                return new LIB_SYMBOL( *li->second );
-
-            return nullptr;
-        };
-
-        std::vector<SCH_ITEM*> loaded;
-
-        for( SCH_ITEM* item : tempScreen->Items() )
-            loaded.push_back( item );
-
-        for( SCH_ITEM* item : loaded )
-        {
-            tempScreen->Remove( item );     // detach: tempSheet's dtor must not free it
-
             SCH_SHEET_PATH path;
 
-            if( SCH_ITEM* existing = sch.ResolveItem( item->m_Uuid, &path, /*allowNull*/ true ) )
+            if( SCH_ITEM* existing =
+                        sch.ResolveItem( parsed.item->m_Uuid, &path, /*allowNull*/ true ) )
             {
-                commit.Remove( existing, path.LastScreen() );
+                commit.Remove( existing, aTargetScreen );
 
                 if( existing->Type() != SCH_FIELD_T )
-                    removedItems.push_back( existing );
+                    removedItems.insert( existing );
             }
 
-            if( item->Type() == SCH_SYMBOL_T )
-            {
-                auto* sym = static_cast<SCH_SYMBOL*>( item );
-
-                if( LIB_SYMBOL* lib = findLib( sym ) )
-                    sym->SetLibSymbol( lib );
-            }
-
-            item->SetParent( &sch );
-            touched.push_back( toUtf8( item->m_Uuid.AsString() ) );
-            commit.Add( item, aFrame->GetScreen() );
+            touched.push_back( parsed.uuid );
+            commit.Add( parsed.item.get(), aTargetScreen );
             staged = true;
         }
     };
 
-    for( const json& w : aWire.value( "added", json::array() ) )
-        upsert( w );
-    for( const json& w : aWire.value( "changed", json::array() ) )
-        upsert( w );
+    stageUpserts( added );
+    stageUpserts( changed );
 
-    // SKIP_UNDO: remote applies never land on the local undo stack (see doApply).
     if( staged )
+    {
+        for( ParsedUpsert& parsed : added )
+            parsed.item.release();
+        for( ParsedUpsert& parsed : changed )
+            parsed.item.release();
+
+        pcbjam_collab::parkItemsApplyForTest();
         commit.Push( wxT( "Collaborative edit (items)" ), SKIP_UNDO );
+    }
 
     for( SCH_ITEM* item : removedItems )
         delete item;
 
-    // Fold ONLY the applied uuids into the baseline (echo suppression), then flush:
-    // anything else that now differs — a concurrent local edit, the connectivity
-    // cleanup this apply's Push produced — broadcasts as a normal local diff
-    // instead of being swallowed (bug 05).
-    rebaselineTouched( aFrame, touched );
+    if( currentScreen( aFrame ) == aTargetScreen )
+        rebaselineTouched( aFrame, touched );
+
     s_applyingRemote = false;
-    scheduleFlush();
+
+    if( currentScreen( aFrame ) == aTargetScreen )
+        scheduleFlush();
+
+    aError.clear();
+    return true;
 }
 
 // Test/PoC move (the SCH_COMMIT body for kicadCollabTestMoveFirst, deferred via CallAfter).
@@ -1194,20 +1300,107 @@ std::string schCollabSnapshot()
 // (LoadContent + SCH_COMMIT must run where native edits run).
 void schCollabApplyItems( std::string aJson )
 {
-    if( pcbjam_open::busy() ) // open in flight (open_gate.h) — see schCollabApply
-        return;
-
     json wire = json::parse( aJson, nullptr, /*allow_exceptions*/ false );
 
     if( wire.is_discarded() )
         return;
 
+    const pcbjam_collab::ItemsProtocolRequest request =
+            pcbjam_collab::itemsProtocolRequest( wire );
+
+    if( !pcbjam_collab::itemsOwnerMatches( request ) )
+    {
+        pcbjam_collab::emitStaleItemsOwner( request );
+        return;
+    }
+
+    std::string validationError;
+
+    if( !pcbjam_collab::validateRootLiftedItemsWire( wire, validationError ) )
+    {
+        pcbjam_collab::emitItemsApplied( request, "invalid", false, validationError );
+        return;
+    }
+
+    if( pcbjam_open::busy() ) // open in flight (open_gate.h) — see schCollabApply
+    {
+        pcbjam_collab::emitItemsApplied( request, "busy", true, "file open is in flight" );
+        return;
+    }
+
     SCH_EDIT_FRAME* fr = schFrame();
 
     if( !fr )
+    {
+        pcbjam_collab::emitItemsApplied( request, "unavailable", true,
+                                        "eeschema frame is unavailable" );
         return;
+    }
 
-    pcbjam_collab::runOnCoroutine( fr, [fr, wire]() { doApplyItems( fr, wire ); } );
+    SCH_SCREEN* target = currentScreen( fr );
+
+    if( !target )
+    {
+        pcbjam_collab::emitItemsApplied( request, "unavailable", true,
+                                        "eeschema screen is unavailable" );
+        return;
+    }
+
+    pcbjam_collab::runOnCoroutine( fr, [fr, target, wire, request]() {
+        if( !pcbjam_collab::itemsOwnerMatches( request ) )
+        {
+            pcbjam_collab::emitStaleItemsOwner( request );
+            return;
+        }
+
+        SCH_EDIT_FRAME* current = schFrame();
+
+        if( current != fr || !current || currentScreen( current ) != target )
+        {
+            pcbjam_collab::emitItemsApplied( request, "target-changed", false,
+                                            "eeschema frame or screen changed before apply" );
+            return;
+        }
+
+        try
+        {
+            std::string error;
+
+            if( !doApplyItems( fr, target, wire, error ) )
+            {
+                pcbjam_collab::emitItemsApplied( request, "invalid", false, error );
+                return;
+            }
+
+            if( !pcbjam_collab::itemsOwnerMatches( request ) )
+            {
+                pcbjam_collab::emitStaleItemsOwner( request );
+                return;
+            }
+
+            current = schFrame();
+
+            if( current != fr || !current || currentScreen( current ) != target )
+            {
+                pcbjam_collab::emitItemsApplied( request, "target-changed", false,
+                                                "eeschema frame or screen changed during apply" );
+                return;
+            }
+
+            pcbjam_collab::emitItemsApplied( request, "applied" );
+        }
+        catch( const std::exception& e )
+        {
+            s_applyingRemote = false;
+            pcbjam_collab::emitItemsApplied( request, "failed", false, e.what() );
+        }
+        catch( ... )
+        {
+            s_applyingRemote = false;
+            pcbjam_collab::emitItemsApplied( request, "failed", false,
+                                            "unknown eeschema apply failure" );
+        }
+    } );
 }
 
 
@@ -2001,7 +2194,6 @@ bool schEditorActive()
     return schFrame() != nullptr;
 }
 
-
 void kicadSaveSchematic( std::string path )
 {
     SCH_EDIT_FRAME* fr = schFrame();
@@ -2061,6 +2253,8 @@ EMSCRIPTEN_BINDINGS(eeschema) {
     function("kicadOpenFile", &kicadOpenFile PCBJAM_PARKER_POLICY);
     function("kicadOpenFileBusy", &kicadOpenFileBusy);
     function("kicadTestSetOpenPark", &kicadTestSetOpenPark);
+    function("kicadTestSetStopOpenAfterApplyDrain",
+             &pcbjam_open::setTestStopOpenAfterApplyDrain);
     function("kicadCollabBusy", &kicadCollabBusyProbe);
     // Read-only viewer lock (read-only-viewer).
     function("kicadSetReadOnly", &kicadSetReadOnly);
@@ -2068,6 +2262,9 @@ EMSCRIPTEN_BINDINGS(eeschema) {
     function("kicadCollabApply", &schCollabApply);
     function("kicadCollabSnapshot", &schCollabSnapshot);
     // v2 items bridge: per-item s-expr payloads (ysync 0008).
+    function("kicadCollabSetItemsOwner", &pcbjam_collab::acquireItemsOwner);
+    function("kicadCollabReleaseItemsOwner", &pcbjam_collab::releaseItemsOwner);
+    function("kicadTestSetItemsApplyPark", &pcbjam_collab::setItemsApplyTestPark);
     function("kicadCollabApplyItems", &schCollabApplyItems);
     function("kicadCollabSnapshotItems", &schCollabSnapshotItems);
     function("kicadCollabTestMoveFirst", &schCollabTestMoveFirst);

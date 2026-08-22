@@ -152,6 +152,25 @@ inline void runOnCoroutine( wxEvtHandler* aHandler, std::function<void()> aBody 
     aHandler->CallAfter( []() { drainApplies(); } );
 }
 
+inline bool appliesPending()
+{
+    return applyBusy() || !applyQueue().empty();
+}
+
+/**
+ * Programmatic file-open enters through embind, outside wx's normal dispatch
+ * interlock. Its caller holds pcbjam_open::IntentGuard before waiting here, so
+ * applies submitted after that point reject synchronously, while any apply
+ * already accepted into this queue retains FIFO priority and can finish with
+ * wx dispatch live. The caller takes the stronger BusyGuard only after this
+ * drain, before replacing the frame/model.
+ */
+inline void waitForApplyDrain()
+{
+    while( appliesPending() )
+        emscripten_sleep( 1 );
+}
+
 // ── C++ → JS wire emitters (no-ops without a JS listener) ───────────────────
 
 /** Legacy scalar delta wire: window.kicadCollab.onDelta. */

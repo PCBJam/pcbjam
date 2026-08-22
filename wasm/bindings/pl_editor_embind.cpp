@@ -11,6 +11,9 @@
 #include <kiway_player.h>
 #include <kiway.h>
 #include <map>
+#include <exception>
+#include <memory>
+#include <set>
 #include <string>
 #include <vector>
 #include <wx/app.h>
@@ -19,6 +22,8 @@
 #include <nlohmann/json.hpp>
 #include "open_gate.h"
 #include "pcbjam_async_policy.h"
+#include "collab_items_protocol.h"
+#include "collab_items_validation.h"
 #include <eda_draw_frame.h>
 #include <kiid.h>
 #include <pcbjam_read_only.h>
@@ -39,7 +44,12 @@ using json = nlohmann::json;
 // File→Open.
 bool kicadOpenFile( std::string path )
 {
-    // Held across every suspension of the load; see open_gate.h.
+    pcbjam_open::IntentGuard intent;
+    pcbjam_collab::waitForApplyDrain();
+
+    if( pcbjam_open::testStopOpenAfterApplyDrain() )
+        return false;
+
     pcbjam_open::BusyGuard busy;
 
     if( pcbjam_open::testParkMs() > 0 )
@@ -515,78 +525,222 @@ std::string kicadCollabSnapshotItems()
 // drop any pre-existing item that shares an appended uuid (replace-by-uuid).
 void kicadCollabApplyItems( std::string aJson )
 {
-    if( pcbjam_open::busy() ) // open in flight (open_gate.h) — see kicadCollabApply
-        return;
-
     json wire = json::parse( aJson, nullptr, /*allow_exceptions*/ false );
 
     if( wire.is_discarded() )
         return;
 
-    s_applyingRemote = true;
+    const pcbjam_collab::ItemsProtocolRequest request =
+            pcbjam_collab::itemsProtocolRequest( wire );
 
-    DS_DATA_MODEL& model = DS_DATA_MODEL::GetTheInstance();
-
-    for( const json& rid : wire.value( "removed", json::array() ) )
+    if( !pcbjam_collab::itemsOwnerMatches( request ) )
     {
-        if( DS_DATA_ITEM* item = findByUuid( model, rid.get<std::string>() ) )
-        {
-            model.Remove( item );
-            delete item;
-        }
+        pcbjam_collab::emitStaleItemsOwner( request );
+        return;
     }
 
-    auto upsert = [&]( const json& w )
+    if( pcbjam_open::busy() ) // open in flight (open_gate.h) — see kicadCollabApply
     {
-        std::string sexpr = w.value( "sexpr", "" );
+        pcbjam_collab::emitItemsApplied( request, "busy", true, "file open is in flight" );
+        return;
+    }
 
-        if( sexpr.empty() )
-            return;
+    EDA_DRAW_FRAME* targetFrame = topFrame();
 
-        // Bare items (e.g. rendered from the Y.Doc Slot body) get the envelope the
-        // drawing-sheet parser requires; peer-emitted blobs already carry it.
-        if( sexpr.rfind( "(kicad_wks", 0 ) != 0 )
-        {
-            sexpr = "(kicad_wks (version " + std::to_string( SEXPR_WORKSHEET_FILE_VERSION )
-                    + ") (generator \"pl_editor\") " + sexpr + ")";
-        }
+    if( !targetFrame )
+    {
+        pcbjam_collab::emitItemsApplied( request, "unavailable", true,
+                                        "pl_editor frame is unavailable" );
+        return;
+    }
 
-        // Snapshot the pre-append item pointers, then append through the parser.
-        std::vector<DS_DATA_ITEM*> before = model.GetItems();
-        model.SetPageLayout( sexpr.c_str(), /*aAppend*/ true, wxT( "collab-items" ) );
+    std::string validationError;
 
-        // Replace-by-uuid: drop any pre-existing item sharing a newly appended uuid.
-        // Work on pointer snapshots — model.Remove() mutates the live vector.
-        std::vector<DS_DATA_ITEM*> appended( model.GetItems().begin() + before.size(),
-                                             model.GetItems().end() );
+    if( !pcbjam_collab::validateRootLiftedItemsWire( wire, validationError ) )
+    {
+        pcbjam_collab::emitItemsApplied( request, "invalid", false, validationError );
+        return;
+    }
 
-        for( DS_DATA_ITEM* neu : appended )
-        {
-            for( DS_DATA_ITEM* old : before )
-            {
-                if( old->m_Uuid == neu->m_Uuid )
-                {
-                    model.Remove( old );
-                    delete old;
-                    break;
-                }
-            }
-        }
+    struct ParsedUpsert
+    {
+        std::unique_ptr<DS_DATA_ITEM> item;
+        std::string                   uuid;
     };
 
-    for( const json& w : wire.value( "added", json::array() ) )
-        upsert( w );
-    for( const json& w : wire.value( "changed", json::array() ) )
-        upsert( w );
+    pcbjam_collab::runOnCoroutine(
+            targetFrame,
+            [targetFrame, wire, request, validationError]() mutable
+            {
+                if( !pcbjam_collab::itemsOwnerMatches( request ) )
+                {
+                    pcbjam_collab::emitStaleItemsOwner( request );
+                    return;
+                }
 
-    // Rebase the differ on the post-apply state so our own mutations aren't echoed,
-    // then rebuild the GAL view from the model.
-    s_snapshot = snapshotMap();
+                if( topFrame() != targetFrame )
+                {
+                    pcbjam_collab::emitItemsApplied(
+                            request, "target-changed", false,
+                            "pl_editor frame changed before apply" );
+                    return;
+                }
 
-    if( EDA_DRAW_FRAME* fr = topFrame() )
-        fr->HardRedraw();
+                try
+                {
+        std::vector<std::string> removedIds;
+        std::vector<std::string> addedIds;
+        std::vector<std::string> changedIds;
+        std::vector<ParsedUpsert> added;
+        std::vector<ParsedUpsert> changed;
 
-    s_applyingRemote = false;
+        for( const json& rid : wire.value( "removed", json::array() ) )
+            removedIds.push_back( rid.get<std::string>() );
+
+        auto parseCategory = [&]( const char* aCategory, std::vector<ParsedUpsert>& aParsed,
+                                  std::vector<std::string>& aIds ) -> bool
+        {
+            for( const json& entry : wire.value( aCategory, json::array() ) )
+            {
+                std::string sexpr = entry.at( "sexpr" ).get<std::string>();
+
+                if( sexpr.find_first_not_of( " \t\r\n" ) != 0 )
+                    sexpr = sexpr.substr( sexpr.find_first_not_of( " \t\r\n" ) );
+
+                // Bare items get the envelope the drawing-sheet parser requires.
+                if( sexpr.rfind( "(kicad_wks", 0 ) != 0 )
+                {
+                    sexpr = "(kicad_wks (version "
+                            + std::to_string( SEXPR_WORKSHEET_FILE_VERSION )
+                            + ") (generator \"pl_editor\") " + sexpr + ")";
+                }
+
+                DS_DATA_MODEL parsedModel;
+                parsedModel.AllowVoidList( true );
+                parsedModel.SetPageLayout( sexpr.c_str(), /*aAppend*/ true,
+                                           wxT( "collab-items-validate" ) );
+
+                if( parsedModel.GetItems().size() != 1 )
+                {
+                    validationError = std::string( "pl_editor " ) + aCategory
+                                      + " wire entry must parse as exactly one item";
+                    return false;
+                }
+
+                DS_DATA_ITEM* item = parsedModel.GetItems().front();
+                parsedModel.Remove( item );
+
+                std::unique_ptr<DS_DATA_ITEM> parsed( item );
+                std::string uuid = toUtf8( parsed->m_Uuid.AsString() );
+                aIds.push_back( uuid );
+                aParsed.push_back( { std::move( parsed ), std::move( uuid ) } );
+            }
+
+            return true;
+        };
+
+        if( !parseCategory( "added", added, addedIds )
+            || !parseCategory( "changed", changed, changedIds )
+            || !pcbjam_collab::validateItemsBatchIds( removedIds, addedIds, changedIds,
+                                                       validationError ) )
+        {
+            pcbjam_collab::emitItemsApplied( request, "invalid", false, validationError );
+            return;
+        }
+
+        DS_DATA_MODEL& model = DS_DATA_MODEL::GetTheInstance();
+
+        // Refuse to mutate an already ambiguous model. snapshotMap() is keyed
+        // by UUID and would otherwise silently collapse these identities.
+        std::set<std::string> liveIds;
+
+        for( DS_DATA_ITEM* item : model.GetItems() )
+        {
+            std::string uuid = toUtf8( item->m_Uuid.AsString() );
+
+            if( !liveIds.insert( uuid ).second )
+            {
+                pcbjam_collab::emitItemsApplied(
+                        request, "failed", false,
+                        "pl_editor model already contains duplicate UUID: " + uuid );
+                return;
+            }
+        }
+
+        std::set<std::string> replaced( removedIds.begin(), removedIds.end() );
+        replaced.insert( addedIds.begin(), addedIds.end() );
+        replaced.insert( changedIds.begin(), changedIds.end() );
+
+        std::vector<DS_DATA_ITEM*> next;
+        std::vector<DS_DATA_ITEM*> retired;
+        next.reserve( model.GetItems().size() + added.size() + changed.size() );
+        retired.reserve( replaced.size() );
+
+        for( DS_DATA_ITEM* item : model.GetItems() )
+        {
+            if( replaced.count( toUtf8( item->m_Uuid.AsString() ) ) )
+                retired.push_back( item );
+            else
+                next.push_back( item );
+        }
+
+        for( ParsedUpsert& parsed : added )
+            next.push_back( parsed.item.get() );
+        for( ParsedUpsert& parsed : changed )
+            next.push_back( parsed.item.get() );
+
+        s_applyingRemote = true;
+
+        pcbjam_collab::parkItemsApplyForTest();
+
+        // One noexcept vector swap is the model mutation. Every parse,
+        // allocation, and identity check completed against detached state.
+        model.GetItems().swap( next );
+
+        for( ParsedUpsert& parsed : added )
+            parsed.item.release();
+        for( ParsedUpsert& parsed : changed )
+            parsed.item.release();
+
+        for( DS_DATA_ITEM* item : retired )
+            delete item;
+
+        // Rebase the differ on the post-apply state so our own mutations aren't echoed,
+        // then rebuild the GAL view from the model.
+        s_snapshot = snapshotMap();
+
+        targetFrame->HardRedraw();
+
+        s_applyingRemote = false;
+
+        if( !pcbjam_collab::itemsOwnerMatches( request ) )
+        {
+            pcbjam_collab::emitStaleItemsOwner( request );
+            return;
+        }
+
+        if( topFrame() != targetFrame )
+        {
+            pcbjam_collab::emitItemsApplied( request, "target-changed", false,
+                                            "pl_editor frame changed during apply" );
+            return;
+        }
+
+        pcbjam_collab::emitItemsApplied( request, "applied" );
+                }
+                catch( const std::exception& e )
+                {
+                    s_applyingRemote = false;
+                    pcbjam_collab::emitItemsApplied( request, "failed", false, e.what() );
+                }
+                catch( ... )
+                {
+                    s_applyingRemote = false;
+                    pcbjam_collab::emitItemsApplied(
+                            request, "failed", false,
+                            "unknown pl_editor apply failure" );
+                }
+            } );
 }
 
 
@@ -619,6 +773,8 @@ EMSCRIPTEN_BINDINGS(pl_editor) {
     function("kicadOpenFile", &kicadOpenFile PCBJAM_PARKER_POLICY);
     function("kicadOpenFileBusy", &kicadOpenFileBusy);
     function("kicadTestSetOpenPark", &kicadTestSetOpenPark);
+    function("kicadTestSetStopOpenAfterApplyDrain",
+             &pcbjam_open::setTestStopOpenAfterApplyDrain);
     // Read-only viewer lock (read-only-viewer).
     function("kicadSetReadOnly", &kicadSetReadOnly);
     function("kicadSaveDrawingSheet", &kicadSaveDrawingSheet);
@@ -626,6 +782,9 @@ EMSCRIPTEN_BINDINGS(pl_editor) {
     function("kicadCollabApply", &kicadCollabApply);
     function("kicadCollabSnapshot", &kicadCollabSnapshot);
     // v2 items bridge: per-item s-expr payloads (ysync 0008).
+    function("kicadCollabSetItemsOwner", &pcbjam_collab::acquireItemsOwner);
+    function("kicadCollabReleaseItemsOwner", &pcbjam_collab::releaseItemsOwner);
+    function("kicadTestSetItemsApplyPark", &pcbjam_collab::setItemsApplyTestPark);
     function("kicadCollabApplyItems", &kicadCollabApplyItems);
     function("kicadCollabSnapshotItems", &kicadCollabSnapshotItems);
     function("kicadCollabTestAddText", &kicadCollabTestAddText);

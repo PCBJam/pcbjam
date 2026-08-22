@@ -33,6 +33,7 @@ type NativeModule = {
   kicadCollabSetItemsOwner(owner: string): boolean;
   kicadCollabReleaseItemsOwner(owner: string): void;
   kicadTestSetItemsApplyPark(ms: number): void;
+  kicadTestSetStopOpenAfterApplyDrain(stop: boolean): void;
   kicadCollabGetPos(uuid: string): string;
 };
 
@@ -48,14 +49,14 @@ async function boot(page: Page): Promise<void> {
   );
 }
 
-test("programmatic open waits for an owner-scoped items commit suspended in flight", async ({
+test("programmatic open barrier waits for an owner-scoped items commit suspended in flight", async ({
   page,
   testLogger,
 }) => {
   test.setTimeout(240_000);
   await boot(page);
 
-  const result = await page.evaluate(
+  const resultPromise = page.evaluate(
     async ({ first, second, firstUuid }) => {
       const runtime = window as unknown as {
         FS: { mkdirTree(path: string): void; writeFile(path: string, data: string): void };
@@ -79,12 +80,17 @@ test("programmatic open waits for an owner-scoped items commit suspended in flig
       const owner = "lifecycle-e2e-owner";
       const acquired = runtime.Module.kicadCollabSetItemsOwner(owner);
       const acknowledgements: Array<{ status: string; requestId: string }> = [];
+      const order: string[] = [];
       runtime.kicadCollab = {
         ...runtime.kicadCollab,
-        onItemsApplied: (json) => acknowledgements.push(JSON.parse(json)),
+        onItemsApplied: (json) => {
+          acknowledgements.push(JSON.parse(json));
+          order.push("apply-ack");
+        },
       };
 
       runtime.Module.kicadTestSetItemsApplyPark(1_500);
+      runtime.Module.kicadTestSetStopOpenAfterApplyDrain(true);
       runtime.Module.kicadCollabApplyItems(
         JSON.stringify({
           added: [],
@@ -105,9 +111,34 @@ test("programmatic open waits for an owner-scoped items commit suspended in flig
       const observedApplyBusy = runtime.Module.kicadCollabBusy();
 
       // This embind open starts while BOARD_COMMIT owns pointers on a suspended
-      // coroutine stack. It must wait for apply+flush drain before replacing the board.
-      await Promise.resolve(runtime.Module.kicadOpenFile(secondPath));
-      runtime.Module.kicadTestSetItemsApplyPark(0);
+      // coroutine stack. It must wait for apply+flush drain. The test-only
+      // checkpoint returns immediately after that barrier: a same-instance
+      // OpenProjectFiles after a remote commit is a terminal/recreate boundary.
+      let openDeadline: number | undefined;
+      let openResult: unknown;
+      try {
+        openResult = await Promise.race([
+          Promise.resolve(runtime.Module.kicadOpenFile(secondPath)),
+          new Promise<never>((_resolve, reject) => {
+            openDeadline = window.setTimeout(() => {
+              reject(
+                new Error(
+                  `open did not settle after earlier apply: ${JSON.stringify({
+                    acknowledgements,
+                    applyBusy: runtime.Module.kicadCollabBusy(),
+                    openBusy: runtime.Module.kicadOpenFileBusy(),
+                  })}`,
+                ),
+              );
+            }, 45_000);
+          }),
+        ]);
+        order.push("open-barrier-return");
+      } finally {
+        if (openDeadline !== undefined) window.clearTimeout(openDeadline);
+        runtime.Module.kicadTestSetItemsApplyPark(0);
+        runtime.Module.kicadTestSetStopOpenAfterApplyDrain(false);
+      }
 
       const settledDeadline = performance.now() + 30_000;
       while (
@@ -118,7 +149,14 @@ test("programmatic open waits for an owner-scoped items commit suspended in flig
 
       const snapshot = runtime.Module.kicadCollabSnapshotItems();
       runtime.Module.kicadCollabReleaseItemsOwner(owner);
-      return { acknowledgements, acquired, observedApplyBusy, snapshot };
+      return {
+        acknowledgements,
+        acquired,
+        openResult,
+        order,
+        observedApplyBusy,
+        snapshot,
+      };
     },
     {
       first: board(FIRST_UUID, 10),
@@ -127,15 +165,22 @@ test("programmatic open waits for an owner-scoped items commit suspended in flig
     },
   );
 
+  const result = await resultPromise;
+
   expect(result.acquired, "owner acquired only across an idle apply barrier").toBe(true);
   expect(result.observedApplyBusy, "the deterministic in-commit park engaged").toBe(true);
-  expect(result.acknowledgements).toEqual(
-    expect.arrayContaining([
-      expect.objectContaining({ requestId: "parked-apply", status: "applied" }),
-    ]),
+  expect(
+    result.acknowledgements,
+    "the first-entering apply commits exactly once before the later open barrier",
+  ).toEqual([
+    expect.objectContaining({ requestId: "parked-apply", status: "applied" }),
+  ]);
+  expect(result.order).toEqual(["apply-ack", "open-barrier-return"]);
+  expect(result.openResult, "the test checkpoint stopped before unsafe model replacement").toBe(
+    false,
   );
-  expect(result.snapshot).toContain(SECOND_UUID);
-  expect(result.snapshot).not.toContain(FIRST_UUID);
+  expect(result.snapshot).toContain(FIRST_UUID);
+  expect(result.snapshot).not.toContain(SECOND_UUID);
   expect(
     [...testLogger.consoleLogs, ...testLogger.errors].some((line) =>
       line.includes("Aborted("),

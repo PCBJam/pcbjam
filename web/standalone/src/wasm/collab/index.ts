@@ -234,19 +234,23 @@ export function attachKicadCollab(
     // frames from read-only connections too — this keeps the client quiet).
     session.provider.awareness?.setLocalState(null);
   }
-  const binding = bindKicadCollab(session.doc, moduleItemsBridge(mod, win), {
-    readOnly: opts?.readOnly,
-  });
+  const bridge = moduleItemsBridge(mod, win);
+  let binding: KicadBinding | undefined;
   try {
+    binding = bindKicadCollab(session.doc, bridge, {
+      readOnly: opts?.readOnly,
+    });
     binding.seed(opts?.seedDoc, { editorMatchesDoc: opts?.editorMatchesDoc });
   } catch (err) {
     // A partially-attached binding must not survive a seed throw (findings
     // C-2): it already owns the global DOWN hook + doc observers, and the
     // handle that could destroy it would never reach the caller. The SESSION
     // stays alive — its owner decides (degrade / retry / teardown).
-    binding.destroy();
+    if (binding) binding.destroy();
+    else bridge.destroy?.();
     throw err;
   }
+  if (!binding) throw new Error("collaboration binding construction returned no binding");
   clog("attachKicadCollab: ready; doc items =", binding.items.size);
 
   return {

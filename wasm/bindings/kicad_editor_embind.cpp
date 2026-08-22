@@ -44,6 +44,7 @@
 #include "pcbjam_async_policy.h"
 #include "open_gate.h"
 #include "timer_park.h"
+#include "collab_items_protocol.h"
 
 using namespace emscripten;
 
@@ -139,7 +140,12 @@ bool        schCollabTestClearSelection();
 // standalone bundles compile from their own binding TU.
 static bool kicadOpenFile( std::string path )
 {
-    // Held across every suspension of the load; see open_gate.h.
+    pcbjam_open::IntentGuard intent;
+    pcbjam_collab::waitForApplyDrain();
+
+    if( pcbjam_open::testStopOpenAfterApplyDrain() )
+        return false;
+
     pcbjam_open::BusyGuard busy;
 
     if( pcbjam_open::testParkMs() > 0 )
@@ -545,6 +551,8 @@ EMSCRIPTEN_BINDINGS(kicad_editor) {
     function("kicadOpenFile", &kicadOpenFile PCBJAM_PARKER_POLICY);
     function("kicadOpenFileBusy", &kicadOpenFileBusy);
     function("kicadTestSetOpenPark", &kicadTestSetOpenPark);
+    function("kicadTestSetStopOpenAfterApplyDrain",
+             &pcbjam_open::setTestStopOpenAfterApplyDrain);
     function("kicadTestArmTimerPark", &kicadTestArmTimerPark);
     function("kicadTestTimerParkState", &kicadTestTimerParkState);
 
@@ -558,6 +566,9 @@ EMSCRIPTEN_BINDINGS(kicad_editor) {
     // bundles, dispatched on the active editor frame.
     function("kicadCollabApply", &collabApply);
     function("kicadCollabSnapshot", &collabSnapshot);
+    function("kicadCollabSetItemsOwner", &pcbjam_collab::acquireItemsOwner);
+    function("kicadCollabReleaseItemsOwner", &pcbjam_collab::releaseItemsOwner);
+    function("kicadTestSetItemsApplyPark", &pcbjam_collab::setItemsApplyTestPark);
     function("kicadCollabApplyItems", &collabApplyItems);
     function("kicadCollabSnapshotItems", &collabSnapshotItems);
     function("kicadCollabTestMoveFirst", &collabTestMoveFirst);

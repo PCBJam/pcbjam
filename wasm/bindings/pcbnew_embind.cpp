@@ -53,6 +53,8 @@
 #include <pcb_draw_panel_gal.h>
 #include <nlohmann/json.hpp>
 #include "collab_common.h"
+#include "collab_items_protocol.h"
+#include "collab_items_validation.h"
 #include "collab_presence_core.h"
 #include "open_gate.h"
 #include "pcbjam_async_policy.h"
@@ -62,6 +64,7 @@
 #include "pcbjam_libs_reload.h"
 #include <algorithm>
 #include <chrono>
+#include <exception>
 #include <map>
 #include <memory>
 #include <set>
@@ -89,7 +92,14 @@ using json = nlohmann::json;
 #ifndef KICAD_MERGED_EMBIND
 bool kicadOpenFile( std::string path )
 {
-    // Held across every suspension of the load; see open_gate.h.
+    // Refuse new mutations first, but keep wx dispatch live while an older
+    // suspended commit drains. The load interlock starts only after that.
+    pcbjam_open::IntentGuard intent;
+    pcbjam_collab::waitForApplyDrain();
+
+    if( pcbjam_open::testStopOpenAfterApplyDrain() )
+        return false;
+
     pcbjam_open::BusyGuard busy;
 
     if( pcbjam_open::testParkMs() > 0 )
@@ -526,6 +536,18 @@ BOARD_ITEM* makeFromBlob( BOARD& aBoard, const std::string& aBlobIn )
     // Envelope board: remap its net codes onto ours, then lift out the single item it carries.
     BOARD* clip = static_cast<BOARD*>( parsed );
     clip->MapNets( &aBoard );
+
+    const size_t itemCount = clip->Tracks().size() + clip->Zones().size()
+                             + clip->Drawings().size() + clip->Footprints().size()
+                             + clip->Groups().size();
+
+    // One wire entry is one native root. Silently selecting the first root from
+    // a malformed envelope makes the ACK lie and can leave duplicate identities.
+    if( itemCount != 1 )
+    {
+        delete clip;
+        return nullptr;
+    }
 
     BOARD_ITEM* found = nullptr;
 
@@ -1114,111 +1136,177 @@ void doApply( PCB_EDIT_FRAME* aFrame, const json& aDelta )
 // parse the blob (wrapping bare non-footprint payloads in a live-board envelope),
 // then replace any existing item sharing the parsed uuid. Runs inside the apply
 // COROUTINE (see kicadCollabApplyItems), via BOARD_COMMIT like every remote op.
-void doApplyItems( PCB_EDIT_FRAME* aFrame, const json& aWire )
+bool doApplyItems( PCB_EDIT_FRAME* aFrame, BOARD* aTargetBoard, const json& aWire,
+                   std::string& aError )
 {
-    BOARD* board = aFrame->GetBoard();
+    if( !aTargetBoard || !pcbjam_collab::validateRootLiftedItemsWire( aWire, aError ) )
+    {
+        if( aError.empty() )
+            aError = "pcbnew board is unavailable";
+
+        return false;
+    }
+
+    struct ParsedUpsert
+    {
+        std::unique_ptr<BOARD_ITEM> item;
+        std::string                 uuid;
+    };
+
+    std::vector<std::string> removedIds;
+    std::vector<std::string> addedIds;
+    std::vector<std::string> changedIds;
+    std::vector<std::string> addedTreeIds;
+    std::vector<std::string> changedTreeIds;
+    std::vector<ParsedUpsert> added;
+    std::vector<ParsedUpsert> changed;
+
+    for( const json& rid : aWire.value( "removed", json::array() ) )
+        removedIds.push_back( rid.get<std::string>() );
+
+    auto parseCategory = [&]( const char* aCategory, std::vector<ParsedUpsert>& aParsed,
+                              std::vector<std::string>& aRootIds,
+                              std::vector<std::string>& aTreeIds ) -> bool
+    {
+        for( const json& entry : aWire.value( aCategory, json::array() ) )
+        {
+            std::string sexpr = entry.at( "sexpr" ).get<std::string>();
+            size_t      start = sexpr.find_first_not_of( " \t\r\n" );
+            std::string trimmed = sexpr.substr( start );
+
+            // Peer-emitted blobs are already enveloped (or a bare footprint,
+            // which the parser accepts top-level); bare Y-rendered items need
+            // the live board's layer envelope.
+            if( trimmed.rfind( "(kicad_pcb", 0 ) != 0
+                && trimmed.rfind( "(footprint", 0 ) != 0 )
+                trimmed = wrapInBoardEnvelope( *aTargetBoard, trimmed );
+
+            std::unique_ptr<BOARD_ITEM> parsed( makeFromBlob( *aTargetBoard, trimmed ) );
+
+            if( !parsed )
+            {
+                aError = std::string( "pcbnew rejected " ) + aCategory + " item blob";
+                return false;
+            }
+
+            std::string uuid = toUtf8( parsed->m_Uuid.AsString() );
+            aRootIds.push_back( uuid );
+            aTreeIds.push_back( uuid );
+            parsed->RunOnChildren(
+                    [&]( BOARD_ITEM* aChild )
+                    {
+                        aTreeIds.push_back( toUtf8( aChild->m_Uuid.AsString() ) );
+                    }, RECURSE_MODE::RECURSE );
+            aParsed.push_back( { std::move( parsed ), std::move( uuid ) } );
+        }
+
+        return true;
+    };
+
+    // Parse the complete batch before staging even one model mutation.
+    if( !parseCategory( "added", added, addedIds, addedTreeIds )
+        || !parseCategory( "changed", changed, changedIds, changedTreeIds )
+        || !pcbjam_collab::validateItemsBatchIds( removedIds, addedTreeIds,
+                                                   changedTreeIds, aError ) )
+        return false;
+
+    // Per-item wires replace roots. A parsed UUID resolving to a footprint
+    // child would otherwise remove the parent under a different identity.
+    auto rejectChildTarget = [&]( const std::vector<ParsedUpsert>& aParsed ) -> bool
+    {
+        for( const ParsedUpsert& parsed : aParsed )
+        {
+            BOARD_ITEM* existing = aTargetBoard->ResolveItem( parsed.item->m_Uuid,
+                                                               /*allowNullptr*/ true );
+
+            if( existing && existing->GetParentFootprint() )
+            {
+                aError = "pcbnew upsert UUID resolves to a footprint child: " + parsed.uuid;
+                return false;
+            }
+        }
+
+        return true;
+    };
+
+    if( !rejectChildTarget( added ) || !rejectChildTarget( changed ) )
+        return false;
 
     s_applyingRemote = true;
 
     BOARD_COMMIT commit( aFrame );
     bool         staged = false;
 
-    std::vector<std::string> touched;   // root uuids this apply acts on (targeted rebaseline)
-
-    // Owned by nobody once the SKIP_UNDO commit detaches them — freed after Push.
-    std::vector<BOARD_ITEM*> removedItems;
-
-    std::set<std::string> removedIds;
-
-    for( const json& rid : aWire.value( "removed", json::array() ) )
-        removedIds.insert( rid.get<std::string>() );
+    std::vector<std::string> touched;
+    std::set<BOARD_ITEM*>    removedItems;
+    const std::set<std::string> removedIdSet( removedIds.begin(), removedIds.end() );
 
     for( const std::string& rid : removedIds )
     {
         KIID id( wxString::FromUTF8( rid.c_str() ) );
-
         touched.push_back( rid );
 
-        if( BOARD_ITEM* item = board->ResolveItem( id, /*allowNullptr*/ true ) )
+        if( BOARD_ITEM* item = aTargetBoard->ResolveItem( id, /*allowNullptr*/ true ) )
         {
-            if( FOOTPRINT* pfp = item->GetParentFootprint() )
+            if( FOOTPRINT* parent = item->GetParentFootprint() )
             {
-                // Covered by the parent's own removal when the whole footprint
-                // goes. A BARE child removal must remove the child itself
-                // (bug 03 receiving half) — the sender now lifts these to a
-                // parent re-blob, but Y-rendered wires can still carry them.
-                if( removedIds.count( toUtf8( pfp->m_Uuid.AsString() ) ) )
-                    continue;
+                if( removedIdSet.count( toUtf8( parent->m_Uuid.AsString() ) ) )
+                    continue; // the parent removal owns this child
             }
 
             commit.Remove( item );
 
-            // A bare child "removal" of a PCB_FIELD_T is a hide, not a detach —
-            // the field stays owned by its parent footprint.
             if( item->Type() != PCB_FIELD_T )
-                removedItems.push_back( item );
+                removedItems.insert( item );
 
             staged = true;
         }
     }
 
-    auto upsert = [&]( const json& w )
+    auto stageUpserts = [&]( std::vector<ParsedUpsert>& aParsed )
     {
-        std::string sexpr = w.value( "sexpr", "" );
-        size_t      p     = sexpr.find_first_not_of( " \t\r\n" );
-
-        if( p == std::string::npos )
-            return;
-
-        std::string trimmed = sexpr.substr( p );
-
-        // Peer-emitted blobs are already enveloped (or a bare footprint, which the
-        // parser accepts top-level); bare Y.Doc-rendered items need the envelope.
-        if( trimmed.rfind( "(kicad_pcb", 0 ) != 0 && trimmed.rfind( "(footprint", 0 ) != 0 )
-            trimmed = wrapInBoardEnvelope( *board, trimmed );
-
-        BOARD_ITEM* parsed = makeFromBlob( *board, trimmed );
-
-        if( !parsed )
+        for( ParsedUpsert& parsed : aParsed )
         {
-            EM_ASM( { console.log( "[collab] pcbnew applyItems: blob parse failed" ); } );
-            return;
+            if( BOARD_ITEM* existing =
+                        aTargetBoard->ResolveItem( parsed.item->m_Uuid, /*allowNullptr*/ true ) )
+            {
+                commit.Remove( existing );
+                removedItems.insert( existing );
+            }
+
+            touched.push_back( parsed.uuid );
+            commit.Add( parsed.item.get() );
+            staged = true;
         }
-
-        if( BOARD_ITEM* existing = board->ResolveItem( parsed->m_Uuid, /*allowNullptr*/ true ) )
-        {
-            // Replacing by uuid; a (shouldn't-happen) child match replaces its parent.
-            if( FOOTPRINT* fp = existing->GetParentFootprint() )
-                existing = fp;
-
-            commit.Remove( existing );
-            removedItems.push_back( existing );
-        }
-
-        touched.push_back( toUtf8( parsed->m_Uuid.AsString() ) );
-
-        commit.Add( parsed );
-        staged = true;
     };
 
-    for( const json& w : aWire.value( "added", json::array() ) )
-        upsert( w );
-    for( const json& w : aWire.value( "changed", json::array() ) )
-        upsert( w );
+    stageUpserts( added );
+    stageUpserts( changed );
 
-    // SKIP_UNDO: remote applies never land on the local undo stack (see doApply).
     if( staged )
+    {
+        // From this point the commit owns every staged addition, including if
+        // Push suspends. Releasing first avoids deleting a board-owned item if
+        // a later native phase throws.
+        for( ParsedUpsert& parsed : added )
+            parsed.item.release();
+        for( ParsedUpsert& parsed : changed )
+            parsed.item.release();
+
+        pcbjam_collab::parkItemsApplyForTest();
         commit.Push( wxT( "Collaborative edit (items)" ), SKIP_UNDO );
+    }
 
     for( BOARD_ITEM* item : removedItems )
         delete item;
 
-    // Fold ONLY the applied uuids into the baseline (echo suppression), then flush:
-    // anything else that now differs — a concurrent local edit, cleanup this apply's
-    // Push produced — broadcasts as a normal local diff instead of being swallowed.
-    rebaselineTouched( board, touched );
+    // Fold only the accepted UUIDs into the echo baseline. Input rejection
+    // returns above without touching either the model or the baseline.
+    rebaselineTouched( aTargetBoard, touched );
     s_applyingRemote = false;
     scheduleFlush();
+    aError.clear();
+    return true;
 }
 
 // Test/PoC move (the BOARD_COMMIT body for kicadCollabTestMoveFirst). Run inside a COROUTINE by
@@ -1456,20 +1544,107 @@ void pcbCollabApply( std::string aJson )
 // (the blob parse + commit must run where native edits run — see above).
 void pcbCollabApplyItems( std::string aJson )
 {
-    if( pcbjam_open::busy() ) // open in flight (open_gate.h) — see pcbCollabApply
-        return;
-
     json wire = json::parse( aJson, nullptr, /*allow_exceptions*/ false );
 
     if( wire.is_discarded() )
         return;
 
+    const pcbjam_collab::ItemsProtocolRequest request =
+            pcbjam_collab::itemsProtocolRequest( wire );
+
+    if( !pcbjam_collab::itemsOwnerMatches( request ) )
+    {
+        pcbjam_collab::emitStaleItemsOwner( request );
+        return;
+    }
+
+    if( pcbjam_open::busy() ) // open in flight (open_gate.h) — see pcbCollabApply
+    {
+        pcbjam_collab::emitItemsApplied( request, "busy", true, "file open is in flight" );
+        return;
+    }
+
+    std::string validationError;
+
+    if( !pcbjam_collab::validateRootLiftedItemsWire( wire, validationError ) )
+    {
+        pcbjam_collab::emitItemsApplied( request, "invalid", false, validationError );
+        return;
+    }
+
     PCB_EDIT_FRAME* fr = pcbFrame();
 
     if( !fr )
+    {
+        pcbjam_collab::emitItemsApplied( request, "unavailable", true,
+                                        "pcbnew frame is unavailable" );
         return;
+    }
 
-    pcbjam_collab::runOnCoroutine( fr, [fr, wire]() { doApplyItems( fr, wire ); } );
+    BOARD* target = fr->GetBoard();
+
+    if( !target )
+    {
+        pcbjam_collab::emitItemsApplied( request, "unavailable", true,
+                                        "pcbnew board is unavailable" );
+        return;
+    }
+
+    pcbjam_collab::runOnCoroutine( fr, [fr, target, wire, request]() {
+        if( !pcbjam_collab::itemsOwnerMatches( request ) )
+        {
+            pcbjam_collab::emitStaleItemsOwner( request );
+            return;
+        }
+
+        PCB_EDIT_FRAME* current = pcbFrame();
+
+        if( current != fr || !current || current->GetBoard() != target )
+        {
+            pcbjam_collab::emitItemsApplied( request, "target-changed", false,
+                                            "pcbnew frame or board changed before apply" );
+            return;
+        }
+
+        try
+        {
+            std::string error;
+
+            if( !doApplyItems( fr, target, wire, error ) )
+            {
+                pcbjam_collab::emitItemsApplied( request, "invalid", false, error );
+                return;
+            }
+
+            if( !pcbjam_collab::itemsOwnerMatches( request ) )
+            {
+                pcbjam_collab::emitStaleItemsOwner( request );
+                return;
+            }
+
+            current = pcbFrame();
+
+            if( current != fr || !current || current->GetBoard() != target )
+            {
+                pcbjam_collab::emitItemsApplied( request, "target-changed", false,
+                                                "pcbnew frame or board changed during apply" );
+                return;
+            }
+
+            pcbjam_collab::emitItemsApplied( request, "applied" );
+        }
+        catch( const std::exception& e )
+        {
+            s_applyingRemote = false;
+            pcbjam_collab::emitItemsApplied( request, "failed", false, e.what() );
+        }
+        catch( ... )
+        {
+            s_applyingRemote = false;
+            pcbjam_collab::emitItemsApplied( request, "failed", false,
+                                            "unknown pcbnew apply failure" );
+        }
+    } );
 }
 
 
@@ -1560,7 +1735,6 @@ bool pcbEditorActive()
 {
     return pcbFrame() != nullptr;
 }
-
 
 void kicadSaveBoard( std::string path )
 {
@@ -2525,6 +2699,8 @@ EMSCRIPTEN_BINDINGS(pcbnew) {
     function("kicadOpenFile", &kicadOpenFile PCBJAM_PARKER_POLICY);
     function("kicadOpenFileBusy", &kicadOpenFileBusy);
     function("kicadTestSetOpenPark", &kicadTestSetOpenPark);
+    function("kicadTestSetStopOpenAfterApplyDrain",
+             &pcbjam_open::setTestStopOpenAfterApplyDrain);
     function("kicadTestArmTimerPark", &kicadTestArmTimerPark);
     function("kicadTestTimerParkState", &kicadTestTimerParkState);
     function("kicadCollabBusy", &kicadCollabBusyProbe);
@@ -2534,6 +2710,9 @@ EMSCRIPTEN_BINDINGS(pcbnew) {
     function("kicadCollabApply", &pcbCollabApply);
     function("kicadCollabSnapshot", &pcbCollabSnapshot);
     // v2 items bridge: per-item s-expr payloads (ysync 0008).
+    function("kicadCollabSetItemsOwner", &pcbjam_collab::acquireItemsOwner);
+    function("kicadCollabReleaseItemsOwner", &pcbjam_collab::releaseItemsOwner);
+    function("kicadTestSetItemsApplyPark", &pcbjam_collab::setItemsApplyTestPark);
     function("kicadCollabApplyItems", &pcbCollabApplyItems);
     function("kicadCollabSnapshotItems", &pcbCollabSnapshotItems);
     function("kicadCollabTestMoveFirst", &pcbCollabTestMoveFirst);

@@ -28,6 +28,11 @@ import {
   type KicadYItems,
 } from "@pcbjam/shared";
 import { clog, cwarn } from "./debug";
+import {
+  createNativeItemsBridge,
+  type NativeItemsProtocolModule,
+  type NativeItemsProtocolWindow,
+} from "./native-items-bridge";
 
 /**
  * The Slot-model collab binding (ysync 0008 Stage B) — the THIN RUNTIME over the
@@ -58,9 +63,11 @@ export interface KicadItemsBridge {
   /** Full current model as an all-`added` ItemsWireDelta JSON. */
   snapshotItems(): string;
   /** Apply a remote ItemsWireDelta JSON (per-item Parse + splice by uuid). */
-  applyItems(json: string): void;
+  applyItems(json: string): void | PromiseLike<void>;
   /** Register the local-edit emit hook (Format changed items → JSON). */
   onItems(cb: (json: string) => void): void;
+  /** Release this binding's native owner generation and pending tickets. */
+  destroy?(): void;
 }
 
 export interface KicadBinding {
@@ -407,11 +414,13 @@ export function bindKicadCollab(
   return {
     seed,
     destroy: () => {
+      if (destroyed) return;
       destroyed = true; // gates the DOWN hook — see bug 07 note above
       detachSeedArbitration?.();
       detachSeedArbitration = undefined;
       items.unobserveDeep(observer);
       revMeta.unobserve(onRevertMeta);
+      bridge.destroy?.();
     },
     items,
   };
@@ -433,13 +442,11 @@ export interface KicadItemsWindow {
 export function moduleItemsBridge(
   mod: KicadItemsModule,
   win: KicadItemsWindow,
+  opts?: { ackTimeoutMs?: number },
 ): KicadItemsBridge {
-  return {
-    snapshotItems: () => mod.kicadCollabSnapshotItems(),
-    applyItems: (json) => mod.kicadCollabApplyItems(json),
-    onItems: (cb) => {
-      // Preserve any sibling hooks (e.g. the legacy onDelta) on the global.
-      win.kicadCollab = { ...win.kicadCollab, onItems: cb };
-    },
-  };
+  return createNativeItemsBridge(
+    mod as NativeItemsProtocolModule,
+    win as NativeItemsProtocolWindow,
+    opts,
+  );
 }

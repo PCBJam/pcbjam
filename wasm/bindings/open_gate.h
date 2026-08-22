@@ -30,6 +30,18 @@ inline int& busyCount()
 }
 
 /**
+ * Close the public native-entry gate before waiting for an older collaboration
+ * apply, without yet parking wx dispatch. The older coroutine may need normal
+ * wx events/timers to finish its commit; taking BusyGuard first deadlocks that
+ * commit behind the dispatch interlock while open waits for it.
+ */
+struct IntentGuard
+{
+    IntentGuard() { ++busyCount(); }
+    ~IntentGuard() { --busyCount(); }
+};
+
+/**
  * Held for the whole open. Two counters, same suspension-RAII trick:
  *
  *  - `busyCount` is OURS: it answers kicadOpenFileBusy() for the web shell and
@@ -75,6 +87,29 @@ inline int& testParkMs()
 {
     static int s_ms = 0;
     return s_ms;
+}
+
+/**
+ * Test-only checkpoint for the apply-before-open ordering proof.
+ *
+ * The lifecycle E2E enters kicadOpenFile while a native apply is suspended,
+ * then stops immediately after waitForApplyDrain. This proves the FIFO edge
+ * (the apply's completion ACK precedes the open barrier) without attempting a
+ * same-instance OpenProjectFiles after a remote commit. That load is a known
+ * terminal/recreate boundary in the JSPI build: it traps during the native
+ * progress-dialog phase even when the modified bit is cleared.
+ *
+ * False by default: production opens always continue into OpenProjectFiles.
+ */
+inline bool& testStopOpenAfterApplyDrain()
+{
+    static bool s_stop = false;
+    return s_stop;
+}
+
+inline void setTestStopOpenAfterApplyDrain( bool aStop )
+{
+    testStopOpenAfterApplyDrain() = aStop;
 }
 
 } // namespace pcbjam_open

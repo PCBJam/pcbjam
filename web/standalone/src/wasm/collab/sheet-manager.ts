@@ -130,7 +130,6 @@ interface Room {
 
 export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollabManager {
   const { mod, win, scopeId, projectId, provider, seedDocForPath, log } = opts;
-  const bridge = moduleItemsBridge(mod, win);
   const rooms = new Map<string, Room>();
   // In-flight connects, so connectAll() and switchTo() racing on the same sheet (api
   // mode, entry sheet) share ONE connection instead of opening the room twice.
@@ -282,23 +281,44 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
     room.detachWatch?.();
     room.detachWatch = undefined;
 
-    const binding = bindKicadCollab(room.doc, bridge, { readOnly: opts.readOnly });
-    room.binding = binding;
+    // A bridge owns one native generation. Destroying the old sheet's binding
+    // releases that generation, so every activation must acquire a fresh
+    // bridge; reusing the destroyed object would make every later apply reject.
+    let bridge: ReturnType<typeof moduleItemsBridge> | undefined;
+    let binding: KicadBinding | undefined;
 
-    if (!room.seeded) {
-      // First activation: file-seed an empty room, else adopt peer/server state.
-      binding.seed(seedDocForPath(sheetPath), { editorMatchesDoc: room.editorMatchesDoc });
-      room.seeded = true;
-      clog(`[sheet] seeded ${sheetPath} (editorMatchesDoc=${room.editorMatchesDoc})`);
-    } else if (room.dirty) {
-      // Remote edits landed while parked: adopt to catch the editor's screen up.
-      binding.seed(undefined, { editorMatchesDoc: false });
-      clog(`[sheet] re-adopted ${sheetPath} (caught up parked remote edits)`);
-    } else {
-      // Clean revisit: the editor screen already matches the doc — baseline the differ
-      // (rebound after the C++ rebaseline on navigation), no full re-apply.
-      binding.seed(undefined, { editorMatchesDoc: true });
-      clog(`[sheet] rebound ${sheetPath} (no apply)`);
+    try {
+      bridge = moduleItemsBridge(mod, win);
+      binding = bindKicadCollab(room.doc, bridge, { readOnly: opts.readOnly });
+      room.binding = binding;
+
+      if (!room.seeded) {
+        // First activation: file-seed an empty room, else adopt peer/server state.
+        binding.seed(seedDocForPath(sheetPath), { editorMatchesDoc: room.editorMatchesDoc });
+        room.seeded = true;
+        clog(`[sheet] seeded ${sheetPath} (editorMatchesDoc=${room.editorMatchesDoc})`);
+      } else if (room.dirty) {
+        // Remote edits landed while parked: adopt to catch the editor's screen up.
+        binding.seed(undefined, { editorMatchesDoc: false });
+        clog(`[sheet] re-adopted ${sheetPath} (caught up parked remote edits)`);
+      } else {
+        // Clean revisit: the editor screen already matches the doc — baseline the differ
+        // (rebound after the C++ rebaseline on navigation), no full re-apply.
+        binding.seed(undefined, { editorMatchesDoc: true });
+        clog(`[sheet] rebound ${sheetPath} (no apply)`);
+      }
+    } catch (err) {
+      // bind() can reject for schema skew after owner acquisition, and seed()
+      // can fail after observers have attached. Either way leave no owner,
+      // callback, or observer behind while switchTo decides retry vs terminal.
+      try {
+        binding?.destroy();
+      } finally {
+        bridge?.destroy?.(); // idempotent when binding.destroy already released it
+        if (room.binding === binding) room.binding = undefined;
+        startWatch(room);
+      }
+      throw err;
     }
 
     room.dirty = false;
