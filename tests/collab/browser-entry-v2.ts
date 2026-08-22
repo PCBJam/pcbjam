@@ -23,6 +23,7 @@ import {
   driftDocDelta,
   fileToDoc,
   isEmptyKicadDelta,
+  upsertDocToY,
   yToDoc,
 } from "@pcbjam/shared";
 import {
@@ -92,6 +93,46 @@ function singleSeedRender(seedText: string): string {
   }
 }
 
+/**
+ * Build two genuinely concurrent edits from the live room's current state,
+ * merge them off-line, then deliver the already-merged update to the bound
+ * room. This is test-only plumbing for conflict-domain E2E coverage: native
+ * sees one late remote projection, while the Yjs history still contains two
+ * independent clients creating the same root UUID.
+ */
+function applyConcurrentRootCreations(leftText: string, rightText: string): string {
+  const live = handle().doc;
+  const baseUpdate = Y.encodeStateAsUpdate(live);
+  const baseVector = Y.encodeStateVector(live);
+  const replicas: Y.Doc[] = [];
+
+  const author = (clientID: number, text: string): Uint8Array => {
+    const replica = new Y.Doc();
+    replicas.push(replica);
+    Y.applyUpdate(replica, baseUpdate);
+    replica.clientID = clientID;
+    upsertDocToY(fileToDoc(text), replica, `e2e-writer-${clientID}`);
+    return Y.encodeStateAsUpdate(replica, baseVector);
+  };
+
+  const merged = new Y.Doc();
+  replicas.push(merged);
+  try {
+    const left = author(900_002, leftText);
+    const right = author(900_001, rightText);
+    Y.applyUpdate(merged, baseUpdate);
+    Y.applyUpdate(merged, left);
+    Y.applyUpdate(merged, right);
+
+    const rendered = docToFile(yToDoc(merged));
+    const liveVector = Y.encodeStateVector(live);
+    Y.applyUpdate(live, Y.encodeStateAsUpdate(merged, liveVector), "e2e-concurrent-root-merge");
+    return rendered;
+  } finally {
+    for (const replica of replicas) replica.destroy();
+  }
+}
+
 export interface DriftSummary {
   added: string[];
   updated: string[];
@@ -157,6 +198,7 @@ declare global {
       start: typeof start;
       renderActiveDoc: typeof renderActiveDoc;
       singleSeedRender: typeof singleSeedRender;
+      applyConcurrentRootCreations: typeof applyConcurrentRootCreations;
       nativeWireThroughY: typeof nativeSnapshotThroughY;
       driftReport: typeof driftReport;
     };
@@ -167,6 +209,7 @@ window.KicadCollabV2 = {
   start,
   renderActiveDoc,
   singleSeedRender,
+  applyConcurrentRootCreations,
   nativeWireThroughY: nativeSnapshotThroughY,
   driftReport,
 };
