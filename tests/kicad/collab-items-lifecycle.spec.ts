@@ -30,6 +30,7 @@ type NativeModule = {
   kicadCollabBusy(): boolean;
   kicadCollabSnapshotItems(): string;
   kicadCollabApplyItems(json: string): unknown;
+  kicadCollabTestSaveCurrent(): Promise<boolean>;
   kicadCollabSetItemsOwner(owner: string): boolean;
   kicadCollabReleaseItemsOwner(owner: string): void;
   kicadTestSetItemsApplyPark(ms: number): void;
@@ -61,7 +62,10 @@ test("programmatic open barrier waits for an owner-scoped items commit suspended
       const runtime = window as unknown as {
         FS: { mkdirTree(path: string): void; writeFile(path: string, data: string): void };
         Module: NativeModule;
-        kicadCollab?: { onItemsApplied?: (json: string) => void };
+        kicadCollab?: {
+          onItemsApplied?: (json: string) => void;
+          onSave?: (path: string) => void;
+        };
       };
       const dir = "/home/kicad/documents";
       try {
@@ -201,7 +205,10 @@ test("a malformed or identity-overlapping native batch rejects without partial m
       const runtime = window as unknown as {
         FS: { mkdirTree(path: string): void; writeFile(path: string, data: string): void };
         Module: NativeModule;
-        kicadCollab?: { onItemsApplied?: (json: string) => void };
+        kicadCollab?: {
+          onItemsApplied?: (json: string) => void;
+          onSave?: (path: string) => void;
+        };
       };
       const dir = "/home/kicad/documents";
       try {
@@ -217,9 +224,11 @@ test("a malformed or identity-overlapping native batch rejects without partial m
       const owner = "atomic-e2e-owner";
       const acquired = runtime.Module.kicadCollabSetItemsOwner(owner);
       const acknowledgements: Array<{ status: string; requestId: string }> = [];
+      const saveCallbacks: string[] = [];
       runtime.kicadCollab = {
         ...runtime.kicadCollab,
         onItemsApplied: (json) => acknowledgements.push(JSON.parse(json)),
+        onSave: (path) => saveCallbacks.push(path),
       };
       const before = runtime.Module.kicadCollabGetPos(uuid);
       const validChanged = {
@@ -277,6 +286,8 @@ test("a malformed or identity-overlapping native batch rejects without partial m
       )
         await new Promise((resolve) => setTimeout(resolve, 10));
       const afterParent = runtime.Module.kicadCollabGetPos(uuid);
+      const saveAfterRejectedProjection =
+        await runtime.Module.kicadCollabTestSaveCurrent();
       runtime.Module.kicadCollabReleaseItemsOwner(owner);
       return {
         acknowledgements,
@@ -285,6 +296,8 @@ test("a malformed or identity-overlapping native batch rejects without partial m
         afterOverlap,
         afterParent,
         before,
+        saveAfterRejectedProjection,
+        saveCallbacks,
       };
     },
     { content: board(FIRST_UUID, 10), uuid: FIRST_UUID },
@@ -301,6 +314,14 @@ test("a malformed or identity-overlapping native batch rejects without partial m
   expect(result.afterMalformed, "valid prefix was not partially committed").toBe(result.before);
   expect(result.afterOverlap, "cross-category UUID was not staged twice").toBe(result.before);
   expect(result.afterParent, "a dangling child was not installed as a root").toBe(result.before);
+  expect(
+    result.saveAfterRejectedProjection,
+    "a rejected accepted projection poisons the native save cut",
+  ).toBe(false);
+  expect(
+    result.saveCallbacks,
+    "a failed save cut emits no persistence acknowledgement",
+  ).toEqual([]);
   expect(
     [...testLogger.consoleLogs, ...testLogger.errors].some((line) =>
       line.includes("Aborted("),
