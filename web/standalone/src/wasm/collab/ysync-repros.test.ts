@@ -205,10 +205,15 @@ describe("bug 07b — sheet-switch gap: stale onItems writes into the old sheet'
     });
 
     const win: KicadItemsWindow = {};
-    const mod: KicadItemsModule = {
+    const mod: KicadItemsModule & {
+      kicadCollabSetItemsOwner(owner: string): boolean;
+      kicadCollabReleaseItemsOwner(owner: string): void;
+    } = {
       // The editor's model is empty — seed()'s snapshot branch stays a no-op.
       kicadCollabSnapshotItems: () => JSON.stringify({ added: [], changed: [], removed: [] }),
       kicadCollabApplyItems: () => {},
+      kicadCollabSetItemsOwner: () => true,
+      kicadCollabReleaseItemsOwner: () => {},
     };
     const m = createSheetCollabManager({
       mod,
@@ -222,14 +227,20 @@ describe("bug 07b — sheet-switch gap: stale onItems writes into the old sheet'
 
     await m.switchTo("a.kicad_sch"); // binds sheet A; onItems → A's closure
     const aDoc = docs[0]!;
+    const staleOnItems = win.kicadCollab!.onItems!;
 
     const switching = m.switchTo("b.kicad_sch"); // destroys A's binding, awaits the cold connect
     await vi.waitFor(() => expect(connects).toBe(2)); // we are inside the gap
 
+    // The acknowledged native bridge now detaches the public callback as part
+    // of owner release. Keep the captured closure too: a callback already held
+    // by native/event-queue code must still be inert after binding.destroy().
+    expect(win.kicadCollab?.onItems).toBeUndefined();
+
     // C++ has already rebaselined to sheet B (OnSchSheetChanged fired before the
     // JS switch completed); a local edit in the gap emits a B-scoped diff —
-    // through the STALE hook, which still writes into sheet A's doc.
-    win.kicadCollab!.onItems!(
+    // through a previously captured STALE hook.
+    staleOnItems(
       JSON.stringify({
         added: [{ sexpr: `(wire (pts (xy 0 0) (xy 10 0)) (uuid "wire-b"))`, parent: null }],
         changed: [],
