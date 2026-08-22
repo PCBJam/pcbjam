@@ -32,6 +32,7 @@ import {
   type KicadItemsModule,
   type KicadItemsWindow,
 } from "../../web/standalone/src/wasm/collab/index";
+import { nativeSnapshotThroughY } from "../../web/standalone/src/wasm/collab/wire-y-roundtrip";
 
 interface StartOpts {
   room: string;
@@ -156,9 +157,16 @@ declare global {
       start: typeof start;
       renderActiveDoc: typeof renderActiveDoc;
       singleSeedRender: typeof singleSeedRender;
+      nativeWireThroughY: typeof nativeSnapshotThroughY;
       driftReport: typeof driftReport;
     };
   }
 }
 
-window.KicadCollabV2 = { start, renderActiveDoc, singleSeedRender, driftReport };
+window.KicadCollabV2 = {
+  start,
+  renderActiveDoc,
+  singleSeedRender,
+  nativeWireThroughY: nativeSnapshotThroughY,
+  driftReport,
+};
