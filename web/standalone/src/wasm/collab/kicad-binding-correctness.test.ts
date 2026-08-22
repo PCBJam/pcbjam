@@ -31,7 +31,7 @@ const BASE = `(kicad_pcb
 
 interface PendingApply {
   json: string;
-  complete(): void;
+  complete(nativeEmission?: string): void;
   fail(error: unknown): void;
 }
 
@@ -71,8 +71,12 @@ class DeferredEditor implements KicadItemsBridge {
     });
     this.pending.push({
       json,
-      complete: () => {
+      complete: (nativeEmission?: string) => {
         this.applyToStore(json);
+        if (nativeEmission !== undefined) {
+          this.applyToStore(nativeEmission);
+          this.emit?.(nativeEmission);
+        }
         resolve();
       },
       fail: reject,
@@ -94,6 +98,18 @@ class DeferredEditor implements KicadItemsBridge {
     const next = this.pending.shift();
     if (!next) throw new Error("no pending native apply");
     next.complete();
+  }
+
+  releaseOneWithNativeEmission(sexpr: string): void {
+    const next = this.pending.shift();
+    if (!next) throw new Error("no pending native apply");
+    next.complete(
+      JSON.stringify({
+        added: [],
+        changed: [{ sexpr, parent: null }],
+        removed: [],
+      }),
+    );
   }
 
   rejectOne(error: unknown): void {
@@ -200,6 +216,28 @@ describe("P0: native projection is level-triggered and acknowledged", () => {
       baselineSnapshots,
     );
     expect(scalar(editor.store["seg-1"]!.body, "width")).toBe("0.55");
+  });
+
+  it("accounts for a native normalization emitted before the apply acknowledgement", async () => {
+    const { a, editor } = setup();
+
+    // Native accepts the authored spelling, normalizes it during the queued
+    // apply, emits that committed normalization, and only then ACKs. The
+    // normalization is a native transition after the submitted wire; it must
+    // become the acknowledged shadow instead of being overwritten by the
+    // pre-normalized submission and projected forever.
+    setSegmentField(a, "width", "0.400");
+    expect(editor.pending).toHaveLength(1);
+    editor.releaseOneWithNativeEmission(
+      `(segment (start 0 0) (end 10 10) (width 0.4) (layer "F.Cu") (uuid "seg-1"))`,
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(scalar(yToDoc(a).items["seg-1"]!.body, "width")).toBe("0.4");
+    expect(scalar(editor.store["seg-1"]!.body, "width")).toBe("0.4");
+    expect(editor.submitted, "normalization must reach a fixed point after one ACK").toHaveLength(1);
+    expect(editor.pending).toHaveLength(0);
   });
 
   it("retries only an explicit no-mutation failure and retries the latest desired state", async () => {
