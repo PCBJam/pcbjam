@@ -215,8 +215,32 @@ test("a malformed or identity-overlapping native batch rejects without partial m
       )
         await new Promise((resolve) => setTimeout(resolve, 10));
       const afterOverlap = runtime.Module.kicadCollabGetPos(uuid);
+
+      runtime.Module.kicadCollabApplyItems(
+        JSON.stringify({
+          added: [],
+          changed: [{ ...validChanged, parent: "unresolved-parent" }],
+          removed: [],
+          _pcbjam: { requestId: "non-root-parent", ownerGeneration: owner },
+        }),
+      );
+
+      const parentDeadline = performance.now() + 20_000;
+      while (
+        !acknowledgements.some((ack) => ack.requestId === "non-root-parent") &&
+        performance.now() < parentDeadline
+      )
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      const afterParent = runtime.Module.kicadCollabGetPos(uuid);
       runtime.Module.kicadCollabReleaseItemsOwner(owner);
-      return { acknowledgements, acquired, afterMalformed, afterOverlap, before };
+      return {
+        acknowledgements,
+        acquired,
+        afterMalformed,
+        afterOverlap,
+        afterParent,
+        before,
+      };
     },
     { content: board(FIRST_UUID, 10), uuid: FIRST_UUID },
   );
@@ -226,10 +250,12 @@ test("a malformed or identity-overlapping native batch rejects without partial m
     expect.arrayContaining([
       expect.objectContaining({ requestId: "malformed-tail", status: "invalid" }),
       expect.objectContaining({ requestId: "overlapping-id", status: "invalid" }),
+      expect.objectContaining({ requestId: "non-root-parent", status: "invalid" }),
     ]),
   );
   expect(result.afterMalformed, "valid prefix was not partially committed").toBe(result.before);
   expect(result.afterOverlap, "cross-category UUID was not staged twice").toBe(result.before);
+  expect(result.afterParent, "a dangling child was not installed as a root").toBe(result.before);
   expect(
     [...testLogger.consoleLogs, ...testLogger.errors].some((line) =>
       line.includes("Aborted("),

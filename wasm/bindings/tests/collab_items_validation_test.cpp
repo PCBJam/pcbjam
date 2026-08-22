@@ -19,6 +19,7 @@ int main()
     };
 
     assert( pcbjam_collab::validateItemsWireShape( valid, error ) );
+    assert( pcbjam_collab::validateRootLiftedItemsWire( valid, error ) );
 
     json wrongCategory = valid;
     wrongCategory["removed"] = "b";
@@ -31,6 +32,15 @@ int main()
     json wrongParent = valid;
     wrongParent["added"][0]["parent"] = 42;
     assert( !pcbjam_collab::validateItemsWireShape( wrongParent, error ) );
+
+    json danglingChild = valid;
+    danglingChild["added"][0]["parent"] = "parent-uuid";
+    assert( pcbjam_collab::validateItemsWireShape( danglingChild, error ) );
+    assert( !pcbjam_collab::validateRootLiftedItemsWire( danglingChild, error ) );
+
+    json incompleteTicket = valid;
+    incompleteTicket["_pcbjam"].erase( "requestId" );
+    assert( !pcbjam_collab::validateItemsWireShape( incompleteTicket, error ) );
 
     assert( pcbjam_collab::validateItemsBatchIds( { "removed" }, { "added" },
                                                   { "changed" }, error ) );
