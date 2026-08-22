@@ -354,6 +354,22 @@ export function bindKicadCollab(
     );
   };
 
+  /**
+   * A projection/adoption read failed because the authoritative Y state cannot
+   * be materialized by this client. Keep this distinct from failure to read the
+   * native baseline: recreating native cannot repair Y, while a future schema
+   * requires a newer client rather than rewriting the room.
+   */
+  const failAuthoritativeState = (error: unknown): void => {
+    const unsupportedVersion = error instanceof SexprVersionError;
+    failProjection(
+      unsupportedVersion ? "unsupported-y-version" : "invalid-y-state",
+      error,
+      unsupportedVersion ? "unsupported-version" : "materialization-failed",
+      unsupportedVersion ? "upgrade-client" : "repair-yjs-before-recreate",
+    );
+  };
+
   const scheduleRetry = (err: unknown): void => {
     projectionDirty = true;
     retryAttempt += 1;
@@ -444,13 +460,7 @@ export function bindKicadCollab(
       // A fresh native owner cannot hydrate from an authority that cannot be
       // materialized. Retire this owner exactly once without throwing through
       // Y.applyUpdate, and make the repair-before-recreate boundary observable.
-      const unsupportedVersion = err instanceof SexprVersionError;
-      failProjection(
-        unsupportedVersion ? "unsupported-y-version" : "invalid-y-state",
-        err,
-        unsupportedVersion ? "unsupported-version" : "materialization-failed",
-        unsupportedVersion ? "upgrade-client" : "repair-yjs-before-recreate",
-      );
+      failAuthoritativeState(err);
       return;
     }
 
@@ -654,7 +664,7 @@ export function bindKicadCollab(
           const structure = projectionView().structure;
           if (structure !== null) nativeStructure = structure;
         } catch (err) {
-          cwarn("local structural baseline could not be accounted for", err);
+          failAuthoritativeState(err);
         }
       }
       return;
@@ -711,7 +721,7 @@ export function bindKicadCollab(
       try {
         nativeStructure = projectionView().structure;
       } catch (err) {
-        failProjection("native-baseline", err);
+        failAuthoritativeState(err);
         return;
       }
       if (refreshNativeShadow("seed baseline") === null) {
@@ -756,7 +766,14 @@ export function bindKicadCollab(
           failProjection("native-baseline", new Error("post-file-seed baseline failed"));
           return;
         }
-        const local = itemsWireToDelta(wire, itemsView(), warnSkip);
+        let authorityItems: Record<string, KicadItem>;
+        try {
+          authorityItems = itemsView();
+        } catch (err) {
+          failAuthoritativeState(err);
+          return;
+        }
+        const local = itemsWireToDelta(wire, authorityItems, warnSkip);
         if (!isEmptyKicadDelta(local)) applyDeltaToY(doc, local, ORIGIN);
       } catch (err) {
         cwarn("seed: post-file-seed baseline failed", err);
@@ -803,7 +820,7 @@ export function bindKicadCollab(
       try {
         nativeStructure = projectionView().structure;
       } catch (err) {
-        failProjection("native-baseline", err);
+        failAuthoritativeState(err);
         return;
       }
     }
