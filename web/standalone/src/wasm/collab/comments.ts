@@ -19,6 +19,7 @@ import {
   threadUnreadCount,
   toggleReaction,
   yToItemUnchecked,
+  Y_KDOC_STATE,
   type CommentAnchor,
   type CommentThread,
 } from "@pcbjam/shared";
@@ -193,8 +194,10 @@ export function createComments(opts: {
   // Threads change → re-render; anchored ITEMS change (moves) → pins follow.
   const offComments = observeComments(doc, schedule);
   const items = kicadItemsMap(doc);
+  const state = doc.getMap(Y_KDOC_STATE);
   const onItems = () => schedule();
   items.observeDeep(onItems);
+  state.observeDeep(onItems);
 
   recompute();
   pushPins();
@@ -209,7 +212,7 @@ export function createComments(opts: {
     anchorAt(world, maxDistIu) {
       let best: { uuid: string; pos: { x: number; y: number }; d2: number } | null = null;
 
-      for (const [uuid, ym] of items) {
+      for (const [uuid, ym] of kicadItemsMap(doc)) {
         const item = yToItemUnchecked(ym);
         const at = field(item.body, "at");
         const [xs, ys] = at ? args(at) : [];
@@ -288,6 +291,7 @@ export function createComments(opts: {
     destroy() {
       offComments();
       items.unobserveDeep(onItems);
+      state.unobserveDeep(onItems);
       subscribers.clear();
       if (timer) clearTimeout(timer);
       timer = undefined;

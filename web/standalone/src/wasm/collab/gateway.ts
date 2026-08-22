@@ -24,6 +24,7 @@ import {
 import * as syncProtocol from "y-protocols/sync";
 import type * as Y from "yjs";
 import {
+  KDOC_COLLAB_PROTOCOL_VERSION,
   type GatewayClientMsg,
   type GatewayServerMsg,
   type GatewaySubMode,
@@ -380,7 +381,13 @@ export class GatewayDocFacade implements YjsProvider {
   // --- wire (called by GatewayConnection) -----------------------------------
 
   subMsg(): GatewayClientMsg {
-    return { t: "sub", ch: this.ch, doc: this.docPath, mode: this.mode };
+    return {
+      t: "sub",
+      ch: this.ch,
+      doc: this.docPath,
+      mode: this.mode,
+      ...(this.isPresence ? {} : { schema: KDOC_COLLAB_PROTOCOL_VERSION }),
+    };
   }
 
   handleSocketOpen(): void {

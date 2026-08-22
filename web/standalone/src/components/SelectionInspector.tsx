@@ -2,10 +2,10 @@ import * as React from "react";
 import type * as Y from "yjs";
 import {
   kicadItemsMap,
+  kicadLayout,
   yToItemUnchecked,
-  Y_KDOC_LAYOUT,
+  Y_KDOC_STATE,
   type KicadItem,
-  type Slot,
 } from "@pcbjam/shared";
 import { ChevronDown, ChevronRight, X } from "lucide-react";
 import { useDraggablePanel } from "@/components/useDraggablePanel";
@@ -82,9 +82,17 @@ export function SelectionInspector({
   React.useEffect(() => {
     if (!doc) return;
     const items = kicadItemsMap(doc);
+    const state = doc.getMap(Y_KDOC_STATE);
     const bump = () => setItemsVersion((v) => v + 1);
     items.observeDeep(bump);
-    return () => items.unobserveDeep(bump);
+    // v3 may replace the complete active subtree after concurrent first-seed
+    // arbitration. The root observer follows both that swap and all subsequent
+    // changes inside the winning subtree.
+    state.observeDeep(bump);
+    return () => {
+      items.unobserveDeep(bump);
+      state.unobserveDeep(bump);
+    };
   }, [doc]);
 
   const summaries: ItemSummary[] = React.useMemo(() => {
@@ -99,7 +107,7 @@ export function SelectionInspector({
         return undefined;
       }
     };
-    const netName = netNameResolver(doc.getArray<Slot>(Y_KDOC_LAYOUT).toArray());
+    const netName = netNameResolver(kicadLayout(doc));
     return selection.uuids.slice(0, MAX_ITEMS).flatMap((uuid) => {
       const item = itemOf(uuid);
       return item ? [summarizeItem({ uuid, item, itemOf, netName })] : [];

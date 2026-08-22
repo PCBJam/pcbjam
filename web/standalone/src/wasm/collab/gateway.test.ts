@@ -148,6 +148,7 @@ describe("gateway facade — active documents", () => {
       ch: expect.any(Number) as number,
       doc: "a.kicad_sch",
       mode: "active",
+      schema: 3,
     });
     const step1 = ws.frames().find((f) => f.type === 0);
     expect(step1).toBeTruthy();
