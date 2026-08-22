@@ -2,16 +2,17 @@
  * Renders the track-only runtime-perf block for the CI-on-main Discord comment.
  *
  * The perf e2e (tests/kicad/{eeschema,pcbnew}-perf.spec.ts) already writes
- * test-results/perf-{app}.json — schema { app, when, loadMs, openMs, fps:[{throttle,fps}] }.
+ * test-results/perf-{app}.json — schema { app, when, loadMs, openMs, fps:[{throttle,fps,galFps}] }.
  * We read those, fetch the PREVIOUS successful main run's perf via `gh run
  * download` (so we can show a Δ without committing a baseline — stays
  * no-write-back), and format an aligned monospace table (Discord doesn't render
  * markdown tables, so it goes in a ``` code block).
  *
  * Track-only: nothing here gates the build. A regression past REGRESSION_PCT on
- * the stable metrics (loadMs/openMs) is only flagged (a `*`), never failed. FPS
- * is CPU-bound/noisy on CI's headless SwiftShader path, so it's shown but marked
- * indicative.
+ * the stable metrics (loadMs/openMs) is only flagged (a `*`), never failed. Both
+ * FPS columns are measured on CI's software rasteriser (ANGLE over Mesa llvmpipe,
+ * under Xvfb — there is no GPU on the runner), so they are a regression signal
+ * only and never a user-facing frame rate.
  *
  * CLI (from tests/):
  *   tsx tools/screenshots/perf-report.ts [--results DIR] [--prev DIR] [--repo owner/repo]
@@ -26,7 +27,8 @@ export const PERF_APPS = ['eeschema', 'pcbnew'] as const;
 const REGRESSION_PCT = 10; // stable-metric regression past this is flagged with `*`
 const CI_WORKFLOW = 'ci-ubicloud.yml';
 
-export type Fps = { throttle: number; fps: number };
+/** `fps` is the legacy rAF tick count; `galFps` is the real frame rate. */
+export type Fps = { throttle: number; fps: number; galFps?: number };
 export type PerfData = { app: string; when?: string; loadMs: number; openMs: number; fps: Fps[] };
 
 export function readPerf(dir: string): Map<string, PerfData> {
@@ -101,10 +103,32 @@ function fmtMetric(cur: number, prev?: number): string {
     return `${cur} ${arrow}${Math.abs(p).toFixed(0)}%${flag}`;
 }
 
-function fmtFps(fps: Fps[]): string {
+/**
+ * GAL fps with a Δ vs the previous main run, flagged on REGRESSION.
+ *
+ * Higher is better here, so the sign convention is inverted relative to
+ * fmtMetric: a DROP past the threshold gets the `*`. Only the 1x-throttle
+ * number drives the flag — it is the one that repeats within ~2% (pan-only
+ * drive, zoom-to-fit before each measurement), so it is safe to act on.
+ * CI has no GPU, so this is a software-rasteriser redraw rate: useful precisely
+ * because it is consistent, not because it is the user-facing frame rate.
+ */
+function fmtGalFps(fps: Fps[], prev?: Fps[]): string {
+    const triple = fmtFps(fps, 'galFps');
+    const cur = fps.find((f) => f.throttle === 1)?.galFps;
+    const was = prev?.find((f) => f.throttle === 1)?.galFps;
+    if (cur === undefined || was === undefined || was === 0) return triple;
+    const p = pct(cur, was); // + = faster than before
+    const arrow = p > 0 ? '▲' : p < 0 ? '▼' : '·';
+    const flag = -p > REGRESSION_PCT ? '*' : '';
+    return `${triple} ${arrow}${Math.abs(p).toFixed(0)}%${flag}`;
+}
+
+function fmtFps(fps: Fps[], key: 'fps' | 'galFps' = 'fps'): string {
     return [1, 4, 6].map((t) => {
         const hit = fps.find((f) => f.throttle === t);
-        return hit ? Math.round(hit.fps) : '–';
+        const v = hit?.[key];
+        return v === undefined ? '–' : Math.round(v);
     }).join('/');
 }
 
@@ -120,7 +144,7 @@ export function buildPerfReport(opts: { resultsDir?: string; prevDir?: string | 
     if (cur.size === 0) return { block: '', regressed: false };
     const prev = opts.prevDir ? readPerf(opts.prevDir) : new Map<string, PerfData>();
 
-    const headers = ['app', 'loadMs (Δ)', 'openMs (Δ)', 'FPS 1/4/6'];
+    const headers = ['app', 'loadMs (Δ)', 'openMs (Δ)', 'GAL fps 1/4/6 (Δ@1x)', 'rAF 1/4/6'];
     const rows: string[][] = [];
     let regressed = false;
     for (const app of PERF_APPS) {
@@ -129,8 +153,9 @@ export function buildPerfReport(opts: { resultsDir?: string; prevDir?: string | 
         const p = prev.get(app);
         const loadCell = fmtMetric(c.loadMs, p?.loadMs);
         const openCell = fmtMetric(c.openMs, p?.openMs);
-        if (loadCell.endsWith('*') || openCell.endsWith('*')) regressed = true;
-        rows.push([app, loadCell, openCell, fmtFps(c.fps)]);
+        const galCell = fmtGalFps(c.fps, p?.fps);
+        if (loadCell.endsWith('*') || openCell.endsWith('*') || galCell.endsWith('*')) regressed = true;
+        rows.push([app, loadCell, openCell, galCell, fmtFps(c.fps, 'fps')]);
     }
     if (rows.length === 0) return { block: '', regressed: false };
 
@@ -138,7 +163,11 @@ export function buildPerfReport(opts: { resultsDir?: string; prevDir?: string | 
     const line = (cells: string[]) => cells.map((c, i) => pad(c, widths[i])).join('  ');
     const body = [line(headers), rows.map((r) => line(r)).join('\n')].join('\n');
     const footnote = `${prev.size ? 'Δ vs previous main run. ' : 'no prior main run for Δ. '}` +
-        `* = >${REGRESSION_PCT}% slower (track-only, non-gating). FPS is CI-headless — indicative only.`;
+        `* = >${REGRESSION_PCT}% slower (track-only, non-gating). ` +
+        `GAL fps = completed GAL frames on CI's software rasteriser (llvmpipe) — a regression signal, ` +
+        `NOT user-facing frame rate; its Δ/* are computed on the 1x number. rAF is the legacy tick count, ` +
+        `kept for continuity: it ticks on the compositor's schedule whether or not anything rendered, so ` +
+        `it can read 120 while the renderer is stalled.`;
     return { block: '**Runtime perf** (eeschema + pcbnew)\n```\n' + body + '\n```\n' + footnote, regressed };
 }
 

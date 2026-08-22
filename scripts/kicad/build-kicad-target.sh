@@ -290,10 +290,12 @@ else
     BUILD_TYPE="Release"
     EXTRA_FLAGS="-O2 ${KICAD_EH_FLAGS} -matomics -mbulk-memory"
     EMBIND_CONFIG_DEFINES=""   # Release defines no DEBUG in either TU → vtable layouts already match
-    # -O0 at link time skips wasm-opt (which can OOM on large WASM files)
-    # Compilation is still -O2 for optimized code, but we skip post-link wasm-opt
+    # -O0 at link time means emcc does not run wasm-opt itself (it only does at
+    # -O2+). That is fine: step 8.2 below runs wasm-opt explicitly, so the module
+    # is optimized either way. The old "wasm-opt OOMs on large modules" reason for
+    # -O0 was Asyncify-era and no longer applies.
     LINKER_DEBUG_FLAGS="-O0 ${KICAD_EH_FLAGS}"
-    log_info "Building KiCad in RELEASE mode (skipping wasm-opt due to memory limits)"
+    log_info "Building KiCad in RELEASE mode (post-link wasm-opt runs in step 8.2)"
 fi
 
 # Suspension backend: JSPI (native stack switching). The headless CLIs
@@ -694,6 +696,25 @@ if [ "${APP_NAME}" != "kicad_tools" ] && [ "${APP_NAME}" != "occ_service" ]; the
     kw_stage kicad-bitmaps
     log_info "Building bitmap resources..."
     emmake make bitmap_archive_build
+fi
+
+# Step 8.2: post-link Binaryen pass. emcc only runs wasm-opt at link -O2+
+# (link.py: should_run_binaryen_optimizer -> OPT_LEVEL >= 2) and we link at -O1,
+# so without this the module gets no Binaryen pass at all and keeps its whole
+# name section (measured 19.56 MB, ~20% of the editor wasm — -sJSPI sets
+# ASYNCIFY=2, which suppresses wasm-ld's --strip-debug, leaving wasm-opt as the
+# only thing that would drop it). Skipped for targets that already link -O2/-Oz
+# (occ_service, kicad_tools, ngspice_service): emcc strips target_features when
+# it ran the optimizer itself, so there is no hard-coded target list to
+# maintain. Feature flags come from the module's own target_features section and
+# so cannot drift from the link. Override with KICAD_WASM_OPT ("-Oz" for the
+# smallest raw module, "-O2 -g" to keep the name section, "off" to skip).
+KICAD_WASM_OPT="${KICAD_WASM_OPT:--O2}"
+if [ "${KICAD_WASM_OPT}" != "off" ] && grep -aq "target_features" "${LINK_OUT_WASM}"; then
+    kw_stage wasm-opt
+    log_info "wasm-opt ${KICAD_WASM_OPT} on ${APP_NAME}.wasm..."
+    "${EMSDK:-/emsdk}/upstream/bin/wasm-opt" ${KICAD_WASM_OPT} "${LINK_OUT_WASM}" -o "${LINK_OUT_WASM}.tmp"
+    mv -f "${LINK_OUT_WASM}.tmp" "${LINK_OUT_WASM}"
 fi
 
 # Step 9: Create stamp file

@@ -167,9 +167,136 @@ export async function setThrottle(cdp: CDPSession, rate: number): Promise<void> 
 }
 
 /**
+ * Count completed GAL frames instead of rAF ticks.
+ *
+ * A GAL frame ends with the compositor blitting to the DEFAULT framebuffer, so a
+ * run of draws issued while no framebuffer is bound is exactly one frame. The run
+ * has to be collapsed: the number of present draws per frame depends on the AA
+ * mode (1 under supersampling, 2 under AA_NONE, +1 when the crosshair is drawn),
+ * but a run *boundary* happens once per frame in every mode — so no divisor.
+ *
+ * Wrapping the prototypes works even though the context already exists: methods
+ * resolve on the prototype at call time, not at context creation. The initial
+ * framebuffer binding is assumed to be the default and self-corrects on the first
+ * bindFramebuffer, which the GAL issues several times per frame.
+ */
+async function installGalFrameCounter(page: Page): Promise<void> {
+    await page.evaluate(() => {
+        const w = window as unknown as { __galFrames?: number; __galHooked?: boolean };
+        w.__galFrames = 0;
+        if (w.__galHooked) return;
+        w.__galHooked = true;
+        const protos = [
+            (window as unknown as { WebGL2RenderingContext?: { prototype: object } }).WebGL2RenderingContext,
+            (window as unknown as { WebGLRenderingContext?: { prototype: object } }).WebGLRenderingContext,
+        ].filter(Boolean) as Array<{ prototype: Record<string, unknown> }>;
+        const state = new WeakMap<object, { fb: unknown; inPresent: boolean }>();
+        const st = (ctx: object) => {
+            let s = state.get(ctx);
+            if (!s) { s = { fb: null, inPresent: false }; state.set(ctx, s); }
+            return s;
+        };
+        const DRAWS = ['drawArrays', 'drawElements', 'drawArraysInstanced', 'drawElementsInstanced', 'drawRangeElements'];
+        for (const proto of protos) {
+            for (const name of ['bindFramebuffer', ...DRAWS]) {
+                const orig = proto.prototype[name] as ((...a: unknown[]) => unknown) | undefined;
+                if (typeof orig !== 'function') continue;
+                const isDraw = DRAWS.indexOf(name) >= 0;
+                proto.prototype[name] = function (this: object, ...args: unknown[]) {
+                    const s = st(this);
+                    if (!isDraw) {
+                        s.fb = args[1];
+                        if (args[1]) s.inPresent = false;
+                    } else if (s.fb === null || s.fb === undefined) {
+                        if (!s.inPresent) { s.inPresent = true; w.__galFrames = (w.__galFrames ?? 0) + 1; }
+                    } else {
+                        s.inPresent = false;
+                    }
+                    return orig.apply(this, args);
+                };
+            }
+        }
+    });
+}
+
+/** Zoom-to-fit, so every measurement starts from the same visible geometry. */
+async function resetViewToFit(page: Page, cx: number, cy: number): Promise<void> {
+    await page.mouse.move(cx, cy);
+    await page.keyboard.press('Escape').catch(() => {}); // eslint-disable-line -- best-effort
+    await page.keyboard.press('Home').catch(() => {});   // eslint-disable-line -- best-effort
+    await page.waitForFunction(() => true, null, { timeout: 5000 });
+}
+
+/**
+ * Sustained interaction FPS, reported two ways.
+ *
+ * `galFps` is the real one: completed GAL frames per second (see
+ * installGalFrameCounter). `rafFps` is the legacy main-thread requestAnimationFrame
+ * count, kept only so historical CI numbers stay comparable — it is NOT a frame
+ * rate. rAF ticks on the compositor's schedule whether or not the GAL redrew, so
+ * it can read 120 while the renderer is completely stalled (measured: the 80 MB
+ * jetson board on a software rasteriser renders 0 frames while rAF reports 120).
+ *
+ * The drive is a pure middle-drag PAN. Wheel zoom used to be mixed into the same
+ * loop, and it makes the metric unusable: zooming continuously changes how much
+ * geometry is on screen, so the result depends on where the wheel happens to
+ * leave the view. Measured spread across three identical repeats was ±20%
+ * (34.7 / 42.1 / 27.1 fps) with zoom in the loop, versus ±2% (19.9 / 19.0 / 19.6)
+ * for pan alone. Pan also keeps the workload honest — it continuously reveals
+ * geometry that has to be cached, which is the expensive path.
+ *
+ * The view is zoomed to fit first, so every run starts from the same visible
+ * geometry (the whole board — the worst case) rather than inheriting whatever
+ * zoom level the previous measurement left behind.
+ */
+export async function measureInteractionFps(
+    page: Page,
+    seconds: number,
+): Promise<{ rafFps: number; galFps: number }> {
+    const box = await page.locator(MAIN_CANVAS).boundingBox();
+    if (!box) return { rafFps: 0, galFps: 0 };
+    const cx = box.x + box.width / 2;
+    const cy = box.y + box.height / 2;
+    await resetViewToFit(page, cx, cy);
+    await installGalFrameCounter(page);
+
+    type W = { __perfFrames: number; __perfRAF?: number; __galFrames?: number };
+    await page.evaluate(() => {
+        const w = window as unknown as W;
+        if (w.__perfRAF !== undefined) cancelAnimationFrame(w.__perfRAF);
+        w.__perfFrames = 0;
+        w.__galFrames = 0;
+        const loop = () => {
+            w.__perfFrames++;
+            w.__perfRAF = requestAnimationFrame(loop);
+        };
+        w.__perfRAF = requestAnimationFrame(loop);
+    });
+    const start = Date.now();
+    let k = 0;
+    await page.mouse.move(cx, cy);
+    await page.mouse.down({ button: 'middle' });
+    while (Date.now() - start < seconds * 1000) {
+        await page.mouse.move(cx + Math.round(140 * Math.sin(k / 6)), cy + Math.round(90 * Math.cos(k / 7)));
+        k++;
+    }
+    await page.mouse.up({ button: 'middle' });
+    const elapsed = Date.now() - start;
+    const counts = await page.evaluate(() => {
+        const w = window as unknown as W;
+        if (w.__perfRAF !== undefined) cancelAnimationFrame(w.__perfRAF);
+        return { raf: w.__perfFrames, gal: w.__galFrames ?? 0 };
+    });
+    const secs = elapsed / 1000;
+    return { rafFps: +(counts.raf / secs).toFixed(1), galFps: +(counts.gal / secs).toFixed(1) };
+}
+
+/**
  * Sustained interaction FPS: drive real pan/zoom on #canvas (the emscripten input
  * surface — glcanvas-* can be display:none) for `seconds`, counting main-thread rAF
  * frames. Whatever throttle is currently set applies.
+ *
+ * @deprecated rAF ticks are not GAL frames — use measureInteractionFps().galFps.
  */
 export async function measureFps(page: Page, seconds: number): Promise<number> {
     const box = await page.locator(MAIN_CANVAS).boundingBox();

@@ -98,6 +98,7 @@ BEGIN {
     ord[++ROWN] = "kicad-configure"; lab["kicad-configure"] = "KiCad configure (CMake)"
     ord[++ROWN] = "kicad-compile";   lab["kicad-compile"]   = "KiCad compile"
     ord[++ROWN] = "kicad-bitmaps";   lab["kicad-bitmaps"]   = "Bitmap resources"
+    ord[++ROWN] = "wasm-opt";        lab["wasm-opt"]        = "wasm-opt (Binaryen)"
     ord[++ROWN] = "copy-output";     lab["copy-output"]     = "Copy output"
     ord[++ROWN] = "env-shim";        lab["env-shim"]        = "ENV merge shim"
     for (i = 1; i <= ROWN; i++) ridx[ord[i]] = i
