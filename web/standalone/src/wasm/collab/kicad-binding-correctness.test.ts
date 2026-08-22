@@ -341,8 +341,9 @@ describe("P0: native publications rebase from the acknowledged shadow", () => {
 });
 
 describe("P1: malformed raw Y is contained", () => {
-  it("does not throw through the provider transaction or mutate native", () => {
-    const { a, editor } = setup();
+  it("terminalizes once, exposes repair-first recovery, and leaves native at last-good", () => {
+    const failures: NativeProjectionFailure[] = [];
+    const { a, editor } = setup((failure) => failures.push(failure));
     const before = editor.snapshotItems();
 
     expect(() => {
@@ -350,6 +351,21 @@ describe("P1: malformed raw Y is contained", () => {
       item.set("body", "not-a-slot-tree");
     }).not.toThrow();
 
+    expect(editor.snapshotItems()).toBe(before);
+    expect(editor.submitted, "invalid authority must never reach native").toEqual([]);
+    expect(editor.destroyCalls, "the stale native owner is retired").toBe(1);
+    expect(failures).toEqual([
+      expect.objectContaining({
+        kind: "invalid-y-state",
+        status: "materialization-failed",
+        recovery: "repair-yjs-before-recreate",
+      }),
+    ]);
+
+    // Terminal is absorbing even if more malformed peer traffic arrives.
+    kicadItemsMap(a).get("seg-1")!.set("body", "still-not-a-slot-tree");
+    expect(failures, "one terminal event per retired owner").toHaveLength(1);
+    expect(editor.destroyCalls).toBe(1);
     expect(editor.snapshotItems()).toBe(before);
   });
 });
