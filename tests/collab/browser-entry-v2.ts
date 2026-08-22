@@ -154,6 +154,11 @@ function applyRemoteLayout(fileText: string): boolean {
   return syncLayoutToY(fileToDoc(fileText), handle().doc, "e2e-remote-layout");
 }
 
+/** Feed bytes produced by a completed real native save through production save accounting. */
+function applySavedLayout(fileText: string): boolean {
+  return syncLayoutToY(fileToDoc(fileText), handle().doc, "layout-save");
+}
+
 /** Apply a later complete remote snapshot without replacing the live Y.Doc. */
 function applyRemoteDoc(fileText: string): void {
   upsertDocToY(fileToDoc(fileText), handle().doc, "e2e-remote-doc");
@@ -250,6 +255,7 @@ declare global {
       singleSeedRender: typeof singleSeedRender;
       applyConcurrentRootCreations: typeof applyConcurrentRootCreations;
       applyRemoteLayout: typeof applyRemoteLayout;
+      applySavedLayout: typeof applySavedLayout;
       applyRemoteDoc: typeof applyRemoteDoc;
       corruptAuthoritativeItemBody: typeof corruptAuthoritativeItemBody;
       projectionFailures: typeof observedProjectionFailures;
@@ -266,6 +272,7 @@ window.KicadCollabV2 = {
   singleSeedRender,
   applyConcurrentRootCreations,
   applyRemoteLayout,
+  applySavedLayout,
   applyRemoteDoc,
   corruptAuthoritativeItemBody,
   projectionFailures: observedProjectionFailures,
