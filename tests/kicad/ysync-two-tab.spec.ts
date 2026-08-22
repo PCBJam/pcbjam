@@ -220,6 +220,19 @@ function renderDoc(page: Page): Promise<{ ok?: string; err?: string }> {
   });
 }
 
+function projectionFailures(
+  page: Page,
+): Promise<Array<{ kind: string; message: string; recovery: string }>> {
+  return page.evaluate(() => {
+    const w = window as unknown as {
+      KicadCollabV2: {
+        projectionFailures(): Array<{ kind: string; message: string; recovery: string }>;
+      };
+    };
+    return w.KicadCollabV2.projectionFailures();
+  });
+}
+
 /** Item-level drift summary (see browser-entry-v2.ts driftReport). */
 function drift(page: Page, cfg: ToolCfg) {
   return page.evaluate(
@@ -460,9 +473,38 @@ test.describe("v2 items wire — concurrent seed (bug 06 repro)", () => {
     expect(merged.match(/\(version 20220228\)/g), "preamble not doubled").toHaveLength(1);
     expect(merged.match(/\(setup /g), "setup block not doubled").toHaveLength(1);
 
+    const winnerTab = wonA ? tabA : tabB;
+    const loserTab = wonA ? tabB : tabA;
+    const winnerMargin = wonA ? "(left_margin 10)" : "(left_margin 23)";
+    const loserMargin = wonA ? "(left_margin 23)" : "(left_margin 10)";
+
+    // The winner already has the selected whole epoch open. The losing native
+    // instance cannot hot-apply its non-item setup, so production must retire
+    // it before claiming item convergence.
+    await expect
+      .poll(() => projectionFailures(loserTab), { timeout: 10_000, intervals: [200] })
+      .toHaveLength(1);
+    expect((await projectionFailures(loserTab))[0]).toMatchObject({
+      kind: "non-item-structure",
+      recovery: "recreate-from-yjs",
+    });
+    expect(await projectionFailures(winnerTab), "winning native stays live").toEqual([]);
+
+    const winnerNative = await modelText(winnerTab, PL);
+    for (const id of winnerIds) expect(winnerNative, `winner has ${id}`).toContain(id);
+    for (const id of loserIds) expect(winnerNative, `winner excludes ${id}`).not.toContain(id);
+    expect(winnerNative).toContain(winnerMargin);
+
+    const loserNative = await modelText(loserTab, PL);
+    for (const id of loserIds) expect(loserNative, `retired loser retains ${id}`).toContain(id);
+    for (const id of winnerIds) expect(loserNative, `retired loser excludes ${id}`).not.toContain(id);
+    expect(loserNative).toContain(loserMargin);
+
+    // Recovery/late join follows the real Y.Doc-load path: materialize the
+    // selected authority first, create a fresh Wasm instance, then baseline it.
     const tabC = await context.newPage();
-    await bootOpen(tabC, PL, "tabC");
-    await startV2(tabC, { room });
+    await bootOpen(tabC, { ...PL, fixture: merged }, "tabC");
+    await startV2(tabC, { room, editorMatchesDoc: true });
     await expect
       .poll(async () => (await renderDoc(tabC)).ok, {
         timeout: 15_000,
@@ -470,21 +512,11 @@ test.describe("v2 items wire — concurrent seed (bug 06 repro)", () => {
       })
       .toBe(merged);
 
-    // The losing native editor and a late native joiner both project the same
-    // selected items. Non-item setup is intentionally a reopen boundary today;
-    // the canonical Y document above is nevertheless one whole epoch.
-    for (const [tab, label] of [
-      [tabA, "tabA"],
-      [tabB, "tabB"],
-      [tabC, "tabC"],
-    ] as const) {
-      await expect
-        .poll(async () => modelText(tab, PL), { timeout: 15_000, intervals: [300] })
-        .toContain(winnerIds[0]!);
-      const native = await modelText(tab, PL);
-      for (const id of winnerIds) expect(native, `${label} has winner ${id}`).toContain(id);
-      for (const id of loserIds) expect(native, `${label} excludes loser ${id}`).not.toContain(id);
-    }
+    const recoveredNative = await modelText(tabC, PL);
+    for (const id of winnerIds) expect(recoveredNative, `recovered native has ${id}`).toContain(id);
+    for (const id of loserIds) expect(recoveredNative, `recovered native excludes ${id}`).not.toContain(id);
+    expect(recoveredNative).toContain(winnerMargin);
+    expect(await projectionFailures(tabC), "fresh native stays live").toEqual([]);
 
     expect(hasAbort(testLogger), "no WASM abort").toBe(false);
     await tabA.close();

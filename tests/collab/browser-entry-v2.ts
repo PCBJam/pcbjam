@@ -23,6 +23,7 @@ import {
   driftDocDelta,
   fileToDoc,
   isEmptyKicadDelta,
+  syncLayoutToY,
   upsertDocToY,
   yToDoc,
 } from "@pcbjam/shared";
@@ -33,7 +34,16 @@ import {
   type KicadItemsModule,
   type KicadItemsWindow,
 } from "../../web/standalone/src/wasm/collab/index";
+import {
+  NATIVE_PROJECTION_FAILED_EVENT,
+  type NativeProjectionFailure,
+} from "../../web/standalone/src/wasm/collab/kicad-binding";
 import { nativeSnapshotThroughY } from "../../web/standalone/src/wasm/collab/wire-y-roundtrip";
+
+const projectionFailures: NativeProjectionFailure[] = [];
+window.addEventListener(NATIVE_PROJECTION_FAILED_EVENT, (event) => {
+  projectionFailures.push((event as CustomEvent<NativeProjectionFailure>).detail);
+});
 
 interface StartOpts {
   room: string;
@@ -133,6 +143,33 @@ function applyConcurrentRootCreations(leftText: string, rightText: string): stri
   }
 }
 
+/**
+ * Test-only remote-author helper for the part of a KiCad document that the
+ * native item bridge cannot hot-apply. The non-local origin is deliberate: it
+ * must cross the production structural-projection guard, not the local
+ * `layout-save` accounting path.
+ */
+function applyRemoteLayout(fileText: string): boolean {
+  return syncLayoutToY(fileToDoc(fileText), handle().doc, "e2e-remote-layout");
+}
+
+/** Apply a later complete remote snapshot without replacing the live Y.Doc. */
+function applyRemoteDoc(fileText: string): void {
+  upsertDocToY(fileToDoc(fileText), handle().doc, "e2e-remote-doc");
+}
+
+/** Terminal projection failures observed from the production window event. */
+function observedProjectionFailures(): NativeProjectionFailure[] {
+  return projectionFailures.map((failure) => ({ ...failure }));
+}
+
+/** Canonical parsed slots for one non-item root head (for native-save oracles). */
+function layoutHead(fileText: string, head: string): string {
+  return JSON.stringify(
+    fileToDoc(fileText).layout.filter((slot) => "k" in slot && slot.k === head),
+  );
+}
+
 export interface DriftSummary {
   added: string[];
   updated: string[];
@@ -199,6 +236,10 @@ declare global {
       renderActiveDoc: typeof renderActiveDoc;
       singleSeedRender: typeof singleSeedRender;
       applyConcurrentRootCreations: typeof applyConcurrentRootCreations;
+      applyRemoteLayout: typeof applyRemoteLayout;
+      applyRemoteDoc: typeof applyRemoteDoc;
+      projectionFailures: typeof observedProjectionFailures;
+      layoutHead: typeof layoutHead;
       nativeWireThroughY: typeof nativeSnapshotThroughY;
       driftReport: typeof driftReport;
     };
@@ -210,6 +251,10 @@ window.KicadCollabV2 = {
   renderActiveDoc,
   singleSeedRender,
   applyConcurrentRootCreations,
+  applyRemoteLayout,
+  applyRemoteDoc,
+  projectionFailures: observedProjectionFailures,
+  layoutHead,
   nativeWireThroughY: nativeSnapshotThroughY,
   driftReport,
 };
