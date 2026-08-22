@@ -368,4 +368,33 @@ describe("P1: malformed raw Y is contained", () => {
     expect(editor.destroyCalls).toBe(1);
     expect(editor.snapshotItems()).toBe(before);
   });
+
+  it("requires authority repair when a fresh owner joins an already malformed room", () => {
+    const authority = new Y.Doc();
+    const seeder = new DeferredEditor(BASE);
+    const seedBinding = bindKicadCollab(authority, seeder);
+    seedBinding.seed(fileToDoc(BASE));
+    seedBinding.destroy();
+    kicadItemsMap(authority).get("seg-1")!.set("body", "not-a-slot-tree");
+
+    const failures: NativeProjectionFailure[] = [];
+    const freshEditor = new DeferredEditor(BASE);
+    const freshBinding = bindKicadCollab(authority, freshEditor, {
+      onProjectionFailure: (failure) => failures.push(failure),
+    });
+    freshBinding.seed(undefined, { editorMatchesDoc: true });
+
+    expect(failures).toEqual([
+      expect.objectContaining({
+        kind: "invalid-y-state",
+        status: "materialization-failed",
+        recovery: "repair-yjs-before-recreate",
+      }),
+    ]);
+    expect(freshEditor.destroyCalls).toBe(1);
+    expect(freshEditor.submitted, "malformed authority never reaches a fresh native owner").toEqual(
+      [],
+    );
+    authority.destroy();
+  });
 });
