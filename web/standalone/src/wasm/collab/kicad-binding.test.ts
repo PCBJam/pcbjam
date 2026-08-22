@@ -25,6 +25,7 @@ import { bindKicadCollab, DOC_REVERTED_EVENT, SexprVersionError, type KicadItems
 class FakeEditor implements KicadItemsBridge {
   store: Record<string, KicadItem> = {};
   applied: string[] = []; // raw JSON of every applyItems call (echo assertions)
+  destroyCalls = 0;
   private emit: ((json: string) => void) | null = null;
 
   snapshotItems(): string {
@@ -44,6 +45,10 @@ class FakeEditor implements KicadItemsBridge {
 
   onItems(cb: (json: string) => void): void {
     this.emit = cb;
+  }
+
+  destroy(): void {
+    this.destroyCalls += 1;
   }
 
   /** A local user edit: mutate the store, then emit (like OnModify → Format). */
@@ -97,6 +102,17 @@ describe("bindKicadCollab — two editors over relayed Y.Docs", () => {
     const bindB = bindKicadCollab(b, edB);
     return { a, b, edA, edB, bindA, bindB };
   }
+
+  it("releases its bridge owner exactly once when destroyed", () => {
+    const doc = new Y.Doc();
+    const editor = new FakeEditor();
+    const binding = bindKicadCollab(doc, editor);
+
+    binding.destroy();
+    binding.destroy();
+
+    expect(editor.destroyCalls).toBe(1);
+  });
 
   it("seed → add → edit → remove propagates both ways; no self-echo", () => {
     const { edA, edB, bindA, bindB } = setup();

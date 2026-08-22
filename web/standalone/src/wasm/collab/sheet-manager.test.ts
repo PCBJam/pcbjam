@@ -33,9 +33,16 @@ interface FakeBinding {
   destroy: ReturnType<typeof vi.fn>;
   lastSeedOpts?: unknown;
 }
+interface FakeBridge {
+  snapshotItems: ReturnType<typeof vi.fn>;
+  applyItems: ReturnType<typeof vi.fn>;
+  onItems: ReturnType<typeof vi.fn>;
+  destroy: ReturnType<typeof vi.fn>;
+}
 
 let sessions: FakeSession[];
 let bindings: FakeBinding[];
+let bridges: FakeBridge[];
 
 function makeDoc(): FakeDoc {
   const handlers = new Set<() => void>();
@@ -66,6 +73,7 @@ function makeManager() {
 beforeEach(() => {
   sessions = [];
   bindings = [];
+  bridges = [];
   connectKicadDoc.mockReset();
   bindKicadCollab.mockReset();
   moduleItemsBridge.mockReset();
@@ -85,11 +93,16 @@ beforeEach(() => {
     bindings.push(b);
     return b;
   });
-  moduleItemsBridge.mockImplementation(() => ({
-    snapshotItems: vi.fn(),
-    applyItems: vi.fn(),
-    onItems: vi.fn(),
-  }));
+  moduleItemsBridge.mockImplementation(() => {
+    const bridge: FakeBridge = {
+      snapshotItems: vi.fn(),
+      applyItems: vi.fn(),
+      onItems: vi.fn(),
+      destroy: vi.fn(),
+    };
+    bridges.push(bridge);
+    return bridge;
+  });
 });
 
 describe("sheet-manager warm pool", () => {
@@ -118,6 +131,17 @@ describe("sheet-manager warm pool", () => {
     expect(bindKicadCollab).toHaveBeenCalledTimes(2); // new binding for b
     // No provider is torn down on a switch — that's the whole point of the warm pool.
     expect(sessions.every((s) => s.provider.destroy.mock.calls.length === 0)).toBe(true);
+  });
+
+  it("acquires a fresh native owner bridge for every sheet activation", async () => {
+    const m = makeManager();
+    await m.switchTo("a.kicad_sch");
+    await m.switchTo("b.kicad_sch");
+    await m.switchTo("a.kicad_sch");
+
+    expect(moduleItemsBridge).toHaveBeenCalledTimes(3);
+    expect(new Set(bridges)).toHaveProperty("size", 3);
+    expect(bindKicadCollab.mock.calls.map((call) => call[1])).toEqual(bridges);
   });
 
   it("re-warms each sheet exactly once across repeated switches", async () => {
@@ -196,6 +220,18 @@ describe("sheet-manager warm pool", () => {
 });
 
 describe("sheet-manager lifecycle hardening (findings C-1/C-4/C-5)", () => {
+  it("releases a freshly-acquired owner if binding construction throws", async () => {
+    const fatal = new Error("binding construction failed");
+    bindKicadCollab.mockImplementationOnce(() => {
+      throw fatal;
+    });
+    const m = makeManager();
+
+    await expect(m.switchTo("a.kicad_sch")).resolves.toBeUndefined();
+    expect(bridges).toHaveLength(1);
+    expect(bridges[0]!.destroy).toHaveBeenCalledTimes(1);
+  });
+
   it("a connect resolving after destroy() is torn down, not registered (C-1)", async () => {
     let release!: () => void;
     const late: FakeSession = {

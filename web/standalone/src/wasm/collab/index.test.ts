@@ -151,6 +151,20 @@ describe("connectKicadDoc — deadline + cancellation cover the whole path (C-3)
 });
 
 describe("attachKicadCollab — a seed throw cannot leak the binding (C-2)", () => {
+  it("releases the native owner if binding construction itself throws", () => {
+    const bridge = { destroy: vi.fn() };
+    moduleItemsBridge.mockReturnValue(bridge);
+    bindKicadCollab.mockImplementationOnce(() => {
+      throw new Error("unsupported document version");
+    });
+    const session = { doc: new Y.Doc(), provider: makeProvider() };
+
+    expect(() =>
+      attachKicadCollab({} as never, {} as never, session as never),
+    ).toThrow("unsupported document version");
+    expect(bridge.destroy).toHaveBeenCalledTimes(1);
+  });
+
   it("destroys the partially-attached binding and rethrows", () => {
     const binding = {
       seed: vi.fn(() => {

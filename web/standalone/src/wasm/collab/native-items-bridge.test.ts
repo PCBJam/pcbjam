@@ -16,7 +16,7 @@ type Ack = {
 };
 
 type ProtocolModule = KicadItemsModule & {
-  kicadCollabSetItemsOwner(owner: string): void;
+  kicadCollabSetItemsOwner(owner: string): boolean | void;
   kicadCollabReleaseItemsOwner(owner: string): void;
 };
 
@@ -26,18 +26,20 @@ type ProtocolWindow = KicadItemsWindow & {
   };
 };
 
-function setup() {
+function setup(opts: { ownerAcquired?: boolean; ackTimeoutMs?: number } = {}) {
   const submitted: string[] = [];
   const mod: ProtocolModule = {
     kicadCollabSnapshotItems: () => EMPTY_WIRE,
     kicadCollabApplyItems: (json) => {
       submitted.push(json);
     },
-    kicadCollabSetItemsOwner: vi.fn(),
+    kicadCollabSetItemsOwner: vi.fn(() => opts.ownerAcquired ?? true),
     kicadCollabReleaseItemsOwner: vi.fn(),
   };
   const win: ProtocolWindow = {};
-  const bridge = moduleItemsBridge(mod, win) as ReturnType<typeof moduleItemsBridge> & {
+  const bridge = moduleItemsBridge(mod, win, {
+    ackTimeoutMs: opts.ackTimeoutMs,
+  }) as ReturnType<typeof moduleItemsBridge> & {
     readonly ownerGeneration: string;
     destroy(): void;
   };
@@ -143,5 +145,34 @@ describe("moduleItemsBridge — acknowledged owner-scoped protocol", () => {
       status: "owner-released",
       retryable: false,
     });
+  });
+
+  it("refuses ownership while the previous native generation is still draining", () => {
+    expect(() => setup({ ownerAcquired: false })).toThrow(
+      "native items owner is still draining its previous generation",
+    );
+  });
+
+  it("terminally rejects a missing acknowledgement and leaves destroy safe", async () => {
+    vi.useFakeTimers();
+    try {
+      const { bridge, mod } = setup({ ackTimeoutMs: 25 });
+      const completion = bridge.applyItems(EMPTY_WIRE);
+      const outcome = expect(completion).rejects.toMatchObject({
+        name: "NativeItemsApplyError",
+        status: "ack-timeout",
+        retryable: false,
+      });
+
+      await vi.advanceTimersByTimeAsync(25);
+      await outcome;
+
+      // The timeout has already removed/settled the ticket; teardown only
+      // releases the owner and cannot reject the same request a second time.
+      expect(() => bridge.destroy()).not.toThrow();
+      expect(mod.kicadCollabReleaseItemsOwner).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
