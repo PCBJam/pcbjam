@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { fileToDoc } from "@pcbjam/shared";
-import { nonItemProjectionSignature } from "./projection-structure";
+import {
+  nonItemProjectionSignature,
+  nonItemProjectionState,
+} from "./projection-structure";
 
 const BASE = `(kicad_pcb
   (version 20241229)
@@ -32,5 +35,24 @@ describe("non-item native projection signature", () => {
     expect(nonItemProjectionSignature(fileToDoc(changed))).not.toBe(
       nonItemProjectionSignature(fileToDoc(BASE)),
     );
+  });
+
+  it("separates hard layout drift from exact library-definition drift", () => {
+    const base = nonItemProjectionState(fileToDoc(BASE));
+    const libraryChanged = nonItemProjectionState(
+      fileToDoc(
+        BASE.replace(
+          '(property "Reference" "R")',
+          '(property "Reference" "X")',
+        ),
+      ),
+    );
+    const layoutChanged = nonItemProjectionState(
+      fileToDoc(BASE.replace('(paper "A4")', '(paper "A3")')),
+    );
+
+    expect(libraryChanged.hardSignature).toBe(base.hardSignature);
+    expect(libraryChanged.libraries).not.toEqual(base.libraries);
+    expect(layoutChanged.hardSignature).not.toBe(base.hardSignature);
   });
 });

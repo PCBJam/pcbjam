@@ -319,22 +319,56 @@ module GraphClosure {
 module StructuralProjection {
   datatype Action = HotApplyItems | RehydrateNative
 
-  // The item bridge cannot hot-apply metadata, root-layout or definition-only
-  // changes. A mismatched non-item signature therefore crosses an explicit
-  // rehydration boundary instead of leaving native silently stale.
-  function Decide(nativeNonItems: int, yNonItems: int): Action
+  // Root/layout drift is never expressible through the item bridge. Library
+  // drift is hot-applicable only when the runtime has established that every
+  // changed definition is carried by the same audited symbol-root request.
+  // The coverage predicate is computed by the concrete TypeScript codec; this
+  // verified classifier makes the fail-closed policy executable.
+  function Decide(hardMatches: bool,
+                  librariesMatch: bool,
+                  allLibraryChangesCovered: bool): Action
   {
-    if nativeNonItems == yNonItems then HotApplyItems else RehydrateNative
+    if hardMatches && (librariesMatch || allLibraryChangesCovered)
+    then HotApplyItems
+    else RehydrateNative
   }
 
-  lemma EqualStructureMayUseTheItemBridge(signature: int)
-    ensures Decide(signature, signature) == HotApplyItems
+  lemma HardDriftAlwaysRehydrates(librariesMatch: bool,
+                                  allLibraryChangesCovered: bool)
+    ensures Decide(false, librariesMatch, allLibraryChangesCovered)
+      == RehydrateNative
   {}
 
-  lemma StructuralDriftNeverClaimsAHotApply(a: int, b: int)
-    requires a != b
-    ensures Decide(a, b) == RehydrateNative
+  lemma UncoveredLibraryDriftAlwaysRehydrates(hardMatches: bool)
+    ensures Decide(hardMatches, false, false) == RehydrateNative
   {}
+
+  lemma EqualLibrariesMayUseTheItemBridge()
+    ensures Decide(true, true, false) == HotApplyItems
+  {}
+
+  lemma CoveredLibraryDriftMayUseTheItemBridge()
+    ensures Decide(true, false, true) == HotApplyItems
+  {}
+
+  lemma LibrariesAreNeverBlanketIgnored(hardMatches: bool)
+    ensures !hardMatches || Decide(hardMatches, false, false) == RehydrateNative
+  {}
+
+  method ExportStructuralProjectionDecision(
+      hardMatches: bool,
+      librariesMatch: bool,
+      allLibraryChangesCovered: bool) returns (action: int)
+    ensures action == 1 || action == 4
+    ensures !hardMatches ==> action == 4
+    ensures hardMatches && librariesMatch ==> action == 1
+    ensures hardMatches && !librariesMatch && allLibraryChangesCovered ==> action == 1
+    ensures hardMatches && !librariesMatch && !allLibraryChangesCovered ==> action == 4
+  {
+    action := match Decide(hardMatches, librariesMatch, allLibraryChangesCovered)
+      case HotApplyItems => 1
+      case RehydrateNative => 4;
+  }
 }
 
 module DurabilityBoundary {

@@ -7,6 +7,12 @@ export declare function decideProjectionAck(
   ok: boolean,
   retryable: boolean,
 ): ProjectionAckAction;
+export type StructuralProjectionAction = 1 | 4;
+export declare function decideStructuralProjection(
+  hardMatches: boolean,
+  librariesMatch: boolean,
+  allLibraryChangesCovered: boolean,
+): StructuralProjectionAction;
 export type NativeEmissionAction = 1 | 4;
 export declare function decideNativeEmission(
   projectionInFlight: boolean,

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   decideNativeEmission,
   decideProjectionAck,
+  decideStructuralProjection,
 } from "./generated/projection-kernel.js";
 
 const bools = [false, true] as const;
@@ -55,5 +56,23 @@ describe("verified projection acknowledgement kernel", () => {
   it("terminalizes a native emission whose order relative to an in-flight apply is ambiguous", () => {
     expect(decideNativeEmission(false)).toBe(1);
     expect(decideNativeEmission(true)).toBe(4);
+  });
+
+  it("exhaustively permits only equal hard state plus equal/covered libraries", () => {
+    for (const hardMatches of bools) {
+      for (const librariesMatch of bools) {
+        for (const allLibraryChangesCovered of bools) {
+          const expected =
+            hardMatches && (librariesMatch || allLibraryChangesCovered) ? 1 : 4;
+          expect(
+            decideStructuralProjection(
+              hardMatches,
+              librariesMatch,
+              allLibraryChangesCovered,
+            ),
+          ).toBe(expected);
+        }
+      }
+    }
   });
 });

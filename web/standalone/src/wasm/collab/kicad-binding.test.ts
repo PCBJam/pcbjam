@@ -5,6 +5,7 @@ import {
   fileToDoc,
   itemsWireToDelta,
   kicadLibSymbolsMap,
+  kicadItemsMap,
   kicadMetaMap,
   parseItemsWireDelta,
   renderItem,
@@ -25,6 +26,7 @@ import {
   type KicadItemsBridge,
   type NativeProjectionFailure,
 } from "./kicad-binding";
+import { NativeItemsApplyError } from "./native-items-bridge";
 
 /**
  * A fake editor implementing the v2 items bridge over an in-memory flattened
@@ -338,7 +340,10 @@ describe("lib_symbols flow through the binding (miss 08A)", () => {
   const INSTANCE = `(symbol (lib_id "Device:R") (at 100 50 0) (uuid "sym-1"))`;
   const WRITER_DEF = `(symbol "Device:R" (pin_names (offset 0)) (property "Reference" "R" (at 2 0 90)))`;
   const CAP_DEF = `(symbol "Device:C" (property "Reference" "C" (at 2 0 90)))`;
+  const CAP_CHANGED_DEF = `(symbol "Device:C" (pin_names (offset 2)) (property "Reference" "C" (at 2 0 90)))`;
   const CAP_INSTANCE = `(symbol (lib_id "Device:C") (at 120 50 0) (uuid "sym-2"))`;
+  const CHANGED_DEF = `(symbol "Device:R" (pin_names (offset 1)) (property "Reference" "R" (at 2 0 90)))`;
+  const WRONG_DEF = `(symbol "Device:X" (property "Reference" "X" (at 2 0 90)))`;
 
   function fileWithDefinition(definition: string): string {
     return `(kicad_sch
@@ -417,6 +422,174 @@ describe("lib_symbols flow through the binding (miss 08A)", () => {
         recovery: "recreate-from-yjs",
       }),
     ]);
+  });
+
+  it("does not let an unrelated symbol root cover a definition addition", () => {
+    const { edA, failuresB } = fileBackedPair();
+
+    edA.localUpsert(
+      `(lib_symbols ${CAP_DEF}) ${INSTANCE.replace("(at 100 50 0)", "(at 101 50 0)")}`,
+    );
+
+    expect(failuresB).toEqual([
+      expect.objectContaining({ kind: "non-item-structure" }),
+    ]);
+  });
+
+  it("does not treat a symbol carrying the wrong library id as coverage", () => {
+    const { edA, failuresB } = fileBackedPair();
+
+    edA.localUpsert(`(lib_symbols ${WRONG_DEF}) ${CAP_INSTANCE}`, null, "added");
+
+    expect(failuresB).toEqual([
+      expect.objectContaining({ kind: "non-item-structure" }),
+    ]);
+  });
+
+  it("requires rehydration for library removal because the wire has no delete opcode", () => {
+    const { a, failuresB } = fileBackedPair();
+
+    kicadLibSymbolsMap(a).delete("Device:R");
+
+    expect(failuresB).toEqual([
+      expect.objectContaining({ kind: "non-item-structure" }),
+    ]);
+  });
+
+  it("conservatively rehydrates when multiple roots share a changed definition", () => {
+    const second = INSTANCE.replace("(at 100 50 0)", "(at 140 50 0)").replace(
+      'uuid "sym-1"',
+      'uuid "sym-3"',
+    );
+    const { a, b } = pair();
+    const edA = new FakeEditor();
+    const edB = new FakeEditor();
+    for (const editor of [edA, edB]) {
+      seedEditor(editor, INSTANCE);
+      seedEditor(editor, second);
+      editor.libraries["Device:R"] = WRITER_DEF;
+    }
+    const failuresB: NativeProjectionFailure[] = [];
+    const bindA = bindKicadCollab(a, edA);
+    const bindB = bindKicadCollab(b, edB, {
+      onProjectionFailure: (failure) => failuresB.push(failure),
+    });
+    const seedDoc = fileToDoc(`(kicad_sch
+      (version 20231120)
+      (lib_symbols ${WRITER_DEF})
+      ${INSTANCE}
+      ${second})`);
+    bindA.seed(seedDoc);
+    bindB.seed(seedDoc);
+
+    edA.localUpsert(
+      `(lib_symbols ${CHANGED_DEF}) ${INSTANCE.replace("(at 100 50 0)", "(at 101 50 0)")}`,
+    );
+
+    expect(failuresB).toEqual([
+      expect.objectContaining({ kind: "non-item-structure" }),
+    ]);
+    expect(edB.store["sym-1"]).toBeDefined();
+    expect(edB.store["sym-3"]).toBeDefined();
+  });
+
+  it("does not advance the library shadow when a covered native apply fails", async () => {
+    const { a, b } = pair();
+    const edA = new FakeEditor();
+    const edB = new FakeEditor();
+    for (const editor of [edA, edB]) {
+      seedEditor(editor, INSTANCE);
+      editor.libraries["Device:R"] = WRITER_DEF;
+    }
+    let attempts = 0;
+    const failingBridge: KicadItemsBridge = {
+      snapshotItems: () => edB.snapshotItems(),
+      onItems: (cb) => edB.onItems(cb),
+      destroy: () => edB.destroy(),
+      applyItems: () => {
+        attempts += 1;
+        return Promise.reject(
+          new NativeItemsApplyError("busy", true, "test-owner", `request-${attempts}`),
+        );
+      },
+    };
+    const failuresB: NativeProjectionFailure[] = [];
+    const bindA = bindKicadCollab(a, edA);
+    const bindB = bindKicadCollab(b, failingBridge, {
+      onProjectionFailure: (failure) => failuresB.push(failure),
+    });
+    const seedDoc = fileToDoc(fileWithDefinition(WRITER_DEF));
+    bindA.seed(seedDoc);
+    bindB.seed(seedDoc);
+
+    edA.localUpsert(`(lib_symbols ${CAP_DEF}) ${CAP_INSTANCE}`, null, "added");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(attempts).toBe(1);
+
+    // Roll authority back to the exact pre-request state before the retry. If
+    // the failed ticket had advanced B's library shadow, this exact rollback
+    // would look like an uncovered definition removal and terminalize it.
+    a.transact(() => {
+      kicadItemsMap(a).delete("sym-2");
+      kicadLibSymbolsMap(a).delete("Device:C");
+    });
+    await Promise.resolve();
+
+    expect(failuresB).toEqual([]);
+    expect(attempts).toBe(1);
+  });
+
+  it("ACKs the exact submitted library target, never newer dirty authority", async () => {
+    const { a, b } = pair();
+    const edA = new FakeEditor();
+    const edB = new FakeEditor();
+    for (const editor of [edA, edB]) {
+      seedEditor(editor, INSTANCE);
+      editor.libraries["Device:R"] = WRITER_DEF;
+    }
+    const applied: string[] = [];
+    let acknowledge = (): void => {
+      throw new Error("native projection was not submitted");
+    };
+    const heldBridge: KicadItemsBridge = {
+      snapshotItems: () => edB.snapshotItems(),
+      onItems: (cb) => edB.onItems(cb),
+      destroy: () => edB.destroy(),
+      applyItems: (json) => {
+        applied.push(json);
+        return new Promise<void>((resolve) => {
+          acknowledge = () => {
+            edB.applyItems(json);
+            resolve();
+          };
+        });
+      },
+    };
+    const failuresB: NativeProjectionFailure[] = [];
+    const bindA = bindKicadCollab(a, edA);
+    const bindB = bindKicadCollab(b, heldBridge, {
+      onProjectionFailure: (failure) => failuresB.push(failure),
+    });
+    const seedDoc = fileToDoc(fileWithDefinition(WRITER_DEF));
+    bindA.seed(seedDoc);
+    bindB.seed(seedDoc);
+
+    edA.localUpsert(`(lib_symbols ${CAP_DEF}) ${CAP_INSTANCE}`, null, "added");
+    expect(applied).toHaveLength(1);
+
+    // A newer definition-only state becomes dirty while CAP_DEF is still in
+    // flight. The old ACK must advance to CAP_DEF, exposing CAP_CHANGED_DEF as
+    // uncovered drift; acknowledging the latest Y view here would hide it.
+    kicadLibSymbolsMap(a).set("Device:C", CAP_CHANGED_DEF);
+    acknowledge();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(failuresB).toEqual([
+      expect.objectContaining({ kind: "non-item-structure" }),
+    ]);
+    expect(edB.libraries["Device:C"]).toBe(CAP_DEF);
   });
 
   it("an emitted placement's definition is stored and re-rendered for the peer", () => {

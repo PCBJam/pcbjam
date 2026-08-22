@@ -12,8 +12,12 @@ import {
   kicadMetaMap,
   parseItemsWireDelta,
   rebaseKicadItems,
+  scalar,
   seedDocToY,
   SEXPR_VERSION_SUPPORTED,
+  sexprToItems,
+  unquoteAtom,
+  unwrapWireItem,
   upsertLibSymbolsToY,
   wireLibSymbols,
   Y_KDOC_REVERT_AT,
@@ -34,6 +38,7 @@ import { clog, cwarn } from "./debug";
 import {
   decideNativeEmission,
   decideProjectionAck,
+  decideStructuralProjection,
 } from "./generated/projection-kernel.js";
 import {
   createNativeItemsBridge,
@@ -41,7 +46,10 @@ import {
   type NativeItemsProtocolModule,
   type NativeItemsProtocolWindow,
 } from "./native-items-bridge";
-import { nonItemProjectionSignature } from "./projection-structure";
+import {
+  nonItemProjectionState,
+  type NonItemProjectionState,
+} from "./projection-structure";
 
 /**
  * The Slot-model collab binding (ysync 0008 Stage B) — the THIN RUNTIME over the
@@ -180,8 +188,16 @@ export function bindKicadCollab(
 
   /** Last native state we can account for: snapshots, local emits, and ACKed applies. */
   let nativeShadow: Record<string, KicadItem> | null = null;
-  /** Last non-item structure known to be open in this native instance. */
-  let nativeStructure: string | null = null;
+  /**
+   * Last non-item state known to exist in this native instance. A null hard
+   * signature denotes an editor-snapshot room with no file-backed root/layout;
+   * libraries are still exact and must never be silently ignored.
+   */
+  interface RuntimeNonItemState {
+    readonly hardSignature: string | null;
+    readonly libraries: Readonly<Record<string, string>>;
+  }
+  let nativeNonItems: RuntimeNonItemState | null = null;
   let projectionDirty = false;
   let projectionInFlight = false;
   let projectionTerminal = false;
@@ -207,6 +223,27 @@ export function bindKicadCollab(
     return next;
   };
 
+  const runtimeNonItems = (
+    state: NonItemProjectionState,
+  ): RuntimeNonItemState => ({
+    hardSignature: state.hardSignature,
+    libraries: { ...state.libraries },
+  });
+
+  const yLibraries = (): Record<string, string> => {
+    const libraries: Record<string, string> = {};
+    const map = kicadLibSymbolsMap(doc);
+    for (const id of [...map.keys()].sort()) libraries[id] = map.get(id)!;
+    return libraries;
+  };
+
+  const overlayNativeLibraries = (defs: Record<string, string>): void => {
+    nativeNonItems = {
+      hardSignature: nativeNonItems?.hardSignature ?? null,
+      libraries: { ...(nativeNonItems?.libraries ?? {}), ...defs },
+    };
+  };
+
   /**
    * Materialize the desired item replica. Full file-backed docs go through
    * yToDoc, which validates shape and deterministically repairs graph links.
@@ -215,7 +252,7 @@ export function bindKicadCollab(
    */
   const projectionView = (): {
     items: Record<string, KicadItem>;
-    structure: string | null;
+    nonItems: RuntimeNonItemState;
   } => {
     const currentVersion = ydocSexprVersion(doc);
     if (!SEXPR_VERSION_SUPPORTED.includes(currentVersion)) {
@@ -225,7 +262,7 @@ export function bindKicadCollab(
       const complete = yToDoc(doc);
       return {
         items: complete.items,
-        structure: nonItemProjectionSignature(complete),
+        nonItems: runtimeNonItems(nonItemProjectionState(complete)),
       };
     }
 
@@ -238,7 +275,7 @@ export function bindKicadCollab(
       .map(([uuid]): Slot => ({ item: uuid }));
     return {
       items: canonicalizeKicadDocGraph({ root: "kicad_items", items: raw, layout }).items,
-      structure: null,
+      nonItems: { hardSignature: null, libraries: yLibraries() },
     };
   };
 
@@ -259,16 +296,22 @@ export function bindKicadCollab(
   const snapshotView = (): {
     wire: ItemsWireDelta;
     view: Record<string, KicadItem>;
+    libraries: Record<string, string>;
   } => {
     const wire = parseItemsWireDelta(bridge.snapshotItems());
     const delta = itemsWireToDelta(wire, {}, warnSkip);
-    return { wire, view: applyItemsDelta({}, delta) };
+    return {
+      wire,
+      view: applyItemsDelta({}, delta),
+      libraries: wireLibSymbols(wire),
+    };
   };
 
   const refreshNativeShadow = (context: string): ItemsWireDelta | null => {
     try {
       const snapshot = snapshotView();
       nativeShadow = snapshot.view;
+      overlayNativeLibraries(snapshot.libraries);
       return snapshot.wire;
     } catch (err) {
       cwarn(`${context}: native snapshot failed`, err);
@@ -294,6 +337,114 @@ export function bindKicadCollab(
       return true;
     });
     return delta;
+  };
+
+  const libraryConsumers = (
+    view: Record<string, KicadItem>,
+  ): Map<string, Set<string>> => {
+    const consumers = new Map<string, Set<string>>();
+    for (const [uuid, item] of Object.entries(view)) {
+      if (item.parent !== null) continue;
+      const encoded = scalar(item.body, "lib_id");
+      if (encoded === undefined) continue;
+      const id = unquoteAtom(encoded);
+      const roots = consumers.get(id) ?? new Set<string>();
+      roots.add(uuid);
+      consumers.set(id, roots);
+    }
+    return consumers;
+  };
+
+  interface LibraryProjectionCoverage {
+    readonly librariesMatch: boolean;
+    readonly allChangesCovered: boolean;
+    readonly changed: readonly string[];
+    readonly uncovered: readonly string[];
+  }
+
+  /**
+   * Prove the concrete premise consumed by the generated structural policy.
+   *
+   * A definition is not covered merely because it appears somewhere in the
+   * batch: an exact desired definition must accompany every desired consumer
+   * root, and every old native consumer must be replaced/removed by the same
+   * request. Existing definitions with multiple native consumers remain on the
+   * conservative rehydrate path because eeschema currently interleaves each
+   * root's remove/add and cannot atomically replace that shared cache entry.
+   * Definition removals are likewise fail-closed: the v2 wire has no explicit
+   * library-delete operation whose ACK could certify the resulting cache.
+   */
+  const libraryProjectionCoverage = (
+    native: RuntimeNonItemState,
+    desired: RuntimeNonItemState,
+    wire: ItemsWireDelta,
+    nativeItems: Record<string, KicadItem>,
+    desiredItems: Record<string, KicadItem>,
+  ): LibraryProjectionCoverage => {
+    const changed = [...new Set([
+      ...Object.keys(native.libraries),
+      ...Object.keys(desired.libraries),
+    ])]
+      .filter((id) => native.libraries[id] !== desired.libraries[id])
+      .sort();
+    if (changed.length === 0) {
+      return {
+        librariesMatch: true,
+        allChangesCovered: true,
+        changed,
+        uncovered: [],
+      };
+    }
+
+    const exactUpserts = new Map<string, Set<string>>();
+    const operatedRoots = new Set<string>(wire.removed);
+    for (const entry of [...wire.added, ...wire.changed]) {
+      const parsed = sexprToItems(unwrapWireItem(entry.sexpr), entry.parent);
+      operatedRoots.add(parsed.uuid);
+      const root = parsed.items[parsed.uuid];
+      const encoded = root ? scalar(root.body, "lib_id") : undefined;
+      if (encoded === undefined) continue;
+      const id = unquoteAtom(encoded);
+      const entryDefs = wireLibSymbols({
+        added: [entry],
+        changed: [],
+        removed: [],
+      });
+      if (entryDefs[id] !== desired.libraries[id]) continue;
+      const roots = exactUpserts.get(id) ?? new Set<string>();
+      roots.add(parsed.uuid);
+      exactUpserts.set(id, roots);
+    }
+
+    const nativeConsumers = libraryConsumers(nativeItems);
+    const desiredConsumers = libraryConsumers(desiredItems);
+    const uncovered = changed.filter((id) => {
+      const nativeDefinition = native.libraries[id];
+      const desiredDefinition = desired.libraries[id];
+      // No explicit delete opcode: never infer a cache deletion from an item
+      // removal and then claim the complete non-item shadow was acknowledged.
+      if (desiredDefinition === undefined) return true;
+
+      const desiredRoots = desiredConsumers.get(id) ?? new Set<string>();
+      const nativeRoots = nativeConsumers.get(id) ?? new Set<string>();
+      const exactRoots = exactUpserts.get(id) ?? new Set<string>();
+      if (desiredRoots.size === 0) return true; // definition-only add/change
+      if (nativeDefinition !== undefined && nativeRoots.size > 1) return true;
+      for (const uuid of desiredRoots) {
+        if (!exactRoots.has(uuid)) return true;
+      }
+      for (const uuid of nativeRoots) {
+        if (!operatedRoots.has(uuid)) return true;
+      }
+      return false;
+    });
+
+    return {
+      librariesMatch: false,
+      allChangesCovered: uncovered.length === 0,
+      changed,
+      uncovered,
+    };
   };
 
   const failProjection = (
@@ -384,7 +535,12 @@ export function bindKicadCollab(
     }
   };
 
-  const finishProjection = (wire: ItemsWireDelta, err?: unknown): void => {
+  interface ProjectionTicket {
+    readonly wire: ItemsWireDelta;
+    readonly targetNonItems: RuntimeNonItemState;
+  }
+
+  const finishProjection = (ticket: ProjectionTicket, err?: unknown): void => {
     projectionInFlight = false;
     if (destroyed || projectionTerminal) return;
 
@@ -418,8 +574,15 @@ export function bindKicadCollab(
       if (nativeShadow === null) throw new Error("acknowledged projection has no native shadow");
       nativeShadow = applyItemsDelta(
         nativeShadow,
-        itemsWireToDelta(wire, nativeShadow, warnSkip),
+        itemsWireToDelta(ticket.wire, nativeShadow, warnSkip),
       );
+      // Advance to the exact non-item target submitted with this request. A
+      // newer Y update may already have set projectionDirty; reading it here
+      // would incorrectly acknowledge state this native commit never applied.
+      nativeNonItems = {
+        hardSignature: ticket.targetNonItems.hardSignature,
+        libraries: { ...ticket.targetNonItems.libraries },
+      };
     } catch (shadowError) {
       failProjection("internal-policy", shadowError);
       return;
@@ -452,6 +615,13 @@ export function bindKicadCollab(
       );
       return;
     }
+    if (nativeNonItems === null) {
+      failProjection(
+        "native-baseline",
+        new Error("native projection has no non-item baseline"),
+      );
+      return;
+    }
 
     let desired: ReturnType<typeof projectionView>;
     try {
@@ -464,25 +634,75 @@ export function bindKicadCollab(
       return;
     }
 
-    if (
-      nativeStructure !== null &&
-      desired.structure !== null &&
-      nativeStructure !== desired.structure
-    ) {
+    // An editor-snapshot-seeded room has no authoritative root/layout at all;
+    // null means "outside this room's state", not a competing hard structure.
+    const hardMatches =
+      desired.nonItems.hardSignature === null ||
+      nativeNonItems.hardSignature === desired.nonItems.hardSignature;
+    if (decideStructuralProjection(hardMatches, true, true) === 4) {
       failProjection(
         "non-item-structure",
         new Error(
-          "remote root/layout/library structure cannot be hot-applied; native rehydration is required",
+          "remote root/layout structure cannot be hot-applied; native rehydration is required",
+        ),
+      );
+      return;
+    }
+
+    let delta: ReturnType<typeof projectionDelta>;
+    let wire: ItemsWireDelta;
+    let coverage: LibraryProjectionCoverage;
+    try {
+      delta = projectionDelta(nativeShadow!, desired.items);
+      wire = deltaToItemsWire(delta, desired.items, libDefs);
+      coverage = libraryProjectionCoverage(
+        nativeNonItems,
+        desired.nonItems,
+        wire,
+        nativeShadow!,
+        desired.items,
+      );
+    } catch (err) {
+      failProjection("internal-policy", err);
+      return;
+    }
+
+    const structuralAction = decideStructuralProjection(
+      true,
+      coverage.librariesMatch,
+      coverage.allChangesCovered,
+    );
+    if (structuralAction === 4) {
+      const ids = coverage.uncovered.map((id) => JSON.stringify(id)).join(", ");
+      failProjection(
+        "non-item-structure",
+        new Error(
+          `remote library definition change is not covered by this symbol-root projection (${ids}); native rehydration is required`,
+        ),
+      );
+      return;
+    }
+    if (structuralAction !== 1) {
+      failProjection(
+        "internal-policy",
+        new Error(
+          `verified structural projection policy returned invalid action ${structuralAction}`,
         ),
       );
       return;
     }
 
     projectionDirty = false;
-    const delta = projectionDelta(nativeShadow!, desired.items);
     if (isEmptyKicadDelta(delta)) return;
-    const wire = deltaToItemsWire(delta, desired.items, libDefs);
     if (isEmptyItemsWireDelta(wire)) return;
+
+    const ticket: ProjectionTicket = {
+      wire,
+      targetNonItems: {
+        hardSignature: desired.nonItems.hardSignature,
+        libraries: { ...desired.nonItems.libraries },
+      },
+    };
 
     clog("⬆ desired Y state → apply to editor:", {
       added: wire.added.length,
@@ -494,17 +714,17 @@ export function bindKicadCollab(
     try {
       completion = bridge.applyItems(JSON.stringify(wire));
     } catch (err) {
-      finishProjection(wire, err);
+      finishProjection(ticket, err);
       return;
     }
 
     if (isPromiseLike(completion)) {
       Promise.resolve(completion).then(
-        () => finishProjection(wire),
-        (err: unknown) => finishProjection(wire, err),
+        () => finishProjection(ticket),
+        (err: unknown) => finishProjection(ticket, err),
       );
     } else {
-      finishProjection(wire);
+      finishProjection(ticket);
     }
   }
 
@@ -661,8 +881,11 @@ export function bindKicadCollab(
     if (txn.origin === ORIGIN || txn.origin === "layout-save") {
       if (touchesNonItems) {
         try {
-          const structure = projectionView().structure;
-          if (structure !== null) nativeStructure = structure;
+          const target = projectionView().nonItems;
+          nativeNonItems = {
+            hardSignature: target.hardSignature,
+            libraries: { ...target.libraries },
+          };
         } catch (err) {
           failAuthoritativeState(err);
         }
@@ -709,7 +932,7 @@ export function bindKicadCollab(
 
   function seed(seedDoc?: KicadDoc, opts?: { editorMatchesDoc?: boolean }): void {
     seeded = true; // open the UP gate; everything below runs synchronously
-    if (seedDoc) nativeStructure = nonItemProjectionSignature(seedDoc);
+    if (seedDoc) nativeNonItems = runtimeNonItems(nonItemProjectionState(seedDoc));
     // `ydocHasState` (meta + layout + items), NOT `items.size`: a populated
     // drawing sheet (pl_editor .kicad_wks) has zero uuid items, so an items-only
     // check would mis-classify a seeded room as empty and re-seed/clobber it.
@@ -719,14 +942,20 @@ export function bindKicadCollab(
       // differ — otherwise the first local edit would re-emit the full model.
       clog(`seed: editor matches doc (${items.size} item(s)) → baseline only, no apply`);
       try {
-        nativeStructure = projectionView().structure;
+        nativeNonItems = projectionView().nonItems;
       } catch (err) {
         failAuthoritativeState(err);
         return;
       }
-      if (refreshNativeShadow("seed baseline") === null) {
+      const wire = refreshNativeShadow("seed baseline");
+      if (wire === null) {
         failProjection("native-baseline", new Error("seed baseline snapshot failed"));
+        return;
       }
+      // Opening/materializing and then parsing through KiCad's writer may
+      // normalize a library definition. Publish that exact native form so the
+      // first later symbol edit cannot manufacture structural drift.
+      upsertLibSymbolsToY(doc, wireLibSymbols(wire), ORIGIN);
       return;
     }
     if (!ydocHasState(doc) && seedDoc) {
@@ -747,36 +976,33 @@ export function bindKicadCollab(
       clog(
         `seed: doc empty → SEEDING from file (${Object.keys(seedDoc.items).length} item(s), root ${seedDoc.root})`,
       );
-      // v3 arbitrates the whole detached state at one active pointer, so a
-      // concurrent first seed selects one complete document rather than
-      // independently merging its items/layout/meta into a hybrid.
-      const nonce = `${doc.clientID}:${Math.random().toString(36).slice(2)}`;
-      seedDocToY(seedDoc, doc, ORIGIN, nonce);
       // snapshotItems() does double duty here. Its side effects register the
       // C++ change listener (bug 01 — without it this tab would receive but
-      // never SEND) and rebaseline the wasm differ. Its RESULT re-upserts the
-      // item bodies in the EDITOR's serialization: the file's formatting and
-      // the writer's normalized output can differ textually, and every future
-      // emit/drift-compare uses the writer's form — keeping file-formatted
-      // bodies would false-positive drift-detect on every file-seeded room
-      // and defeat upsertYItem's no-op skip. Meta + layout stay file-derived.
+      // never SEND) and rebaseline the wasm differ. Snapshot BEFORE publishing
+      // the seed, then install the file plus writer-normalized item/definition
+      // forms in ONE Y transaction. No peer can observe a transient raw file
+      // definition and retire before the canonical follow-up arrives.
       try {
-        const wire = refreshNativeShadow("post-file-seed baseline");
-        if (!wire) {
-          failProjection("native-baseline", new Error("post-file-seed baseline failed"));
-          return;
-        }
-        let authorityItems: Record<string, KicadItem>;
-        try {
-          authorityItems = itemsView();
-        } catch (err) {
-          failAuthoritativeState(err);
-          return;
-        }
-        const local = itemsWireToDelta(wire, authorityItems, warnSkip);
-        if (!isEmptyKicadDelta(local)) applyDeltaToY(doc, local, ORIGIN);
+        const snapshot = snapshotView();
+        nativeShadow = snapshot.view;
+        overlayNativeLibraries(snapshot.libraries);
+        const local = itemsWireToDelta(snapshot.wire, seedDoc.items, warnSkip);
+        const nonce = `${doc.clientID}:${Math.random().toString(36).slice(2)}`;
+        doc.transact(() => {
+          // v3 arbitrates the whole detached state at one active pointer, so a
+          // concurrent first seed selects one complete document rather than a
+          // per-root hybrid.
+          seedDocToY(seedDoc, doc, ORIGIN, nonce);
+          if (!isEmptyKicadDelta(local)) applyDeltaToY(doc, local, ORIGIN);
+          upsertLibSymbolsToY(doc, snapshot.libraries, ORIGIN);
+        }, ORIGIN);
+        const target = projectionView().nonItems;
+        nativeNonItems = {
+          hardSignature: target.hardSignature,
+          libraries: { ...target.libraries },
+        };
       } catch (err) {
-        cwarn("seed: post-file-seed baseline failed", err);
+        cwarn("seed: atomic writer-normalized baseline failed", err);
         failProjection("native-baseline", err);
       }
       return;
@@ -787,6 +1013,7 @@ export function bindKicadCollab(
       const snapshot = snapshotView();
       wire = snapshot.wire;
       nativeShadow = snapshot.view;
+      overlayNativeLibraries(snapshot.libraries);
     } catch (err) {
       cwarn("seed: snapshotItems unparseable", err);
       failProjection("native-baseline", err);
@@ -812,13 +1039,19 @@ export function bindKicadCollab(
 
     // Joining a populated doc: doc authority wins. The same acknowledged pump
     // used for live updates computes the minimal root-lifted adopt difference.
-    if (nativeStructure === null) {
+    if (nativeNonItems === null || nativeNonItems.hardSignature === null) {
       // Legacy/app-less callers may only supply the item snapshot. Production
       // passes either seedDoc or editorMatchesDoc. Baseline the current
       // structure here so subsequent remote structural drift still fails
       // closed instead of remaining silently stale.
       try {
-        nativeStructure = projectionView().structure;
+        const desired = projectionView().nonItems;
+        nativeNonItems = {
+          hardSignature: desired.hardSignature,
+          libraries: {
+            ...(nativeNonItems?.libraries ?? {}),
+          },
+        };
       } catch (err) {
         failAuthoritativeState(err);
         return;
