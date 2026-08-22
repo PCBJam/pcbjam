@@ -386,12 +386,16 @@ module DurabilityBoundary {
 
 module ProjectionKernel {
   datatype Action = Ignore | Idle | StartLatest | RetryLatest | Terminal
-  datatype Flight = NoFlight | InFlight(owner: nat, request: nat, revision: nat)
+  datatype Flight =
+    NoFlight
+    | InFlight(owner: nat, request: nat, revision: nat)
+    | RetryWait(owner: nat, timer: nat, revision: nat)
   datatype State = State(
     owner: nat,
     desired: nat,
     applied: nat,
     nextRequest: nat,
+    nextTimer: nat,
     flight: Flight,
     dirty: bool,
     terminal: bool)
@@ -406,6 +410,12 @@ module ProjectionKernel {
       && s.applied <= s.flight.revision <= s.desired
       && s.flight.request <= s.nextRequest
       && (s.dirty <==> s.flight.revision < s.desired))
+    && (s.flight.RetryWait? ==>
+      s.flight.owner == s.owner
+      && s.applied <= s.flight.revision
+      && s.flight.revision == s.desired
+      && s.flight.timer <= s.nextTimer
+      && s.dirty)
   }
 
   function Request(s: State, revision: nat): State
@@ -415,11 +425,16 @@ module ProjectionKernel {
     if s.terminal || revision <= s.desired then s
     else match s.flight
       case NoFlight =>
-        State(s.owner, revision, s.applied, s.nextRequest + 1,
+        State(s.owner, revision, s.applied, s.nextRequest + 1, s.nextTimer,
               InFlight(s.owner, s.nextRequest + 1, revision), false, false)
       case InFlight(_, _, _) =>
-        State(s.owner, revision, s.applied, s.nextRequest,
+        State(s.owner, revision, s.applied, s.nextRequest, s.nextTimer,
               s.flight, true, false)
+      case RetryWait(_, _, _) =>
+        // A new desired revision cancels the pending retry timer and starts
+        // that new latest state immediately, exactly like requestProjection().
+        State(s.owner, revision, s.applied, s.nextRequest + 1, s.nextTimer,
+              InFlight(s.owner, s.nextRequest + 1, revision), false, false)
   }
 
   function RehydrateOwner(s: State): State
@@ -430,7 +445,7 @@ module ProjectionKernel {
     ensures RehydrateOwner(s).flight.NoFlight?
     ensures !RehydrateOwner(s).terminal
   {
-    State(s.owner + 1, s.desired, s.desired, s.nextRequest,
+    State(s.owner + 1, s.desired, s.desired, s.nextRequest, s.nextTimer,
           NoFlight, false, false)
   }
 
@@ -466,19 +481,40 @@ module ProjectionKernel {
         if ackOwner != s.owner || ackOwner != inOwner || ackRequest != inRequest then
           (s, Ignore)
         else if ok && s.dirty then
-          (State(s.owner, s.desired, inRevision, s.nextRequest + 1,
+          (State(s.owner, s.desired, inRevision, s.nextRequest + 1, s.nextTimer,
                  InFlight(s.owner, s.nextRequest + 1, s.desired), false, false),
            StartLatest)
         else if ok then
-          (State(s.owner, s.desired, inRevision, s.nextRequest,
+          (State(s.owner, s.desired, inRevision, s.nextRequest, s.nextTimer,
                  NoFlight, false, false), Idle)
         else if retryable then
-          (State(s.owner, s.desired, s.applied, s.nextRequest + 1,
-                 InFlight(s.owner, s.nextRequest + 1, s.desired), false, false),
+          // The real controller has no native request in flight during
+          // backoff. It retains the latest desired revision behind one timer.
+          (State(s.owner, s.desired, s.applied, s.nextRequest, s.nextTimer + 1,
+                 RetryWait(s.owner, s.nextTimer + 1, s.desired), true, false),
            RetryLatest)
         else
-          (State(s.owner, s.desired, s.applied, s.nextRequest,
+          (State(s.owner, s.desired, s.applied, s.nextRequest, s.nextTimer,
                  NoFlight, false, true), Terminal)
+      case RetryWait(_, _, _) => (s, Ignore)
+  }
+
+  // A retry callback is owner/timer scoped. A cleared or stale callback is an
+  // identity transition; the matching live timer starts one request for the
+  // exact latest revision retained during the wait interval.
+  function RetryTimer(s: State, timerOwner: nat, timer: nat): (State, Action)
+    requires Invariant(s)
+    ensures Invariant(RetryTimer(s, timerOwner, timer).0)
+  {
+    match s.flight
+      case RetryWait(waitOwner, waitTimer, waitRevision) =>
+        if timerOwner != s.owner || timerOwner != waitOwner || timer != waitTimer then
+          (s, Ignore)
+        else
+          (State(s.owner, s.desired, s.applied, s.nextRequest + 1, s.nextTimer,
+                 InFlight(s.owner, s.nextRequest + 1, waitRevision), false, false),
+           StartLatest)
+      case _ => (s, Ignore)
   }
 
   lemma StaleOwnerAckIsIdentity(s: State, ackOwner: nat, ackRequest: nat,
@@ -526,14 +562,61 @@ module ProjectionKernel {
     ensures Ack(s, ackOwner, ackRequest, true, false).0.flight.revision == s.desired
   {}
 
-  lemma RetryStartsExactlyLatest(s: State, ackOwner: nat, ackRequest: nat)
+  lemma RetrySchedulesExactlyLatest(s: State, ackOwner: nat, ackRequest: nat)
     requires Invariant(s)
     requires s.flight.InFlight?
     requires ackOwner == s.owner == s.flight.owner
     requires ackRequest == s.flight.request
     ensures Ack(s, ackOwner, ackRequest, false, true).1 == RetryLatest
-    ensures Ack(s, ackOwner, ackRequest, false, true).0.flight.InFlight?
+    ensures Ack(s, ackOwner, ackRequest, false, true).0.flight.RetryWait?
     ensures Ack(s, ackOwner, ackRequest, false, true).0.flight.revision == s.desired
+    ensures Ack(s, ackOwner, ackRequest, false, true).0.desired == s.desired
+    ensures Ack(s, ackOwner, ackRequest, false, true).0.applied == s.applied
+    ensures Ack(s, ackOwner, ackRequest, false, true).0.nextRequest == s.nextRequest
+    ensures Ack(s, ackOwner, ackRequest, false, true).0.dirty
+  {}
+
+  lemma RetryWaitRetainsLatestWithoutNativeFlight(s: State)
+    requires Invariant(s)
+    requires s.flight.RetryWait?
+    ensures s.flight.revision == s.desired
+    ensures s.dirty
+    ensures !s.flight.InFlight?
+  {}
+
+  lemma MatchingRetryTimerStartsExactlyLatest(s: State)
+    requires Invariant(s)
+    requires s.flight.RetryWait?
+    ensures RetryTimer(s, s.owner, s.flight.timer).1 == StartLatest
+    ensures RetryTimer(s, s.owner, s.flight.timer).0.flight.InFlight?
+    ensures RetryTimer(s, s.owner, s.flight.timer).0.flight.revision == s.desired
+    ensures RetryTimer(s, s.owner, s.flight.timer).0.nextRequest == s.nextRequest + 1
+    ensures !RetryTimer(s, s.owner, s.flight.timer).0.dirty
+  {}
+
+  lemma StaleRetryTimerIsIdentity(s: State, timerOwner: nat, timer: nat)
+    requires Invariant(s)
+    requires s.flight.RetryWait?
+    requires timerOwner != s.owner || timer != s.flight.timer
+    ensures RetryTimer(s, timerOwner, timer) == (s, Ignore)
+  {}
+
+  lemma NewerRequestCancelsRetryWaitAndStartsExactlyLatest(s: State, revision: nat)
+    requires Invariant(s)
+    requires s.flight.RetryWait?
+    requires revision > s.desired
+    ensures Request(s, revision).desired == revision
+    ensures Request(s, revision).flight.InFlight?
+    ensures Request(s, revision).flight.revision == revision
+    ensures !Request(s, revision).dirty
+  {}
+
+  lemma RehydrationCancelsRetryWait(s: State)
+    requires Invariant(s)
+    requires s.flight.RetryWait?
+    ensures RehydrateOwner(s).flight.NoFlight?
+    ensures RetryTimer(RehydrateOwner(s), s.owner, s.flight.timer)
+      == (RehydrateOwner(s), Ignore)
   {}
 
   lemma TerminalFailureStopsFlight(s: State, ackOwner: nat, ackRequest: nat)
