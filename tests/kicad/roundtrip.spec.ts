@@ -1,3 +1,5 @@
+import { execSync } from "node:child_process";
+import path from "node:path";
 import type { BrowserContext, Page } from "@playwright/test";
 import { test, expect } from "./fixtures";
 import { sexprDiff } from "../../web/standalone/src/wasm/collab/sexpr-diff";
@@ -9,6 +11,7 @@ import { sexprDiff } from "../../web/standalone/src/wasm/collab/sexpr-diff";
  *
  *   load a fixture file  →  save it (ORIG, normalized through the serializer)
  *   →  kicadCollabSnapshotItems (per-item s-expr blobs, the Slot-model wire)
+ *   →  parse wire → KicadItem tree → Y.Doc → KicadItem tree → render wire
  *   →  RELOAD the page (fresh process-global wasm; boot.ts) → open an EMPTY doc
  *   →  kicadCollabApplyItems(snapshot)  (rebuild the model purely from the blobs)
  *   →  save (REGEN)
@@ -61,6 +64,7 @@ type FS = {
 // Heavy tools (pcbnew ~190MB wasm) can take well over a minute to download +
 // compile + boot, especially the SECOND instance of a run; keep this generous.
 const BOOT_TIMEOUT = 150000;
+const COLLAB_BUNDLE = path.resolve(__dirname, "../apps/kicad/collab-bundle-v2.js");
 
 function hasAbort(l: { consoleLogs: string[]; errors: string[] }): boolean {
   return [...l.consoleLogs, ...l.errors].some((s) => s.includes("Aborted("));
@@ -140,7 +144,15 @@ async function roundTrip(
   const extract = await context.newPage();
   await bootOpen(extract, cfg, cfg.fixture, "rt");
   const orig = await saveRead(extract, cfg, "orig_dump");
-  const snap = await extract.evaluate(() => window.Module.kicadCollabSnapshotItems());
+  await extract.addScriptTag({ path: COLLAB_BUNDLE });
+  const snap = await extract.evaluate(() => {
+    const wire = window.Module.kicadCollabSnapshotItems();
+    return (
+      window as unknown as {
+        KicadCollabV2: { nativeWireThroughY(json: string): string };
+      }
+    ).KicadCollabV2.nativeWireThroughY(wire);
+  });
   await extract.close();
 
   // v2 wire: { added: [{ sexpr, parent }] } — uuids live inside the blobs.
@@ -438,8 +450,12 @@ const PCB_FP: ToolCfg = {
 };
 
 test.beforeAll(() => {
-  // No reconciler bundle needed — the round trip drives only the C++ Module.*
-  // exports (open / snapshot / apply / save).
+  // The Yjs conversion must be current; otherwise this suite can accidentally
+  // prove only native snapshot→native apply while bypassing Y.Doc entirely.
+  execSync("node collab/build.mjs", {
+    cwd: path.resolve(__dirname, ".."),
+    stdio: "inherit",
+  });
 });
 
 test.describe("round trip: file → yjs → file", () => {
