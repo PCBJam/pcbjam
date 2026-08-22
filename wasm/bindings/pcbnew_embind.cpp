@@ -23,6 +23,7 @@
 #include <pcb_shape.h>
 #include <pcb_text.h>
 #include <pcb_group.h>
+#include <pcb_generator.h>
 #include <zone.h>
 #include <eda_text.h>
 #include <pcb_edit_frame.h>
@@ -224,22 +225,40 @@ int itemLayer( BOARD_ITEM* aItem )
     return (int) aItem->BOARD_ITEM::GetLayer();
 }
 
-// Iterate every board item the bridge syncs: the top-level items (tracks, footprints, drawings,
-// zones, groups) PLUS each footprint's TEXT children (fields = reference/value/user, and graphic
-// PCB_TEXT). The text children are visited by their OWN uuid because a silkscreen reference/value
-// can be moved *independently* of its footprint (the footprint origin doesn't change, so syncing
-// the footprint as a unit would miss it). Pads and footprint graphic shapes are NOT visited — they
-// move only with the footprint. All these uuids live in BOARD::m_itemByIdCache, so apply resolves
-// them directly. On a whole-footprint move the children also re-appear in the diff (their absolute
-// positions changed); that's redundant but convergent, since apply uses absolute SetPosition.
+// The complete native ROOT universe for collaboration. Keep every snapshot, diff, and blob parser
+// on this iterator: separate hand-written collection lists already made PCB_GROUP disappear from
+// v2 snapshots and PCB_GENERATOR disappear from snapshots, diffs, and envelope parsing.
+template <typename Fn>
+void forEachRootItem( BOARD& aBoard, Fn&& aFn )
+{
+    // Preserve the established v2 snapshot order for the original four collections; append the
+    // two group-like root collections in the same order as the board-file writer.
+    for( FOOTPRINT* f : aBoard.Footprints() )   aFn( static_cast<BOARD_ITEM*>( f ) );
+    for( PCB_TRACK* t : aBoard.Tracks() )       aFn( static_cast<BOARD_ITEM*>( t ) );
+    for( ZONE* z : aBoard.Zones() )             aFn( static_cast<BOARD_ITEM*>( z ) );
+    for( BOARD_ITEM* d : aBoard.Drawings() )    aFn( d );
+    for( PCB_GROUP* g : aBoard.Groups() )       aFn( static_cast<BOARD_ITEM*>( g ) );
+    for( PCB_GENERATOR* g : aBoard.Generators() )
+        aFn( static_cast<BOARD_ITEM*>( g ) );
+}
+
+// Iterate every scalar-diff item the bridge syncs: the roots above PLUS each footprint's TEXT
+// children (fields = reference/value/user, and graphic PCB_TEXT). The text children are visited by
+// their OWN uuid because a silkscreen reference/value can be moved independently of its footprint.
+// Pads and footprint graphic shapes are not visited: their containing footprint blob is emitted
+// from the native dirty-root signal. All these uuids live in BOARD::m_itemByIdCache, so apply
+// resolves them directly.
 template <typename Fn>
 void forEachTopItem( BOARD& aBoard, Fn&& aFn )
 {
-    for( PCB_TRACK* t : aBoard.Tracks() )       aFn( static_cast<BOARD_ITEM*>( t ) );
-
-    for( FOOTPRINT* f : aBoard.Footprints() )
+    forEachRootItem( aBoard, [&]( BOARD_ITEM* aRoot )
     {
-        aFn( static_cast<BOARD_ITEM*>( f ) );
+        aFn( aRoot );
+
+        if( aRoot->Type() != PCB_FOOTPRINT_T )
+            return;
+
+        FOOTPRINT* f = static_cast<FOOTPRINT*>( aRoot );
 
         for( PCB_FIELD* fld : f->GetFields() )
         {
@@ -252,11 +271,7 @@ void forEachTopItem( BOARD& aBoard, Fn&& aFn )
             if( g->Type() == PCB_TEXT_T )
                 aFn( g );
         }
-    }
-
-    for( BOARD_ITEM* d : aBoard.Drawings() )    aFn( d );
-    for( ZONE* z : aBoard.Zones() )             aFn( static_cast<BOARD_ITEM*>( z ) );
-    for( PCB_GROUP* g : aBoard.Groups() )       aFn( static_cast<BOARD_ITEM*>( g ) );
+    } );
 }
 
 // The diff/wire unit for one board item: the fields apply() can act on. Tracks carry their two
@@ -537,9 +552,14 @@ BOARD_ITEM* makeFromBlob( BOARD& aBoard, const std::string& aBlobIn )
     BOARD* clip = static_cast<BOARD*>( parsed );
     clip->MapNets( &aBoard );
 
-    const size_t itemCount = clip->Tracks().size() + clip->Zones().size()
-                             + clip->Drawings().size() + clip->Footprints().size()
-                             + clip->Groups().size();
+    size_t      itemCount = 0;
+    BOARD_ITEM* found     = nullptr;
+
+    forEachRootItem( *clip, [&]( BOARD_ITEM* aItem )
+    {
+        ++itemCount;
+        found = aItem;
+    } );
 
     // One wire entry is one native root. Silently selecting the first root from
     // a malformed envelope makes the ACK lie and can leave duplicate identities.
@@ -548,14 +568,6 @@ BOARD_ITEM* makeFromBlob( BOARD& aBoard, const std::string& aBlobIn )
         delete clip;
         return nullptr;
     }
-
-    BOARD_ITEM* found = nullptr;
-
-    if( !clip->Tracks().empty() )           found = clip->Tracks().front();      // track / via / arc
-    else if( !clip->Zones().empty() )       found = clip->Zones().front();
-    else if( !clip->Drawings().empty() )    found = clip->Drawings().front();    // shape / text / …
-    else if( !clip->Footprints().empty() )  found = clip->Footprints().front();
-    else if( !clip->Groups().empty() )      found = clip->Groups().front();
 
     if( found )
     {
@@ -1694,10 +1706,7 @@ std::string pcbCollabSnapshotItems()
             added.push_back( json{ { "sexpr", blobForItem( board, item ) }, { "parent", nullptr } } );
         };
 
-        for( FOOTPRINT* fp : board->Footprints() )  push( fp );
-        for( PCB_TRACK* t : board->Tracks() )       push( t );
-        for( ZONE* z : board->Zones() )             push( z );
-        for( BOARD_ITEM* d : board->Drawings() )    push( d );
+        forEachRootItem( *board, push );
     }
 
     rebaseline();
