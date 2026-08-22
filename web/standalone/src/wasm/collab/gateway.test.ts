@@ -115,6 +115,16 @@ const step2From = (serverDoc: Y.Doc, clientStep1?: Uint8Array): Uint8Array => {
   return encoding.toUint8Array(enc);
 };
 
+function syncSubtype(frame: Uint8Array): number | null {
+  const dec = decoding.createDecoder(frame.slice());
+  if (decoding.readVarUint(dec) !== 0) return null;
+  return decoding.readVarUint(dec);
+}
+
+function step1Frame(ws: FakeWebSocket): Uint8Array | undefined {
+  return ws.frames().find((f) => f.type === 0 && syncSubtype(f.frame) === 0)?.frame;
+}
+
 const cleanups: Array<() => void> = [];
 afterEach(() => {
   for (const c of cleanups.splice(0)) c();
@@ -150,14 +160,14 @@ describe("gateway facade — active documents", () => {
       mode: "active",
       schema: 3,
     });
-    const step1 = ws.frames().find((f) => f.type === 0);
+    const step1 = step1Frame(ws);
     expect(step1).toBeTruthy();
 
     // Server state lands via Step2 → whenSynced resolves, doc holds it.
     const serverDoc = new Y.Doc();
     serverDoc.getMap("m").set("k", "v");
     cleanups.push(() => serverDoc.destroy());
-    ws.receiveFrame(sub!.ch, step2From(serverDoc, step1!.frame));
+    ws.receiveFrame(sub!.ch, step2From(serverDoc, step1));
     await facade.whenSynced();
     expect(doc.getMap("m").get("k")).toBe("v");
 
@@ -177,7 +187,10 @@ describe("gateway facade — active documents", () => {
     const ch = ws.controls()[0]!.ch;
     ws.sent = [];
     ws.receiveText(JSON.stringify({ t: "resync", ch }));
-    expect(ws.frames().filter((f) => f.type === 0).length).toBe(1);
+    expect(ws.frames().filter((f) => f.type === 0).map((f) => syncSubtype(f.frame))).toEqual([
+      2,
+      0,
+    ]);
   });
 });
 
@@ -213,12 +226,12 @@ describe("gateway facade — passive warm pool (the laziness contract)", () => {
     ws.sent = [];
     const syncing = facade.activate();
     expect(ws.controls()).toEqual([{ t: "act", ch }]);
-    const step1 = ws.frames().find((f) => f.type === 0);
+    const step1 = step1Frame(ws);
     expect(step1).toBeTruthy();
     const serverDoc = new Y.Doc();
     serverDoc.getMap("m").set("from", "server");
     cleanups.push(() => serverDoc.destroy());
-    ws.receiveFrame(ch, step2From(serverDoc, step1!.frame));
+    ws.receiveFrame(ch, step2From(serverDoc, step1));
     await syncing;
     expect(doc.getMap("m").get("from")).toBe("server");
   });
@@ -307,10 +320,10 @@ describe("gateway connection — mux + reconnect", () => {
     const ch = ws1.controls()[0]!.ch;
     // Activate (and settle the sync) on socket 1.
     const syncing = facade.activate();
-    const step1 = ws1.frames().find((f) => f.type === 0)!;
+    const step1 = step1Frame(ws1)!;
     const serverDoc = new Y.Doc();
     cleanups.push(() => serverDoc.destroy());
-    ws1.receiveFrame(ch, step2From(serverDoc, step1.frame));
+    ws1.receiveFrame(ch, step2From(serverDoc, step1));
     await syncing;
 
     vi.useFakeTimers();
@@ -335,8 +348,8 @@ describe("gateway connection — mux + reconnect", () => {
     const ws1 = FakeWebSocket.instances.at(-1)!;
     ws1.open();
     const ch = ws1.controls()[0]!.ch;
-    const initialStep1 = ws1.frames().find((f) => f.type === 0)!;
-    ws1.receiveFrame(ch, step2From(serverDoc, initialStep1.frame));
+    const initialStep1 = step1Frame(ws1)!;
+    ws1.receiveFrame(ch, step2From(serverDoc, initialStep1));
     await facade.whenSynced();
 
     vi.useFakeTimers();

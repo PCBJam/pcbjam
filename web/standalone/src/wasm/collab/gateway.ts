@@ -22,7 +22,7 @@ import {
   removeAwarenessStates,
 } from "y-protocols/awareness";
 import * as syncProtocol from "y-protocols/sync";
-import type * as Y from "yjs";
+import * as Y from "yjs";
 import {
   KDOC_COLLAB_PROTOCOL_VERSION,
   type GatewayClientMsg,
@@ -426,8 +426,11 @@ export class GatewayDocFacade implements YjsProvider {
       return;
     }
     if (msg.t === "resync") {
-      // The doc's relay (re)connected server-side — our Step1 pulls the news.
-      if (this.mode === "active" && !this.isPresence) this.sendSyncStep1();
+      // The doc's relay (re)connected server-side. Upload our complete local
+      // state before asking for the server's missing state: Step1 alone is a
+      // download-only exchange and cannot recover edits authored while the
+      // outer gateway socket was disconnected.
+      if (this.mode === "active" && !this.isPresence) this.beginSync();
       return;
     }
     // touched
@@ -487,7 +490,21 @@ export class GatewayDocFacade implements YjsProvider {
   }
 
   private beginSync(): void {
+    // WebSocket messages are ordered. Sending the idempotent full Yjs update
+    // first means the following Step1's Step2 response is also an acceptance
+    // barrier for client-only/offline structs: the server processed them before
+    // it answered. Use SyncUpdate (not an unsolicited Step2), so peer facades
+    // that receive the gateway's local fan-out do not falsely mark themselves
+    // synced merely because another client reconnected.
+    this.sendFullStateUpdate();
     this.sendSyncStep1();
+  }
+
+  private sendFullStateUpdate(): void {
+    const encoder = encoding.createEncoder();
+    encoding.writeVarUint(encoder, MESSAGE_SYNC);
+    syncProtocol.writeUpdate(encoder, Y.encodeStateAsUpdate(this.doc));
+    this.send(encoding.toUint8Array(encoder));
   }
 
   private sendSyncStep1(): void {
