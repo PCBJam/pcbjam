@@ -68,8 +68,9 @@ import { nonItemProjectionSignature } from "./projection-structure";
 export const DOC_REVERTED_EVENT = "pcbjam:doc-reverted";
 
 /**
- * Terminal projection boundary. The current native instance is retired and
- * the shell offers a fresh boot from authoritative Yjs state.
+ * Terminal projection boundary. The current native instance is retired. Most
+ * failures can recreate directly from authoritative Yjs; an invalid authority
+ * must be corrected first because a fresh editor cannot materialize it either.
  */
 export const NATIVE_PROJECTION_FAILED_EVENT = "pcbjam:native-projection-failed";
 
@@ -78,11 +79,16 @@ export interface NativeProjectionFailure {
     | "native-apply"
     | "native-baseline"
     | "native-emission-order"
+    | "invalid-y-state"
+    | "unsupported-y-version"
     | "non-item-structure"
     | "internal-policy";
   readonly message: string;
   readonly status?: string;
-  readonly recovery: "recreate-from-yjs";
+  readonly recovery:
+    | "recreate-from-yjs"
+    | "repair-yjs-before-recreate"
+    | "upgrade-client";
 }
 
 /** The v2 per-item s-expr bridge (Stage C C++ contract), runtime-adapted. */
@@ -294,6 +300,7 @@ export function bindKicadCollab(
     kind: NativeProjectionFailure["kind"],
     error: unknown,
     status?: string,
+    recovery: NativeProjectionFailure["recovery"] = "recreate-from-yjs",
   ): void => {
     if (destroyed || projectionTerminal) return;
     projectionTerminal = true;
@@ -308,9 +315,15 @@ export function bindKicadCollab(
       kind,
       message,
       status,
-      recovery: "recreate-from-yjs",
+      recovery,
     };
-    cwarn("native projection terminal; retire this instance and rehydrate from Yjs", failure);
+    const recoveryLog =
+      recovery === "repair-yjs-before-recreate"
+        ? "repair authoritative Yjs before recreation"
+        : recovery === "upgrade-client"
+          ? "upgrade the client before recreation"
+          : "recreate from authoritative Yjs";
+    cwarn(`native projection terminal; retire this instance and ${recoveryLog}`, failure);
 
     // Stop native ingress immediately. The binding observers remain installed
     // only until the shell tears the collaboration handle down; both destroy
@@ -428,10 +441,16 @@ export function bindKicadCollab(
     try {
       desired = projectionView();
     } catch (err) {
-      // Raw or future-version Y state is quarantined. Do not let an observer
-      // throw through Y.applyUpdate, and do not mutate a known-good editor.
-      projectionDirty = false;
-      cwarn("⬆ remote Y state is invalid; native projection quarantined", err);
+      // A fresh native owner cannot hydrate from an authority that cannot be
+      // materialized. Retire this owner exactly once without throwing through
+      // Y.applyUpdate, and make the repair-before-recreate boundary observable.
+      const unsupportedVersion = err instanceof SexprVersionError;
+      failProjection(
+        unsupportedVersion ? "unsupported-y-version" : "invalid-y-state",
+        err,
+        unsupportedVersion ? "unsupported-version" : "materialization-failed",
+        unsupportedVersion ? "upgrade-client" : "repair-yjs-before-recreate",
+      );
       return;
     }
 

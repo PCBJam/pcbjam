@@ -1543,10 +1543,16 @@ export function WasmTool({
     };
     const onProjectionFailure = (e: Event) => {
       const failure = (e as CustomEvent<NativeProjectionFailure>).detail;
+      const recovery =
+        failure?.recovery === "repair-yjs-before-recreate"
+          ? "The authoritative collaboration state must be corrected before reloading; " +
+            "reloading this malformed room alone cannot recover the editor."
+          : failure?.recovery === "upgrade-client"
+            ? "Update the application before recreating the editor from this room."
+            : "Reload to recreate the editor from authoritative Yjs state.";
       promote(
         "native projection",
-        `${failure?.message ?? "native projection entered an unknown state"} ` +
-          "Reload to recreate the editor from authoritative Yjs state.",
+        `${failure?.message ?? "native projection entered an unknown state"} ${recovery}`,
       );
     };
     // With PROXY_TO_PTHREAD, main()/wx/timers — and therefore every wasm
