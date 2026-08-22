@@ -49,6 +49,8 @@ function hasAbort(l: { consoleLogs: string[]; errors: string[] }): boolean {
 const U_TITLE = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 const U_RECT = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
 const U_DIVERGENT = "dddddddd-dddd-dddd-dddd-dddddddddddd";
+const U_ALT_TITLE = "cccccccc-cccc-cccc-cccc-cccccccccccc";
+const U_ALT_RECT = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee";
 
 const PL: ToolCfg = {
   html: "pl_editor.html",
@@ -62,6 +64,15 @@ const PL: ToolCfg = {
 )
 `,
   fns: ["kicadCollabTestAddText"],
+};
+
+const PL_ALT_SEED: ToolCfg = {
+  ...PL,
+  fixture: PL.fixture
+    .replace("(left_margin 10)", "(left_margin 23)")
+    .replace(U_RECT, U_ALT_RECT)
+    .replace(U_TITLE, U_ALT_TITLE)
+    .replace('"Title"', '"Alternative seed"'),
 };
 
 const FP1 = "66666666-0000-0000-0000-000000000001";
@@ -400,15 +411,15 @@ for (const [cfg, label] of [
 // ── Bug 06 — concurrent first-seed duplicates kdoc_layout ────────────────────
 // 06-bug-concurrent-seed-duplicates-layout.md: seed-vs-adopt is client-side
 // check-then-act; two tabs opening the same fresh room inside the settle
-// window can both file-seed. FIXED by the arbitrated seed (seedDocToY nonce +
-// LWW-loser layout retraction — deterministic unit coverage in
-// web/pcbjam-shared/test/ysync-repros.test.ts); this drives the real window
-// and asserts the room ends on one clean sequence either way.
+// window can both file-seed. The v3 active pointer arbitrates one complete
+// epoch (layout + items + definitions) as one Y.Map value. This drives two
+// genuinely different native files, then joins a third tab, so a hybrid cannot
+// hide behind equal seeds.
 
 test.describe("v2 items wire — concurrent seed (bug 06 repro)", () => {
   test.describe.configure({ timeout: 420000 });
 
-  test("both tabs seed a fresh room at once: the room converges on one clean sequence", async ({
+  test("divergent simultaneous seeds and a late joiner select one whole epoch", async ({
     context,
     testLogger,
   }) => {
@@ -416,12 +427,12 @@ test.describe("v2 items wire — concurrent seed (bug 06 repro)", () => {
     const tabA = await context.newPage();
     const tabB = await context.newPage();
     await bootOpen(tabA, PL, "tabA");
-    await bootOpen(tabB, PL, "tabB");
+    await bootOpen(tabB, PL_ALT_SEED, "tabB");
 
     // Equal settle windows, started together: both pass ydocHasState("empty").
     await Promise.all([
       startV2(tabA, { room, seedText: PL.fixture, settleMs: 400 }),
-      startV2(tabB, { room, seedText: PL.fixture, settleMs: 400 }),
+      startV2(tabB, { room, seedText: PL_ALT_SEED.fixture, settleMs: 400 }),
     ]);
 
     // Let the CRDT converge (not part of the repro — both docs must agree).
@@ -437,20 +448,48 @@ test.describe("v2 items wire — concurrent seed (bug 06 repro)", () => {
 
     const merged = (await renderDoc(tabA)).ok!;
 
-    // Whether or not both tabs raced into the seed branch this run, the
-    // arbitrated seed (seedDocToY + LWW-loser layout retraction) must leave a
-    // SINGLE clean sequence: each root exactly once, the preamble not doubled.
-    // (Byte-comparing against singleSeedRender(fixture) is no longer valid: the
-    // file-seed path deliberately re-upserts item BODIES in the editor's
-    // serialization, so the room's render is editor-normalized, not file-verbatim.)
-    expect(merged.match(new RegExp(U_RECT, "g")), "border rect appears once").toHaveLength(1);
-    expect(merged.match(new RegExp(U_TITLE, "g")), "title text appears once").toHaveLength(1);
+    const wonA = merged.includes(U_RECT) && merged.includes(U_TITLE);
+    const wonB = merged.includes(U_ALT_RECT) && merged.includes(U_ALT_TITLE);
+    expect([wonA, wonB].filter(Boolean), "exactly one complete seed won").toHaveLength(1);
+    const winnerIds = wonA ? [U_RECT, U_TITLE] : [U_ALT_RECT, U_ALT_TITLE];
+    const loserIds = wonA ? [U_ALT_RECT, U_ALT_TITLE] : [U_RECT, U_TITLE];
+    for (const id of winnerIds) expect(merged).toContain(id);
+    for (const id of loserIds) expect(merged).not.toContain(id);
+    expect(merged).toContain(wonA ? "(left_margin 10)" : "(left_margin 23)");
+    expect(merged).not.toContain(wonA ? "(left_margin 23)" : "(left_margin 10)");
     expect(merged.match(/\(version 20220228\)/g), "preamble not doubled").toHaveLength(1);
     expect(merged.match(/\(setup /g), "setup block not doubled").toHaveLength(1);
+
+    const tabC = await context.newPage();
+    await bootOpen(tabC, PL, "tabC");
+    await startV2(tabC, { room });
+    await expect
+      .poll(async () => (await renderDoc(tabC)).ok, {
+        timeout: 15_000,
+        intervals: [300],
+      })
+      .toBe(merged);
+
+    // The losing native editor and a late native joiner both project the same
+    // selected items. Non-item setup is intentionally a reopen boundary today;
+    // the canonical Y document above is nevertheless one whole epoch.
+    for (const [tab, label] of [
+      [tabA, "tabA"],
+      [tabB, "tabB"],
+      [tabC, "tabC"],
+    ] as const) {
+      await expect
+        .poll(async () => modelText(tab, PL), { timeout: 15_000, intervals: [300] })
+        .toContain(winnerIds[0]!);
+      const native = await modelText(tab, PL);
+      for (const id of winnerIds) expect(native, `${label} has winner ${id}`).toContain(id);
+      for (const id of loserIds) expect(native, `${label} excludes loser ${id}`).not.toContain(id);
+    }
 
     expect(hasAbort(testLogger), "no WASM abort").toBe(false);
     await tabA.close();
     await tabB.close();
+    await tabC.close();
   });
 });
 
