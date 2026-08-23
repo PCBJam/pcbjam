@@ -4,7 +4,16 @@ import { execSync } from "node:child_process";
 import type { Page } from "@playwright/test";
 import { fileToDoc } from "../../web/pcbjam-shared/src/index.js";
 import { expect, test } from "./fixtures";
-import { TRIO_PCB, bootOpen, callHook, modelText, type ToolCfg } from "./utils/trio";
+import { clickMenuItem, findRenderedByType } from "../e2e/utils/element-tracker";
+import {
+  FP1,
+  PAD1,
+  TRIO_PCB,
+  bootOpen,
+  callHook,
+  modelText,
+  type ToolCfg,
+} from "./utils/trio";
 
 /**
  * Real-Wasm regressions for KiCad's PCB root identity and pointer-based
@@ -26,6 +35,19 @@ const GROUPED_PCB: ToolCfg = {
 const GENERATED_PCB: ToolCfg = {
   ...TRIO_PCB,
   fixture: read("kicad/qa/data/pcbnew/diff_pair_uncoupled_tuning_drc.kicad_pcb"),
+};
+const POINTER_HOOKS = [
+  "kicadCollabGetSelection",
+  "kicadCollabTestSelectByUuid",
+  "kicadCollabTestClearSelection",
+];
+const GROUPED_POINTER_PCB: ToolCfg = {
+  ...GROUPED_PCB,
+  fns: [...GROUPED_PCB.fns, ...POINTER_HOOKS],
+};
+const CHILD_POINTER_PCB: ToolCfg = {
+  ...TRIO_PCB,
+  fns: [...TRIO_PCB.fns, ...POINTER_HOOKS],
 };
 
 const TABLE_ROOT_UUID = "91919191-0000-0000-0000-000000000001";
@@ -172,6 +194,98 @@ async function applyChangedRoot(page: Page, id: string, sexpr: string): Promise<
   );
 }
 
+async function applyRemovedRoot(page: Page, id: string): Promise<void> {
+  await callHook(
+    page,
+    "kicadCollabApplyItems",
+    JSON.stringify({
+      added: [],
+      changed: [],
+      removed: [id],
+    }),
+  );
+  await page.waitForFunction(
+    () => !(window as unknown as ReferenceWindow).Module.kicadCollabBusy(),
+    null,
+    { timeout: 30_000 },
+  );
+}
+
+async function selection(page: Page): Promise<string[]> {
+  return JSON.parse(
+    await callHook<string>(page, "kicadCollabGetSelection"),
+  ) as string[];
+}
+
+async function expectSelection(page: Page, expected: string[]): Promise<void> {
+  const sortedExpected = [...expected].sort();
+  await expect
+    .poll(async () => [...(await selection(page))].sort(), {
+      timeout: 15_000,
+      intervals: [50, 100, 250],
+    })
+    .toEqual(sortedExpected);
+}
+
+async function enterRealGroup(page: Page, groupUuid: string, members: string[]): Promise<void> {
+  expect(
+    await callHook<boolean>(page, "kicadCollabTestSelectByUuid", groupUuid),
+    "the real group resolves through KiCad's selection tool",
+  ).toBe(true);
+  await expectSelection(page, [groupUuid]);
+
+  const canvas = page.locator('[id^="glcanvas-"]:visible').first();
+  await expect(canvas).toBeVisible({ timeout: 15_000 });
+  const box = await canvas.boundingBox();
+  expect(box, "the real GAL canvas has an interactive bounding box").not.toBeNull();
+  await page.mouse.click(
+    Math.round(box!.x + box!.width / 2),
+    Math.round(box!.y + box!.height / 2),
+    { button: "right" },
+  );
+
+  await expect
+    .poll(
+      async () =>
+        (await findRenderedByType(page, "menuitem", { parentId: "popupmenu" })).map(
+          (item) => item.label,
+        ),
+      {
+        timeout: 15_000,
+        intervals: [50, 100, 250],
+        message: "the selected PCB_GROUP exposes KiCad's real Enter Group action",
+      },
+    )
+    .toContain("Enter Group");
+  expect(await clickMenuItem(page, "Enter Group"), "the real group-enter action fires").toBe(
+    true,
+  );
+
+  // EnterGroup replaces the selected owner with all direct members. This is a
+  // behavioral proof that PCB_SELECTION_TOOL::m_enteredGroup is populated;
+  // no test-only native hook is involved.
+  await expectSelection(page, members);
+}
+
+async function waitForNativeRoot(page: Page, uuid: string): Promise<void> {
+  await expect
+    .poll(
+      async () =>
+        (await snapshot(page)).added.some((entry) =>
+          entry.sexpr.toLowerCase().includes(uuid.toLowerCase()),
+        ),
+      { timeout: 30_000, intervals: [50, 100, 250] },
+    )
+    .toBe(true);
+}
+
+function expectNoWasmAbort(logger: { consoleLogs: string[]; errors: string[] }, label: string): void {
+  expect(
+    [...logger.consoleLogs, ...logger.errors].some((line) => line.includes("Aborted(")),
+    label,
+  ).toBe(false);
+}
+
 async function saveCurrentBytes(page: Page): Promise<string> {
   await page.evaluate(() => {
     const runtime = window as unknown as ReferenceWindow;
@@ -300,6 +414,162 @@ test.describe("PCB root identity/reference closure", () => {
       memberUuids(balancedForm(persisted, "group", source.id)),
       "replacement UUID remains owned by the group",
     ).toContain(member!.id);
+  });
+
+  test("remote replacement clears a real entered-group pointer before retiring the root", async ({
+    page,
+    testLogger,
+  }) => {
+    await bootOpen(page, GROUPED_POINTER_PCB);
+    const source = ownerFromDocument(
+      await modelText(page, GROUPED_POINTER_PCB),
+      "group",
+    );
+    const before = await snapshot(page);
+    const groupBlob = rootBlob(before, source.id);
+    const expectedMembers = memberUuids(balancedForm(groupBlob, "group", source.id));
+    expect(expectedMembers.length, "the real StickHub group is not empty").toBeGreaterThan(0);
+
+    await enterRealGroup(page, source.id, expectedMembers);
+    await applyChangedRoot(page, source.id, groupBlob);
+
+    // The projection replaced the exact BOARD_ITEM pointer that EnterGroup
+    // retained. The selection and entered-group caches must be cleared before
+    // BOARD_COMMIT retires it, while the replacement UUID remains selectable.
+    await expectSelection(page, []);
+    expect(
+      await callHook<boolean>(page, "kicadCollabTestSelectByUuid", source.id),
+      "the replacement group resolves through a fresh native pointer",
+    ).toBe(true);
+    await expectSelection(page, [source.id]);
+
+    // BOARD_COMMIT consults GetEnteredGroup when adding a root. If the old
+    // pointer survived, this is a deterministic use-after-free surface; if an
+    // implementation incorrectly rebound entered state, it would also adopt
+    // the new text into the group.
+    const addedUuid = await callHook<string>(
+      page,
+      "kicadCollabTestAddBoardText",
+      "after-group-replace",
+      180_000_000,
+      120_000_000,
+      "F.SilkS",
+    );
+    expect(addedUuid, "the post-replacement native action returns a UUID").not.toBe("");
+    await waitForNativeRoot(page, addedUuid);
+
+    const after = await snapshot(page);
+    const reboundGroup = rootBlob(after, source.id);
+    expect(memberUuids(balancedForm(reboundGroup, "group", source.id))).toEqual(
+      expectedMembers,
+    );
+    expect(reboundGroup, "post-replacement additions stay outside the exited group").not.toContain(
+      addedUuid,
+    );
+
+    expect(await callHook<boolean>(page, "kicadCollabTestClearSelection")).toBe(true);
+    await expectSelection(page, []);
+    expect(page.isClosed(), "the Wasm editor remains alive after pointer retirement").toBe(false);
+    expectNoWasmAbort(
+      testLogger,
+      "entered-group replacement and the following native action do not abort Wasm",
+    );
+  });
+
+  test("remote removal clears a real entered-group pointer before retiring the owner", async ({
+    page,
+    testLogger,
+  }) => {
+    await bootOpen(page, GROUPED_POINTER_PCB);
+    const source = ownerFromDocument(
+      await modelText(page, GROUPED_POINTER_PCB),
+      "group",
+    );
+    const before = await snapshot(page);
+    const groupBlob = rootBlob(before, source.id);
+    const expectedMembers = memberUuids(balancedForm(groupBlob, "group", source.id));
+
+    await enterRealGroup(page, source.id, expectedMembers);
+    await applyRemovedRoot(page, source.id);
+
+    await expectSelection(page, []);
+    expect(
+      await callHook<boolean>(page, "kicadCollabTestSelectByUuid", source.id),
+      "the removed group UUID no longer resolves",
+    ).toBe(false);
+
+    const addedUuid = await callHook<string>(
+      page,
+      "kicadCollabTestAddBoardText",
+      "after-group-remove",
+      185_000_000,
+      125_000_000,
+      "F.SilkS",
+    );
+    expect(addedUuid, "native editing continues after group retirement").not.toBe("");
+    await waitForNativeRoot(page, addedUuid);
+    expect(
+      await callHook<boolean>(page, "kicadCollabTestSelectByUuid", addedUuid),
+      "the selection tool resolves a post-removal root",
+    ).toBe(true);
+    await expectSelection(page, [addedUuid]);
+
+    const after = await snapshot(page);
+    expect(
+      after.added.some((entry) =>
+        entry.sexpr.toLowerCase().includes(source.id.toLowerCase()),
+      ),
+      "the retired group is absent from the native root universe",
+    ).toBe(false);
+    expect(page.isClosed(), "the Wasm editor remains alive after group removal").toBe(false);
+    expectNoWasmAbort(
+      testLogger,
+      "entered-group removal and the following selection/native actions do not abort Wasm",
+    );
+  });
+
+  test("footprint replacement clears a selected child pointer and selects the new child safely", async ({
+    page,
+    testLogger,
+  }) => {
+    await bootOpen(page, CHILD_POINTER_PCB);
+    const before = await snapshot(page);
+    const footprintBlob = rootBlob(before, FP1);
+    expect(footprintBlob, "the parent root owns the selected pad").toContain(PAD1);
+
+    expect(
+      await callHook<boolean>(page, "kicadCollabTestSelectByUuid", PAD1),
+      "the original footprint child resolves",
+    ).toBe(true);
+    await expectSelection(page, [PAD1]);
+
+    await applyChangedRoot(page, FP1, footprintBlob);
+    await expectSelection(page, []);
+
+    expect(
+      await callHook<boolean>(page, "kicadCollabTestSelectByUuid", PAD1),
+      "the replacement footprint's child resolves by the same durable UUID",
+    ).toBe(true);
+    await expectSelection(page, [PAD1]);
+    expect(await callHook<boolean>(page, "kicadCollabTestClearSelection")).toBe(true);
+    await expectSelection(page, []);
+
+    expect(
+      await callHook<boolean>(page, "kicadCollabTestSetPadSize", PAD1, 2_000_000, 2_000_000),
+      "a native action resolves and mutates the replacement child",
+    ).toBe(true);
+    await expect
+      .poll(async () => rootBlob(await snapshot(page), FP1), {
+        timeout: 30_000,
+        intervals: [50, 100, 250],
+      })
+      .not.toBe(footprintBlob);
+
+    expect(page.isClosed(), "the Wasm editor survives child pointer retirement").toBe(false);
+    expectNoWasmAbort(
+      testLogger,
+      "selected-child replacement and following selection/native actions do not abort Wasm",
+    );
   });
 
   test("a root upsert cannot reuse an unrelated live table-cell UUID", async ({
