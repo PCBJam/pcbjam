@@ -126,7 +126,10 @@ test.describe("native non-item save roundtrip", () => {
     const saved = await modelText(page, TRIO_SCH);
     expect(saved).not.toContain(SYM1);
     expect(saved).not.toContain('(symbol "Device:R"');
-    expect(await syncNativeSave(page, saved), "the unused definition changed Y").toBe(true);
+    expect(
+      await syncNativeSave(page, saved),
+      "orphan knowledge stays internal, so the save needs no Y deletion",
+    ).toBe(false);
 
     const authority = await renderDoc(page);
     expect(authority.err).toBeUndefined();

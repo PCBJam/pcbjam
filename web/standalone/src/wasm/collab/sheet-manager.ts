@@ -393,9 +393,13 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
     if (!room) return; // not a collab sheet (or still onboarding) — nothing to sync
     const write = (): void => {
       try {
+        const savedDoc = fileToDoc(fileText);
         // Writing to a PARKED room's doc marks it dirty via startWatch — fine:
         // the diff-on-rebind adopt makes the catch-up cost the real delta only.
-        if (syncLayoutToY(fileToDoc(fileText), room.doc, "layout-save")) {
+        const changed = room.binding
+          ? room.binding.syncLayoutFromNative(savedDoc)
+          : syncLayoutToY(savedDoc, room.doc, "layout-save");
+        if (changed) {
           clog(`[sheet] layout save-sync: ${sheetPath} updated`);
         }
       } catch (err) {

@@ -12,10 +12,12 @@ import {
   kicadMetaMap,
   parseItemsWireDelta,
   rebaseKicadItems,
+  referencedLibSymbolIds,
   scalar,
   seedDocToY,
   SEXPR_VERSION_SUPPORTED,
   sexprToItems,
+  syncLayoutToY,
   unquoteAtom,
   unwrapWireItem,
   upsertLibSymbolsToY,
@@ -128,6 +130,8 @@ export interface KicadBinding {
    * full-document blob apply; skip it and just baseline the wasm differ.
    */
   seed(seedDoc?: KicadDoc, opts?: { editorMatchesDoc?: boolean }): void;
+  /** Reconcile one completed native save and account its exact non-item state. */
+  syncLayoutFromNative(fileDoc: KicadDoc): boolean;
   destroy(): void;
   /** The underlying kdoc items map (exposed for tests/inspection). */
   readonly items: KicadYItems;
@@ -229,18 +233,35 @@ export function bindKicadCollab(
     libraries: { ...state.libraries },
   });
 
-  const yLibraries = (): Record<string, string> => {
+  const yLibraries = (
+    view: Readonly<Record<string, KicadItem>>,
+  ): Record<string, string> => {
     const libraries: Record<string, string> = {};
     const map = kicadLibSymbolsMap(doc);
-    for (const id of [...map.keys()].sort()) libraries[id] = map.get(id)!;
+    for (const id of [...referencedLibSymbolIds(view)].sort()) {
+      const definition = map.get(id);
+      if (definition !== undefined) libraries[id] = definition;
+    }
     return libraries;
   };
 
-  const overlayNativeLibraries = (defs: Record<string, string>): void => {
+  const setNativeLibraries = (definitions: Record<string, string>): void => {
     nativeNonItems = {
       hardSignature: nativeNonItems?.hardSignature ?? null,
-      libraries: { ...(nativeNonItems?.libraries ?? {}), ...defs },
+      libraries: { ...definitions },
     };
+  };
+
+  const accountNativeItemLibraries = (
+    view: Readonly<Record<string, KicadItem>>,
+    carried: Record<string, string>,
+  ): void => {
+    const known = { ...(nativeNonItems?.libraries ?? {}), ...carried };
+    const live: Record<string, string> = {};
+    for (const id of referencedLibSymbolIds(view)) {
+      if (known[id] !== undefined) live[id] = known[id];
+    }
+    setNativeLibraries(live);
   };
 
   /**
@@ -272,9 +293,14 @@ export function bindKicadCollab(
     const layout: Slot[] = Object.entries(raw)
       .filter(([, item]) => item.parent === null)
       .map(([uuid]): Slot => ({ item: uuid }));
+    const normalized = canonicalizeKicadDocGraph({
+      root: "kicad_items",
+      items: raw,
+      layout,
+    }).items;
     return {
-      items: canonicalizeKicadDocGraph({ root: "kicad_items", items: raw, layout }).items,
-      nonItems: { hardSignature: null, libraries: yLibraries() },
+      items: normalized,
+      nonItems: { hardSignature: null, libraries: yLibraries(normalized) },
     };
   };
 
@@ -310,7 +336,7 @@ export function bindKicadCollab(
     try {
       const snapshot = snapshotView();
       nativeShadow = snapshot.view;
-      overlayNativeLibraries(snapshot.libraries);
+      setNativeLibraries(snapshot.libraries);
       return snapshot.wire;
     } catch (err) {
       cwarn(`${context}: native snapshot failed`, err);
@@ -737,6 +763,24 @@ export function bindKicadCollab(
     pumpProjection();
   };
 
+  const syncLayoutFromNative = (fileDoc: KicadDoc): boolean => {
+    if (destroyed || projectionTerminal) {
+      throw new Error("cannot publish layout from a retired native projection owner");
+    }
+    if (!seeded) throw new Error("cannot publish layout before collaboration seed");
+    if (readOnly) throw new Error("read-only collaboration cannot publish native layout");
+
+    // Capture exactly what this completed native writer contains. The Y write
+    // below may retain orphan definition knowledge or peer consumers absent
+    // from this snapshot; neither may be promoted into the native ledger.
+    const nativeSavedState = runtimeNonItems(nonItemProjectionState(fileDoc));
+    const changed = syncLayoutToY(fileDoc, doc, ORIGIN);
+    nativeNonItems = nativeSavedState;
+    // Reconcile any peer state that coexisted in Y but was not in this save.
+    queueMicrotask(requestProjection);
+    return changed;
+  };
+
   // DOWN: local editor change → Y.Doc
   bridge.onItems((json: string) => {
     if (destroyed || projectionTerminal) return;
@@ -819,6 +863,10 @@ export function bindKicadCollab(
         applyDeltaToY(doc, delta, ORIGIN);
         upsertLibSymbolsToY(doc, defs, ORIGIN);
       }, ORIGIN);
+      // Only definitions carried by this exact native emission are known to be
+      // present in native; unrelated definitions coexisting in Y stay internal.
+      accountNativeItemLibraries(local, defs);
+
       // A native emission before ACK violates the ordering contract. We still
       // preserve its parseable intent above, but cannot know whether it belongs
       // before or after the submitted wire. The generated policy therefore
@@ -1005,7 +1053,7 @@ export function bindKicadCollab(
       try {
         const snapshot = snapshotView();
         nativeShadow = snapshot.view;
-        overlayNativeLibraries(snapshot.libraries);
+        setNativeLibraries(snapshot.libraries);
         const local = itemsWireToDelta(snapshot.wire, seedDoc.items, warnSkip);
         const nonce = `${doc.clientID}:${Math.random().toString(36).slice(2)}`;
         doc.transact(() => {
@@ -1033,7 +1081,7 @@ export function bindKicadCollab(
       const snapshot = snapshotView();
       wire = snapshot.wire;
       nativeShadow = snapshot.view;
-      overlayNativeLibraries(snapshot.libraries);
+      setNativeLibraries(snapshot.libraries);
     } catch (err) {
       cwarn("seed: snapshotItems unparseable", err);
       failProjection("native-baseline", err);
@@ -1083,6 +1131,7 @@ export function bindKicadCollab(
 
   return {
     seed,
+    syncLayoutFromNative,
     destroy: () => {
       if (destroyed) return;
       destroyed = true; // gates the DOWN hook — see bug 07 note above

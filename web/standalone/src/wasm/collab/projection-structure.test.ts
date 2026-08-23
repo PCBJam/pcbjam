@@ -10,6 +10,7 @@ const BASE = `(kicad_pcb
   (version 20241229)
   (paper "A4")
   (lib_symbols (symbol "Device:R" (property "Reference" "R")))
+  (symbol (lib_id "Device:R") (at 1 1) (uuid "sym-1"))
   (segment (start 0 0) (end 1 1) (width 0.2) (uuid "seg-1")))`;
 
 describe("non-item native projection signature", () => {
@@ -20,6 +21,7 @@ describe("non-item native projection signature", () => {
       (version 20241229)
       (lib_symbols (symbol "Device:R" (property "Reference" "R")))
       (via (at 9 9) (size 0.8) (uuid "via-2"))
+      (symbol (lib_id "Device:R") (at 2 2) (uuid "sym-1"))
       (segment (start 7 7) (end 8 8) (width 0.9) (uuid "seg-1")))`);
 
     expect(nonItemProjectionSignature(right)).toBe(

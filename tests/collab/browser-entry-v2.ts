@@ -157,7 +157,7 @@ function applyRemoteLayout(fileText: string): boolean {
 
 /** Feed bytes produced by a completed real native save through production save accounting. */
 function applySavedLayout(fileText: string): boolean {
-  return syncLayoutToY(fileToDoc(fileText), handle().doc, "layout-save");
+  return handle().binding.syncLayoutFromNative(fileToDoc(fileText));
 }
 
 /** Apply a later complete remote snapshot without replacing the live Y.Doc. */

@@ -411,49 +411,79 @@ describe("lib_symbols flow through the binding (miss 08A)", () => {
     expect(edB.libraries["Device:C"]).toBe(CAP_DEF);
   });
 
-  it("still requires rehydration for a definition-only change with no covering symbol wire", () => {
-    const { a, failuresB } = fileBackedPair();
+  it("retains an unused definition internally without projecting native drift", () => {
+    const { a, b, edB, failuresB } = fileBackedPair();
 
     kicadLibSymbolsMap(a).set("Device:C", CAP_DEF);
 
-    expect(failuresB).toEqual([
-      expect.objectContaining({
-        kind: "non-item-structure",
-        recovery: "recreate-from-yjs",
-      }),
-    ]);
+    expect(failuresB).toEqual([]);
+    expect(kicadLibSymbolsMap(b).get("Device:C")).toBe(CAP_DEF);
+    expect(edB.libraries["Device:C"]).toBeUndefined();
+    expect(docToFile(yToDoc(b))).not.toContain(`(symbol "Device:C"`);
   });
 
-  it("does not let an unrelated symbol root cover a definition addition", () => {
-    const { edA, failuresB } = fileBackedPair();
+  it("keeps a carried but unused definition internal while applying the live root", () => {
+    const { b, edA, edB, failuresB } = fileBackedPair();
 
     edA.localUpsert(
       `(lib_symbols ${CAP_DEF}) ${INSTANCE.replace("(at 100 50 0)", "(at 101 50 0)")}`,
     );
 
-    expect(failuresB).toEqual([
-      expect.objectContaining({ kind: "non-item-structure" }),
-    ]);
+    expect(failuresB).toEqual([]);
+    expect(scalar(edB.store["sym-1"]!.body, "at")).toBe("101");
+    expect(kicadLibSymbolsMap(b).get("Device:C")).toBe(CAP_DEF);
+    expect(edB.libraries["Device:C"]).toBeUndefined();
   });
 
-  it("does not treat a symbol carrying the wrong library id as coverage", () => {
+  it("fails closed when a symbol carries the wrong library definition", () => {
     const { edA, failuresB } = fileBackedPair();
 
     edA.localUpsert(`(lib_symbols ${WRONG_DEF}) ${CAP_INSTANCE}`, null, "added");
 
     expect(failuresB).toEqual([
-      expect.objectContaining({ kind: "non-item-structure" }),
+      expect.objectContaining({
+        kind: "invalid-y-state",
+        recovery: "repair-yjs-before-recreate",
+      }),
     ]);
   });
 
-  it("requires rehydration for library removal because the wire has no delete opcode", () => {
+  it("fails closed when retained knowledge is corrupted under a live consumer", () => {
     const { a, failuresB } = fileBackedPair();
 
     kicadLibSymbolsMap(a).delete("Device:R");
 
     expect(failuresB).toEqual([
-      expect.objectContaining({ kind: "non-item-structure" }),
+      expect.objectContaining({
+        kind: "invalid-y-state",
+        recovery: "repair-yjs-before-recreate",
+      }),
     ]);
+  });
+
+  it("accounts an orphaning native save exactly while retaining reusable knowledge", async () => {
+    const doc = new Y.Doc();
+    const editor = new FakeEditor();
+    seedEditor(editor, INSTANCE);
+    editor.libraries["Device:R"] = WRITER_DEF;
+    const failures: NativeProjectionFailure[] = [];
+    const binding = bindKicadCollab(doc, editor, {
+      onProjectionFailure: (failure) => failures.push(failure),
+    });
+    binding.seed(fileToDoc(fileWithDefinition(WRITER_DEF)));
+    editor.localRemove("sym-1");
+
+    const changed = binding.syncLayoutFromNative(
+      fileToDoc(`(kicad_sch
+        (version 20231120)
+        (lib_symbols))`),
+    );
+    await Promise.resolve();
+
+    expect(changed).toBe(false);
+    expect(failures).toEqual([]);
+    expect(kicadLibSymbolsMap(doc).get("Device:R")).toBe(WRITER_DEF);
+    expect(docToFile(yToDoc(doc))).not.toContain(`(symbol "Device:R"`);
   });
 
   it("conservatively rehydrates when multiple roots share a changed definition", () => {

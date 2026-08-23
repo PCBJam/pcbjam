@@ -1,5 +1,6 @@
 import {
   libSymbolsFromLayout,
+  referencedLibSymbolIds,
   type KicadDoc,
   type Slot,
 } from "@pcbjam/shared";
@@ -87,9 +88,10 @@ export function nonItemProjectionState(doc: KicadDoc): NonItemProjectionState {
   const heads = [...groups.entries()].sort(([left], [right]) =>
     left.localeCompare(right),
   );
-  const libraries = Object.entries(
-    libSymbolsFromLayout(doc.layout, doc.items),
-  ).sort(([left], [right]) => left.localeCompare(right));
+  const referenced = referencedLibSymbolIds(doc.items);
+  const libraries = Object.entries(libSymbolsFromLayout(doc.layout, doc.items))
+    .filter(([id]) => referenced.has(id))
+    .sort(([left], [right]) => left.localeCompare(right));
 
   return {
     hardSignature: JSON.stringify({ root: doc.root, atoms, heads }),

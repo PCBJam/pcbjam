@@ -2030,7 +2030,10 @@ export function WasmTool({
                   }
                   if (collabDocRef.current && relPath === targetPath) {
                     try {
-                      syncLayoutToY(fileToDoc(text), collabDocRef.current, "layout-save");
+                      const savedDoc = fileToDoc(text);
+                      const binding = collabHandleRef.current?.binding;
+                      if (binding) binding.syncLayoutFromNative(savedDoc);
+                      else syncLayoutToY(savedDoc, collabDocRef.current, "layout-save");
                     } catch (err) {
                       append(`[save] layout sync failed: ${String(err)}`);
                     }
