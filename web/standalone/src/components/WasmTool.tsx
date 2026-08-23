@@ -107,7 +107,6 @@ import {
   type SiblingRestageHandle,
 } from "@/wasm/collab/sibling-restage";
 import {
-  DOC_REVERTED_EVENT,
   NATIVE_PROJECTION_FAILED_EVENT,
   type NativeProjectionFailure,
 } from "@/wasm/collab/kicad-binding";
@@ -1128,9 +1127,6 @@ export function WasmTool({
   // A collaborator updated library items that are PLACED in the open document
   // (LIB_ITEM_UPDATED_EVENT) — placed copies keep the previous version, so warn.
   const [libUpdate, setLibUpdate] = React.useState<string | null>(null);
-  // The backend rolled this document back to its last valid state
-  // (kicad-validity 0001 — DOC_REVERTED_EVENT from the collab binding).
-  const [docReverted, setDocReverted] = React.useState<string | null>(null);
   // A peer changed the team's lib SET mid-session (LIB_SET_CHANGED_EVENT —
   // the scope room's `libset` broadcast). The lib table is frozen at boot, so
   // the toast's click action loads the new lib live (addAnnouncedLib), with a
@@ -1371,13 +1367,6 @@ export function WasmTool({
           `placed copies keep the previous version until updated from the library.`,
       );
     };
-    const onDocReverted = (e: Event) => {
-      const d = (e as CustomEvent<{ reason?: string; at?: string }>).detail;
-      setDocReverted(
-        `This document was rolled back to its last valid state — invalid content ` +
-          `was detected${d?.reason ? ` (${d.reason})` : ""}. Recent edits may have been undone.`,
-      );
-    };
     const onLibSet = (e: Event) => {
       const d = (e as CustomEvent<LibSetChangedDetail>).detail;
       // Only additions get a call to action — a removed lib's table row is
@@ -1395,14 +1384,12 @@ export function WasmTool({
     window.addEventListener(LIB_ERROR_EVENT, onError);
     window.addEventListener(LIB_ITEM_UPDATED_EVENT, onItemUpdated);
     window.addEventListener(LIB_SET_CHANGED_EVENT, onLibSet);
-    window.addEventListener(DOC_REVERTED_EVENT, onDocReverted);
     return () => {
       clearTimeout(busyTimer);
       window.removeEventListener(LIB_BUSY_EVENT, onBusy);
       window.removeEventListener(LIB_ERROR_EVENT, onError);
       window.removeEventListener(LIB_ITEM_UPDATED_EVENT, onItemUpdated);
       window.removeEventListener(LIB_SET_CHANGED_EVENT, onLibSet);
-      window.removeEventListener(DOC_REVERTED_EVENT, onDocReverted);
     };
   }, []);
 
@@ -1426,13 +1413,6 @@ export function WasmTool({
     const t = setTimeout(() => setLibSetNotice(null), 30_000);
     return () => clearTimeout(t);
   }, [libSetNotice]);
-
-  // Auto-dismiss the doc-reverted toast (longest — the user should see it).
-  React.useEffect(() => {
-    if (!docReverted) return;
-    const t = setTimeout(() => setDocReverted(null), 15_000);
-    return () => clearTimeout(t);
-  }, [docReverted]);
 
   // Full-library eager load overlay. The fat-load fires one loading:true/false
   // pair PER library (222 on the full set), and between them the C++ side parses
@@ -2914,18 +2894,6 @@ export function WasmTool({
           title={libSetNotice.mode === "reload" ? "Reload" : "Load the new library"}
         >
           {libSetNotice.message}
-        </button>
-      )}
-
-      {/* Backend rolled this doc back to the last valid state (kicad-validity). */}
-      {docReverted && (
-        <button
-          data-testid="doc-reverted-toast"
-          className="max-w-md rounded bg-orange-950/95 px-3 py-2 text-center text-xs text-orange-100 shadow-lg ring-1 ring-orange-500/40"
-          onClick={() => setDocReverted(null)}
-          title="Dismiss"
-        >
-          {docReverted}
         </button>
       )}
 
