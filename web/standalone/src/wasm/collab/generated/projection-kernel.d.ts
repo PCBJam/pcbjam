@@ -7,6 +7,12 @@ export declare function decideProjectionAck(
   ok: boolean,
   retryable: boolean,
 ): ProjectionAckAction;
+export type SaveCutAction = 0 | 1 | 4;
+export declare function decideSaveCut(
+  acknowledgedThroughCut: boolean,
+  timedOut: boolean,
+  projectionFailedThroughCut: boolean,
+): SaveCutAction;
 export type StructuralProjectionAction = 1 | 4;
 export declare function decideStructuralProjection(
   hardMatches: boolean,
@@ -16,4 +22,5 @@ export declare function decideStructuralProjection(
 export type NativeEmissionAction = 1 | 4;
 export declare function decideNativeEmission(
   projectionInFlight: boolean,
+  causallyBeforeApply: boolean,
 ): NativeEmissionAction;

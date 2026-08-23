@@ -461,6 +461,13 @@ extern "C" void kicadCollabOnModify()
 // kicad fork's save chokepoint (PL_EDITOR_FRAME::SaveDrawingSheetFile) after a
 // successful write to MEMFS, so the web app can route the saved bytes onward
 // (API upload, local-disk write-back, download). No-op without a JS listener.
+extern "C" bool kicadCollabBeforeSave()
+{
+    return pcbjam_collab::beginSaveAfterApplyDrainFor( 35000 );
+}
+
+extern "C" void kicadCollabAfterSave() { pcbjam_collab::endSave(); }
+
 extern "C" void kicadCollabOnSave( const char* aPath )
 {
     EM_ASM( {
@@ -539,9 +546,27 @@ void kicadCollabApplyItems( std::string aJson )
         return;
     }
 
+    const pcbjam_collab::ProjectionFence::Ticket ticket =
+            pcbjam_collab::acceptItemsProjection( request );
+
+    if( request.tracked() && !ticket )
+    {
+        pcbjam_collab::emitItemsApplied( request, "invalid", false,
+                                        "native projection owner epoch is fail-stopped" );
+        return;
+    }
+
+    if( ticket && !pcbjam_collab::projectionFence().mayEnter( ticket ) )
+    {
+        pcbjam_collab::emitItemsApplied( request, "busy", true,
+                                        "a native save cut is in flight", ticket );
+        return;
+    }
+
     if( pcbjam_open::busy() ) // open in flight (open_gate.h) — see kicadCollabApply
     {
-        pcbjam_collab::emitItemsApplied( request, "busy", true, "file open is in flight" );
+        pcbjam_collab::emitItemsApplied( request, "busy", true, "file open is in flight",
+                                        ticket );
         return;
     }
 
@@ -550,7 +575,7 @@ void kicadCollabApplyItems( std::string aJson )
     if( !targetFrame )
     {
         pcbjam_collab::emitItemsApplied( request, "unavailable", true,
-                                        "pl_editor frame is unavailable" );
+                                        "pl_editor frame is unavailable", ticket );
         return;
     }
 
@@ -558,7 +583,7 @@ void kicadCollabApplyItems( std::string aJson )
 
     if( !pcbjam_collab::validateRootLiftedItemsWire( wire, validationError ) )
     {
-        pcbjam_collab::emitItemsApplied( request, "invalid", false, validationError );
+        pcbjam_collab::emitItemsApplied( request, "invalid", false, validationError, ticket );
         return;
     }
 
@@ -570,11 +595,20 @@ void kicadCollabApplyItems( std::string aJson )
 
     pcbjam_collab::runOnCoroutine(
             targetFrame,
-            [targetFrame, wire, request, validationError]() mutable
+            [targetFrame, wire, request, validationError, ticket]() mutable
             {
                 if( !pcbjam_collab::itemsOwnerMatches( request ) )
                 {
-                    pcbjam_collab::emitStaleItemsOwner( request );
+                    pcbjam_collab::emitStaleItemsOwner( request, ticket );
+                    return;
+                }
+
+                if( !pcbjam_collab::projectionFence().mayEnter( ticket ) )
+                {
+                    pcbjam_collab::emitItemsApplied(
+                            request, "invalid", false,
+                            "native projection owner epoch became fail-stopped before apply",
+                            ticket );
                     return;
                 }
 
@@ -582,7 +616,7 @@ void kicadCollabApplyItems( std::string aJson )
                 {
                     pcbjam_collab::emitItemsApplied(
                             request, "target-changed", false,
-                            "pl_editor frame changed before apply" );
+                            "pl_editor frame changed before apply", ticket );
                     return;
                 }
 
@@ -644,7 +678,8 @@ void kicadCollabApplyItems( std::string aJson )
             || !pcbjam_collab::validateItemsBatchIds( removedIds, addedIds, changedIds,
                                                        validationError ) )
         {
-            pcbjam_collab::emitItemsApplied( request, "invalid", false, validationError );
+            pcbjam_collab::emitItemsApplied( request, "invalid", false, validationError,
+                                            ticket );
             return;
         }
 
@@ -662,7 +697,7 @@ void kicadCollabApplyItems( std::string aJson )
             {
                 pcbjam_collab::emitItemsApplied(
                         request, "failed", false,
-                        "pl_editor model already contains duplicate UUID: " + uuid );
+                        "pl_editor model already contains duplicate UUID: " + uuid, ticket );
                 return;
             }
         }
@@ -715,30 +750,31 @@ void kicadCollabApplyItems( std::string aJson )
 
         if( !pcbjam_collab::itemsOwnerMatches( request ) )
         {
-            pcbjam_collab::emitStaleItemsOwner( request );
+            pcbjam_collab::emitStaleItemsOwner( request, ticket );
             return;
         }
 
         if( topFrame() != targetFrame )
         {
             pcbjam_collab::emitItemsApplied( request, "target-changed", false,
-                                            "pl_editor frame changed during apply" );
+                                            "pl_editor frame changed during apply", ticket );
             return;
         }
 
-        pcbjam_collab::emitItemsApplied( request, "applied" );
+        pcbjam_collab::emitItemsApplied( request, "applied", false, {}, ticket );
                 }
                 catch( const std::exception& e )
                 {
                     s_applyingRemote = false;
-                    pcbjam_collab::emitItemsApplied( request, "failed", false, e.what() );
+                    pcbjam_collab::emitItemsApplied( request, "failed", false, e.what(),
+                                                    ticket );
                 }
                 catch( ... )
                 {
                     s_applyingRemote = false;
                     pcbjam_collab::emitItemsApplied(
                             request, "failed", false,
-                            "unknown pl_editor apply failure" );
+                            "unknown pl_editor apply failure", ticket );
                 }
             } );
 }

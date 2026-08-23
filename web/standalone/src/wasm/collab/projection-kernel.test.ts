@@ -53,9 +53,11 @@ describe("verified projection acknowledgement kernel", () => {
     expect(decideProjectionAck(true, true, true, false, false)).toBe(4);
   });
 
-  it("terminalizes a native emission whose order relative to an in-flight apply is ambiguous", () => {
-    expect(decideNativeEmission(false)).toBe(1);
-    expect(decideNativeEmission(true)).toBe(4);
+  it("accepts only idle or causally proven pre-apply native emissions", () => {
+    expect(decideNativeEmission(false, false)).toBe(1);
+    expect(decideNativeEmission(false, true)).toBe(1);
+    expect(decideNativeEmission(true, false)).toBe(4);
+    expect(decideNativeEmission(true, true)).toBe(1);
   });
 
   it("exhaustively permits only equal hard state plus equal/covered libraries", () => {

@@ -66,6 +66,12 @@ export class NativeItemsApplyError extends Error {
 
 export interface AcknowledgedItemsBridge {
   readonly ownerGeneration: string;
+  /**
+   * The native implementation serializes local flushes and remote applies in
+   * one FIFO, suppresses apply echoes, and acknowledges at the apply-body tail.
+   * Therefore an onItems callback observed before ACK is causally pre-apply.
+   */
+  readonly preAckEmissionsArePreApply: true;
   snapshotItems(): string;
   applyItems(json: string): Promise<void>;
   onItems(cb: (json: string) => void): void;
@@ -247,6 +253,7 @@ export function createNativeItemsBridge(
 
   return {
     ownerGeneration,
+    preAckEmissionsArePreApply: true,
     snapshotItems: () => mod.kicadCollabSnapshotItems(),
     applyItems: (json: string): Promise<void> => {
       if (destroyed) {

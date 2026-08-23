@@ -1314,17 +1314,35 @@ void schCollabApplyItems( std::string aJson )
         return;
     }
 
+    const pcbjam_collab::ProjectionFence::Ticket ticket =
+            pcbjam_collab::acceptItemsProjection( request );
+
+    if( request.tracked() && !ticket )
+    {
+        pcbjam_collab::emitItemsApplied( request, "invalid", false,
+                                        "native projection owner epoch is fail-stopped" );
+        return;
+    }
+
+    if( ticket && !pcbjam_collab::projectionFence().mayEnter( ticket ) )
+    {
+        pcbjam_collab::emitItemsApplied( request, "busy", true,
+                                        "a native save cut is in flight", ticket );
+        return;
+    }
+
     std::string validationError;
 
     if( !pcbjam_collab::validateRootLiftedItemsWire( wire, validationError ) )
     {
-        pcbjam_collab::emitItemsApplied( request, "invalid", false, validationError );
+        pcbjam_collab::emitItemsApplied( request, "invalid", false, validationError, ticket );
         return;
     }
 
     if( pcbjam_open::busy() ) // open in flight (open_gate.h) — see schCollabApply
     {
-        pcbjam_collab::emitItemsApplied( request, "busy", true, "file open is in flight" );
+        pcbjam_collab::emitItemsApplied( request, "busy", true, "file open is in flight",
+                                        ticket );
         return;
     }
 
@@ -1333,7 +1351,7 @@ void schCollabApplyItems( std::string aJson )
     if( !fr )
     {
         pcbjam_collab::emitItemsApplied( request, "unavailable", true,
-                                        "eeschema frame is unavailable" );
+                                        "eeschema frame is unavailable", ticket );
         return;
     }
 
@@ -1342,14 +1360,22 @@ void schCollabApplyItems( std::string aJson )
     if( !target )
     {
         pcbjam_collab::emitItemsApplied( request, "unavailable", true,
-                                        "eeschema screen is unavailable" );
+                                        "eeschema screen is unavailable", ticket );
         return;
     }
 
-    pcbjam_collab::runOnCoroutine( fr, [fr, target, wire, request]() {
+    pcbjam_collab::runOnCoroutine( fr, [fr, target, wire, request, ticket]() {
         if( !pcbjam_collab::itemsOwnerMatches( request ) )
         {
-            pcbjam_collab::emitStaleItemsOwner( request );
+            pcbjam_collab::emitStaleItemsOwner( request, ticket );
+            return;
+        }
+
+        if( !pcbjam_collab::projectionFence().mayEnter( ticket ) )
+        {
+            pcbjam_collab::emitItemsApplied(
+                    request, "invalid", false,
+                    "native projection owner epoch became fail-stopped before apply", ticket );
             return;
         }
 
@@ -1358,7 +1384,7 @@ void schCollabApplyItems( std::string aJson )
         if( current != fr || !current || currentScreen( current ) != target )
         {
             pcbjam_collab::emitItemsApplied( request, "target-changed", false,
-                                            "eeschema frame or screen changed before apply" );
+                                            "eeschema frame or screen changed before apply", ticket );
             return;
         }
 
@@ -1368,13 +1394,13 @@ void schCollabApplyItems( std::string aJson )
 
             if( !doApplyItems( fr, target, wire, error ) )
             {
-                pcbjam_collab::emitItemsApplied( request, "invalid", false, error );
+                pcbjam_collab::emitItemsApplied( request, "invalid", false, error, ticket );
                 return;
             }
 
             if( !pcbjam_collab::itemsOwnerMatches( request ) )
             {
-                pcbjam_collab::emitStaleItemsOwner( request );
+                pcbjam_collab::emitStaleItemsOwner( request, ticket );
                 return;
             }
 
@@ -1383,22 +1409,22 @@ void schCollabApplyItems( std::string aJson )
             if( current != fr || !current || currentScreen( current ) != target )
             {
                 pcbjam_collab::emitItemsApplied( request, "target-changed", false,
-                                                "eeschema frame or screen changed during apply" );
+                                                "eeschema frame or screen changed during apply", ticket );
                 return;
             }
 
-            pcbjam_collab::emitItemsApplied( request, "applied" );
+            pcbjam_collab::emitItemsApplied( request, "applied", false, {}, ticket );
         }
         catch( const std::exception& e )
         {
             s_applyingRemote = false;
-            pcbjam_collab::emitItemsApplied( request, "failed", false, e.what() );
+            pcbjam_collab::emitItemsApplied( request, "failed", false, e.what(), ticket );
         }
         catch( ... )
         {
             s_applyingRemote = false;
             pcbjam_collab::emitItemsApplied( request, "failed", false,
-                                            "unknown eeschema apply failure" );
+                                            "unknown eeschema apply failure", ticket );
         }
     } );
 }
@@ -1855,6 +1881,13 @@ std::string schCollabTestDuplicateSchItem( std::string aId, int aDx, int aDy )
 // KICAD_MERGED_EMBIND: identical definition in pcbnew_embind.cpp; the merged image
 // gets the one in kicad_editor_embind.cpp (both fork save chokepoints call it).
 #ifndef KICAD_MERGED_EMBIND
+extern "C" bool kicadCollabBeforeSave()
+{
+    return pcbjam_collab::beginSaveAfterApplyDrainFor( 35000 );
+}
+
+extern "C" void kicadCollabAfterSave() { pcbjam_collab::endSave(); }
+
 extern "C" void kicadCollabOnSave( const char* aPath )
 {
     EM_ASM( {

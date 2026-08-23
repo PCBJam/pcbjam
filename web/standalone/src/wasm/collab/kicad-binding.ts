@@ -22,9 +22,6 @@ import {
   unwrapWireItem,
   upsertLibSymbolsToY,
   wireLibSymbols,
-  Y_KDOC_REVERT_AT,
-  Y_KDOC_REVERT_NONCE,
-  Y_KDOC_REVERT_REASON,
   Y_KDOC_STATE,
   ydocHasState,
   ydocSexprVersion,
@@ -74,12 +71,6 @@ import {
  */
 
 /**
- * Window event fired when the backend rolled this doc back to its last valid
- * state (kicad-validity 0001 B3). detail: { reason?: string; at?: string }.
- */
-export const DOC_REVERTED_EVENT = "pcbjam:doc-reverted";
-
-/**
  * Terminal projection boundary. The current native instance is retired. Most
  * failures can recreate directly from authoritative Yjs; an invalid authority
  * must be corrected first because a fresh editor cannot materialize it either.
@@ -105,6 +96,13 @@ export interface NativeProjectionFailure {
 
 /** The v2 per-item s-expr bridge (Stage C C++ contract), runtime-adapted. */
 export interface KicadItemsBridge {
+  /**
+   * Opt-in causal contract of the production native bridge. When true, local
+   * emits and remote applies share one strict FIFO, apply echoes are suppressed,
+   * and ACK is emitted at the apply-body tail. An emit seen before ACK is thus
+   * known to precede that apply. Fakes/alternate bridges default fail-closed.
+   */
+  readonly preAckEmissionsArePreApply?: true;
   /** Full current model as an all-`added` ItemsWireDelta JSON. */
   snapshotItems(): string;
   /** Apply a remote ItemsWireDelta JSON (per-item Parse + splice by uuid). */
@@ -790,7 +788,10 @@ export function bindKicadCollab(
       nativeShadow = null;
       return;
     }
-    const emissionAction = decideNativeEmission(projectionInFlight);
+    const emissionAction = decideNativeEmission(
+      projectionInFlight,
+      bridge.preAckEmissionsArePreApply === true,
+    );
     const failAmbiguousEmission = (cause?: unknown): boolean => {
       if (emissionAction !== 4) return false;
       const detail = cause instanceof Error ? ` (${cause.message})` : "";
@@ -864,13 +865,12 @@ export function bindKicadCollab(
         upsertLibSymbolsToY(doc, defs, ORIGIN);
       }, ORIGIN);
       // Only definitions carried by this exact native emission are known to be
-      // present in native; unrelated definitions coexisting in Y stay internal.
+      // present in native. Never bless unrelated library values that happened
+      // to coexist in current Y state.
       accountNativeItemLibraries(local, defs);
-
-      // A native emission before ACK violates the ordering contract. We still
-      // preserve its parseable intent above, but cannot know whether it belongs
-      // before or after the submitted wire. The generated policy therefore
-      // retires this generation instead of guessing a shadow and echoing.
+      // The generated policy accepts a pre-ACK emission only for a bridge whose
+      // strict FIFO proves it is causally before the queued apply. An alternate
+      // or fake bridge without that contract remains fail-stop.
       if (failAmbiguousEmission()) return;
       // A stale local snapshot may need a corrective projection (the disjoint
       // remote fields preserved by the rebase). Avoid re-entering native code
@@ -913,7 +913,6 @@ export function bindKicadCollab(
         items = nextItems;
         items.observeDeep(observer);
       }
-      rebindRevertMeta();
     } catch (err) {
       cwarn("kdoc active state is incomplete; waiting for a valid replacement", err);
     }
@@ -963,40 +962,6 @@ export function bindKicadCollab(
     requestProjection();
   };
   stateRoot.observeDeep(onState);
-
-  // Validity-revert notice (kicad-validity 0001 B3): the backend stamps
-  // kdoc_meta.revertNonce when it rolls the doc back to the last valid state
-  // (the content itself arrives through the normal item sync above). Watched
-  // like seedNonce; surfaced as a window event for the shell's toast. The
-  // nonce is deduped so a reconnect replaying the same marker stays silent.
-  let revMeta = kicadMetaMap(doc);
-  let lastRevertNonce = revMeta.get(Y_KDOC_REVERT_NONCE);
-  const onRevertMeta = () => {
-    const nonce = revMeta.get(Y_KDOC_REVERT_NONCE);
-    if (nonce === undefined || nonce === lastRevertNonce) return;
-    lastRevertNonce = nonce;
-    clog("doc reverted by backend:", revMeta.get(Y_KDOC_REVERT_REASON));
-    if (typeof window !== "undefined") {
-      window.dispatchEvent(
-        new CustomEvent(DOC_REVERTED_EVENT, {
-          detail: {
-            reason: revMeta.get(Y_KDOC_REVERT_REASON),
-            at: revMeta.get(Y_KDOC_REVERT_AT),
-          },
-        }),
-      );
-    }
-  };
-  revMeta.observe(onRevertMeta);
-
-  function rebindRevertMeta(): void {
-    const nextMeta = kicadMetaMap(doc);
-    if (nextMeta === revMeta) return;
-    revMeta.unobserve(onRevertMeta);
-    revMeta = nextMeta;
-    revMeta.observe(onRevertMeta);
-    onRevertMeta();
-  }
 
   function seed(seedDoc?: KicadDoc, opts?: { editorMatchesDoc?: boolean }): void {
     seeded = true; // open the UP gate; everything below runs synchronously
@@ -1138,7 +1103,6 @@ export function bindKicadCollab(
       if (retryTimer !== undefined) clearTimeout(retryTimer);
       items.unobserveDeep(observer);
       stateRoot.unobserveDeep(onState);
-      revMeta.unobserve(onRevertMeta);
       bridge.destroy?.();
     },
     get items() {

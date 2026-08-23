@@ -13,6 +13,7 @@
 #include <emscripten.h>
 #include <emscripten/bind.h>
 #include <board.h>
+#include <board_connected_item.h>
 #include <board_commit.h>
 #include <pcb_io/kicad_sexpr/pcb_io_kicad_sexpr.h>
 #include <board_item.h>
@@ -24,6 +25,8 @@
 #include <pcb_text.h>
 #include <pcb_group.h>
 #include <pcb_generator.h>
+#include <pcb_point.h>
+#include <netinfo.h>
 #include <zone.h>
 #include <eda_text.h>
 #include <pcb_edit_frame.h>
@@ -56,6 +59,7 @@
 #include "collab_common.h"
 #include "collab_items_protocol.h"
 #include "collab_items_validation.h"
+#include "collab_pcb_root_policy.h"
 #include "collab_presence_core.h"
 #include "open_gate.h"
 #include "pcbjam_async_policy.h"
@@ -70,6 +74,7 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 #include <wx/app.h>
 #include <wx/event.h>
@@ -231,15 +236,11 @@ int itemLayer( BOARD_ITEM* aItem )
 template <typename Fn>
 void forEachRootItem( BOARD& aBoard, Fn&& aFn )
 {
-    // Preserve the established v2 snapshot order for the original four collections; append the
-    // two group-like root collections in the same order as the board-file writer.
-    for( FOOTPRINT* f : aBoard.Footprints() )   aFn( static_cast<BOARD_ITEM*>( f ) );
-    for( PCB_TRACK* t : aBoard.Tracks() )       aFn( static_cast<BOARD_ITEM*>( t ) );
-    for( ZONE* z : aBoard.Zones() )             aFn( static_cast<BOARD_ITEM*>( z ) );
-    for( BOARD_ITEM* d : aBoard.Drawings() )    aFn( d );
-    for( PCB_GROUP* g : aBoard.Groups() )       aFn( static_cast<BOARD_ITEM*>( g ) );
-    for( PCB_GENERATOR* g : aBoard.Generators() )
-        aFn( static_cast<BOARD_ITEM*>( g ) );
+    // Preserve the established v2 order while sharing one executable collection inventory with
+    // the app-free policy test.  In particular, PCB_POINT is persisted by the board writer and
+    // must not disappear from snapshots, diffs, or the one-root envelope parser.
+    pcbjam_collab::forEachPcbRootItem( aBoard,
+            [&]( auto* aItem ) { aFn( static_cast<BOARD_ITEM*>( aItem ) ); } );
 }
 
 // Iterate every scalar-diff item the bridge syncs: the roots above PLUS each footprint's TEXT
@@ -467,90 +468,59 @@ std::string blobForItem( BOARD* aBoard, BOARD_ITEM* aItem )
     return wrapInBoardEnvelope( *aBoard, body );
 }
 
-// A bare `(footprint …)` blob carries no `(version …)`, but the parser NEEDS one: it starts at
-// m_requiredVersion = 0, and several format decisions are gated on it — most visibly
-// `if( m_requiredVersion < 20230620 ) field->SetVisible( false )` in the T_property case
-// (pcb_io_kicad_sexpr_parser.cpp), which silently stamps `(hide yes)` onto every mandatory
-// field of an applied footprint.
-//
-// The clipboard dialect got this for free because CTL_FOR_CLIPBOARD emits the version INSIDE
-// the footprint form — but that token is not valid board-file content (see blobForItem), so we
-// can't keep it in the Y.Doc. Instead re-supply it here, at parse time only: splice
-// `(version N)` in right after `(footprint "<lib id>"`, which is exactly where the clipboard
-// writer put it. The Y.Doc body stays byte-identical to the file; only the wire→model decode
-// sees the token.
-static std::string withFootprintVersion( const std::string& aBlob )
+struct ParsedBoardRoot
 {
-    static const std::string kHead = "(footprint";
+    std::unique_ptr<BOARD> envelope;
+    BOARD_ITEM*            root = nullptr; // owned by envelope until detachParsedBoardRoot()
 
-    if( aBlob.compare( 0, kHead.size(), kHead ) != 0 )
-        return aBlob;                       // envelope blob — its (kicad_pcb …) carries a version
+    explicit operator bool() const { return envelope && root; }
+};
 
-    if( aBlob.find( "(version " ) != std::string::npos )
-        return aBlob;                       // already versioned (older peer, clipboard dialect)
-
-    // Skip the quoted lib id that follows the head keyword, then inject.
-    size_t open = aBlob.find( '"', kHead.size() );
-
-    if( open == std::string::npos )
-        return aBlob;
-
-    size_t close = open + 1;
-
-    while( close < aBlob.size() && aBlob[close] != '"' )
-        close += ( aBlob[close] == '\\' ) ? 2 : 1;
-
-    if( close >= aBlob.size() )
-        return aBlob;
-
-    return aBlob.substr( 0, close + 1 )
-           + " (version " + std::to_string( SEXPR_BOARD_FILE_VERSION ) + ")"
-           + aBlob.substr( close + 1 );
-}
-
-// Reconstruct a board item from a wire blob. Parse() returns a bare FOOTPRINT*, or a BOARD*
-// (the `(kicad_pcb …)` envelope) holding the single item — in which case detach that item from
-// the throw-away board and hand back ownership. Returns nullptr on a parse failure (Parse catches
-// internally) or if no item is found. Runs inside the apply COROUTINE.
-BOARD_ITEM* makeFromBlob( BOARD& aBoard, const std::string& aBlobIn )
+// Parse one wire blob in a wholly isolated temporary board. Every bare root, including a
+// footprint, is wrapped in `(kicad_pcb …)`: qualified PCB_IO_KICAD_SEXPR::Parse() otherwise gives
+// a bare footprint no BOARD, and nested `(net …)` fields silently become net 0. The live board is
+// read only for its layer-table envelope; critically, parsing does NOT call MapNets(live).
+// Parsed connected items keep pointing at net objects owned by `envelope` until the complete v2
+// batch validates and detachParsedBoardRoot() is explicitly invoked.
+ParsedBoardRoot parseBoardRootFromBlob( BOARD& aContextBoard, const std::string& aBlobIn )
 {
-    if( aBlobIn.empty() )
-        return nullptr;
+    const size_t start = aBlobIn.find_first_not_of( " \t\r\n" );
 
-    const std::string aBlob = withFootprintVersion( aBlobIn );
+    if( start == std::string::npos )
+        return {};
+
+    std::string aBlob = aBlobIn.substr( start );
+
+    if( aBlob.rfind( "(kicad_pcb", 0 ) != 0 )
+        aBlob = wrapInBoardEnvelope( aContextBoard, aBlob );
 
     CLIPBOARD_IO io;
-    io.SetBoard( &aBoard );
 
     // Parse directly (not io.Parse(), whose catch(...) swallows the error): a
     // failed apply must say WHY, or wire bugs surface as silent non-convergence.
-    BOARD_ITEM* parsed = nullptr;           // FOOTPRINT* (bare) | BOARD* (envelope) | nullptr
+    std::unique_ptr<BOARD_ITEM> parsed;     // BOARD* envelope | nullptr
 
     try
     {
-        parsed = io.PCB_IO_KICAD_SEXPR::Parse( wxString::FromUTF8( aBlob.c_str() ) );
+        parsed.reset(
+                io.PCB_IO_KICAD_SEXPR::Parse( wxString::FromUTF8( aBlob.c_str() ) ) );
     }
     catch( const IO_ERROR& e )
     {
         EM_ASM( { console.log( "[collab] pcbnew blob parse error: " + UTF8ToString( $0 ) ); },
                 std::string( e.What().utf8_str() ).c_str() );
-        return nullptr;
+        return {};
     }
     catch( ... )
     {
         EM_ASM( { console.log( "[collab] pcbnew blob parse error: unknown exception" ); } );
-        return nullptr;
+        return {};
     }
 
-    if( !parsed )
-        return nullptr;
+    if( !parsed || parsed->Type() != PCB_T )
+        return {};
 
-    if( parsed->Type() != PCB_T )
-        return parsed;                      // bare footprint — ready to commit.Add
-
-    // Envelope board: remap its net codes onto ours, then lift out the single item it carries.
-    BOARD* clip = static_cast<BOARD*>( parsed );
-    clip->MapNets( &aBoard );
+    std::unique_ptr<BOARD> clip( static_cast<BOARD*>( parsed.release() ) );
 
     size_t      itemCount = 0;
     BOARD_ITEM* found     = nullptr;
@@ -564,23 +534,106 @@ BOARD_ITEM* makeFromBlob( BOARD& aBoard, const std::string& aBlobIn )
     // One wire entry is one native root. Silently selecting the first root from
     // a malformed envelope makes the ACK lie and can leave duplicate identities.
     if( itemCount != 1 )
-    {
-        delete clip;
-        return nullptr;
-    }
+        return {};
 
-    if( found )
+    return { std::move( clip ), found };
+}
+
+// Resolve an accepted parsed root's net names, detach it from the isolated envelope, and transfer
+// ownership to the caller. `aResolveNet` may return a live net or a planned NETINFO_ITEM which will
+// be staged in the same BOARD_COMMIT before the root. No live lookup/creation happens during parse.
+template <typename ResolveNet>
+std::unique_ptr<BOARD_ITEM> detachParsedBoardRoot( ParsedBoardRoot& aParsed, BOARD& aTargetBoard,
+                                                   ResolveNet&& aResolveNet )
+{
+    if( !aParsed )
+        return nullptr;
+
+    BOARD_ITEM* found = aParsed.root;
+    struct ParsedNetReference
     {
-        clip->Remove( found );              // detach so clip's dtor doesn't delete it
-        // Reparent onto the REAL board before clip is freed: the item's m_parent still points at
-        // clip, and commit.Push/saveCopyInUndoList dereferences GetParent() — a dangling pointer
+        BOARD_CONNECTED_ITEM* item;
+        wxString              name;
+    };
+
+    std::vector<ParsedNetReference> connected;
+
+    // Capture names while every parsed item still references its valid temporary-board net.
+    // BOARD::Remove currently leaves that pointer intact, but the transfer must not depend on a
+    // cleanup implementation detail: only these immutable names cross the detach boundary.
+    for( BOARD_CONNECTED_ITEM* item : aParsed.envelope->AllConnectedItems() )
+        connected.push_back( { item, item->GetNetname() } );
+
+    // A board-parsed footprint carries TWO classes of board-owned reference:
+    // connected children point at NETINFO_ITEMs and its component-class proxy
+    // points at a COMPONENT_CLASS from the parsing board. The accepted net resolver above fixes
+    // the first one. Rebind the second exactly as PCB_CONTROL's board-paste
+    // path does before the temporary board dies; otherwise apply succeeds and
+    // ACKs, but a later save dereferences the freed component class (real-world
+    // StickHub regression).
+    //
+    // Detach with BOARD::RemoveAll rather than cloning.  This is also the
+    // production KiCad paste sequence: it clears the temporary board's root and
+    // child UUID caches without marking the item STRUCT_DELETED, and avoids a
+    // copy constructor silently retaining any future board-owned reference.
+    if( found && found->Type() == PCB_FOOTPRINT_T )
+    {
+        FOOTPRINT* footprint = static_cast<FOOTPRINT*>( found );
+        footprint->ResolveComponentClassNames( &aTargetBoard,
+                                                footprint->GetTransientComponentClassNames() );
+        footprint->ClearTransientComponentClassNames();
+        aParsed.envelope->RemoveAll( { PCB_FOOTPRINT_T } );
+        footprint->SetParent( &aTargetBoard );
+        footprint->SetParentGroup( nullptr );
+    }
+    else if( found )
+    {
+        aParsed.envelope->Remove( found ); // detach so the envelope's dtor doesn't delete it
+        // Reparent onto the REAL board before the envelope is freed: the item's m_parent still
+        // points at it, and commit.Push/saveCopyInUndoList dereferences GetParent() — a dangling
+        // pointer
         // here is what trapped via add ("index out of bounds") and tripped the zone undo assert.
-        found->SetParent( &aBoard );
+        found->SetParent( &aTargetBoard );
         found->SetParentGroup( nullptr );
     }
 
-    delete clip;
-    return found;
+    aParsed.root = nullptr;
+    std::unique_ptr<BOARD_ITEM> out( found );
+
+    // Resolve the pre-detach name snapshots only after cleanup has finished. This keeps temporary
+    // connectivity cleanup away from planned nets whose board-assigned code is intentionally
+    // deferred until commit.Push.
+    if( !pcbjam_collab::resolvePcbConnectedNets(
+                connected,
+                []( const ParsedNetReference& aRef ) -> const wxString& { return aRef.name; },
+                std::forward<ResolveNet>( aResolveNet ),
+                []( const ParsedNetReference& aRef, NETINFO_ITEM* aNet )
+                {
+                    aRef.item->SetNet( aNet );
+                } ) )
+        return nullptr;
+
+    aParsed.envelope.reset();
+    return out;
+}
+
+// Legacy scalar-wire convenience. Its caller already entered the native mutation phase, so it
+// preserves the former immediate MapNets semantics while sharing the isolated parser/detacher.
+BOARD_ITEM* makeFromBlob( BOARD& aBoard, const std::string& aBlobIn )
+{
+    ParsedBoardRoot parsed = parseBoardRootFromBlob( aBoard, aBlobIn );
+    std::unique_ptr<BOARD_ITEM> item = detachParsedBoardRoot(
+            parsed, aBoard,
+            [&]( const wxString& aName ) -> NETINFO_ITEM*
+            {
+                if( NETINFO_ITEM* existing = aBoard.FindNet( aName ) )
+                    return existing;
+
+                NETINFO_ITEM* created = new NETINFO_ITEM( &aBoard, aName );
+                aBoard.Add( created );
+                return created;
+            } );
+    return item.release();
 }
 
 // Wrap a BARE item s-expr (e.g. one rendered from the Y.Doc Slot body) in the fake
@@ -787,10 +840,45 @@ void noteDirty( BOARD_ITEM* aItem )
     if( !aItem )
         return;
 
-    if( FOOTPRINT* fp = aItem->GetParentFootprint() )
-        aItem = fp;
+    std::vector<BOARD_CONNECTED_ITEM*> connected;
+    pcbjam_collab::PcbDirtyScope scope = pcbjam_collab::PcbDirtyScope::Item;
 
-    g_dirty.insert( toUtf8( aItem->m_Uuid.AsString() ) );
+    if( aItem->Type() == PCB_NETINFO_T )
+    {
+        // NETINFO_ITEM has a UUID in BOARD's lookup cache but is not a standalone board-file
+        // root.  Serializing it with PCB_IO_KICAD_SEXPR::Format produces only the synthetic
+        // `(kicad_pcb (version …) (generator …) (layers …))` furniture envelope.  The TS
+        // decoder used to skip that payload, permanently losing net rename/delete operations.
+        //
+        // Current KiCad persists net names on connected pads/tracks/zones/shapes.  The Net
+        // Inspector mutates those references during its NETINFO remove/add sequence without
+        // necessarily issuing an item callback for each one, so dirty every connected root.
+        // flushDiff runs after the whole edit settles and captures their final authored names.
+        NETINFO_ITEM* net = static_cast<NETINFO_ITEM*>( aItem );
+        BOARD*        board = net->GetParent();
+
+        if( !board )
+            return;
+
+        connected = board->AllConnectedItems();
+        scope = pcbjam_collab::PcbDirtyScope::NetTable;
+    }
+
+    auto rootOf = []( auto* aCandidate ) -> BOARD_ITEM*
+    {
+        BOARD_ITEM* item = static_cast<BOARD_ITEM*>( aCandidate );
+
+        if( FOOTPRINT* fp = item->GetParentFootprint() )
+            return static_cast<BOARD_ITEM*>( fp );
+
+        return item;
+    };
+
+    pcbjam_collab::forEachPcbDirtyRoot( aItem, scope, connected, rootOf,
+            []( BOARD_ITEM* aRoot )
+            {
+                g_dirty.insert( toUtf8( aRoot->m_Uuid.AsString() ) );
+            } );
 }
 
 // Re-seed the diff baseline to the current model — after handing out a seed snapshot, or after
@@ -1145,7 +1233,7 @@ void doApply( PCB_EDIT_FRAME* aFrame, const json& aDelta )
 }
 
 // v2 items apply: removed by uuid; added/changed are an idempotent per-item upsert —
-// parse the blob (wrapping bare non-footprint payloads in a live-board envelope),
+// parse the blob (the shared decoder wraps every bare root in a live-board envelope),
 // then replace any existing item sharing the parsed uuid. Runs inside the apply
 // COROUTINE (see kicadCollabApplyItems), via BOARD_COMMIT like every remote op.
 bool doApplyItems( PCB_EDIT_FRAME* aFrame, BOARD* aTargetBoard, const json& aWire,
@@ -1161,10 +1249,14 @@ bool doApplyItems( PCB_EDIT_FRAME* aFrame, BOARD* aTargetBoard, const json& aWir
 
     struct ParsedUpsert
     {
-        std::unique_ptr<BOARD_ITEM> item;
+        ParsedBoardRoot             parsed;
+        std::unique_ptr<BOARD_ITEM> item; // populated only after whole-batch validation
         std::string                 uuid;
     };
 
+    // Declared before the parsed vectors so every parsed/detached item is destroyed before its
+    // planned net on any preparation failure. Planned nets are not installed until commit.Push.
+    std::map<std::string, std::unique_ptr<NETINFO_ITEM>> plannedNets;
     std::vector<std::string> removedIds;
     std::vector<std::string> addedIds;
     std::vector<std::string> changedIds;
@@ -1182,18 +1274,8 @@ bool doApplyItems( PCB_EDIT_FRAME* aFrame, BOARD* aTargetBoard, const json& aWir
     {
         for( const json& entry : aWire.value( aCategory, json::array() ) )
         {
-            std::string sexpr = entry.at( "sexpr" ).get<std::string>();
-            size_t      start = sexpr.find_first_not_of( " \t\r\n" );
-            std::string trimmed = sexpr.substr( start );
-
-            // Peer-emitted blobs are already enveloped (or a bare footprint,
-            // which the parser accepts top-level); bare Y-rendered items need
-            // the live board's layer envelope.
-            if( trimmed.rfind( "(kicad_pcb", 0 ) != 0
-                && trimmed.rfind( "(footprint", 0 ) != 0 )
-                trimmed = wrapInBoardEnvelope( *aTargetBoard, trimmed );
-
-            std::unique_ptr<BOARD_ITEM> parsed( makeFromBlob( *aTargetBoard, trimmed ) );
+            const std::string sexpr = entry.at( "sexpr" ).get<std::string>();
+            ParsedBoardRoot parsed = parseBoardRootFromBlob( *aTargetBoard, sexpr );
 
             if( !parsed )
             {
@@ -1201,15 +1283,16 @@ bool doApplyItems( PCB_EDIT_FRAME* aFrame, BOARD* aTargetBoard, const json& aWir
                 return false;
             }
 
-            std::string uuid = toUtf8( parsed->m_Uuid.AsString() );
+            std::string uuid = toUtf8( parsed.root->m_Uuid.AsString() );
+
             aRootIds.push_back( uuid );
             aTreeIds.push_back( uuid );
-            parsed->RunOnChildren(
+            parsed.root->RunOnChildren(
                     [&]( BOARD_ITEM* aChild )
                     {
                         aTreeIds.push_back( toUtf8( aChild->m_Uuid.AsString() ) );
                     }, RECURSE_MODE::RECURSE );
-            aParsed.push_back( { std::move( parsed ), std::move( uuid ) } );
+            aParsed.push_back( { std::move( parsed ), nullptr, std::move( uuid ) } );
         }
 
         return true;
@@ -1228,7 +1311,7 @@ bool doApplyItems( PCB_EDIT_FRAME* aFrame, BOARD* aTargetBoard, const json& aWir
     {
         for( const ParsedUpsert& parsed : aParsed )
         {
-            BOARD_ITEM* existing = aTargetBoard->ResolveItem( parsed.item->m_Uuid,
+            BOARD_ITEM* existing = aTargetBoard->ResolveItem( parsed.parsed.root->m_Uuid,
                                                                /*allowNullptr*/ true );
 
             if( existing && existing->GetParentFootprint() )
@@ -1244,7 +1327,50 @@ bool doApplyItems( PCB_EDIT_FRAME* aFrame, BOARD* aTargetBoard, const json& aWir
     if( !rejectChildTarget( added ) || !rejectChildTarget( changed ) )
         return false;
 
+    // The batch is now syntactically and structurally accepted. Resolve references without
+    // mutating the live board: missing nets are allocated into `plannedNets`, shared by name,
+    // and staged in the same BOARD_COMMIT before any root that points at them.
     s_applyingRemote = true;
+
+    auto resolveAcceptedNet = [&]( const wxString& aName ) -> NETINFO_ITEM*
+    {
+        if( NETINFO_ITEM* existing = aTargetBoard->FindNet( aName ) )
+            return existing;
+
+        if( aName.IsEmpty() )
+            return aTargetBoard->FindNet( NETINFO_LIST::UNCONNECTED );
+
+        std::string key = toUtf8( aName );
+        auto [it, inserted] = plannedNets.try_emplace( key );
+
+        if( inserted )
+            it->second = std::make_unique<NETINFO_ITEM>( aTargetBoard, aName );
+
+        return it->second.get();
+    };
+
+    auto prepareUpserts = [&]( std::vector<ParsedUpsert>& aParsed ) -> bool
+    {
+        for( ParsedUpsert& parsed : aParsed )
+        {
+            parsed.item = detachParsedBoardRoot( parsed.parsed, *aTargetBoard,
+                                                  resolveAcceptedNet );
+
+            if( !parsed.item )
+            {
+                aError = "pcbnew could not resolve accepted item references: " + parsed.uuid;
+                return false;
+            }
+        }
+
+        return true;
+    };
+
+    if( !prepareUpserts( added ) || !prepareUpserts( changed ) )
+    {
+        s_applyingRemote = false;
+        return false;
+    }
 
     BOARD_COMMIT commit( aFrame );
     bool         staged = false;
@@ -1252,6 +1378,13 @@ bool doApplyItems( PCB_EDIT_FRAME* aFrame, BOARD* aTargetBoard, const json& aWir
     std::vector<std::string> touched;
     std::set<BOARD_ITEM*>    removedItems;
     const std::set<std::string> removedIdSet( removedIds.begin(), removedIds.end() );
+
+    for( auto& [name, net] : plannedNets )
+    {
+        (void) name;
+        commit.Add( net.get() );
+        staged = true;
+    }
 
     for( const std::string& rid : removedIds )
     {
@@ -1304,6 +1437,11 @@ bool doApplyItems( PCB_EDIT_FRAME* aFrame, BOARD* aTargetBoard, const json& aWir
             parsed.item.release();
         for( ParsedUpsert& parsed : changed )
             parsed.item.release();
+        for( auto& [name, net] : plannedNets )
+        {
+            (void) name;
+            net.release();
+        }
 
         pcbjam_collab::parkItemsApplyForTest();
         commit.Push( wxT( "Collaborative edit (items)" ), SKIP_UNDO );
@@ -1570,9 +1708,27 @@ void pcbCollabApplyItems( std::string aJson )
         return;
     }
 
+    const pcbjam_collab::ProjectionFence::Ticket ticket =
+            pcbjam_collab::acceptItemsProjection( request );
+
+    if( request.tracked() && !ticket )
+    {
+        pcbjam_collab::emitItemsApplied( request, "invalid", false,
+                                        "native projection owner epoch is fail-stopped" );
+        return;
+    }
+
+    if( ticket && !pcbjam_collab::projectionFence().mayEnter( ticket ) )
+    {
+        pcbjam_collab::emitItemsApplied( request, "busy", true,
+                                        "a native save cut is in flight", ticket );
+        return;
+    }
+
     if( pcbjam_open::busy() ) // open in flight (open_gate.h) — see pcbCollabApply
     {
-        pcbjam_collab::emitItemsApplied( request, "busy", true, "file open is in flight" );
+        pcbjam_collab::emitItemsApplied( request, "busy", true, "file open is in flight",
+                                        ticket );
         return;
     }
 
@@ -1580,7 +1736,7 @@ void pcbCollabApplyItems( std::string aJson )
 
     if( !pcbjam_collab::validateRootLiftedItemsWire( wire, validationError ) )
     {
-        pcbjam_collab::emitItemsApplied( request, "invalid", false, validationError );
+        pcbjam_collab::emitItemsApplied( request, "invalid", false, validationError, ticket );
         return;
     }
 
@@ -1589,7 +1745,7 @@ void pcbCollabApplyItems( std::string aJson )
     if( !fr )
     {
         pcbjam_collab::emitItemsApplied( request, "unavailable", true,
-                                        "pcbnew frame is unavailable" );
+                                        "pcbnew frame is unavailable", ticket );
         return;
     }
 
@@ -1598,14 +1754,22 @@ void pcbCollabApplyItems( std::string aJson )
     if( !target )
     {
         pcbjam_collab::emitItemsApplied( request, "unavailable", true,
-                                        "pcbnew board is unavailable" );
+                                        "pcbnew board is unavailable", ticket );
         return;
     }
 
-    pcbjam_collab::runOnCoroutine( fr, [fr, target, wire, request]() {
+    pcbjam_collab::runOnCoroutine( fr, [fr, target, wire, request, ticket]() {
         if( !pcbjam_collab::itemsOwnerMatches( request ) )
         {
-            pcbjam_collab::emitStaleItemsOwner( request );
+            pcbjam_collab::emitStaleItemsOwner( request, ticket );
+            return;
+        }
+
+        if( !pcbjam_collab::projectionFence().mayEnter( ticket ) )
+        {
+            pcbjam_collab::emitItemsApplied(
+                    request, "invalid", false,
+                    "native projection owner epoch became fail-stopped before apply", ticket );
             return;
         }
 
@@ -1614,7 +1778,7 @@ void pcbCollabApplyItems( std::string aJson )
         if( current != fr || !current || current->GetBoard() != target )
         {
             pcbjam_collab::emitItemsApplied( request, "target-changed", false,
-                                            "pcbnew frame or board changed before apply" );
+                                            "pcbnew frame or board changed before apply", ticket );
             return;
         }
 
@@ -1624,13 +1788,13 @@ void pcbCollabApplyItems( std::string aJson )
 
             if( !doApplyItems( fr, target, wire, error ) )
             {
-                pcbjam_collab::emitItemsApplied( request, "invalid", false, error );
+                pcbjam_collab::emitItemsApplied( request, "invalid", false, error, ticket );
                 return;
             }
 
             if( !pcbjam_collab::itemsOwnerMatches( request ) )
             {
-                pcbjam_collab::emitStaleItemsOwner( request );
+                pcbjam_collab::emitStaleItemsOwner( request, ticket );
                 return;
             }
 
@@ -1639,22 +1803,22 @@ void pcbCollabApplyItems( std::string aJson )
             if( current != fr || !current || current->GetBoard() != target )
             {
                 pcbjam_collab::emitItemsApplied( request, "target-changed", false,
-                                                "pcbnew frame or board changed during apply" );
+                                                "pcbnew frame or board changed during apply", ticket );
                 return;
             }
 
-            pcbjam_collab::emitItemsApplied( request, "applied" );
+            pcbjam_collab::emitItemsApplied( request, "applied", false, {}, ticket );
         }
         catch( const std::exception& e )
         {
             s_applyingRemote = false;
-            pcbjam_collab::emitItemsApplied( request, "failed", false, e.what() );
+            pcbjam_collab::emitItemsApplied( request, "failed", false, e.what(), ticket );
         }
         catch( ... )
         {
             s_applyingRemote = false;
             pcbjam_collab::emitItemsApplied( request, "failed", false,
-                                            "unknown pcbnew apply failure" );
+                                            "unknown pcbnew apply failure", ticket );
         }
     } );
 }
@@ -1728,6 +1892,13 @@ std::string pcbCollabSnapshotItems()
 // KICAD_MERGED_EMBIND: identical definition in eeschema_embind.cpp; the merged image
 // gets the one in kicad_editor_embind.cpp (both fork save chokepoints call it).
 #ifndef KICAD_MERGED_EMBIND
+extern "C" bool kicadCollabBeforeSave()
+{
+    return pcbjam_collab::beginSaveAfterApplyDrainFor( 35000 );
+}
+
+extern "C" void kicadCollabAfterSave() { pcbjam_collab::endSave(); }
+
 extern "C" void kicadCollabOnSave( const char* aPath )
 {
     EM_ASM( {
@@ -1767,6 +1938,18 @@ void kicadSaveBoard( std::string path )
         // Don't abort the wasm runtime on a save failure; the JS caller detects it
         // by the file being absent / empty.
     }
+}
+
+
+// Test-only entry to the real editor save command. Unlike kicadSaveBoard(),
+// this traverses PCB_EDIT_FRAME::SaveBoard/SavePcbFile — the same path as the
+// Ctrl+S accelerator — so ordering tests exercise the production pre-save
+// projection drain and onSave notification without depending on DOM key-event
+// delivery while wx has coroutine work queued.
+bool pcbCollabTestSaveCurrent()
+{
+    PCB_EDIT_FRAME* fr = pcbFrame();
+    return fr && fr->SaveBoard();
 }
 
 
@@ -2582,6 +2765,128 @@ bool pcbCollabTestMoveBoardItem( std::string aId, int aDx, int aDy )
     return true;
 }
 
+// Net-table repro hooks.  They deliberately mirror the Net Inspector's real BOARD::Add/Remove
+// operations, because those callbacks are the path on which NETINFO_ITEM used to be serialized
+// into an item-less furniture envelope.  Net names are file content only through connected
+// roots in current KiCad, so each hook also exercises the final pad/root representation.
+bool pcbCollabTestCreateNetAndAssign( std::string aId, std::string aNetName )
+{
+    PCB_EDIT_FRAME* fr = pcbFrame();
+
+    if( !fr || aNetName.empty()
+        || fr->GetBoard()->FindNet( wxString::FromUTF8( aNetName.c_str() ) )
+        || !dynamic_cast<BOARD_CONNECTED_ITEM*>( testResolve( fr, aId ) ) )
+        return false;
+
+    pcbjam_collab::runOnCoroutine( fr, [fr, aId, aNetName]() {
+        BOARD* board = fr->GetBoard();
+        auto*  item = dynamic_cast<BOARD_CONNECTED_ITEM*>( testResolve( fr, aId ) );
+        wxString netName = wxString::FromUTF8( aNetName.c_str() );
+
+        if( !board || !item || board->FindNet( netName ) )
+            return;
+
+        NETINFO_ITEM* net = new NETINFO_ITEM( board, netName, 0 );
+        board->Add( net );
+
+        BOARD_COMMIT commit( fr );
+        commit.Modify( item );
+        item->SetNet( net );
+        commit.Push( wxT( "Collab test create and assign net" ) );
+        fr->OnModify();
+    } );
+
+    return true;
+}
+
+bool pcbCollabTestRenameNet( std::string aOldName, std::string aNewName )
+{
+    PCB_EDIT_FRAME* fr = pcbFrame();
+
+    if( !fr || aOldName.empty() || aNewName.empty() )
+        return false;
+
+    BOARD* board = fr->GetBoard();
+
+    if( !board->FindNet( wxString::FromUTF8( aOldName.c_str() ) )
+        || board->FindNet( wxString::FromUTF8( aNewName.c_str() ) ) )
+        return false;
+
+    pcbjam_collab::runOnCoroutine( fr, [fr, aOldName, aNewName]() {
+        BOARD* board = fr->GetBoard();
+
+        if( !board )
+            return;
+
+        NETINFO_ITEM* net = board->FindNet( wxString::FromUTF8( aOldName.c_str() ) );
+
+        if( !net || board->FindNet( wxString::FromUTF8( aNewName.c_str() ) ) )
+            return;
+
+        std::vector<BOARD_CONNECTED_ITEM*> affected;
+
+        for( BOARD_CONNECTED_ITEM* item : board->AllConnectedItems() )
+        {
+            if( item->GetNet() == net )
+                affected.push_back( item );
+        }
+
+        // This is the production Net Inspector sequence: Remove temporarily maps the affected
+        // items to net 0; Add installs the renamed object; the final loop restores references.
+        board->Remove( net );
+        net->SetNetname( wxString::FromUTF8( aNewName.c_str() ) );
+        board->Add( net );
+
+        for( BOARD_CONNECTED_ITEM* item : affected )
+            item->SetNet( net );
+
+        fr->OnModify();
+    } );
+
+    return true;
+}
+
+bool pcbCollabTestDeleteNet( std::string aNetName )
+{
+    PCB_EDIT_FRAME* fr = pcbFrame();
+
+    if( !fr || aNetName.empty()
+        || !fr->GetBoard()->FindNet( wxString::FromUTF8( aNetName.c_str() ) ) )
+        return false;
+
+    pcbjam_collab::runOnCoroutine( fr, [fr, aNetName]() {
+        BOARD* board = fr->GetBoard();
+
+        if( !board )
+            return;
+
+        NETINFO_ITEM* net = board->FindNet( wxString::FromUTF8( aNetName.c_str() ) );
+
+        if( !net || net->GetNetCode() == NETINFO_LIST::UNCONNECTED )
+            return;
+
+        board->Remove( net );
+        fr->OnModify();
+        delete net;
+    } );
+
+    return true;
+}
+
+std::string pcbCollabTestListNets()
+{
+    json names = json::array();
+    PCB_EDIT_FRAME* fr = pcbFrame();
+
+    if( !fr || !fr->GetBoard() )
+        return names.dump();
+
+    for( NETINFO_ITEM* net : fr->GetBoard()->GetNetInfo() )
+        names.push_back( toUtf8( net->GetNetname() ) );
+
+    return names.dump();
+}
+
 // Duplicate (fresh uuids — exercises the FOOTPRINT copy-ctor uuid class).
 std::string pcbCollabTestDuplicateBoardItem( std::string aId, int aDx, int aDy )
 {
@@ -2687,6 +2992,8 @@ EMSCRIPTEN_BINDINGS(pcbnew) {
     function("kicadLayersSetActive", &pcbLayersSetActive);
     // pcbnew-only test helper (no eeschema counterpart — name is not shared).
     function("kicadCollabTestItemBlob", &kicadCollabTestItemBlob);
+    function("kicadCollabTestSaveCurrent",
+             &pcbCollabTestSaveCurrent PCBJAM_PARKER_POLICY);
     // pcbnew-only ysync-review repro hooks (names not shared with eeschema).
     function("kicadCollabTestSetPadSize", &pcbCollabTestSetPadSize);
     function("kicadCollabTestMoveEndpoint", &pcbCollabTestMoveEndpoint);
@@ -2699,6 +3006,10 @@ EMSCRIPTEN_BINDINGS(pcbnew) {
     function("kicadCollabTestSetFootprintField", &pcbCollabTestSetFootprintField);
     function("kicadCollabTestSetBoardItemLocked", &pcbCollabTestSetBoardItemLocked);
     function("kicadCollabTestMoveBoardItem", &pcbCollabTestMoveBoardItem);
+    function("kicadCollabTestCreateNetAndAssign", &pcbCollabTestCreateNetAndAssign);
+    function("kicadCollabTestRenameNet", &pcbCollabTestRenameNet);
+    function("kicadCollabTestDeleteNet", &pcbCollabTestDeleteNet);
+    function("kicadCollabTestListNets", &pcbCollabTestListNets);
     function("kicadCollabTestDuplicateBoardItem", &pcbCollabTestDuplicateBoardItem);
 
 #ifndef KICAD_MERGED_EMBIND

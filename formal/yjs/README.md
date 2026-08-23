@@ -6,7 +6,7 @@ are useful only when their abstraction boundary is explicit.
 
 ## What is proved
 
-`YjsProperties.dfy` has nine policy modules and one abstract controller:
+`YjsProperties.dfy` has ten policy modules and one abstract controller:
 
 | Module | Verified obligation |
 | --- | --- |
@@ -19,17 +19,20 @@ are useful only when their abstraction boundary is explicit.
 | `GraphClosure` | Canonical references are reconstructed from one certified parent relation; every parent traversal terminates by a strictly decreasing natural rank, so self/cyclic ownership is impossible. |
 | `StructuralProjection` | An item-only hot apply is permitted only while native and Yjs non-item signatures agree; structural drift requires full native rehydration. |
 | `DurabilityBoundary` | A revision reported durable is within the persisted frontier and therefore survives restore; flushing advances that frontier through every accepted revision. |
+| `SaveCut` | Native projection acknowledgements form one contiguous covered prefix; a successful complete latest-state projection may cover older retryable/not-entered tickets. A save freezes the accepted prefix and may acknowledge persistence only after that cut is covered. Pending timeout or a permanent failure at any outstanding ticket through the cut fails closed, while later accepted work cannot move the frozen cut. |
 | `ProjectionKernel` | Owner/request isolation, one-flight/latest-dirty coalescing, monotone successful application, an explicit no-native-flight retry-wait interval with owner/timer isolation and exact-latest wake, terminal fail-stop, clean owner rehydration, and fail-stop on an ambiguously ordered native emission preserve the controller invariant. |
 
-The exported acknowledgement and native-emission decisions are compiled by
-Dafny to JavaScript. The standalone application imports and executes those
-generated functions; tests enumerate all 32 acknowledgement inputs and both
-emission-order inputs. Dafny 4.11.0 currently discharges **72 verified
-obligations with 0 errors** for this source.
+The exported acknowledgement, structural-projection, native-emission, and
+save-cut decisions are compiled by Dafny to JavaScript. The standalone
+controller executes the first three; an app-independent FIFO refinement
+harness executes the save-cut policy. Tests enumerate every classifier input.
+Dafny 4.11.0 currently discharges **107 verified obligations with 0 errors** for
+this source.
 
-Only those two classifiers are generated into production. Queue state,
-promises/timers, native-shadow mutation, owner/request prefiltering, observers,
-terminal UI and recovery plumbing remain handwritten and require unit plus
+Only those four classifiers are emitted into the generated runtime artifact.
+Queue state, promises/timers, native-shadow mutation, owner/request
+prefiltering, observers, terminal UI, the concrete native save-drain/deadline
+mapping, and recovery plumbing remain handwritten and require unit plus
 browser/Wasm refinement evidence.
 
 ## Verify and regenerate
@@ -70,7 +73,8 @@ tests and real KiCad/Wasm end-to-end tests.
 Several modules prove conditional obligations rather than construction of
 their premises: graph closure assumes a certified owner/rank relation, atomic
 batch assumes pure preparation, structural projection assumes a complete
-signature, and durability assumes an ordered persisted frontier. The formal
+signature, durability assumes an ordered persisted frontier, and save-cut
+assumes the native queue refines its monotonically ticketed FIFO. The formal
 result is therefore a proof of selected policies, not a whole-program theorem.
 
 `RetryWait` models the safety-relevant interval in which no native request is

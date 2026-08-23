@@ -3,7 +3,13 @@ import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { execSync } from "node:child_process";
 import type { BrowserContext, Page } from "@playwright/test";
-import { parseSexpr, fileToDoc } from "@pcbjam/shared";
+import {
+  compareSlots,
+  driftDocDelta,
+  KICAD_WRITER_NORMALIZED_ITEM_REFERENCE_ORDER,
+  parseSexpr,
+  fileToDoc,
+} from "../../web/pcbjam-shared/src/index.js";
 import { expect, test } from "./fixtures";
 import {
   TRIO_PCB,
@@ -49,6 +55,10 @@ const GENERATED_PCB: ToolCfg = {
   fixture: read("kicad/qa/data/pcbnew/diff_pair_uncoupled_tuning_drc.kicad_pcb"),
 };
 
+const STICKHUB_NETTED_FOOTPRINT = "02995be1-979b-4b84-a4b4-8eb9bd3d9e39";
+const STICKHUB_GND_PAD = "746cc8bc-1074-4915-abdb-85c85120ff59";
+const STICKHUB_SIGNAL_PAD = "8f217301-5df2-4f16-9eb0-3c8e53dd326a";
+
 test.beforeAll(() => {
   execSync("node collab/build.mjs", {
     cwd: path.resolve(__dirname, ".."),
@@ -83,6 +93,29 @@ function expectCompleteParsedEqual(actual: string, expected: string, label: stri
   ).toBe(true);
 }
 
+function expectSemanticallyEqual(actual: string, expected: string, label: string): void {
+  const actualDoc = fileToDoc(actual);
+  const expectedDoc = fileToDoc(expected);
+  const delta = driftDocDelta(expectedDoc, actualDoc);
+  expect(actualDoc.root, `${label}: root metadata differs`).toBe(expectedDoc.root);
+  expect(
+    {
+      added: delta.added.map((item) => item.uuid),
+      updated: delta.updated.map((item) => item.uuid),
+      removed: delta.removed,
+    },
+    `${label}: item content or membership differs`,
+  ).toEqual({ added: [], updated: [], removed: [] });
+  expect(
+    compareSlots(
+      expectedDoc.layout,
+      actualDoc.layout,
+      KICAD_WRITER_NORMALIZED_ITEM_REFERENCE_ORDER,
+    ),
+    `${label}: layout differs`,
+  ).not.toBe("different");
+}
+
 async function realFreshOwnerRoundTrip(
   page: Page,
   context: BrowserContext,
@@ -106,7 +139,11 @@ async function realFreshOwnerRoundTrip(
     await bootOpen(fresh, freshCfg);
     await startV2(fresh, { room, editorMatchesDoc: true });
     const native1 = await modelText(fresh, freshCfg);
-    expectCompleteParsedEqual(native1, authority.ok!, "Yjs -> fresh native");
+    // KiCad may reorder independent top-level roots on reopen (the demo board
+    // moves one track block while preserving every UUID-bearing AST). The
+    // production invariant is semantic equality: exact membership/content,
+    // identical non-item root state, and at most order-only layout churn.
+    expectSemanticallyEqual(native1, authority.ok!, "Yjs -> fresh native");
     expect(await drift(fresh, freshCfg), "fresh owner is full-document drift free").toBeNull();
     expect(await projectionFailures(fresh), "fresh owner stays live").toEqual([]);
   } finally {
@@ -158,6 +195,44 @@ test.describe("real KiCad designs through Yjs and fresh native owners", () => {
       wire.added.some((entry) => entry.sexpr.includes(group![0])),
       `native snapshot omitted PCB_GROUP ${group![0]}`,
     ).toBe(true);
+  });
+
+  test("StickHub: replacing a real footprint root preserves pad nets and remains saveable", async ({
+    page,
+  }) => {
+    await bootOpen(page, GROUPED_PCB);
+    const snapshot = JSON.parse(
+      await callHook<string>(page, "kicadCollabSnapshotItems"),
+    ) as { added: Array<{ sexpr: string }> };
+    const footprint = snapshot.added.find((entry) =>
+      entry.sexpr.includes(STICKHUB_NETTED_FOOTPRINT),
+    );
+    expect(footprint, "real netted footprint is present in the native snapshot").toBeTruthy();
+
+    await callHook(
+      page,
+      "kicadCollabApplyItems",
+      JSON.stringify({
+        added: [],
+        changed: [{ id: STICKHUB_NETTED_FOOTPRINT, sexpr: footprint!.sexpr }],
+        removed: [],
+      }),
+    );
+    await page.waitForFunction(
+      () => !(window as unknown as CorpusWindow).Module.kicadCollabBusy!(),
+      null,
+      { timeout: 30_000 },
+    );
+
+    const saved = await modelText(page, GROUPED_PCB);
+    const savedDoc = fileToDoc(saved);
+    expect(JSON.stringify(savedDoc.items[STICKHUB_GND_PAD]), "GND pad retained its net").toContain(
+      "GND",
+    );
+    expect(
+      JSON.stringify(savedDoc.items[STICKHUB_SIGNAL_PAD]),
+      "signal pad retained its net",
+    ).toContain("/U2D+");
   });
 
   test("tuning-pattern board: native snapshot includes its real PCB_GENERATOR root", async ({

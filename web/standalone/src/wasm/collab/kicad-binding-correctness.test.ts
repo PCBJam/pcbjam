@@ -49,7 +49,10 @@ class DeferredEditor implements KicadItemsBridge {
   private emit: ((json: string) => void) | null = null;
   private destroyed = false;
 
-  constructor(text: string) {
+  constructor(
+    text: string,
+    readonly preAckEmissionsArePreApply?: true,
+  ) {
     Object.assign(this.store, fileToDoc(text).items);
   }
 
@@ -144,7 +147,10 @@ function relayedPair(): { a: Y.Doc; b: Y.Doc } {
   return { a, b };
 }
 
-function setup(onProjectionFailure?: (failure: NativeProjectionFailure) => void): {
+function setup(
+  onProjectionFailure?: (failure: NativeProjectionFailure) => void,
+  opts?: { preAckEmissionsArePreApply?: true },
+): {
   a: Y.Doc;
   b: Y.Doc;
   binding: ReturnType<typeof bindKicadCollab>;
@@ -162,7 +168,7 @@ function setup(onProjectionFailure?: (failure: NativeProjectionFailure) => void)
   seedBinding.destroy();
   seedDoc.destroy();
 
-  const editor = new DeferredEditor(BASE);
+  const editor = new DeferredEditor(BASE, opts?.preAckEmissionsArePreApply);
   const binding = bindKicadCollab(b, editor, { onProjectionFailure });
   binding.seed(undefined, { editorMatchesDoc: true });
   return { a, b, binding, editor };
@@ -323,8 +329,12 @@ describe("P0: non-item native projection is explicit", () => {
 });
 
 describe("P0: native publications rebase from the acknowledged shadow", () => {
-  it("a stale native root cannot roll back a disjoint newer Y field", () => {
-    const { a, editor } = setup();
+  it("a FIFO-proven pre-apply native edit rebases, drains, and fully converges", async () => {
+    const failures: NativeProjectionFailure[] = [];
+    const { a, editor } = setup(
+      (failure) => failures.push(failure),
+      { preAckEmissionsArePreApply: true },
+    );
 
     // Y advances width, but native application is deliberately held.  Native
     // still contains width=0.2 when the user changes only the layer.
@@ -337,6 +347,24 @@ describe("P0: native publications rebase from the acknowledged shadow", () => {
     const merged = yToDoc(a).items["seg-1"]!.body;
     expect(scalar(merged, "width"), "newer remote field survives").toBe("0.4");
     expect(scalar(merged, "layer"), "local disjoint edit survives").toBe('"B.Cu"');
+
+    // FIFO order is local emission L, then the already-submitted remote wire W.
+    // Its ACK advances the shadow through W and starts exactly one corrective
+    // projection for the rebased latest Y state.
+    editor.releaseOne();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(editor.pending, "ACK starts one latest corrective projection").toHaveLength(1);
+    editor.releaseOne();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(failures).toEqual([]);
+    expect(editor.destroyCalls).toBe(0);
+    expect(editor.pending).toHaveLength(0);
+    expect(editor.submitted).toHaveLength(2);
+    expect(scalar(editor.store["seg-1"]!.body, "width")).toBe("0.4");
+    expect(scalar(editor.store["seg-1"]!.body, "layer")).toBe('"B.Cu"');
   });
 });
 

@@ -21,7 +21,6 @@ import {
 } from "@pcbjam/shared";
 import {
   bindKicadCollab,
-  DOC_REVERTED_EVENT,
   SexprVersionError,
   type KicadItemsBridge,
   type NativeProjectionFailure,
@@ -759,81 +758,6 @@ describe("bindKicadCollab — read-only viewer (read-only-viewer)", () => {
     // writer alone and stays file-recoverable.
     expect(ydocHasState(a)).toBe(true);
     expect(docToFile(yToDoc(a))).toBe(docToFile(seedDoc));
-  });
-});
-
-describe("validity-revert marker → DOC_REVERTED_EVENT (kicad-validity 0001 B3)", () => {
-  /** Stub the browser window just enough for the binding's dispatch. */
-  function withWindowSpy(): { events: CustomEvent[]; restore: () => void } {
-    const events: CustomEvent[] = [];
-    const prev = (globalThis as { window?: unknown }).window;
-    (globalThis as { window?: unknown }).window = {
-      dispatchEvent: (e: Event) => {
-        events.push(e as CustomEvent);
-        return true;
-      },
-    };
-    return {
-      events,
-      restore: () => {
-        (globalThis as { window?: unknown }).window = prev;
-      },
-    };
-  }
-
-  it("dispatches once per nonce when the backend stamps a revert", () => {
-    const spy = withWindowSpy();
-    try {
-      const { a, b } = pair();
-      const edA = new FakeEditor();
-      seedEditor(edA, FP);
-      bindKicadCollab(a, edA).seed();
-
-      // The "backend" writes the marker on the peer doc; it relays over.
-      const meta = kicadMetaMap(b);
-      b.transact(() => {
-        meta.set("revertNonce", "job-1");
-        meta.set("revertReason", "unbalanced (");
-        meta.set("revertedAt", "2026-07-14T00:00:00Z");
-      });
-
-      expect(spy.events).toHaveLength(1);
-      expect(spy.events[0]!.type).toBe(DOC_REVERTED_EVENT);
-      expect(spy.events[0]!.detail).toMatchObject({
-        reason: "unbalanced (",
-        at: "2026-07-14T00:00:00Z",
-      });
-
-      // Same nonce again (e.g. a reconnect replay) → silent.
-      b.transact(() => meta.set("revertReason", "unbalanced ( again"));
-      expect(spy.events).toHaveLength(1);
-
-      // A NEW nonce → a second toast.
-      b.transact(() => meta.set("revertNonce", "job-2"));
-      expect(spy.events).toHaveLength(2);
-    } finally {
-      spy.restore();
-    }
-  });
-
-  it("a nonce present BEFORE binding does not fire (stale marker on open)", () => {
-    const spy = withWindowSpy();
-    try {
-      const doc = new Y.Doc();
-      doc.getMap("kdoc_meta").set("revertNonce", "old-job");
-      const ed = new FakeEditor();
-      seedEditor(ed, FP);
-      const binding = bindKicadCollab(doc, ed);
-      binding.seed();
-      expect(spy.events).toHaveLength(0);
-
-      // …and after destroy() the observer is gone entirely.
-      binding.destroy();
-      doc.getMap("kdoc_meta").set("revertNonce", "post-destroy");
-      expect(spy.events).toHaveLength(0);
-    } finally {
-      spy.restore();
-    }
   });
 });
 

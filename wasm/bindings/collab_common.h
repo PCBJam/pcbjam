@@ -11,9 +11,13 @@
 
 #ifdef __EMSCRIPTEN__
 
+#include "collab_projection_fence.h"
+
+#include <chrono>
 #include <deque>
 #include <emscripten.h>
 #include <functional>
+#include <memory>
 #include <string>
 #include <nlohmann/json.hpp>
 #include <wx/event.h>
@@ -26,6 +30,12 @@
 namespace pcbjam_collab {
 
 inline std::string toUtf8( const wxString& s ) { return std::string( s.utf8_str() ); }
+
+inline ProjectionFence& projectionFence()
+{
+    static ProjectionFence fence;
+    return fence;
+}
 
 /**
  * Run a body on the editor's main loop AND inside a COROUTINE — the exact
@@ -169,6 +179,77 @@ inline void waitForApplyDrain()
 {
     while( appliesPending() )
         emscripten_sleep( 1 );
+}
+
+/**
+ * Save is allowed to wait for accepted projections, but must never serialize a
+ * known-stale model or hang the editor forever.  Returns false without mutating
+ * the queue when the deadline expires; the native save chokepoint then fails
+ * closed and leaves the document dirty.
+ */
+inline std::unique_ptr<ProjectionSaveLease>& activeSaveLease()
+{
+    static std::unique_ptr<ProjectionSaveLease> lease;
+    return lease;
+}
+
+/**
+ * Acquire the frozen cut and wait until it is safe to start a native save.
+ * Success deliberately retains the lease.  The native RAII guard calls
+ * endSave() only after the actual KiCad writer and save-side mutations exit.
+ */
+inline bool beginSaveAfterApplyDrainFor( int aTimeoutMs )
+{
+    std::unique_ptr<ProjectionSaveLease>& lease = activeSaveLease();
+
+    if( lease )
+        return false; // a nested/re-entrant save cannot steal the active cut
+
+    lease = std::make_unique<ProjectionSaveLease>( projectionFence() );
+
+    if( !( *lease ) )
+    {
+        lease.reset();
+        return false;
+    }
+
+    const auto deadline = std::chrono::steady_clock::now()
+                          + std::chrono::milliseconds( aTimeoutMs );
+
+    while( true )
+    {
+        const ProjectionFence::SaveAction action = lease->decide( false );
+
+        if( action == ProjectionFence::SaveAction::FailClosed )
+        {
+            lease.reset();
+            return false;
+        }
+
+        // The verified frontier says the frozen projection cut is complete.
+        // Also require the shared native FIFO to be idle so the synchronous
+        // writer cannot observe an unrelated coroutine half-mutation.
+        if( action == ProjectionFence::SaveAction::Persist && !appliesPending() )
+            return true;
+
+        if( std::chrono::steady_clock::now() >= deadline )
+        {
+            // Exercise the generated timeout branch for an unresolved cut.
+            // A fully acknowledged cut with unrelated FIFO work is the stricter
+            // concrete quiescence case and also fails closed at its deadline.
+            (void) lease->decide( true );
+            lease.reset();
+            return false;
+        }
+
+        emscripten_sleep( 1 );
+    }
+}
+
+/** Release the retained writer lease. Safe after every success/error return. */
+inline void endSave() noexcept
+{
+    activeSaveLease().reset();
 }
 
 // ── C++ → JS wire emitters (no-ops without a JS listener) ───────────────────

@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const REQUIRED_DAFNY = "4.11.0+fcb2042d6d043a2634f0854338c08feeaaaf4ae2";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -20,6 +20,10 @@ const output = join(
   "web/standalone/src/wasm/collab/generated/projection-kernel.js",
 );
 const declarations = output.replace(/\.js$/, ".d.ts");
+const cppSaveCut = join(
+  root,
+  "wasm/bindings/generated/save_cut_decision.h",
+);
 const dafnyCwd = join(root, "web/standalone");
 const dafny = process.env.DAFNY || "dafny";
 const checkOnly = process.argv.includes("--check");
@@ -82,7 +86,7 @@ const adapter =
   [
     "",
     "// This adapter is the only handwritten transformation around Dafny's output.",
-    "// The decision itself executes ProjectionKernel.ExportAckDecision above.",
+    "// Each decision executes its named Dafny Export method above.",
     "export function decideProjectionAck(",
     "  ownerMatches,",
     "  requestMatches,",
@@ -100,6 +104,26 @@ const adapter =
     "  const action = Number(encoded.toString());",
     "  if (!Number.isInteger(action) || action < 0 || action > 4) {",
     "    throw new Error(`verified projection kernel returned invalid action ${action}`);",
+    "  }",
+    "  return action;",
+    "}",
+    "",
+    "// A save may persist only after the native FIFO has acknowledged every",
+    "// accepted projection through its frozen cut. Timeout or a failed",
+    "// projection through that cut fails closed.",
+    "export function decideSaveCut(",
+    "  acknowledgedThroughCut,",
+    "  timedOut,",
+    "  projectionFailedThroughCut,",
+    ") {",
+    "  const encoded = SaveCut.__default.ExportSaveCutDecision(",
+    "    acknowledgedThroughCut,",
+    "    timedOut,",
+    "    projectionFailedThroughCut,",
+    "  );",
+    "  const action = Number(encoded.toString());",
+    "  if (action !== 0 && action !== 1 && action !== 4) {",
+    "    throw new Error(`verified save-cut kernel returned invalid action ${action}`);",
     "  }",
     "  return action;",
     "}",
@@ -124,11 +148,12 @@ const adapter =
     "  return action;",
     "}",
     "",
-    "// Native emissions are safe to publish normally only when no projection",
-    "// ticket is awaiting acknowledgement. The decision is verified in Dafny.",
-    "export function decideNativeEmission(projectionInFlight) {",
+    "// An in-flight native emission is safe only when the bridge proves its",
+    "// strict FIFO places that emission before the unacknowledged apply.",
+    "export function decideNativeEmission(projectionInFlight, causallyBeforeApply) {",
     "  const encoded = ProjectionKernel.__default.ExportNativeEmissionDecision(",
     "    projectionInFlight,",
+    "    causallyBeforeApply,",
     "  );",
     "  const action = Number(encoded.toString());",
     "  if (action !== 1 && action !== 4) {",
@@ -150,6 +175,12 @@ const expectedDeclarations =
     "  ok: boolean,",
     "  retryable: boolean,",
     "): ProjectionAckAction;",
+    "export type SaveCutAction = 0 | 1 | 4;",
+    "export declare function decideSaveCut(",
+    "  acknowledgedThroughCut: boolean,",
+    "  timedOut: boolean,",
+    "  projectionFailedThroughCut: boolean,",
+    "): SaveCutAction;",
     "export type StructuralProjectionAction = 1 | 4;",
     "export declare function decideStructuralProjection(",
     "  hardMatches: boolean,",
@@ -159,8 +190,63 @@ const expectedDeclarations =
     "export type NativeEmissionAction = 1 | 4;",
     "export declare function decideNativeEmission(",
     "  projectionInFlight: boolean,",
+    "  causallyBeforeApply: boolean,",
     "): NativeEmissionAction;",
   ].join("\n") + "\n";
+
+async function generatedCppSaveCutHeader() {
+  // Execute the just-generated Dafny adapter for all eight boolean inputs.
+  // The C++ table is therefore derived from the verified implementation, not
+  // a second handwritten rendering of SaveCut.Classify.
+  const moduleUrl = pathToFileURL(output);
+  moduleUrl.searchParams.set("source", sourceSha256);
+  const { decideSaveCut } = await import(moduleUrl.href);
+  const actions = [];
+
+  for (let bits = 0; bits < 8; bits++) {
+    const acknowledgedThroughCut = (bits & 4) !== 0;
+    const timedOut = (bits & 2) !== 0;
+    const projectionFailedThroughCut = (bits & 1) !== 0;
+    const action = decideSaveCut(
+      acknowledgedThroughCut,
+      timedOut,
+      projectionFailedThroughCut,
+    );
+
+    if (action !== 0 && action !== 1 && action !== 4) {
+      throw new Error(`Dafny emitted invalid C++ save-cut action ${action}`);
+    }
+
+    actions.push(action);
+  }
+
+  return `${banner}#pragma once
+
+namespace pcbjam_collab::generated
+{
+enum class SaveCutAction : unsigned char
+{
+    Wait = 0,
+    Persist = 1,
+    FailClosed = 4,
+};
+
+// Index bits: acknowledgedThroughCut=4, timedOut=2,
+// projectionFailedThroughCut=1. Values were exhaustively evaluated by the
+// generated Dafny JavaScript above when this header was produced.
+inline constexpr SaveCutAction decideSaveCut( bool aAcknowledgedThroughCut,
+                                               bool aTimedOut,
+                                               bool aProjectionFailedThroughCut ) noexcept
+{
+    constexpr unsigned char actions[8] = { ${actions.join(", ")} };
+    const unsigned index = ( aAcknowledgedThroughCut ? 4U : 0U )
+                           | ( aTimedOut ? 2U : 0U )
+                           | ( aProjectionFailedThroughCut ? 1U : 0U );
+    return static_cast<SaveCutAction>( actions[index] );
+}
+} // namespace pcbjam_collab::generated
+`;
+}
 
 if (checkOnly) {
   const currentJavaScript = readFileSync(output, "utf8");
@@ -171,10 +257,17 @@ if (checkOnly) {
   ) {
     throw new Error("verified projection kernel is stale; regenerate it");
   }
+  const expectedCppSaveCut = await generatedCppSaveCutHeader();
+  const currentCppSaveCut = readFileSync(cppSaveCut, "utf8");
+  if (currentCppSaveCut !== expectedCppSaveCut) {
+    throw new Error("verified C++ save-cut kernel is stale; regenerate it");
+  }
   process.stdout.write("Verified projection kernel is current.\n");
 } else {
   writeFileSync(output, expectedJavaScript);
   writeFileSync(declarations, expectedDeclarations);
+  writeFileSync(cppSaveCut, await generatedCppSaveCutHeader());
   process.stdout.write(`Wrote ${output}\n`);
   process.stdout.write(`Wrote ${declarations}\n`);
+  process.stdout.write(`Wrote ${cppSaveCut}\n`);
 }

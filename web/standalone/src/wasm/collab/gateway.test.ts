@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import * as syncProtocol from "y-protocols/sync";
 import * as Y from "yjs";
 import {
+  KDOC_COLLAB_PROTOCOL_VERSION,
   parseGatewayClientMsg,
   tagGatewayFrame,
   untagGatewayFrame,
@@ -158,7 +159,7 @@ describe("gateway facade — active documents", () => {
       ch: expect.any(Number) as number,
       doc: "a.kicad_sch",
       mode: "active",
-      schema: 3,
+      schema: KDOC_COLLAB_PROTOCOL_VERSION,
     });
     const step1 = step1Frame(ws);
     expect(step1).toBeTruthy();

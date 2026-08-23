@@ -418,6 +418,270 @@ module DurabilityBoundary {
   {}
 }
 
+module SaveCut {
+  datatype Failure = NoFailure | Failed(ticket: nat)
+  datatype Queue = Queue(
+    accepted: nat,
+    acknowledged: nat,
+    failure: Failure)
+  datatype Action = Wait | Persist | FailClosed
+
+  // accepted and acknowledged are monotonically increasing tickets.
+  // `acknowledged` denotes one contiguous covered prefix, but the bridge may
+  // advance it directly to a later successful latest-state ticket: that
+  // projection contains the complete desired state and therefore supersedes
+  // older retryable/not-entered work. A permanent failure may likewise occur
+  // at any outstanding ticket; fail-stop prevents later coverage from jumping
+  // across it.
+  ghost predicate Invariant(q: Queue)
+  {
+    q.acknowledged <= q.accepted
+    && match q.failure
+      case NoFailure => true
+      case Failed(ticket) =>
+        q.acknowledged < ticket <= q.accepted
+  }
+
+  function Accept(q: Queue): Queue
+    requires Invariant(q)
+    requires q.failure.NoFailure?
+    ensures Invariant(Accept(q))
+    ensures Accept(q).accepted == q.accepted + 1
+    ensures Accept(q).acknowledged == q.acknowledged
+  {
+    Queue(q.accepted + 1, q.acknowledged, NoFailure)
+  }
+
+  function AcknowledgeNext(q: Queue): Queue
+    requires Invariant(q)
+    requires q.failure.NoFailure?
+    requires q.acknowledged < q.accepted
+    ensures Invariant(AcknowledgeNext(q))
+    ensures AcknowledgeNext(q).accepted == q.accepted
+    ensures AcknowledgeNext(q).acknowledged == q.acknowledged + 1
+  {
+    Queue(q.accepted, q.acknowledged + 1, NoFailure)
+  }
+
+  function AcknowledgeLatest(q: Queue, ticket: nat): Queue
+    requires Invariant(q)
+    requires q.failure.NoFailure?
+    requires q.acknowledged < ticket <= q.accepted
+    ensures Invariant(AcknowledgeLatest(q, ticket))
+    ensures AcknowledgeLatest(q, ticket).accepted == q.accepted
+    ensures AcknowledgeLatest(q, ticket).acknowledged == ticket
+  {
+    Queue(q.accepted, ticket, NoFailure)
+  }
+
+  function FailNext(q: Queue): Queue
+    requires Invariant(q)
+    requires q.failure.NoFailure?
+    requires q.acknowledged < q.accepted
+    ensures Invariant(FailNext(q))
+    ensures FailNext(q).accepted == q.accepted
+    ensures FailNext(q).acknowledged == q.acknowledged
+    ensures FailNext(q).failure.Failed?
+    ensures FailNext(q).failure.ticket == q.acknowledged + 1
+  {
+    Queue(q.accepted, q.acknowledged, Failed(q.acknowledged + 1))
+  }
+
+  function FailOutstanding(q: Queue, ticket: nat): Queue
+    requires Invariant(q)
+    requires q.failure.NoFailure?
+    requires q.acknowledged < ticket <= q.accepted
+    ensures Invariant(FailOutstanding(q, ticket))
+    ensures FailOutstanding(q, ticket).accepted == q.accepted
+    ensures FailOutstanding(q, ticket).acknowledged == q.acknowledged
+    ensures FailOutstanding(q, ticket).failure == Failed(ticket)
+  {
+    Queue(q.accepted, q.acknowledged, Failed(ticket))
+  }
+
+  // A save freezes the accepted projection prefix at invocation. Projections
+  // accepted later receive larger tickets and are not silently pulled into or
+  // substituted for this cut.
+  function BeginSave(q: Queue): nat
+  {
+    q.accepted
+  }
+
+  function AcknowledgedThroughCut(q: Queue, cut: nat): bool
+  {
+    cut <= q.acknowledged
+  }
+
+  function ProjectionFailedThroughCut(q: Queue, cut: nat): bool
+  {
+    match q.failure
+      case NoFailure => false
+      case Failed(ticket) => ticket <= cut
+  }
+
+  // This total classifier is compiled into the runtime artifact. Failure has
+  // fail-closed precedence for arbitrary inputs. Under Invariant, a failure
+  // through the cut and an acknowledged cut cannot both be true.
+  function Classify(acknowledgedThroughCut: bool,
+                    timedOut: bool,
+                    projectionFailedThroughCut: bool): Action
+  {
+    if projectionFailedThroughCut then FailClosed
+    else if acknowledgedThroughCut then Persist
+    else if timedOut then FailClosed
+    else Wait
+  }
+
+  function Decide(q: Queue, cut: nat, timedOut: bool): Action
+    requires Invariant(q)
+    requires cut <= q.accepted
+  {
+    Classify(
+      AcknowledgedThroughCut(q, cut),
+      timedOut,
+      ProjectionFailedThroughCut(q, cut))
+  }
+
+  function MayAcknowledgePersistence(q: Queue,
+                                     cut: nat,
+                                     timedOut: bool): bool
+    requires Invariant(q)
+    requires cut <= q.accepted
+  {
+    Decide(q, cut, timedOut) == Persist
+  }
+
+  lemma AcknowledgementsAdvanceExactlyOneFifoTicket(q: Queue)
+    requires Invariant(q)
+    requires q.failure.NoFailure?
+    requires q.acknowledged < q.accepted
+    ensures AcknowledgeNext(q).acknowledged == q.acknowledged + 1
+    ensures AcknowledgeNext(q).acknowledged <= AcknowledgeNext(q).accepted
+  {}
+
+  lemma LatestStateAcknowledgementCoversItsWholePrefix(q: Queue,
+                                                       ticket: nat,
+                                                       prior: nat)
+    requires Invariant(q)
+    requires q.failure.NoFailure?
+    requires q.acknowledged < ticket <= q.accepted
+    requires prior <= ticket
+    ensures prior <= AcknowledgeLatest(q, ticket).acknowledged
+  {}
+
+  lemma CoalescedLatestAcknowledgementDrainsAFrozenCut(q: Queue,
+                                                       cut: nat,
+                                                       latest: nat)
+    requires Invariant(q)
+    requires q.failure.NoFailure?
+    requires q.acknowledged < latest <= q.accepted
+    requires cut <= latest
+    ensures Decide(AcknowledgeLatest(q, latest), cut, false) == Persist
+  {}
+
+  lemma PermanentFailureAtAnyOutstandingTicketFailsItsCut(q: Queue,
+                                                           ticket: nat,
+                                                           timedOut: bool)
+    requires Invariant(q)
+    requires q.failure.NoFailure?
+    requires q.acknowledged < ticket <= q.accepted
+    ensures Decide(FailOutstanding(q, ticket), ticket, timedOut) == FailClosed
+  {}
+
+  lemma FailedThroughCutCannotAlsoBeAcknowledged(q: Queue, cut: nat)
+    requires Invariant(q)
+    requires ProjectionFailedThroughCut(q, cut)
+    ensures !AcknowledgedThroughCut(q, cut)
+  {}
+
+  lemma PersistOnlyAfterTheCutIsAcknowledged(q: Queue,
+                                              cut: nat,
+                                              timedOut: bool)
+    requires Invariant(q)
+    requires cut <= q.accepted
+    requires Decide(q, cut, timedOut) == Persist
+    ensures cut <= q.acknowledged
+  {}
+
+  lemma PersistenceAcknowledgementIsNeverStale(q: Queue,
+                                                cut: nat,
+                                                timedOut: bool)
+    requires Invariant(q)
+    requires cut <= q.accepted
+    requires MayAcknowledgePersistence(q, cut, timedOut)
+    ensures cut <= q.acknowledged
+  {}
+
+  lemma PendingSaveWaits(q: Queue, cut: nat)
+    requires Invariant(q)
+    requires cut <= q.accepted
+    requires q.acknowledged < cut
+    requires !ProjectionFailedThroughCut(q, cut)
+    ensures Decide(q, cut, false) == Wait
+  {}
+
+  lemma TimedOutPendingSaveFailsClosed(q: Queue, cut: nat)
+    requires Invariant(q)
+    requires cut <= q.accepted
+    requires q.acknowledged < cut
+    ensures Decide(q, cut, true) == FailClosed
+    ensures !MayAcknowledgePersistence(q, cut, true)
+  {}
+
+  lemma FailedProjectionThroughCutFailsClosed(q: Queue,
+                                               cut: nat,
+                                               timedOut: bool)
+    requires Invariant(q)
+    requires cut <= q.accepted
+    requires ProjectionFailedThroughCut(q, cut)
+    ensures Decide(q, cut, timedOut) == FailClosed
+    ensures !MayAcknowledgePersistence(q, cut, timedOut)
+  {}
+
+  lemma NewerAcceptanceDoesNotMoveAnExistingCut(q: Queue,
+                                                cut: nat,
+                                                timedOut: bool)
+    requires Invariant(q)
+    requires q.failure.NoFailure?
+    requires cut <= q.accepted
+    ensures BeginSave(Accept(q)) == BeginSave(q) + 1
+    ensures AcknowledgedThroughCut(Accept(q), cut)
+      == AcknowledgedThroughCut(q, cut)
+    ensures ProjectionFailedThroughCut(Accept(q), cut)
+      == ProjectionFailedThroughCut(q, cut)
+    ensures Decide(Accept(q), cut, timedOut) == Decide(q, cut, timedOut)
+  {}
+
+  lemma FailureStrictlyAfterCutDoesNotInvalidateTheDrainedCut(
+      q: Queue, cut: nat, timedOut: bool)
+    requires Invariant(q)
+    requires cut <= q.accepted
+    requires cut <= q.acknowledged
+    requires q.failure.Failed?
+    requires cut < q.failure.ticket
+    ensures Decide(q, cut, timedOut) == Persist
+  {}
+
+  method ExportSaveCutDecision(acknowledgedThroughCut: bool,
+                               timedOut: bool,
+                               projectionFailedThroughCut: bool)
+      returns (action: int)
+    ensures action == 0 || action == 1 || action == 4
+    ensures projectionFailedThroughCut ==> action == 4
+    ensures !projectionFailedThroughCut && acknowledgedThroughCut ==> action == 1
+    ensures !projectionFailedThroughCut && !acknowledgedThroughCut && timedOut
+      ==> action == 4
+    ensures !projectionFailedThroughCut && !acknowledgedThroughCut && !timedOut
+      ==> action == 0
+  {
+    action := match Classify(
+      acknowledgedThroughCut, timedOut, projectionFailedThroughCut)
+      case Wait => 0
+      case Persist => 1
+      case FailClosed => 4;
+  }
+}
+
 module ProjectionKernel {
   datatype Action = Ignore | Idle | StartLatest | RetryLatest | Terminal
   datatype Flight =
@@ -493,15 +757,16 @@ module ProjectionKernel {
     else Terminal
   }
 
-  // Native item emissions are ordered with respect to acknowledged projection
-  // tickets. An emission observed while a ticket is still in flight has no
-  // trustworthy before/after relation to that ticket: treating it as either
-  // side of the acknowledged shadow can manufacture an infinite normalization
-  // echo or swallow a concurrent local edit. Preserve the emitted intent at
-  // the data layer, then retire this native generation.
-  function NativeEmissionDecision(projectionInFlight: bool): Action
+  // The production native bridge runs local flushes and remote applies in one
+  // strict, non-interleaving FIFO and suppresses remote-apply echoes. Under
+  // that explicit refinement contract, an onItems callback observed before an
+  // outstanding ACK is causally before that apply and may be rebased normally.
+  // A bridge without that proof remains fail-stop: guessing before/after can
+  // manufacture an echo or swallow local intent.
+  function NativeEmissionDecision(projectionInFlight: bool,
+                                  causallyBeforeApply: bool): Action
   {
-    if projectionInFlight then Terminal else Idle
+    if projectionInFlight && !causallyBeforeApply then Terminal else Idle
   }
 
   function Ack(s: State, ackOwner: nat, ackRequest: nat,
@@ -663,12 +928,16 @@ module ProjectionKernel {
     ensures Ack(s, ackOwner, ackRequest, false, false).0.flight.NoFlight?
   {}
 
-  lemma InFlightNativeEmissionIsTerminal()
-    ensures NativeEmissionDecision(true) == Terminal
+  lemma UnknownInFlightNativeEmissionIsTerminal()
+    ensures NativeEmissionDecision(true, false) == Terminal
   {}
 
   lemma IdleNativeEmissionMayPublish()
-    ensures NativeEmissionDecision(false) == Idle
+    ensures NativeEmissionDecision(false, false) == Idle
+  {}
+
+  lemma ProvenPreApplyNativeEmissionMayPublish()
+    ensures NativeEmissionDecision(true, true) == Idle
   {}
 
   method ExportAckDecision(ownerMatches: bool, requestMatches: bool,
@@ -690,13 +959,14 @@ module ProjectionKernel {
   }
 
 
-  method ExportNativeEmissionDecision(projectionInFlight: bool)
+  method ExportNativeEmissionDecision(projectionInFlight: bool,
+                                      causallyBeforeApply: bool)
       returns (action: int)
     ensures action == 1 || action == 4
-    ensures projectionInFlight ==> action == 4
-    ensures !projectionInFlight ==> action == 1
+    ensures projectionInFlight && !causallyBeforeApply ==> action == 4
+    ensures !projectionInFlight || causallyBeforeApply ==> action == 1
   {
-    action := match NativeEmissionDecision(projectionInFlight)
+    action := match NativeEmissionDecision(projectionInFlight, causallyBeforeApply)
       case Idle => 1
       case Terminal => 4
       case _ => 4;

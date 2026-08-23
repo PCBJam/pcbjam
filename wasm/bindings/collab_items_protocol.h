@@ -90,6 +90,7 @@ inline bool acquireItemsOwner( std::string aOwner )
     if( aOwner.empty() || appliesPending() || pcbjam_open::busy() )
         return false;
 
+    projectionFence().acquireOwner();
     setItemsOwner( std::move( aOwner ) );
     return true;
 }
@@ -116,7 +117,10 @@ inline void parkItemsApplyForTest()
 inline void releaseItemsOwner( std::string aOwner )
 {
     if( activeItemsOwner() == aOwner )
+    {
+        projectionFence().releaseOwner();
         activeItemsOwner().clear();
+    }
 }
 
 inline bool itemsOwnerMatches( const ItemsProtocolRequest& aRequest )
@@ -130,9 +134,31 @@ inline bool itemsOwnerMatches( const ItemsProtocolRequest& aRequest )
     return activeItemsOwner().empty();
 }
 
-inline void emitItemsApplied( const ItemsProtocolRequest& aRequest, const char* aStatus,
-                              bool aRetryable = false, const std::string& aError = {} )
+inline ProjectionFence::Ticket acceptItemsProjection( const ItemsProtocolRequest& aRequest )
 {
+    if( !aRequest.tracked() || activeItemsOwner() != aRequest.ownerGeneration )
+        return {};
+
+    return projectionFence().accept();
+}
+
+inline void emitItemsApplied( const ItemsProtocolRequest& aRequest, const char* aStatus,
+                              bool aRetryable = false, const std::string& aError = {},
+                              ProjectionFence::Ticket aTicket = {} )
+{
+    // Settle the native frontier BEFORE calling arbitrary JS. A synchronous
+    // save triggered by an ACK observer must see this exact outcome, and a
+    // stale ticket from an older owner epoch is ignored by ProjectionFence.
+    if( aTicket )
+    {
+        if( std::string( aStatus ) == "applied" )
+            (void) projectionFence().appliedLatest( aTicket );
+        else if( aRetryable )
+            (void) projectionFence().retryableNotEntered( aTicket );
+        else
+            (void) projectionFence().failedPermanently( aTicket );
+    }
+
     if( !aRequest.tracked() )
         return; // legacy/direct test calls retain their fire-and-forget behavior
 
@@ -160,10 +186,11 @@ inline void emitItemsApplied( const ItemsProtocolRequest& aRequest, const char* 
     }, payload.c_str() );
 }
 
-inline void emitStaleItemsOwner( const ItemsProtocolRequest& aRequest )
+inline void emitStaleItemsOwner( const ItemsProtocolRequest& aRequest,
+                                 ProjectionFence::Ticket aTicket = {} )
 {
     emitItemsApplied( aRequest, "stale-owner", false,
-                      "items request belongs to an inactive binding generation" );
+                      "items request belongs to an inactive binding generation", aTicket );
 }
 
 } // namespace pcbjam_collab

@@ -44,6 +44,7 @@
 #include "pcbjam_async_policy.h"
 #include "open_gate.h"
 #include "timer_park.h"
+#include "collab_common.h"
 #include "collab_items_protocol.h"
 
 using namespace emscripten;
@@ -344,6 +345,13 @@ static bool kicadSetReadOnly( bool aReadOnly )
 // C++ → JS save notification. Called from BOTH fork save chokepoints
 // (PCB_EDIT_FRAME::SavePcbFile and SCH_EDIT_FRAME::saveSchematicFile) — one shared
 // definition serves the merged image. No-op without a JS listener.
+extern "C" bool kicadCollabBeforeSave()
+{
+    return pcbjam_collab::beginSaveAfterApplyDrainFor( 35000 );
+}
+
+extern "C" void kicadCollabAfterSave() { pcbjam_collab::endSave(); }
+
 extern "C" void kicadCollabOnSave( const char* aPath )
 {
     EM_ASM( {
