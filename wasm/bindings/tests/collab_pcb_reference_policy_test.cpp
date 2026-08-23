@@ -54,6 +54,15 @@ int main()
             duplicateMember, group, spec, error ) );
     assert( error.find( "repeats member" ) != std::string::npos );
 
+    PcbReferenceSpec emptyGroup{ PcbReferenceOwnerKind::Group, group, {} };
+    PcbReferenceSpec emptyGenerator{ PcbReferenceOwnerKind::Generator, generator, {} };
+    assert( !pcbjam_collab::validatePcbReferencePersistability(
+            emptyGroup, false, error ) );
+    assert( pcbjam_collab::validatePcbReferencePersistability(
+            emptyGenerator, false, error ) );
+    assert( !pcbjam_collab::validatePcbReferencePersistability(
+            emptyGenerator, true, error ) );
+
     const std::set<std::string> roots{ group, generator, memberA, memberB, memberC };
     const std::map<std::string, std::vector<std::string>> validReferences{
         { group, { memberA, generator } },

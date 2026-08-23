@@ -22,6 +22,7 @@
 #include <pcb_track.h>
 #include <pcb_field.h>
 #include <pcb_shape.h>
+#include <pcb_table.h>
 #include <pcb_text.h>
 #include <pcb_group.h>
 #include <pcb_generator.h>
@@ -59,6 +60,7 @@
 #include "collab_common.h"
 #include "collab_items_protocol.h"
 #include "collab_items_validation.h"
+#include "collab_pcb_reference_policy.h"
 #include "collab_pcb_root_policy.h"
 #include "collab_presence_core.h"
 #include "open_gate.h"
@@ -241,6 +243,70 @@ void forEachRootItem( BOARD& aBoard, Fn&& aFn )
     // must not disappear from snapshots, diffs, or the one-root envelope parser.
     pcbjam_collab::forEachPcbRootItem( aBoard,
             [&]( auto* aItem ) { aFn( static_cast<BOARD_ITEM*>( aItem ) ); } );
+}
+
+// UUIDs owned by one persisted root. Group/generator RunOnChildren traverses
+// logical membership references, not owned serialization children, so it must
+// never participate in the identity tree used for collision/removal checks.
+pcbjam_collab::PcbItemTreeIds pcbItemTreeIds( BOARD_ITEM* aRoot )
+{
+    pcbjam_collab::PcbItemTreeIds tree;
+
+    if( !aRoot )
+        return tree;
+
+    tree.root = toUtf8( aRoot->m_Uuid.AsString() );
+    tree.ids.push_back( tree.root );
+
+    if( aRoot->Type() != PCB_GROUP_T && aRoot->Type() != PCB_GENERATOR_T )
+    {
+        aRoot->RunOnChildren(
+                [&]( BOARD_ITEM* aChild )
+                {
+                    tree.ids.push_back( toUtf8( aChild->m_Uuid.AsString() ) );
+                }, RECURSE_MODE::RECURSE );
+    }
+
+    return tree;
+}
+
+pcbjam_collab::PcbRootPersistability pcbRootPersistability( BOARD_ITEM* aRoot )
+{
+    pcbjam_collab::PcbRootPersistability result;
+
+    auto inspect = [&]( BOARD_ITEM* aItem )
+    {
+        if( PCB_SHAPE* shape = dynamic_cast<PCB_SHAPE*>( aItem ) )
+        {
+            if( shape->GetShape() == SHAPE_T::POLY && !shape->IsPolyShapeValid() )
+                result.containsInvalidPolygon = true;
+        }
+    };
+
+    inspect( aRoot );
+
+    if( aRoot && aRoot->Type() != PCB_GROUP_T && aRoot->Type() != PCB_GENERATOR_T )
+        aRoot->RunOnChildren( inspect, RECURSE_MODE::RECURSE );
+
+    if( aRoot && aRoot->Type() == PCB_TABLE_T )
+    {
+        PCB_TABLE* table = static_cast<PCB_TABLE*>( aRoot );
+        result.isTable = true;
+        result.tableColumns = table->GetColCount();
+
+        for( PCB_TABLECELL* cell : table->GetCells() )
+        {
+            if( !cell )
+            {
+                result.tableCells.push_back( { 0, 0 } );
+                continue;
+            }
+
+            result.tableCells.push_back( { cell->GetColSpan(), cell->GetRowSpan() } );
+        }
+    }
+
+    return result;
 }
 
 // Iterate every scalar-diff item the bridge syncs: the roots above PLUS each footprint's TEXT
@@ -1239,7 +1305,8 @@ void doApply( PCB_EDIT_FRAME* aFrame, const json& aDelta )
 bool doApplyItems( PCB_EDIT_FRAME* aFrame, BOARD* aTargetBoard, const json& aWire,
                    std::string& aError )
 {
-    if( !aTargetBoard || !pcbjam_collab::validateRootLiftedItemsWire( aWire, aError ) )
+    if( !aFrame || !aTargetBoard
+        || !pcbjam_collab::validateRootLiftedItemsWire( aWire, aError ) )
     {
         if( aError.empty() )
             aError = "pcbnew board is unavailable";
@@ -1252,6 +1319,9 @@ bool doApplyItems( PCB_EDIT_FRAME* aFrame, BOARD* aTargetBoard, const json& aWir
         ParsedBoardRoot             parsed;
         std::unique_ptr<BOARD_ITEM> item; // populated only after whole-batch validation
         std::string                 uuid;
+        pcbjam_collab::PcbItemTreeIds tree;
+        bool                        hasReferences = false;
+        pcbjam_collab::PcbReferenceSpec references;
     };
 
     // Declared before the parsed vectors so every parsed/detached item is destroyed before its
@@ -1266,7 +1336,18 @@ bool doApplyItems( PCB_EDIT_FRAME* aFrame, BOARD* aTargetBoard, const json& aWir
     std::vector<ParsedUpsert> changed;
 
     for( const json& rid : aWire.value( "removed", json::array() ) )
-        removedIds.push_back( rid.get<std::string>() );
+    {
+        std::string normalized;
+
+        if( !pcbjam_collab::normalizePcbReferenceUuid(
+                    rid.get<std::string>(), normalized ) )
+        {
+            aError = "pcbnew removed item has an invalid UUID";
+            return false;
+        }
+
+        removedIds.push_back( std::move( normalized ) );
+    }
 
     auto parseCategory = [&]( const char* aCategory, std::vector<ParsedUpsert>& aParsed,
                               std::vector<std::string>& aRootIds,
@@ -1285,14 +1366,52 @@ bool doApplyItems( PCB_EDIT_FRAME* aFrame, BOARD* aTargetBoard, const json& aWir
 
             std::string uuid = toUtf8( parsed.root->m_Uuid.AsString() );
 
+            if( !pcbjam_collab::validatePcbRootPersistability(
+                        pcbRootPersistability( parsed.root ), aError ) )
+            {
+                aError = std::string( "pcbnew rejected non-persistable " )
+                         + aCategory + " root " + uuid + ": " + aError;
+                return false;
+            }
+
+            pcbjam_collab::PcbItemTreeIds tree = pcbItemTreeIds( parsed.root );
+            bool hasReferences = parsed.root->Type() == PCB_GROUP_T
+                                 || parsed.root->Type() == PCB_GENERATOR_T;
+            pcbjam_collab::PcbReferenceSpec references;
+
+            if( hasReferences )
+            {
+                if( !pcbjam_collab::extractPcbReferenceSpec(
+                            sexpr, uuid, references, aError ) )
+                    return false;
+
+                const bool nativeGenerator = parsed.root->Type() == PCB_GENERATOR_T;
+                const bool wireGenerator = references.kind
+                        == pcbjam_collab::PcbReferenceOwnerKind::Generator;
+
+                if( nativeGenerator != wireGenerator )
+                {
+                    aError = "pcbnew reference owner kind does not match parsed root: " + uuid;
+                    return false;
+                }
+
+                // KiCad's writer deliberately omits empty groups and empty
+                // tuning-pattern generators. A successful apply of either
+                // would ACK a root that vanishes on the next save.
+                const bool tuningGenerator = nativeGenerator
+                        && static_cast<PCB_GENERATOR*>( parsed.root )
+                                   ->GetGeneratorType() == wxT( "tuning_pattern" );
+
+                if( !pcbjam_collab::validatePcbReferencePersistability(
+                            references, tuningGenerator, aError ) )
+                    return false;
+            }
+
             aRootIds.push_back( uuid );
-            aTreeIds.push_back( uuid );
-            parsed.root->RunOnChildren(
-                    [&]( BOARD_ITEM* aChild )
-                    {
-                        aTreeIds.push_back( toUtf8( aChild->m_Uuid.AsString() ) );
-                    }, RECURSE_MODE::RECURSE );
-            aParsed.push_back( { std::move( parsed ), nullptr, std::move( uuid ) } );
+            aTreeIds.insert( aTreeIds.end(), tree.ids.begin(), tree.ids.end() );
+            aParsed.push_back( { std::move( parsed ), nullptr, std::move( uuid ),
+                                 std::move( tree ), hasReferences,
+                                 std::move( references ) } );
         }
 
         return true;
@@ -1305,26 +1424,112 @@ bool doApplyItems( PCB_EDIT_FRAME* aFrame, BOARD* aTargetBoard, const json& aWir
                                                    changedTreeIds, aError ) )
         return false;
 
-    // Per-item wires replace roots. A parsed UUID resolving to a footprint
-    // child would otherwise remove the parent under a different identity.
-    auto rejectChildTarget = [&]( const std::vector<ParsedUpsert>& aParsed ) -> bool
+    // Establish the exact live persisted-root ownership forest. This one
+    // preflight simultaneously rejects nested UUID collisions, child splices,
+    // reserved board/cache identities, and child removals that are not covered
+    // by their complete replacement root. No native pointer is mutated here.
+    std::vector<pcbjam_collab::PcbItemTreeIds> liveTrees;
+    std::set<std::string>                     liveOwnedIds;
+    std::map<std::string, std::string>        liveRootByItem;
+
+    forEachRootItem( *aTargetBoard, [&]( BOARD_ITEM* aRoot )
+    {
+        pcbjam_collab::PcbItemTreeIds tree = pcbItemTreeIds( aRoot );
+
+        for( const std::string& id : tree.ids )
+        {
+            liveOwnedIds.insert( id );
+            liveRootByItem.emplace( id, tree.root );
+        }
+
+        liveTrees.push_back( std::move( tree ) );
+    } );
+
+    std::set<std::string> reservedIds;
+
+    for( const auto& [id, item] : aTargetBoard->GetItemByIdCache() )
+    {
+        (void) item;
+        std::string key = toUtf8( id.AsString() );
+
+        if( !liveOwnedIds.count( key ) )
+            reservedIds.insert( std::move( key ) );
+    }
+
+    reservedIds.insert( toUtf8( aTargetBoard->m_Uuid.AsString() ) );
+
+    std::vector<pcbjam_collab::PcbItemTreeIds> upsertTrees;
+
+    auto appendTrees = [&]( const std::vector<ParsedUpsert>& aParsed )
+    {
+        for( const ParsedUpsert& parsed : aParsed )
+            upsertTrees.push_back( parsed.tree );
+    };
+
+    appendTrees( added );
+    appendTrees( changed );
+
+    std::set<std::string> postRootIds;
+    std::set<std::string> postItemIds;
+
+    if( !pcbjam_collab::projectPcbPostItemUniverse(
+                liveTrees, reservedIds, removedIds, upsertTrees,
+                postRootIds, postItemIds, aError ) )
+        return false;
+
+    (void) postItemIds;
+
+    // Capture the complete pre-batch pointer relation by UUID, then overlay
+    // exactly the owners authored by this batch. Isolated KiCad parsing cannot
+    // resolve `(members ...)`, so the accepted wire text is authoritative.
+    std::map<std::string, std::vector<std::string>> desiredReferences;
+    std::map<std::string, pcbjam_collab::PcbReferenceOwnerKind> desiredKinds;
+
+    forEachRootItem( *aTargetBoard, [&]( BOARD_ITEM* aRoot )
+    {
+        EDA_GROUP* group = dynamic_cast<EDA_GROUP*>( aRoot );
+
+        if( !group || ( aRoot->Type() != PCB_GROUP_T
+                        && aRoot->Type() != PCB_GENERATOR_T ) )
+            return;
+
+        std::string owner = toUtf8( aRoot->m_Uuid.AsString() );
+        std::vector<std::string>& members = desiredReferences[owner];
+
+        for( EDA_ITEM* member : group->GetItems() )
+            members.push_back( toUtf8( member->m_Uuid.AsString() ) );
+
+        desiredKinds[owner] = aRoot->Type() == PCB_GENERATOR_T
+                ? pcbjam_collab::PcbReferenceOwnerKind::Generator
+                : pcbjam_collab::PcbReferenceOwnerKind::Group;
+    } );
+
+    for( const std::string& id : removedIds )
+    {
+        desiredReferences.erase( id );
+        desiredKinds.erase( id );
+    }
+
+    auto overlayReferences = [&]( const std::vector<ParsedUpsert>& aParsed )
     {
         for( const ParsedUpsert& parsed : aParsed )
         {
-            BOARD_ITEM* existing = aTargetBoard->ResolveItem( parsed.parsed.root->m_Uuid,
-                                                               /*allowNullptr*/ true );
+            desiredReferences.erase( parsed.uuid );
+            desiredKinds.erase( parsed.uuid );
 
-            if( existing && existing->GetParentFootprint() )
+            if( parsed.hasReferences )
             {
-                aError = "pcbnew upsert UUID resolves to a footprint child: " + parsed.uuid;
-                return false;
+                desiredReferences[parsed.uuid] = parsed.references.members;
+                desiredKinds[parsed.uuid] = parsed.references.kind;
             }
         }
-
-        return true;
     };
 
-    if( !rejectChildTarget( added ) || !rejectChildTarget( changed ) )
+    overlayReferences( added );
+    overlayReferences( changed );
+
+    if( !pcbjam_collab::validatePcbReferenceClosure(
+                postRootIds, desiredReferences, aError ) )
         return false;
 
     // The batch is now syntactically and structurally accepted. Resolve references without
@@ -1372,13 +1577,25 @@ bool doApplyItems( PCB_EDIT_FRAME* aFrame, BOARD* aTargetBoard, const json& aWir
         return false;
     }
 
+    // Root replacement invalidates every child pointer in KiCad's selection
+    // and table-range caches. The selection tool also retains an entered-group
+    // pointer independently of BOARD_COMMIT. Clear both before any old tree can
+    // be detached; malformed/rejected batches returned above without changing UI.
+    if( !removedIds.empty() || !added.empty() || !changed.empty() )
+    {
+        if( PCB_SELECTION_TOOL* selection =
+                    aFrame->GetToolManager()->GetTool<PCB_SELECTION_TOOL>() )
+        {
+            selection->ExitGroup();
+            selection->ClearSelection( true );
+        }
+    }
+
     BOARD_COMMIT commit( aFrame );
     bool         staged = false;
 
     std::vector<std::string> touched;
     std::set<BOARD_ITEM*>    removedItems;
-    const std::set<std::string> removedIdSet( removedIds.begin(), removedIds.end() );
-
     for( auto& [name, net] : plannedNets )
     {
         (void) name;
@@ -1388,17 +1605,16 @@ bool doApplyItems( PCB_EDIT_FRAME* aFrame, BOARD* aTargetBoard, const json& aWir
 
     for( const std::string& rid : removedIds )
     {
+        auto liveOwner = liveRootByItem.find( rid );
+
+        if( liveOwner != liveRootByItem.end() && liveOwner->second != rid )
+            continue; // the accepted full-root upsert owns this child retirement
+
         KIID id( wxString::FromUTF8( rid.c_str() ) );
         touched.push_back( rid );
 
         if( BOARD_ITEM* item = aTargetBoard->ResolveItem( id, /*allowNullptr*/ true ) )
         {
-            if( FOOTPRINT* parent = item->GetParentFootprint() )
-            {
-                if( removedIdSet.count( toUtf8( parent->m_Uuid.AsString() ) ) )
-                    continue; // the parent removal owns this child
-            }
-
             commit.Remove( item );
 
             if( item->Type() != PCB_FIELD_T )
@@ -1444,7 +1660,114 @@ bool doApplyItems( PCB_EDIT_FRAME* aFrame, BOARD* aTargetBoard, const json& aWir
         }
 
         pcbjam_collab::parkItemsApplyForTest();
-        commit.Push( wxT( "Collaborative edit (items)" ), SKIP_UNDO );
+        commit.Push( wxT( "Collaborative edit (items)" ),
+                     SKIP_UNDO | SKIP_ENTERED_GROUP );
+    }
+
+    // BOARD::Remove does not clear an owner's outgoing EDA_GROUP relation.
+    // Null every surviving member backpointer before the old owner is deleted.
+    for( BOARD_ITEM* item : removedItems )
+    {
+        if( EDA_GROUP* owner = dynamic_cast<EDA_GROUP*>( item ) )
+            owner->RemoveAll();
+    }
+
+    // Resolve the complete accepted relation against the post-commit board
+    // before changing any surviving owner. The preflight proved closure; this
+    // second check is the concrete refinement guard around KiCad's pointer map.
+    std::map<EDA_GROUP*, std::vector<EDA_ITEM*>> resolvedReferences;
+
+    for( const auto& [ownerId, memberIds] : desiredReferences )
+    {
+        BOARD_ITEM* ownerItem = aTargetBoard->ResolveItem(
+                KIID( wxString::FromUTF8( ownerId.c_str() ) ), true );
+        EDA_GROUP* owner = dynamic_cast<EDA_GROUP*>( ownerItem );
+        auto       kind = desiredKinds.find( ownerId );
+
+        if( !owner || !ownerItem || ownerItem->GetParent() != aTargetBoard
+            || toUtf8( ownerItem->m_Uuid.AsString() ) != ownerId
+            || kind == desiredKinds.end()
+            || ( ownerItem->Type() == PCB_GENERATOR_T )
+                       != ( kind->second
+                            == pcbjam_collab::PcbReferenceOwnerKind::Generator ) )
+        {
+            aError = "pcbnew could not resolve accepted reference owner: " + ownerId;
+            s_applyingRemote = false;
+
+            for( BOARD_ITEM* item : removedItems )
+                delete item;
+
+            return false;
+        }
+
+        std::vector<EDA_ITEM*>& members = resolvedReferences[owner];
+
+        for( const std::string& memberId : memberIds )
+        {
+            BOARD_ITEM* member = aTargetBoard->ResolveItem(
+                    KIID( wxString::FromUTF8( memberId.c_str() ) ), true );
+
+            if( !member || member->GetParent() != aTargetBoard
+                || toUtf8( member->m_Uuid.AsString() ) != memberId )
+            {
+                aError = "pcbnew could not resolve accepted reference member: "
+                         + memberId;
+                s_applyingRemote = false;
+
+                for( BOARD_ITEM* item : removedItems )
+                    delete item;
+
+                return false;
+            }
+
+            members.push_back( member );
+        }
+    }
+
+    forEachRootItem( *aTargetBoard, []( BOARD_ITEM* aRoot )
+    {
+        if( ( aRoot->Type() == PCB_GROUP_T || aRoot->Type() == PCB_GENERATOR_T ) )
+        {
+            if( EDA_GROUP* owner = dynamic_cast<EDA_GROUP*>( aRoot ) )
+                owner->RemoveAll();
+        }
+    } );
+
+    for( const auto& [owner, members] : resolvedReferences )
+    {
+        for( EDA_ITEM* member : members )
+            owner->AddItem( member );
+    }
+
+    // The UUID graph, not insertion order or native pointer identity, is the
+    // persisted relation. Verify it exactly after the concrete AddItem calls.
+    for( const auto& [ownerId, expectedMembers] : desiredReferences )
+    {
+        BOARD_ITEM* ownerItem = aTargetBoard->ResolveItem(
+                KIID( wxString::FromUTF8( ownerId.c_str() ) ), true );
+        EDA_GROUP* owner = dynamic_cast<EDA_GROUP*>( ownerItem );
+        std::set<std::string> actual;
+
+        if( owner )
+        {
+            for( EDA_ITEM* member : owner->GetItems() )
+                actual.insert( toUtf8( member->m_Uuid.AsString() ) );
+        }
+
+        const std::set<std::string> expected( expectedMembers.begin(),
+                                               expectedMembers.end() );
+
+        if( !owner || actual != expected )
+        {
+            aError = "pcbnew reference rebind did not reproduce accepted graph: "
+                     + ownerId;
+            s_applyingRemote = false;
+
+            for( BOARD_ITEM* item : removedItems )
+                delete item;
+
+            return false;
+        }
     }
 
     for( BOARD_ITEM* item : removedItems )

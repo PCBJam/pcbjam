@@ -1,6 +1,6 @@
 # pcbjam Yjs/native sync compared with y-prosemirror
 
-Measured on 2026-08-22. Code LOC means nonblank lines after stripping line and
+Measured on 2026-08-23. Code LOC means nonblank lines after stripping line and
 block comments while preserving strings and regular-expression literals.
 Generated Dafny JavaScript is reported separately and excluded from the
 repo-owned source total: the audited source is the Dafny model plus its pinned,
@@ -10,39 +10,39 @@ byte-comparing generator.
 
 | Layer | Physical LOC | Code LOC | What must be understood |
 | --- | ---: | ---: | --- |
-| Shared Y schema and conversion | 3,482 | 2,371 | parsing, slot identity, v3 epochs, graph validity, deltas, wire validation, native rebase |
-| Browser synchronization algorithms | 1,281 | 993 | acknowledged shadow, one-flight projection, generated decisions, retry/fail-stop |
+| Shared Y schema and conversion | 3,492 | 2,371 | slot identity, v3 epochs, graph validity, deltas, wire validation, native rebase |
+| Browser synchronization algorithms | 1,565 | 1,210 | acknowledged shadow, one-flight projection, library coverage, generated decisions, retry/fail-stop |
 | Browser lifecycle, sheet adapter and recovery host | 4,028 | 2,895 | owner isolation, open/apply barriers, sheet switching, terminal UI and recovery |
-| Native C++ integration files (conservative) | 7,218 | 4,653 | snapshot/emit, preflight validation, atomic apply, ownership and adjacent editor bindings |
-| Client gateway/schema boundary | 1,325 | 863 | versioned subscriptions, gateway wire and document admission |
-| Dafny model and generator | 824 | 678 | update algebra, admission, epochs, rebase, graph and projection policies |
+| Native C++ integration files (conservative) | 7,260 | 4,686 | complete PCB root iterator, snapshot/emit, preflight, temporary-board ownership, save drain and adjacent bindings |
+| Client gateway/schema boundary | 1,342 | 870 | versioned subscriptions, reconnect upload, gateway wire and document admission |
+| Dafny model and generator | 1,126 | 943 | update algebra, admission, epochs, rebase, graph, projection and save-cut policies |
 
-The algorithmic TypeScript core—the first two rows—is **3,364 code lines**. That
-is the smallest useful reading set for understanding the representation,
-conflict domains, rebase and projection controller. A conservative audit of
-the complete 26-file repo-owned production/formal integration boundary is
-**18,158 physical / 12,453 code lines**. This includes the whole `WasmTool`
-recovery host because malformed-authority classification is observable there.
-The C++ and host numbers deliberately count complete integration files,
-including adjacent editor-binding/UI code, so the count is reproducible rather
-than dependent on subjective line slicing. On the earlier comparable 25-file
-manifest that omitted the whole `WasmTool` host, the current result is **14,911
-/ 10,066**; most of the apparent scope jump is that newly explicit inclusion,
-not code added by these fixes.
+The measured six-row manifest is **18,813 physical / 12,975 code lines**. Its
+shared row accidentally omitted the small tokenizer/parser `sexpr.ts`
+(**96 / 72**). The corrected complete boundary is therefore **18,909 physical /
+13,047 code lines**.
+
+The smallest useful algorithm reading set is the first two rows plus that
+parser: **5,153 physical / 3,653 code lines**. It covers representation,
+conflict-domain classification, native three-way rebase, structural/library
+coverage and the asynchronous projection controller. A syntactic audit of the
+11 central TypeScript files found 338 functions and 859 decision-like sites;
+this is not cyclomatic complexity, but it explains why reading only a single
+`sync()` function cannot establish correctness. At least six interacting
+protocol concerns remain: seed epoch, update convergence, local intent rebase,
+native FIFO/ACK, lifecycle/fail-stop and save/durability.
+
+The C++ and lifecycle-host rows deliberately count complete integration files,
+including adjacent editor binding/UI code. That makes the count reproducible
+instead of depending on subjective line slicing. It also means the full total
+is a conservative maintenance boundary, not 13,047 lines of dense CRDT logic.
 
 “Understand it fully” cannot literally stop at repository code. Yjs's CRDT,
 the JavaScript/WebAssembly runtime and KiCad parser/writer are trusted
-dependencies. The focused 35-file evidence corpus is **9,477 physical / 7,815
-code lines**. Adding it to the conservative production/formal boundary gives a
-defensible end-to-end audit surface of **27,635 physical / 20,268 code lines**.
-The broader 54-file collaboration corpus is **12,365 / 10,148**, for **30,523 /
-22,601** with production/formal source. These evidence sets are alternatives—
-the focused set is contained in the broad set—not additional rows to sum
-together.
-
-The generated Dafny JavaScript and declaration are **2,308 / 2,218** and are
-excluded from those totals. Include the extra 2,218 code lines only if the audit
-also reviews compiler output rather than regenerating and byte-comparing it.
+dependencies. The proof plus focused regression corpus pushes the practical
+review surface above 20,000 code lines. Generated Dafny JavaScript/declarations
+are excluded: the intended audit is the Dafny source, pinned compiler/generator
+and byte-comparison, not a manual review of compiler output.
 
 For comparison, stable `y-prosemirror` v1.3.7 at commit
 `f89fadd2a8bf15c0c7e6bfcac268883a5fa4e0f8` is **1,800 physical / 1,219 code
@@ -56,6 +56,13 @@ These are not quality-per-line scores. pcbjam's count includes C++, lifecycle,
 schema admission and formal policy that `y-prosemirror` does not need; the
 `y-prosemirror` count excludes ProseMirror and Yjs themselves. The comparison
 measures integration burden, not correctness or design quality.
+
+As a reading estimate, pcbjam's 3,653-line algorithm core is about **3.0×** the
+stable y-prosemirror 1,219-line core. The corrected 13,047-line full integration
+boundary is about **10.7×**, but that ratio is deliberately apples-to-oranges:
+it charges pcbjam for C++, Wasm lifecycle, schema admission, save ordering and
+formal policy while charging y-prosemirror for none of ProseMirror, Yjs or the
+browser runtime beneath it.
 
 ## Why pcbjam is larger
 
@@ -71,8 +78,10 @@ native KiCad commit
   -> distribute Yjs updates
   -> validate/canonicalize the peer's desired graph
   -> submit one queued native projection
+  -> preflight + rebind board-owned references + native commit
   -> wait for an owner/request acknowledgement
-  -> retry, fail-stop, or rehydrate
+  -> retry, fail-stop, or explicitly reload
+  -> drain accepted projection work before native save
 ```
 
 ```text
@@ -98,7 +107,17 @@ intent recovery, graph closure, acknowledgement and lifecycle isolation itself.
 | Invalid state | Version gate, whole-batch validation, graph canonicalization, quarantine or reload | Conversion must produce a schema-valid ProseMirror document; recovery/normalization is propagated through the binding rather than claiming that arbitrary raw Y nodes are simply removed |
 | Initialization | One active epoch selects a complete seed | The authoritative Y type is bound to the editor; initialization is schema-aware |
 | Same-domain conflict | One complete authored value wins through Yjs | Y text/tree semantics plus ProseMirror normalization |
-| Formal evidence | Dafny policy model and generated acknowledgement/emission decisions | The repository ships tests and architectural reasoning, but no formal proof artifact |
+| Save/durability | Native projection drain, writer chokepoint, backend persistence frontier | Outside the binding; the host persists application state |
+| Recovery | Explicit fresh Wasm owner from canonical Y; malformed Y must be repaired first | Recreate/reconfigure the editor view from the bound Y fragment as the host permits |
+| Formal evidence | Dafny policy model and generated ACK, structural, emission and save-cut classifiers | The repository ships tests and architectural reasoning, but no formal proof artifact |
+
+Neither system proves that arbitrary high-level user operations commute.
+ProseMirror's server-sequenced `prosemirror-collab` plugin rebases steps through
+a mapping; y-prosemirror instead embeds editor structure in Yjs CRDT types.
+pcbjam reconstructs semantic intent from delayed snapshots. In all three cases,
+“order does not matter” must be stated at the correct layer: the same Yjs update
+set converges, while conflicting writes to one logical value still require one
+deterministic visible result.
 
 Using ProseMirror as an intermediate representation would not eliminate
 pcbjam's KiCad snapshot identity or asynchronous acknowledgement problems and
@@ -124,10 +143,9 @@ merges and most parent repair disappear. The client still needs a root-level
 acknowledged-shadow rebase, epochs, schema admission and the asynchronous ACK /
 fail-stop controller; atomic roots do not establish the causal order of a stale
 native snapshot. Yjs still selects every valid concurrent winner; the server
-can retain its separate admission/persistence/lint and invalid-checkpoint
-recovery duties without interpreting ordinary conflicts. The cost is explicit:
-compatible edits inside the same footprint, symbol, or other root no longer
-both survive.
+remains limited to admission, persistence, validated reads and report-only
+lint. The cost is explicit: compatible edits inside the same footprint, symbol,
+or other root no longer both survive.
 
 If same-root compatible edits must survive, there is no equally simple
 snapshot-based design. The robust long-term analogue of y-prosemirror is to
@@ -135,6 +153,18 @@ instrument KiCad's commit layer to emit semantic operations with durable
 identities (`set field`, `insert/delete/move child`, `replace atomic sequence`)
 and apply those operations directly to Yjs. This costs more native work up
 front, but removes inferred intent and most three-way snapshot rebasing.
+
+| Direction | Simplicity | Concurrent intent retained | Native work | Recommendation |
+| --- | --- | --- | --- | --- |
+| Current conservative slot graph | Medium/low | UUID roots and audited fields; anonymous sequences atomic | Existing bridge plus continuing grammar/root/reference audits | Keep while compatibility requires the current document format |
+| Atomic root blobs | Highest near-term | Different roots merge; same-root edits conflict as one value | Smaller parser/schema surface, same ACK/save lifecycle | Best simplification if product accepts same-root conflicts |
+| Native semantic operations | Lowest initially, highest long-term robustness | Can retain same-root edits where operations have durable identity | Instrument KiCad commits and define operation schema | Best long-term analogue of y-prosemirror |
+| ProseMirror intermediate | Low confidence | Does not create missing KiCad identities | Adds a third model/projection | Not recommended without a prototype showing a concrete reduction |
+
+No option removes the native FIFO/ACK, lifecycle isolation, save cut, schema
+admission or explicit reload boundary. Those exist because KiCad is an
+asynchronous mutable native model, not because the Yjs schema happens to use
+slots.
 
 ## Primary references
 

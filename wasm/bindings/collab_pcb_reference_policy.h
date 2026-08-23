@@ -34,6 +34,26 @@ struct PcbReferenceSpec
     std::vector<std::string> members;
 };
 
+/**
+ * KiCad omits every empty PCB_GROUP and an empty tuning-pattern generator
+ * from its board writer. Reject those roots before native mutation so an ACK
+ * can never describe an item that disappears at the next save boundary.
+ */
+inline bool validatePcbReferencePersistability( const PcbReferenceSpec& aSpec,
+                                                bool aIsTuningGenerator,
+                                                std::string& aError )
+{
+    if( aSpec.members.empty()
+        && ( aSpec.kind == PcbReferenceOwnerKind::Group || aIsTuningGenerator ) )
+    {
+        aError = "PCB reference owner is not persistable without members: " + aSpec.owner;
+        return false;
+    }
+
+    aError.clear();
+    return true;
+}
+
 namespace pcb_reference_detail
 {
 

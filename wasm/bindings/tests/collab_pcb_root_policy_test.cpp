@@ -160,5 +160,91 @@ int main()
     Net* planned = &plannedNets.at( "NEW" );
     assert( ( lastAssignments == std::vector<Net*>{ planned, planned, &existing } ) );
 
+    // Root replacement is validated over the complete owned UUID tree before
+    // the native board is touched. A replacement may reuse its own descendants,
+    // but it may not steal a child identity from an unrelated live root.
+    using pcbjam_collab::PcbItemTreeIds;
+    const std::vector<PcbItemTreeIds> liveTrees{
+        { "root-a", { "root-a", "child-a", "child-b" } },
+        { "root-b", { "root-b", "child-c" } },
+    };
+    std::set<std::string> postRoots;
+    std::set<std::string> postItems;
+    std::string           treeError;
+
+    assert( pcbjam_collab::projectPcbPostItemUniverse(
+            liveTrees, {}, {}, { { "root-a", { "root-a", "child-a", "child-new" } } },
+            postRoots, postItems, treeError ) );
+    assert( ( postRoots == std::set<std::string>{ "root-a", "root-b" } ) );
+    assert( ( postItems == std::set<std::string>{
+            "root-a", "child-a", "child-new", "root-b", "child-c" } ) );
+
+    assert( !pcbjam_collab::projectPcbPostItemUniverse(
+            liveTrees, {}, {}, { { "root-a", { "root-a", "child-c" } } },
+            postRoots, postItems, treeError ) );
+    assert( treeError.find( "collides" ) != std::string::npos );
+
+    // A child UUID cannot be promoted into an independently replaceable root.
+    assert( !pcbjam_collab::projectPcbPostItemUniverse(
+            liveTrees, {}, {}, { { "child-a", { "child-a" } } },
+            postRoots, postItems, treeError ) );
+    assert( treeError.find( "resolves to a child" ) != std::string::npos );
+
+    assert( !pcbjam_collab::projectPcbPostItemUniverse(
+            liveTrees, {}, {}, { { "root-a", { "root-a", "root-a" } } },
+            postRoots, postItems, treeError ) );
+    assert( treeError.find( "repeats UUID" ) != std::string::npos );
+
+    // Removing a whole root makes every owned UUID reusable in the same atomic
+    // batch. A raw child removal is only meaningful beside the complete
+    // replacement root that owns it.
+    assert( pcbjam_collab::projectPcbPostItemUniverse(
+            liveTrees, {}, { "root-b" }, { { "root-c", { "root-c", "child-c" } } },
+            postRoots, postItems, treeError ) );
+    assert( ( postRoots == std::set<std::string>{ "root-a", "root-c" } ) );
+    assert( postItems.count( "child-c" ) == 1 );
+
+    assert( !pcbjam_collab::projectPcbPostItemUniverse(
+            liveTrees, {}, { "child-a", "already-absent" }, {},
+            postRoots, postItems, treeError ) );
+    assert( treeError.find( "requires replacement" ) != std::string::npos );
+
+    assert( pcbjam_collab::projectPcbPostItemUniverse(
+            liveTrees, {}, { "child-a", "already-absent" },
+            { { "root-a", { "root-a", "child-b" } } },
+            postRoots, postItems, treeError ) );
+    assert( postRoots.count( "root-a" ) == 1 );
+    assert( postItems.count( "child-a" ) == 0 );
+    assert( postItems.count( "child-b" ) == 1 );
+
+    assert( !pcbjam_collab::projectPcbPostItemUniverse(
+            liveTrees, { "reserved" }, { "reserved" }, {},
+            postRoots, postItems, treeError ) );
+    assert( treeError.find( "reserved identity" ) != std::string::npos );
+    assert( !pcbjam_collab::projectPcbPostItemUniverse(
+            liveTrees, { "reserved" }, {}, { { "new", { "new", "reserved" } } },
+            postRoots, postItems, treeError ) );
+    assert( treeError.find( "reserved identity" ) != std::string::npos );
+
+    using pcbjam_collab::PcbRootPersistability;
+    using pcbjam_collab::PcbTableCellSpan;
+    assert( pcbjam_collab::validatePcbRootPersistability(
+            PcbRootPersistability{}, treeError ) );
+    assert( !pcbjam_collab::validatePcbRootPersistability(
+            PcbRootPersistability{ true, false, 0, {} }, treeError ) );
+    assert( treeError.find( "polygon" ) != std::string::npos );
+    assert( !pcbjam_collab::validatePcbRootPersistability(
+            PcbRootPersistability{ false, true, 0, {} }, treeError ) );
+    assert( !pcbjam_collab::validatePcbRootPersistability(
+            PcbRootPersistability{ false, true, 2, { { 1, 1 } } }, treeError ) );
+    assert( pcbjam_collab::validatePcbRootPersistability(
+            PcbRootPersistability{ false, true, 2,
+                    { PcbTableCellSpan{}, PcbTableCellSpan{},
+                      PcbTableCellSpan{}, PcbTableCellSpan{} } }, treeError ) );
+    assert( !pcbjam_collab::validatePcbRootPersistability(
+            PcbRootPersistability{ false, true, 2,
+                    { { 3, 1 }, { 1, 1 }, { 1, 1 }, { 1, 1 } } }, treeError ) );
+    assert( treeError.find( "span" ) != std::string::npos );
+
     return 0;
 }
