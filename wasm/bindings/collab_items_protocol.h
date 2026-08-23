@@ -14,6 +14,7 @@
 #ifdef __EMSCRIPTEN__
 
 #include "collab_common.h"
+#include "collab_items_owner.h"
 #include "open_gate.h"
 
 #include <emscripten.h>
@@ -68,15 +69,15 @@ inline ItemsProtocolRequest itemsProtocolRequest( const nlohmann::json& aWire )
     return out;
 }
 
-inline std::string& activeItemsOwner()
+inline ItemsOwnerEpoch& itemsOwnerEpoch()
 {
-    static std::string owner;
+    static ItemsOwnerEpoch owner;
     return owner;
 }
 
-inline void setItemsOwner( std::string aOwner )
+inline const std::string& activeItemsOwner()
 {
-    activeItemsOwner() = std::move( aOwner );
+    return itemsOwnerEpoch().active();
 }
 
 /**
@@ -90,9 +91,7 @@ inline bool acquireItemsOwner( std::string aOwner )
     if( aOwner.empty() || appliesPending() || pcbjam_open::busy() )
         return false;
 
-    projectionFence().acquireOwner();
-    setItemsOwner( std::move( aOwner ) );
-    return true;
+    return itemsOwnerEpoch().tryAcquire( std::move( aOwner ), projectionFence() );
 }
 
 /** Deterministic in-commit suspension used only by the native lifecycle E2E. */
@@ -113,14 +112,10 @@ inline void parkItemsApplyForTest()
         emscripten_sleep( itemsApplyTestParkMs() );
 }
 
-/** Compare-and-release: an old binding cannot clear the owner that replaced it. */
+/** Compare-and-release: a rejected/stale binding cannot clear the active owner. */
 inline void releaseItemsOwner( std::string aOwner )
 {
-    if( activeItemsOwner() == aOwner )
-    {
-        projectionFence().releaseOwner();
-        activeItemsOwner().clear();
-    }
+    (void) itemsOwnerEpoch().releaseIfMatches( aOwner, projectionFence() );
 }
 
 inline bool itemsOwnerMatches( const ItemsProtocolRequest& aRequest )
