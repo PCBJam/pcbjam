@@ -30,6 +30,7 @@ const GENERATED_PCB: ToolCfg = {
 
 const TABLE_ROOT_UUID = "91919191-0000-0000-0000-000000000001";
 const TABLE_CELL_UUID = "91919191-0000-0000-0000-0000000000c1";
+const TABLE_REPLACEMENT_CELL_UUID = "91919191-0000-0000-0000-0000000000c2";
 const TABLE_PCB: ToolCfg = {
   ...TRIO_PCB,
   fns: [
@@ -406,6 +407,199 @@ test.describe("PCB root identity/reference closure", () => {
         line.includes("Aborted("),
       ),
       "collision rejection does not trap or corrupt Wasm",
+    ).toBe(false);
+  });
+
+  test("a bare nested table-cell removal is rejected atomically and fail-stops save", async ({
+    page,
+    testLogger,
+  }) => {
+    await bootOpen(page, TABLE_PCB);
+    const beforeSave = await modelText(page, TABLE_PCB);
+    const beforeSnapshot = await snapshot(page);
+    expect(rootBlob(beforeSnapshot, TABLE_ROOT_UUID)).toContain(
+      `(uuid "${TABLE_CELL_UUID}")`,
+    );
+
+    const result = await page.evaluate(
+      async ({ childUuid }) => {
+        const runtime = window as unknown as ReferenceWindow;
+        const owner = "table-child-removal-owner";
+        const requestId = "bare-table-child-removal";
+        const acknowledgements: Array<{
+          error?: string;
+          requestId: string;
+          retryable?: boolean;
+          status: string;
+        }> = [];
+        const saveCallbacks: string[] = [];
+        runtime.kicadCollab = {
+          ...runtime.kicadCollab,
+          onItemsApplied: (json) => acknowledgements.push(JSON.parse(json)),
+          onSave: (savedPath) => saveCallbacks.push(savedPath),
+        };
+
+        const acquired = runtime.Module.kicadCollabSetItemsOwner(owner);
+        runtime.Module.kicadCollabApplyItems(
+          JSON.stringify({
+            added: [],
+            changed: [],
+            removed: [childUuid],
+            _pcbjam: { requestId, ownerGeneration: owner },
+          }),
+        );
+
+        const deadline = performance.now() + 30_000;
+        while (
+          !acknowledgements.some((ack) => ack.requestId === requestId) &&
+          performance.now() < deadline
+        ) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+
+        const nativeSnapshot = JSON.parse(
+          runtime.Module.kicadCollabSnapshotItems(),
+        ) as ItemsSnapshot;
+        const productionSaveAccepted =
+          await runtime.Module.kicadCollabTestSaveCurrent();
+        runtime.Module.kicadCollabReleaseItemsOwner(owner);
+
+        return {
+          acknowledgement: acknowledgements.find((ack) => ack.requestId === requestId),
+          acquired,
+          nativeSnapshot,
+          productionSaveAccepted,
+          saveCallbacks,
+        };
+      },
+      { childUuid: TABLE_CELL_UUID },
+    );
+    const afterSave = await modelText(page, TABLE_PCB);
+
+    expect(result.acquired).toBe(true);
+    expect(result.acknowledgement).toEqual(
+      expect.objectContaining({
+        requestId: "bare-table-child-removal",
+        retryable: false,
+        status: "invalid",
+      }),
+    );
+    expect(result.acknowledgement?.error).toMatch(/child|nested|root|owned/i);
+    expect(result.nativeSnapshot, "preflight rejection preserves every native root").toEqual(
+      beforeSnapshot,
+    );
+    expect(afterSave, "direct native serialization remains byte-identical").toBe(beforeSave);
+    expect(fileToDoc(afterSave), "the native semantic document is unchanged").toEqual(
+      fileToDoc(beforeSave),
+    );
+    expect(
+      result.productionSaveAccepted,
+      "a nonretryable child-removal rejection blocks the acknowledged save cut",
+    ).toBe(false);
+    expect(result.saveCallbacks, "rejected native state is never reported persisted").toEqual([]);
+    expect(
+      [...testLogger.consoleLogs, ...testLogger.errors].some((line) =>
+        line.includes("Aborted("),
+      ),
+      "child-removal rejection does not trap or corrupt Wasm",
+    ).toBe(false);
+  });
+
+  test("a nested table-cell removal with its complete replacement root saves exactly", async ({
+    page,
+    testLogger,
+  }) => {
+    await bootOpen(page, TABLE_PCB);
+    const beforeSave = await modelText(page, TABLE_PCB);
+    const beforeSnapshot = await snapshot(page);
+    const originalTable = rootBlob(beforeSnapshot, TABLE_ROOT_UUID);
+    const replacementTable = originalTable
+      .replace(TABLE_CELL_UUID, TABLE_REPLACEMENT_CELL_UUID)
+      .replace("identity sentinel", "replacement sentinel");
+    expect(replacementTable).not.toContain(TABLE_CELL_UUID);
+    expect(replacementTable).toContain(TABLE_REPLACEMENT_CELL_UUID);
+
+    const result = await page.evaluate(
+      async ({ childUuid, ownerUuid, replacement }) => {
+        const runtime = window as unknown as ReferenceWindow;
+        const owner = "table-root-replacement-owner";
+        const requestId = "table-child-with-root-replacement";
+        const acknowledgements: Array<{
+          error?: string;
+          requestId: string;
+          retryable?: boolean;
+          status: string;
+        }> = [];
+        runtime.kicadCollab = {
+          ...runtime.kicadCollab,
+          onItemsApplied: (json) => acknowledgements.push(JSON.parse(json)),
+        };
+
+        const acquired = runtime.Module.kicadCollabSetItemsOwner(owner);
+        runtime.Module.kicadCollabApplyItems(
+          JSON.stringify({
+            added: [],
+            changed: [{ id: ownerUuid, parent: null, sexpr: replacement }],
+            removed: [childUuid],
+            _pcbjam: { requestId, ownerGeneration: owner },
+          }),
+        );
+
+        const deadline = performance.now() + 30_000;
+        while (
+          !acknowledgements.some((ack) => ack.requestId === requestId) &&
+          performance.now() < deadline
+        ) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        while (runtime.Module.kicadCollabBusy() && performance.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+
+        const nativeSnapshot = JSON.parse(
+          runtime.Module.kicadCollabSnapshotItems(),
+        ) as ItemsSnapshot;
+        runtime.Module.kicadCollabReleaseItemsOwner(owner);
+
+        return {
+          acknowledgement: acknowledgements.find((ack) => ack.requestId === requestId),
+          acquired,
+          nativeSnapshot,
+        };
+      },
+      {
+        childUuid: TABLE_CELL_UUID,
+        ownerUuid: TABLE_ROOT_UUID,
+        replacement: replacementTable,
+      },
+    );
+    const persisted = await saveCurrentBytes(page);
+    const expected = beforeSave
+      .replace(TABLE_CELL_UUID, TABLE_REPLACEMENT_CELL_UUID)
+      .replace("identity sentinel", "replacement sentinel");
+    const savedTable = fileToDoc(persisted).items[TABLE_ROOT_UUID];
+
+    expect(result.acquired).toBe(true);
+    expect(result.acknowledgement).toEqual(
+      expect.objectContaining({
+        requestId: "table-child-with-root-replacement",
+        status: "applied",
+      }),
+    );
+    expect(rootBlob(result.nativeSnapshot, TABLE_ROOT_UUID)).not.toContain(TABLE_CELL_UUID);
+    expect(rootBlob(result.nativeSnapshot, TABLE_ROOT_UUID)).toContain(
+      TABLE_REPLACEMENT_CELL_UUID,
+    );
+    expect(persisted).not.toContain(TABLE_CELL_UUID);
+    expect(persisted).toContain(TABLE_REPLACEMENT_CELL_UUID);
+    expect(savedTable, "the saved table equals the complete desired replacement root").toEqual(
+      fileToDoc(expected).items[TABLE_ROOT_UUID],
+    );
+    expect(
+      [...testLogger.consoleLogs, ...testLogger.errors].some((line) =>
+        line.includes("Aborted("),
+      ),
+      "valid root replacement does not trap or corrupt Wasm",
     ).toBe(false);
   });
 });
