@@ -193,6 +193,110 @@ test("programmatic open barrier waits for an owner-scoped items commit suspended
   ).toBe(false);
 });
 
+test("an active native items owner cannot be stolen or released by another generation", async ({
+  page,
+  testLogger,
+}) => {
+  test.setTimeout(180_000);
+  await boot(page);
+
+  const result = await page.evaluate(
+    async ({ content, uuid }) => {
+      const runtime = window as unknown as {
+        FS: { mkdirTree(path: string): void; writeFile(path: string, data: string): void };
+        Module: NativeModule;
+        kicadCollab?: { onItemsApplied?: (json: string) => void };
+      };
+      const dir = "/home/kicad/documents";
+      try {
+        runtime.FS.mkdirTree(dir);
+      } catch {
+        // Exists from a previous test.
+      }
+      const path = `${dir}/owner-takeover.kicad_pcb`;
+      runtime.FS.writeFile(path, content);
+      await Promise.resolve(runtime.Module.kicadOpenFile(path));
+      runtime.Module.kicadCollabSnapshotItems();
+
+      const firstOwner = "owner-takeover-first";
+      const rejectedOwner = "owner-takeover-rejected";
+      const probeOwner = "owner-takeover-probe";
+      const freshOwner = "owner-takeover-fresh";
+      const acknowledgements: Array<{ status: string; requestId: string }> = [];
+      runtime.kicadCollab = {
+        ...runtime.kicadCollab,
+        onItemsApplied: (json) => acknowledgements.push(JSON.parse(json)),
+      };
+
+      const firstAcquired = runtime.Module.kicadCollabSetItemsOwner(firstOwner);
+      const takeoverAcquired = runtime.Module.kicadCollabSetItemsOwner(rejectedOwner);
+
+      // Compare-and-release by a generation that never acquired authority must
+      // not clear the first owner's lease.
+      runtime.Module.kicadCollabReleaseItemsOwner(rejectedOwner);
+      const acquiredAfterForeignRelease =
+        runtime.Module.kicadCollabSetItemsOwner(probeOwner);
+
+      runtime.Module.kicadCollabApplyItems(
+        JSON.stringify({
+          added: [],
+          changed: [
+            {
+              sexpr: `(segment (start 40 40) (end 45 40) (width 0.2) (layer "F.Cu") (net 0) (uuid "${uuid}"))`,
+              parent: null,
+            },
+          ],
+          removed: [],
+          _pcbjam: { requestId: "first-owner-still-active", ownerGeneration: firstOwner },
+        }),
+      );
+
+      const deadline = performance.now() + 20_000;
+      while (
+        !acknowledgements.some((ack) => ack.requestId === "first-owner-still-active") &&
+        performance.now() < deadline
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+
+      runtime.Module.kicadCollabReleaseItemsOwner(probeOwner);
+      runtime.Module.kicadCollabReleaseItemsOwner(firstOwner);
+      const freshAcquired = runtime.Module.kicadCollabSetItemsOwner(freshOwner);
+      runtime.Module.kicadCollabReleaseItemsOwner(freshOwner);
+
+      return {
+        acknowledgement: acknowledgements.find(
+          (ack) => ack.requestId === "first-owner-still-active",
+        ),
+        acquiredAfterForeignRelease,
+        firstAcquired,
+        freshAcquired,
+        takeoverAcquired,
+      };
+    },
+    { content: board(FIRST_UUID, 10), uuid: FIRST_UUID },
+  );
+
+  expect(result.firstAcquired).toBe(true);
+  expect(
+    result.takeoverAcquired,
+    "an idle queue does not make an already-owned native editor ownerless",
+  ).toBe(false);
+  expect(
+    result.acquiredAfterForeignRelease,
+    "compare-and-release by a rejected generation preserves the active owner",
+  ).toBe(false);
+  expect(result.acknowledgement, "the original generation remains authoritative").toEqual(
+    expect.objectContaining({ requestId: "first-owner-still-active", status: "applied" }),
+  );
+  expect(result.freshAcquired, "release by the active owner opens a fresh epoch").toBe(true);
+  expect(
+    [...testLogger.consoleLogs, ...testLogger.errors].some((line) =>
+      line.includes("Aborted("),
+    ),
+  ).toBe(false);
+});
+
 test("a malformed or identity-overlapping native batch rejects without partial mutation", async ({
   page,
   testLogger,
