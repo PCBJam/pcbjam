@@ -7,11 +7,12 @@ import { expect, test } from "./fixtures";
 import { TRIO_PCB, bootOpen, callHook, modelText, type ToolCfg } from "./utils/trio";
 
 /**
- * Real-Wasm regressions for KiCad's pointer-based PCB_GROUP/PCB_GENERATOR
- * relation.  These intentionally send isolated root blobs, exactly as the Yjs
- * projector does.  KiCad's parser can only resolve `(members ...)` while
- * parsing a complete BOARD, so the collaboration applier must preserve and
- * rebind the UUID graph after every root in the batch is known.
+ * Real-Wasm regressions for KiCad's PCB root identity and pointer-based
+ * PCB_GROUP/PCB_GENERATOR relations. These intentionally send isolated root
+ * blobs, exactly as the Yjs projector does. KiCad's parser can only resolve
+ * `(members ...)` while parsing a complete BOARD, so the collaboration applier
+ * must validate and rebind the complete UUID graph after every root in the
+ * batch is known.
  */
 
 const ROOT = path.resolve(__dirname, "../..");
@@ -27,6 +28,51 @@ const GENERATED_PCB: ToolCfg = {
   fixture: read("kicad/qa/data/pcbnew/diff_pair_uncoupled_tuning_drc.kicad_pcb"),
 };
 
+const TABLE_ROOT_UUID = "91919191-0000-0000-0000-000000000001";
+const TABLE_CELL_UUID = "91919191-0000-0000-0000-0000000000c1";
+const TABLE_PCB: ToolCfg = {
+  ...TRIO_PCB,
+  fns: [
+    ...TRIO_PCB.fns,
+    "kicadCollabTestSaveCurrent",
+    "kicadCollabSetItemsOwner",
+    "kicadCollabReleaseItemsOwner",
+  ],
+  fixture: `(kicad_pcb
+  (version 20241229)
+  (generator "pcbnew")
+  (generator_version "9.0")
+  (general (thickness 1.6))
+  (paper "A4")
+  (layers
+    (0 "F.Cu" signal)
+    (2 "B.Cu" signal)
+    (37 "F.SilkS" user)
+    (25 "Edge.Cuts" user)
+  )
+  (setup)
+  (net 0 "")
+  (table (column_count 1)
+    (uuid "${TABLE_ROOT_UUID}")
+    (layer "F.SilkS")
+    (border (external yes) (header no) (stroke (width 0.15) (type solid)))
+    (separators (rows yes) (cols yes) (stroke (width 0.15) (type solid)))
+    (column_widths 25)
+    (row_heights 10)
+    (cells
+      (table_cell "identity sentinel"
+        (start 20 20) (end 45 30)
+        (margins 0 0 0 0)
+        (span 1 1)
+        (layer "F.SilkS")
+        (uuid "${TABLE_CELL_UUID}")
+        (effects (font (size 1.27 1.27)))
+      )
+    )
+  )
+)`,
+};
+
 interface ItemsSnapshot {
   added: Array<{ sexpr: string }>;
 }
@@ -37,9 +83,16 @@ interface ReferenceWindow {
   };
   Module: {
     kicadCollabBusy(): boolean;
+    kicadCollabApplyItems(json: string): unknown;
+    kicadCollabSnapshotItems(): string;
+    kicadCollabSetItemsOwner(owner: string): boolean;
+    kicadCollabReleaseItemsOwner(owner: string): void;
     kicadCollabTestSaveCurrent(): Promise<boolean>;
   };
-  kicadCollab?: Record<string, unknown> & { onSave?: (path: string) => void };
+  kicadCollab?: Record<string, unknown> & {
+    onItemsApplied?: (json: string) => void;
+    onSave?: (path: string) => void;
+  };
   __pcbReferenceSaves?: Array<{ path: string; text: string }>;
 }
 
@@ -179,7 +232,7 @@ function rootBlob(wire: ItemsSnapshot, uuid: string): string {
   return entry!.sexpr;
 }
 
-test.describe("PCB group/generator reference closure", () => {
+test.describe("PCB root identity/reference closure", () => {
   test.describe.configure({ timeout: 300_000 });
 
   test("identical StickHub group apply -> production save preserves every member", async ({
@@ -246,5 +299,113 @@ test.describe("PCB group/generator reference closure", () => {
       memberUuids(balancedForm(persisted, "group", source.id)),
       "replacement UUID remains owned by the group",
     ).toContain(member!.id);
+  });
+
+  test("a root upsert cannot reuse an unrelated live table-cell UUID", async ({
+    page,
+    testLogger,
+  }) => {
+    await bootOpen(page, TABLE_PCB);
+    const beforeSave = await modelText(page, TABLE_PCB);
+    const beforeSnapshot = await snapshot(page);
+    const tableBlob = rootBlob(beforeSnapshot, TABLE_ROOT_UUID);
+    expect(tableBlob, "the live table owns the collision target as a nested child").toContain(
+      `(uuid "${TABLE_CELL_UUID}")`,
+    );
+
+    const result = await page.evaluate(
+      async ({ childUuid }) => {
+        const runtime = window as unknown as ReferenceWindow;
+        const owner = "table-child-collision-owner";
+        const requestId = "table-child-as-root";
+        const acknowledgements: Array<{
+          error?: string;
+          requestId: string;
+          retryable?: boolean;
+          status: string;
+        }> = [];
+        const saveCallbacks: string[] = [];
+        runtime.kicadCollab = {
+          ...runtime.kicadCollab,
+          onItemsApplied: (json) => acknowledgements.push(JSON.parse(json)),
+          onSave: (savedPath) => saveCallbacks.push(savedPath),
+        };
+
+        const acquired = runtime.Module.kicadCollabSetItemsOwner(owner);
+
+        // Before the complete root-tree preflight, this non-footprint child
+        // bypassed the GetParentFootprint-only guard. BOARD_COMMIT then lifted
+        // its removal to the unrelated table while installing this segment as
+        // a root with the table cell's identity.
+        runtime.Module.kicadCollabApplyItems(
+          JSON.stringify({
+            added: [
+              {
+                parent: null,
+                sexpr: `(segment (start 70 70) (end 80 70) (width 0.2) (layer "F.Cu") (net 0) (uuid "${childUuid}"))`,
+              },
+            ],
+            changed: [],
+            removed: [],
+            _pcbjam: { requestId, ownerGeneration: owner },
+          }),
+        );
+
+        const deadline = performance.now() + 30_000;
+        while (
+          !acknowledgements.some((ack) => ack.requestId === requestId) &&
+          performance.now() < deadline
+        ) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+
+        const nativeSnapshot = JSON.parse(
+          runtime.Module.kicadCollabSnapshotItems(),
+        ) as ItemsSnapshot;
+        const productionSaveAccepted =
+          await runtime.Module.kicadCollabTestSaveCurrent();
+        runtime.Module.kicadCollabReleaseItemsOwner(owner);
+
+        return {
+          acknowledgement: acknowledgements.find((ack) => ack.requestId === requestId),
+          acquired,
+          nativeSnapshot,
+          productionSaveAccepted,
+          saveCallbacks,
+        };
+      },
+      { childUuid: TABLE_CELL_UUID },
+    );
+    const afterSave = await modelText(page, TABLE_PCB);
+
+    expect(result.acquired).toBe(true);
+    expect(result.acknowledgement, "the malformed projection is explicitly rejected").toEqual(
+      expect.objectContaining({
+        requestId: "table-child-as-root",
+        retryable: false,
+        status: "invalid",
+      }),
+    );
+    expect(result.acknowledgement?.error).toMatch(/child|collid/i);
+    expect(result.nativeSnapshot, "rejection leaves every native root byte-for-byte intact").toEqual(
+      beforeSnapshot,
+    );
+    expect(afterSave, "a direct native save remains byte-identical after rejection").toBe(
+      beforeSave,
+    );
+    expect(fileToDoc(afterSave), "the saved semantic document is unchanged").toEqual(
+      fileToDoc(beforeSave),
+    );
+    expect(
+      result.productionSaveAccepted,
+      "a terminal rejected projection fail-stops the acknowledged persistence cut",
+    ).toBe(false);
+    expect(result.saveCallbacks, "no rejected state is reported as persisted").toEqual([]);
+    expect(
+      [...testLogger.consoleLogs, ...testLogger.errors].some((line) =>
+        line.includes("Aborted("),
+      ),
+      "collision rejection does not trap or corrupt Wasm",
+    ).toBe(false);
   });
 });
