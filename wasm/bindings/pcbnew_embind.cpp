@@ -1953,6 +1953,16 @@ bool pcbCollabTestSaveCurrent()
 }
 
 
+// Test-only entry to the real headless Save-a-Copy command.  This deliberately
+// traverses PCB_EDIT_FRAME::SavePcbCopy rather than the unfenced silent writer
+// above, so projection-cut tests exercise the production copy chokepoint.
+bool pcbCollabTestSaveCopy( std::string aPath )
+{
+    PCB_EDIT_FRAME* fr = pcbFrame();
+    return fr && fr->SavePcbCopy( wxString::FromUTF8( aPath.c_str() ), false, true );
+}
+
+
 // Test/PoC helper: move the first top-level board item by (dx,dy) IU via a real BOARD_COMMIT,
 // firing the listener — a deterministic local edit for the two-tab demo / e2e. Returns the
 // moved item's uuid.
@@ -2994,6 +3004,8 @@ EMSCRIPTEN_BINDINGS(pcbnew) {
     function("kicadCollabTestItemBlob", &kicadCollabTestItemBlob);
     function("kicadCollabTestSaveCurrent",
              &pcbCollabTestSaveCurrent PCBJAM_PARKER_POLICY);
+    function("kicadCollabTestSaveCopy",
+             &pcbCollabTestSaveCopy PCBJAM_PARKER_POLICY);
     // pcbnew-only ysync-review repro hooks (names not shared with eeschema).
     function("kicadCollabTestSetPadSize", &pcbCollabTestSetPadSize);
     function("kicadCollabTestMoveEndpoint", &pcbCollabTestMoveEndpoint);

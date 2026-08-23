@@ -27,6 +27,7 @@ interface SaveProbeWindow {
   Module: {
     kicadCollabApplyItems(json: string): unknown;
     kicadCollabBusy(): boolean;
+    kicadCollabTestSaveCopy(path: string): Promise<boolean>;
     kicadCollabTestSaveCurrent(): Promise<boolean>;
     kicadTestSetItemsApplyPark(ms: number): void;
   };
@@ -206,6 +207,73 @@ test.describe("Yjs projection and native save ordering", () => {
       segmentWidth(saved!),
       "the save acknowledged after Y revision 0.55 existed must include that revision",
     ).toBe(0.55);
+  });
+
+  test("the real PCB Save-a-Copy waits for its accepted Y revision and writes that exact cut", async ({
+    page,
+  }) => {
+    await bootOpen(page, TRIO_PCB);
+    const seed = await modelText(page, TRIO_PCB);
+    await startV2(page, {
+      room: `save-copy-projection-${test.info().workerIndex}`,
+      seedText: seed,
+    });
+
+    const authority0 = await renderDoc(page);
+    expect(authority0.err).toBeUndefined();
+    expect(segmentWidth(authority0.ok!)).toBe(0.2);
+    const remote = replaceSegmentWidth(authority0.ok!, "0.58");
+    const copyPath = `/home/kicad/documents/save-copy-cut-${test.info().workerIndex}-${Date.now()}.kicad_pcb`;
+    const copyResult = await page.evaluate(
+      async ({ text, path: targetPath, parkMs }) => {
+        const runtime = window as unknown as SaveProbeWindow;
+        runtime.Module.kicadTestSetItemsApplyPark(parkMs);
+        const startedAt = performance.now();
+
+        try {
+          // Submit first so this revision belongs to the copy's frozen cut.
+          // The deterministic in-commit park makes an unfenced SavePcbCopy
+          // serialize the old 0.2 board before this 0.58 commit can land.
+          runtime.KicadCollabV2.applyRemoteDoc(text);
+          const busyBeforeCopy = runtime.Module.kicadCollabBusy();
+          const saved = await runtime.Module.kicadCollabTestSaveCopy(targetPath);
+          const elapsedMs = performance.now() - startedAt;
+          const busyAfterCopy = runtime.Module.kicadCollabBusy();
+          const copied = saved
+            ? runtime.FS.readFile(targetPath, { encoding: "utf8" })
+            : "";
+          return { busyBeforeCopy, saved, elapsedMs, busyAfterCopy, copied };
+        } finally {
+          runtime.Module.kicadTestSetItemsApplyPark(0);
+        }
+      },
+      { text: remote, path: copyPath, parkMs: 1_200 },
+    );
+
+    expect(
+      copyResult.busyBeforeCopy,
+      "the authoritative revision was accepted before Save-a-Copy froze its cut",
+    ).toBe(true);
+    expect(copyResult.saved, "the real headless SavePcbCopy path completed").toBe(true);
+    expect(
+      copyResult.elapsedMs,
+      "Save-a-Copy waited for the deliberately parked pre-cut projection",
+    ).toBeGreaterThanOrEqual(800);
+    expect(
+      copyResult.busyAfterCopy,
+      "Save-a-Copy returned only after its accepted projection queue drained",
+    ).toBe(false);
+    expect(
+      segmentWidth(copyResult.copied),
+      "copied PCB bytes contain the authoritative pre-cut revision, never the stale board",
+    ).toBe(0.58);
+    expect(segmentWidth((await renderDoc(page)).ok!)).toBe(0.58);
+    await expect
+      .poll(() => drift(page, TRIO_PCB), {
+        timeout: 30_000,
+        intervals: [100, 250],
+      })
+      .toBeNull();
   });
 
   test("a save deadline fails closed and a fresh native persists the converged revision", async ({
