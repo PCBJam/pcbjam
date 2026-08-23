@@ -316,6 +316,135 @@ module GraphClosure {
   {}
 }
 
+module ReferenceBatch {
+  // PCB groups and tuning generators carry one-to-many UUID membership edges.
+  // The item parser runs on isolated roots, so those edges are captured from
+  // the accepted wire and rebound only after the complete post-batch item
+  // universe exists. `rank` is the same kind of well-founded certificate used
+  // for parent ownership above; it makes nested group/generator cycles
+  // unrepresentable in an accepted batch.
+  datatype ReferenceState = ReferenceState(edges: map<nat, set<nat>>)
+
+  predicate Closed(items: set<nat>,
+                   edges: map<nat, set<nat>>,
+                   rank: map<nat, nat>)
+  {
+    edges.Keys <= items
+    && rank.Keys == items
+    && (forall owner :: owner in edges.Keys ==>
+      (owner !in edges[owner]
+       && edges[owner] <= items
+       && (forall member :: member in edges[owner] && member in edges.Keys ==>
+         rank[owner] < rank[member])))
+    && (forall first, second, member ::
+      first in edges.Keys && second in edges.Keys
+      && member in edges[first] && member in edges[second]
+      ==> first == second)
+  }
+
+  function Commit(before: ReferenceState,
+                  items: set<nat>,
+                  desired: map<nat, set<nat>>,
+                  rank: map<nat, nat>): ReferenceState
+  {
+    if Closed(items, desired, rank)
+    then ReferenceState(desired)
+    else before
+  }
+
+  function Bind(edges: map<nat, set<nat>>,
+                owner: nat,
+                members: set<nat>): map<nat, set<nat>>
+  {
+    edges[owner := members]
+  }
+
+  lemma InvalidReferenceBatchChangesNothing(before: ReferenceState,
+                                             items: set<nat>,
+                                             desired: map<nat, set<nat>>,
+                                             rank: map<nat, nat>)
+    requires !Closed(items, desired, rank)
+    ensures Commit(before, items, desired, rank) == before
+  {}
+
+  lemma ValidReferenceBatchRebuildsExactly(before: ReferenceState,
+                                           items: set<nat>,
+                                           desired: map<nat, set<nat>>,
+                                           rank: map<nat, nat>)
+    requires Closed(items, desired, rank)
+    ensures Commit(before, items, desired, rank) == ReferenceState(desired)
+  {}
+
+  lemma DistinctOwnerRebindsCommute(edges: map<nat, set<nat>>,
+                                    first: nat,
+                                    firstMembers: set<nat>,
+                                    second: nat,
+                                    secondMembers: set<nat>)
+    requires first != second
+    ensures Bind(Bind(edges, first, firstMembers), second, secondMembers)
+         == Bind(Bind(edges, second, secondMembers), first, firstMembers)
+  {}
+
+  lemma AcceptedReferenceBatchIsClosed(before: ReferenceState,
+                                       items: set<nat>,
+                                       desired: map<nat, set<nat>>,
+                                       rank: map<nat, nat>)
+    requires Closed(items, desired, rank)
+    ensures Closed(items, Commit(before, items, desired, rank).edges, rank)
+  {}
+}
+
+module MonotonicKnowledge {
+  // Embedded symbol definitions are replica knowledge, not merely a native
+  // snapshot field. Native materialization filters that knowledge to the
+  // definitions referenced by the current visible document, while merge and
+  // offline compaction retain the complete known set.
+  function Learn(known: set<nat>, observed: set<nat>): set<nat>
+  {
+    known + observed
+  }
+
+  function Materialize(known: set<nat>, liveReferences: set<nat>): set<nat>
+  {
+    known * liveReferences
+  }
+
+  function CompactOffline(known: set<nat>): set<nat>
+  {
+    known
+  }
+
+  lemma LearningCannotForget(known: set<nat>, observed: set<nat>)
+    ensures known <= Learn(known, observed)
+  {}
+
+  lemma HidingAReferenceDoesNotDeleteKnowledge(known: set<nat>,
+                                               beforeRefs: set<nat>,
+                                               afterRefs: set<nat>,
+                                               definition: nat)
+    requires definition in known
+    requires definition in beforeRefs
+    requires definition !in afterRefs
+    ensures definition in known
+    ensures definition !in Materialize(known, afterRefs)
+  {}
+
+  lemma AHiddenDefinitionCanRevive(known: set<nat>,
+                                   hiddenRefs: set<nat>,
+                                   revivedRefs: set<nat>,
+                                   definition: nat)
+    requires definition in known
+    requires definition !in hiddenRefs
+    requires definition in revivedRefs
+    ensures definition !in Materialize(known, hiddenRefs)
+    ensures definition in Materialize(known, revivedRefs)
+  {}
+
+  lemma OfflineCompactionRetainsAllKnowledge(known: set<nat>)
+    ensures CompactOffline(known) == known
+  {}
+}
+
 module StructuralProjection {
   datatype Action = HotApplyItems | RehydrateNative
 

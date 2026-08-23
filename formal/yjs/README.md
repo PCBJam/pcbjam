@@ -6,7 +6,7 @@ are useful only when their abstraction boundary is explicit.
 
 ## What is proved
 
-`YjsProperties.dfy` has ten policy modules and one abstract controller:
+`YjsProperties.dfy` has twelve policy modules and one abstract controller:
 
 | Module | Verified obligation |
 | --- | --- |
@@ -17,6 +17,8 @@ are useful only when their abstraction boundary is explicit.
 | `ConflictDomains` | Independent semantic domains commute; a same-domain conflict selects one whole authored register value and cannot manufacture a hybrid. |
 | `AtomicNativeBatch` | Rejected preflight changes nothing and accepted preflight commits the complete prepared result. |
 | `GraphClosure` | Canonical references are reconstructed from one certified parent relation; every parent traversal terminates by a strictly decreasing natural rank, so self/cyclic ownership is impossible. |
+| `ReferenceBatch` | Group/generator memberships are rebound only as one validated post-batch graph; invalid input preserves the exact prior relation, valid input rebuilds the exact desired relation, and distinct owner rebinds commute. |
+| `MonotonicKnowledge` | Embedded definitions are monotonic replica knowledge: hiding a reference removes it only from native materialization, offline compaction retains it, and a later reference revives it. |
 | `StructuralProjection` | An item-only hot apply is permitted only while native and Yjs non-item signatures agree; structural drift requires full native rehydration. |
 | `DurabilityBoundary` | A revision reported durable is within the persisted frontier and therefore survives restore; flushing advances that frontier through every accepted revision. |
 | `SaveCut` | Native projection acknowledgements form one contiguous covered prefix; a successful complete latest-state projection may cover older retryable/not-entered tickets. A save freezes the accepted prefix and may acknowledge persistence only after that cut is covered. Pending timeout or a permanent failure at any outstanding ticket through the cut fails closed, while later accepted work cannot move the frozen cut. |
@@ -26,7 +28,7 @@ The exported acknowledgement, structural-projection, native-emission, and
 save-cut decisions are compiled by Dafny to JavaScript. The standalone
 controller executes the first three; an app-independent FIFO refinement
 harness executes the save-cut policy. Tests enumerate every classifier input.
-Dafny 4.11.0 currently discharges **107 verified obligations with 0 errors** for
+Dafny 4.11.0 currently discharges **116 verified obligations with 0 errors** for
 this source.
 
 Only those four classifiers are emitted into the generated runtime artifact.
@@ -71,11 +73,12 @@ connected to these abstractions by deterministic combinatorial/differential
 tests and real KiCad/Wasm end-to-end tests.
 
 Several modules prove conditional obligations rather than construction of
-their premises: graph closure assumes a certified owner/rank relation, atomic
-batch assumes pure preparation, structural projection assumes a complete
-signature, durability assumes an ordered persisted frontier, and save-cut
-assumes the native queue refines its monotonically ticketed FIFO. The formal
-result is therefore a proof of selected policies, not a whole-program theorem.
+their premises: graph/reference closure assumes a certified owner/rank
+relation, atomic batch assumes pure preparation, structural projection assumes
+a complete signature, durability assumes an ordered persisted frontier, and
+save-cut assumes the native queue refines its monotonically ticketed FIFO. The
+formal result is therefore a proof of selected policies, not a whole-program
+theorem.
 
 `RetryWait` models the safety-relevant interval in which no native request is
 in flight but exactly one latest desired revision is retained behind an
