@@ -10,7 +10,7 @@
  *
  * Run: cd tests && npm run tools:contract
  */
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdtempSync,
@@ -125,6 +125,43 @@ try {
     check("resaved footprint lints clean", run(["--lint", produced]).code === 0);
   } else {
     console.log("skip footprint fixtures (kicad submodule not initialized)");
+  }
+
+  // --- resave-batch: N files, one process ----------------------------------
+  // The bulk-upload normalization mode: outputs under <outdir>/<index>/,
+  // per-file verdicts as "RESAVE-BATCH <index> <exit-code>" stderr lines with
+  // the single-file code contract, process exit 0 when the loop completed —
+  // an invalid file mid-batch must not mask its neighbors.
+  {
+    const badMid = out("mid-garbage.kicad_sch");
+    writeFileSync(badMid, "not a schematic (");
+    const r = spawnSync("node", [cli, "--resave-batch", out("batch"), demoPcb, badMid, demoSch], {
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    const stderr = r.stderr?.toString() ?? "";
+    const codes = new Map<number, number>();
+    for (const m of stderr.matchAll(/^RESAVE-BATCH (\d+) (-?\d+)$/gm)) {
+      codes.set(Number(m[1]), Number(m[2]));
+    }
+    check("batch exits 0 despite an invalid entry", r.status === 0, `exit ${r.status}`);
+    check("batch reports one verdict line per entry", codes.size === 3, `${codes.size}`);
+    check("batch board entry verdicts 0", codes.get(0) === 0, `${codes.get(0)}`);
+    check("batch invalid entry verdicts 4", codes.get(1) === 4, `${codes.get(1)}`);
+    check("batch schematic entry verdicts 0", codes.get(2) === 0, `${codes.get(2)}`);
+    const producedPcb = path.join(out("batch"), "0", "demo.kicad_pcb");
+    check(
+      "batch board output lands in its index dir and bumps the version",
+      existsSync(producedPcb) && version(producedPcb) > version(demoPcb),
+    );
+    const producedSch = path.join(out("batch"), "2", "demo.kicad_sch");
+    check("batch schematic output lands in its index dir", existsSync(producedSch));
+    check(
+      "batch invalid entry produced no output dir",
+      !existsSync(path.join(out("batch"), "1", path.basename(badMid))),
+    );
+    check("batch outputs lint clean", run(["--lint", producedPcb, producedSch]).code === 0);
+
+    check("batch usage (no files) exits 2", run(["--resave-batch", out("bu")]).code === 2);
   }
 
   // --- exit-code contract ---------------------------------------------------

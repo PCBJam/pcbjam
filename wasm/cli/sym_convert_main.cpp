@@ -616,8 +616,15 @@ std::unique_ptr<SCHEMATIC> loadSchematicHeadless( const char* aInPath )
     wxFileName pro( fn );
     pro.SetExt( wxS( "kicad_pro" ) );
     trace( "loadSchematicHeadless: LoadProject" );
-    manager.LoadProject( pro.FileExists() ? pro.GetFullPath() : wxString( wxEmptyString ), false );
-    PROJECT& project = manager.Prj();
+    const wxString proPath = pro.FileExists() ? pro.GetFullPath() : wxString( wxEmptyString );
+    manager.LoadProject( proPath, false );
+    // Bind THIS file's project, not Prj(): with aSetActive=false projects
+    // accumulate across --resave-batch entries and Prj() keeps returning the
+    // first one — the s-expr writer would then stamp the wrong (or an empty)
+    // project name into the saved symbol-instance data. GetProject resolves
+    // the exact project the LoadProject call above created (or reused).
+    PROJECT* loaded = manager.GetProject( proPath );
+    PROJECT& project = loaded ? *loaded : manager.Prj();
     project.SetElem( PROJECT::ELEM::LEGACY_SYMBOL_LIBS, nullptr );
 
     auto schematic = std::make_unique<SCHEMATIC>( &project );
@@ -1258,6 +1265,60 @@ int symConvertMain( int argc, char** argv )
         }
     }
 
+    if( argc >= 2 && std::strcmp( argv[1], "--resave-batch" ) == 0 )
+    {
+        // Batch flavor of --resave (bulk-upload normalization): one process,
+        // one runtime init, N inputs. Each input's outputs land in
+        // <outdir>/<index>/ (index = position in the input list) so
+        // hierarchical-schematic sheet outputs from different roots never
+        // collide. Per-file verdicts use the single-file exit contract
+        // (0/2/4/5) and are reported on stderr as
+        //     RESAVE-BATCH <index> <exit-code>
+        // The process exits 0 when the batch LOOP completed — per-file
+        // failures live in the verdict lines, so one bad file can't mask the
+        // rest of the batch. Exit 2 = usage.
+        wxDisableAsserts();
+
+        if( argc < 4 )
+        {
+            std::fprintf( stderr,
+                          "usage: kicad_tools --resave-batch <outdir> <file> [<file>...]\n" );
+            return 2;
+        }
+
+        for( int n = 3; n < argc; n++ )
+        {
+            const int index = n - 3;
+            char      sub[32];
+            std::snprintf( sub, sizeof( sub ), "/%d", index );
+            const std::string outDir = std::string( argv[2] ) + sub;
+            int               rc;
+
+            try
+            {
+                rc = runResave( argv[n], outDir.c_str() );
+            }
+            catch( const std::exception& e )
+            {
+                std::fprintf( stderr, "%s: error: %s\n", argv[n], e.what() );
+                rc = 4;
+            }
+
+            // Entries can come from DIFFERENT projects (a bulk upload of a
+            // multi-project tree); with aSetActive=false the loaded projects
+            // simply accumulate. That is safe because loadSchematicHeadless
+            // binds each schematic to ITS OWN project via GetProject — never
+            // to Prj(), which keeps returning the first loaded project.
+            // (UnloadProject is no help here: unloading the active project
+            // immediately reloads a null "" project, which would then shadow
+            // every later entry's project name in the saved instance data.)
+
+            std::fprintf( stderr, "RESAVE-BATCH %d %d\n", index, rc );
+        }
+
+        return 0;
+    }
+
     if( argc >= 2 && std::strcmp( argv[1], "--convert-lib" ) == 0 && argc >= 4 )
     {
         // The legacy plugin asserts on relative paths and (worse) writes an
@@ -1286,6 +1347,7 @@ int symConvertMain( int argc, char** argv )
     std::fprintf( stderr, "usage: kicad_tools --convert-lib <input.lib> <output.kicad_sym>\n"
                           "       kicad_tools --lint [--strict] <file> [<file>...]\n"
                           "       kicad_tools --resave <file> <outdir>\n"
+                          "       kicad_tools --resave-batch <outdir> <file> [<file>...]\n"
                           "       kicad_tools --erc [--json] [--strict] <file.kicad_sch> [<out>]\n"
                           "       kicad_tools --netlist [--xml] <file.kicad_sch> [<out>]\n"
                           "       kicad_tools --bom <file.kicad_sch> [<out>]\n"

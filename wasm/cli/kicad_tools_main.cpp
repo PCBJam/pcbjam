@@ -25,6 +25,12 @@
  *                       pcbToolsResaveBoard callback, .kicad_sch one file per
  *                       sheet, .kicad_sym/.lib via ConvertLibrary. Exit 4 =
  *                       input invalid, 5 = write failed)
+ *     kicad_tools --resave-batch <outdir> <file> [<file>...]
+ *                       (N resaves, one runtime init — bulk-upload
+ *                       normalization. Outputs in <outdir>/<index>/; per-file
+ *                       verdicts as "RESAVE-BATCH <index> <exit-code>" stderr
+ *                       lines with the single-file code contract; exit 0 when
+ *                       the loop completed)
  *     kicad_tools --erc [--json] [--strict] <file.kicad_sch> [<out>]
  *     kicad_tools --netlist [--xml] <file.kicad_sch> [<out>]
  *     kicad_tools --bom <file.kicad_sch> [<out>]
