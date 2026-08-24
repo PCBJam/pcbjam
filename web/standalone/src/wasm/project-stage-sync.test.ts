@@ -168,3 +168,32 @@ describe("stageViaProjectSync", () => {
     expect(rest).toEqual(files);
   });
 });
+
+describe("stageViaProjectSync CAS ancestry", () => {
+  it("reports the listing revision for every namespace-staged file", async () => {
+    // A bundle-staged file bypasses fetchFileBytes, so the source would
+    // otherwise publish its first save against revision 0 → 409 "local base 0,
+    // server N" (the .kicad_pro assign-footprints conflict).
+    const server = fakeSyncServer({ "a.kicad_pro": "(pro)", "b.txt": "B" });
+    const files: ToolFile[] = [
+      { path: "a.kicad_pro", revision: 1 },
+      { path: "b.txt", revision: 4 },
+      { path: "missing.txt", revision: 2 },
+    ];
+    const seen: Array<[string, number]> = [];
+    await stageViaProjectSync(
+      {
+        slug: "p",
+        files,
+        projectSync: syncConfig(server.fetchImpl),
+        log: () => {},
+        onStagedRevision: (path, revision) => seen.push([path, revision]),
+      },
+      () => {},
+    );
+    expect(seen.sort()).toEqual([
+      ["a.kicad_pro", 1],
+      ["b.txt", 4],
+    ]);
+  });
+});

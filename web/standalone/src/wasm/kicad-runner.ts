@@ -52,6 +52,13 @@ export interface DriveOptions {
   targetPath?: string;
   fetchBytes: (relPath: string) => Promise<Uint8Array>;
   projectSync?: ProjectSyncConfig | null;
+  /**
+   * A file staged from the sync namespace bundle bypassed `fetchBytes`, so the
+   * project source never learned which revision the model was built from.
+   * Called with the listing's revision for every such file so the CAS save
+   * path (uploadFileBytes) publishes against the right ancestry instead of 0.
+   */
+  onStagedRevision?: (relPath: string, revision: number) => void;
   log: (msg: string) => void;
   onStatus: (text: string) => void;
   /** Per-file staging progress (files fetched+written so far, total) — drives
@@ -200,7 +207,10 @@ async function syncProjectToMemfs(win: ToolWindow, opts: DriveOptions): Promise<
  * the files that still need the per-file path. Exported for tests.
  */
 export async function stageViaProjectSync(
-  opts: Pick<DriveOptions, "slug" | "files" | "targetPath" | "log"> & {
+  opts: Pick<
+    DriveOptions,
+    "slug" | "files" | "targetPath" | "log" | "onStagedRevision"
+  > & {
     projectSync?: ProjectSyncConfig | null;
   },
   stageOne: (path: string, bytes: Uint8Array) => void,
@@ -242,8 +252,13 @@ export async function stageViaProjectSync(
       // The namespace manifest raced the project listing (file changed to
       // ydoc-backed, or was just deleted/renamed): let the per-file path
       // answer authoritatively.
-      if (!bytes) missed.push(f);
-      else stageOne(f.path, bytes);
+      if (!bytes) {
+        missed.push(f);
+        continue;
+      }
+      stageOne(f.path, bytes);
+      // `eligible` requires revision > 0, so this is always a real row.
+      if (f.revision !== undefined) opts.onStagedRevision?.(f.path, f.revision);
     }
     if (missed.length) {
       opts.log(

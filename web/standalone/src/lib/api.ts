@@ -152,6 +152,19 @@ export async function uploadFileBytes(
   }
 }
 
+/**
+ * Record a file's CAS ancestry when its bytes were staged WITHOUT going through
+ * `fetchFileBytes` (project sync namespace bundle). See
+ * ProjectSource.rememberBaseRevision.
+ */
+export function rememberFileBaseRevision(
+  slug: string,
+  relPath: string,
+  revision: number,
+): void {
+  projectSource().rememberBaseRevision?.(slug, relPath, revision);
+}
+
 /** Observe the server revision after an ambiguous save; never rebases this model. */
 export async function refreshFileRevision(
   slug: string,

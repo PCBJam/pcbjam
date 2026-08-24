@@ -80,6 +80,17 @@ export interface ProjectSource {
    * becomes a legal write precondition. Optional for non-CAS sources.
    */
   refreshFileRevision?(slug: string, relPath: string): Promise<void>;
+  /**
+   * Record that the in-memory model of `relPath` was built from `revision`
+   * WITHOUT this source having served the bytes — the project sync namespace
+   * stages plain files from one bundle (kicad-runner stageViaProjectSync), so
+   * `fetchFileBytes` never sees them. Without this the first CAS PUT of such
+   * a file goes out with expected revision 0 and 409s against any row that
+   * was ever re-saved (e.g. `.kicad_pro` at revision 1 → "local base 0,
+   * server 1"). The revision comes from the listing the namespace snapshot
+   * was vouched against, so it IS the model's ancestry, not merely observed.
+   */
+  rememberBaseRevision?(slug: string, relPath: string, revision: number): void;
 }
 
 // --- remote (REST backend over the shared contract) ---------------------------
@@ -253,6 +264,11 @@ function remoteProjectSource(): ProjectSource {
       if (res.status !== 200) throw new Error("failed to refresh file revision");
       const file = res.body.find((candidate) => candidate.path === relPath);
       rememberObservedRevision(slug, relPath, file?.revision);
+    },
+    rememberBaseRevision(slug, relPath, revision) {
+      if (!Number.isSafeInteger(revision) || revision < 0) return;
+      rememberObservedRevision(slug, relPath, revision);
+      baseRevisions.set(revisionKey(slug, relPath), revision);
     },
     // Editor saves publish through the CAS PUT (findings D-3 client half): the
     // expected revision is the model's ANCESTRY (baseRevisions), never the
@@ -489,6 +505,9 @@ function compositeProjectSource(
     refreshFileRevision: async (slug, p) => {
       const s = await route(slug);
       await s.refreshFileRevision?.(slug, p);
+    },
+    rememberBaseRevision: (slug, p, revision) => {
+      void route(slug).then((s) => s.rememberBaseRevision?.(slug, p, revision));
     },
   };
 }

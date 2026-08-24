@@ -249,3 +249,33 @@ describe("remote source file-body cache", () => {
     );
   });
 });
+
+describe("remote source CAS ancestry for bundle-staged files", () => {
+  it("rememberBaseRevision sets the expected revision of the next PUT", async () => {
+    // A file staged from the project sync namespace never passes through
+    // fetchFileBytes; without rememberBaseRevision its first save would carry
+    // expected revision 0 and 409 against the real row (assign-footprints
+    // .kicad_pro conflict: "local base 0, server 1").
+    const source = await loadRemote(cacheMock());
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: (h: string) => (h === "x-pcbjam-file-revision" ? "2" : null) },
+      json: async () => ({ revision: 2 }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const relPath = "Leonardo/Arduino Leonardo.kicad_pro";
+    source().rememberBaseRevision?.("leo", relPath, 1);
+    await source().uploadFileBytes!("leo", relPath, new Uint8Array([1]));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const init = (fetchMock.mock.calls[0] as unknown[])[1] as {
+      method: string;
+      headers: Record<string, string>;
+    };
+    expect(init.method).toBe("PUT");
+    const revisionHeader = Object.entries(init.headers).find(
+      ([k]) => k.toLowerCase().includes("revision"),
+    );
+    expect(revisionHeader?.[1]).toBe("1");
+  });
+});

@@ -973,6 +973,7 @@ export function WasmTool({
   files,
   targetPath,
   fetchBytes,
+  onStagedRevision,
   saveBytes,
   createFile,
   docSource,
@@ -1008,6 +1009,12 @@ export function WasmTool({
   boot?: import("@/lib/boot-payload").BootPayload | null;
   /** Fetch one project-relative file's bytes (contract loader or local folder). */
   fetchBytes: (relPath: string) => Promise<Uint8Array>;
+  /**
+   * Files staged from the project sync namespace bundle never pass through
+   * `fetchBytes`; this reports their listing revision so the source can record
+   * the CAS ancestry `saveBytes` must publish against (see DriveOptions).
+   */
+  onStagedRevision?: (relPath: string, revision: number) => void;
   /**
    * Persist one file the user saved in the editor (File→Save writes MEMFS, then
    * the wasm fires window.kicadCollab.onSave → this). API upload for backend
@@ -2055,6 +2062,7 @@ export function WasmTool({
                   digest: boot?.projectSync.digest,
                 }
               : null,
+          onStagedRevision,
           log: append,
           onStatus: setStatus,
           onFileProgress: (done, total) =>
