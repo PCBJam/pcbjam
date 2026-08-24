@@ -414,6 +414,46 @@ describe("ngspice service worker lifetime", () => {
     expect(events).toEqual(["new"]);
   });
 
+  it("acks a pre-handler queued frame at enqueue so the transport window never starves", async () => {
+    // Pin for the E-6 refinement: placing a frame in the bounded mirror queue
+    // IS taking ownership — without the enqueue-time ack, a stream that starts
+    // before the C++ handler installs pins the worker's 64-frame credit
+    // window open forever (observed as the ngspice-probe bg_halt starvation).
+    const first = await readyRequest(0);
+    expect(globalThis.__ngspiceOnEvent).toBeUndefined();
+
+    first.worker.emitMessage({
+      evt: { kind: "char", lines: ["early"] },
+      eventSequence: 1,
+      eventBytes: 33,
+    });
+    await vi.waitFor(() =>
+      expect(first.worker.postMessage).toHaveBeenCalledWith({
+        eventAck: { sequence: 1, bytes: 33 },
+      }));
+
+    // Once the handler installs, the queued frame is dispatched WITHOUT a
+    // second ack; only the new frame earns one.
+    const events: string[] = [];
+    globalThis.__ngspiceOnEvent = (event) => events.push(event.lines?.[0] ?? event.kind);
+    first.worker.emitMessage({
+      evt: { kind: "char", lines: ["late"] },
+      eventSequence: 2,
+      eventBytes: 32,
+    });
+    await vi.waitFor(() => expect(events).toEqual(["early", "late"]));
+    const acks = first.worker.postMessage.mock.calls
+      .map((call) => (call[0] as { eventAck?: { sequence: number; bytes: number } }).eventAck)
+      .filter(Boolean);
+    expect(acks, "exactly one ack per frame, none repeated on drain").toEqual([
+      { sequence: 1, bytes: 33 },
+      { sequence: 2, bytes: 32 },
+    ]);
+
+    first.worker.emitMessage({ id: first.id, res: { ret: 0 } });
+    await expect(first.request).resolves.toEqual({ ret: 0 });
+  });
+
   it("retires a worker whose bounded event stream reports a fatal line", async () => {
     const first = await readyRequest(0, commandRequest("oversize output"));
     first.worker.emitMessage({
