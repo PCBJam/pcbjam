@@ -420,15 +420,26 @@ function firstDiff(a: string, b: string): string {
  * between scenario steps — bounded poll, no blind sleeps (tests/TESTING.md).
  */
 export async function settleConverged(trio: TabSet, cfg: ToolCfg, timeout = 90000): Promise<void> {
-  await expect
-    .poll(
-      async () => {
-        const texts = await Promise.all(trio.tabs.map(([, p]) => modelText(p, cfg)));
-        return texts.every((t) => t === texts[0]);
-      },
-      { timeout, intervals: [400] },
-    )
-    .toBe(true);
+  // On timeout the failure names WHICH tab diverged and the first differing
+  // line — a bare `false` hid the actual divergence (memory: s4-value-race).
+  let last: string[] = [];
+  try {
+    await expect
+      .poll(
+        async () => {
+          last = await Promise.all(trio.tabs.map(([, p]) => modelText(p, cfg)));
+          return last.every((t) => t === last[0]);
+        },
+        { timeout, intervals: [400] },
+      )
+      .toBe(true);
+  } catch (e) {
+    const labels = trio.tabs.map(([l]) => l);
+    const diffs = last
+      .map((t, i) => (i > 0 && t !== last[0] ? `${labels[0]} vs ${labels[i]}: ${firstDiff(last[0], t)}` : null))
+      .filter(Boolean);
+    throw new Error(`trio did not converge:\n${diffs.join("\n")}\n\n${(e as Error).message}`);
+  }
 }
 
 /**
