@@ -126,4 +126,70 @@ test.describe("eeschema core UI (wasm)", () => {
     expect(await count(page)).toBeGreaterThan(0);
     expect(hasAbort(testLogger), "no WASM abort").toBe(false);
   });
+
+  /**
+   * Regression: unpositioned dialogs must open CENTRED, not at the (0,0) origin.
+   *
+   * The wasm port maps wxDefaultPosition to a literal (0,0) with no platform
+   * centring (native ports get it from the window manager / CW_USEDEFAULT).
+   * That was masked for years by DIALOG_SHIM::Show re-centring every dialog
+   * whenever wxDisplay::GetFromWindow() returned wxNOT_FOUND — which it always
+   * did here until the display-index fix. With the lookup working, dialogs
+   * surfaced at the origin; on CI the text-properties dialog then opened UNDER
+   * the just-clicked canvas-centre point with its OK/Cancel corner at the
+   * pointer, swallowed the trailing mouse event, and insta-closed (staging run
+   * 32739091966: the dialog exists in exactly one trace snapshot). The port
+   * now centres any dialog still at the default spot when first shown.
+   */
+  test("text properties dialog opens centred, not at the top-left origin", async ({ page, testLogger }) => {
+    await bootAndOpen(page);
+
+    expect(await clickByTooltip(page, "Draw Text")).toBe(true);
+    await expect.poll(async () => {
+      const t = await findByTooltip(page, "Draw Text", { elementType: "tool" });
+      return (t?.label ?? "").includes("[checked]");
+    }, { timeout: 5000, intervals: [200] }).toBe(true);
+
+    const box = await page.locator("#canvas").boundingBox();
+    expect(box, "#canvas has a bounding box").not.toBeNull();
+    // Click a point AWAY from where a centred dialog will sit, so the dialog can
+    // never land under the pointer regardless of centring (the CI insta-close mode).
+    await page.mouse.click(box!.x + box!.width * 0.85, box!.y + box!.height * 0.85);
+
+    const dialogsOpen = () =>
+      page.evaluate(() =>
+        window.wxElementRegistry.findAll({ visible: true }).filter((e) => /Dialog/i.test(e.typeName)).length,
+      );
+    await expect.poll(dialogsOpen, { timeout: 8000, intervals: [300] }).toBeGreaterThan(0);
+
+    // The dialog window div (the newest window-N) must be roughly viewport-centred.
+    const geo = await page.evaluate(() => {
+      const wins = Array.from(document.querySelectorAll<HTMLElement>("#window-container [id^=\"window-\"]"));
+      const w = wins[wins.length - 1];
+      return {
+        id: w.id,
+        left: parseInt(w.style.left || "0", 10) || 0,
+        top: parseInt(w.style.top || "0", 10) || 0,
+        width: parseInt(w.style.width || "0", 10) || 0,
+        height: parseInt(w.style.height || "0", 10) || 0,
+        vw: window.innerWidth,
+        vh: window.innerHeight,
+      };
+    });
+    console.log(`[TEST] dialog geometry: ${JSON.stringify(geo)}`);
+    const cx = geo.left + geo.width / 2;
+    const cy = geo.top + geo.height / 2;
+    expect(Math.abs(cx - geo.vw / 2),
+      `dialog ${geo.id} horizontal centre ${cx} should be near viewport centre ${geo.vw / 2} `
+      + `(left=${geo.left} — 0 means the port skipped default-position centring)`)
+      .toBeLessThanOrEqual(60);
+    expect(Math.abs(cy - geo.vh / 2),
+      `dialog ${geo.id} vertical centre ${cy} should be near viewport centre ${geo.vh / 2} `
+      + `(top=${geo.top} — 0 means the port skipped default-position centring)`)
+      .toBeLessThanOrEqual(60);
+
+    await page.keyboard.press("Escape");
+    await expect.poll(dialogsOpen, { timeout: 8000, intervals: [300] }).toBe(0);
+    expect(hasAbort(testLogger), "no WASM abort").toBe(false);
+  });
 });
