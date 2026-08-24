@@ -301,6 +301,17 @@ static bool        s_buildFailed = false;
 static ProgramLocs s_locs;
 
 
+void shadersDropContextObjects()
+{
+    // The owning context is gone; the program name is invalid in the current
+    // one. No glDeleteProgram — just forget it so programSync() rebuilds.
+    // The fail latch resets too: a fresh context gets a fresh build attempt.
+    s_program = 0;
+    s_buildFailed = false;
+    s_locs = ProgramLocs();
+}
+
+
 static GLuint compileShader( GLenum type, const char* source )
 {
     GLuint shader = glCreateShader( type );
@@ -476,6 +487,11 @@ static int encodeCombineFunc( GLenum func )
 
 bool programSync()
 {
+    // Every shim draw funnels through here, so this is the single choke point
+    // where a recreated WebGL context (3D viewer close/reopen) gets detected
+    // before any cached GL name is used.
+    contextSync();
+
     if( s_buildFailed )
         return false;
 

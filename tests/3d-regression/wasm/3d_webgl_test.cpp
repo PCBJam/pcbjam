@@ -25,6 +25,33 @@ static const int CAPTURE_HEIGHT = 600;
 static EMSCRIPTEN_WEBGL_CONTEXT_HANDLE g_context = 0;
 static SCENE3D_CTX*                    g_ctx = nullptr;
 
+// One context-creation recipe for the initial context (main) and recreateContext():
+// the recreated context must carry the exact attributes the suite requires, or a
+// close/reopen render would differ from the goldens for attribute reasons alone.
+static bool createContext()
+{
+    EmscriptenWebGLContextAttributes attrs;
+    emscripten_webgl_init_context_attributes( &attrs );
+
+    attrs.majorVersion = 2;
+    attrs.minorVersion = 0;
+    attrs.alpha = false;
+    attrs.depth = true;
+    attrs.stencil = true;                // DrawCulled hole subtraction
+    attrs.antialias = false;             // native goldens are single-sample
+    attrs.preserveDrawingBuffer = true;  // Playwright canvas.screenshot()
+
+    emscripten_set_canvas_element_size( "#canvas", CAPTURE_WIDTH, CAPTURE_HEIGHT );
+
+    g_context = emscripten_webgl_create_context( "#canvas", &attrs );
+
+    if( g_context <= 0 )
+        return false;
+
+    emscripten_webgl_make_context_current( g_context );
+    return true;
+}
+
 extern "C"
 {
 
@@ -82,34 +109,59 @@ int runScenario( int aIndex )
     return 0;
 }
 
+// Destroy the current WebGL context and mint a fresh one on a fresh canvas
+// element — the harness model of the app's 3D-viewer close/reopen (~wxGLCanvas
+// destroys its context AND its DOM canvas; a new frame creates new ones).
+// The element swap is essential: a browser canvas keeps its WebGL context for
+// life, so recreating on the SAME element would hand back the same live context
+// and old GL object names would still work — hiding the very bug this models.
+// Deliberately NO shim call here: the gl1 layer itself must detect the context
+// change on its next draw and rebuild its cached GL objects, exactly as
+// production code paths require.
+EMSCRIPTEN_KEEPALIVE
+int recreateContext()
+{
+    // The scene ctx is rebuilt per context, like the app's per-canvas renderer.
+    // Delete it while the old context is still alive (mirrors releaseOpenGL()).
+    delete g_ctx;
+    g_ctx = nullptr;
+
+    if( g_context > 0 )
+        emscripten_webgl_destroy_context( g_context );
+
+    g_context = 0;
+
+    EM_ASM( {
+        var old = Module['canvas'];
+        var fresh = old.cloneNode( false );  // same id/width/height, no context yet
+        old.parentNode.replaceChild( fresh, old );
+        Module['canvas'] = fresh;
+        // '#canvas' resolves through specialHTMLTargets before querySelector.
+        if( typeof specialHTMLTargets !== 'undefined' )
+            specialHTMLTargets['#canvas'] = fresh;
+    } );
+
+    if( !createContext() )
+    {
+        std::fprintf( stderr, "[3d-webgl] recreateContext: failed to create WebGL2 context\n" );
+        return -1;
+    }
+
+    std::printf( "[3d-webgl] context recreated\n" );
+    return 0;
+}
+
 } // extern "C"
 
 
 int main()
 {
-    EmscriptenWebGLContextAttributes attrs;
-    emscripten_webgl_init_context_attributes( &attrs );
-
-    attrs.majorVersion = 2;
-    attrs.minorVersion = 0;
-    attrs.alpha = false;
-    attrs.depth = true;
-    attrs.stencil = true;                // DrawCulled hole subtraction
-    attrs.antialias = false;             // native goldens are single-sample
-    attrs.preserveDrawingBuffer = true;  // Playwright canvas.screenshot()
-
-    emscripten_set_canvas_element_size( "#canvas", CAPTURE_WIDTH, CAPTURE_HEIGHT );
-
-    g_context = emscripten_webgl_create_context( "#canvas", &attrs );
-
-    if( g_context <= 0 )
+    if( !createContext() )
     {
         std::fprintf( stderr, "[3d-webgl] failed to create WebGL2 context (%ld)\n",
                       (long) g_context );
         return 1;
     }
-
-    emscripten_webgl_make_context_current( g_context );
 
     std::printf( "[3d-webgl] ready: %d scenarios, %dx%d\n", Scene3DTest::GetScenarioCount(),
                  CAPTURE_WIDTH, CAPTURE_HEIGHT );

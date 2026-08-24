@@ -116,6 +116,13 @@ void __wrap_glDrawElements( GLenum mode, GLsizei count, GLenum type, const GLvoi
 
 void __wrap_glBindTexture( GLenum target, GLuint texture )
 {
+    // NO contextSync() here: this wrap intercepts EVERY caller, including the
+    // 2D GAL binding its own textures under its own context — a check here
+    // ping-pongs the owner on 2D<->3D paint alternation and thrash-rebuilds
+    // the FFP program each flip (observed: 23 resets in one e2e run). The
+    // boundTexture2D mirror this site feeds is write-only bookkeeping, so a
+    // reset zeroing it after a new-context bind loses nothing.
+
     if( dlistRecording() )
     {
         dlistRecordBindTexture( target, texture );

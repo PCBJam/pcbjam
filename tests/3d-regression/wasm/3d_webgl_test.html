@@ -23,6 +23,7 @@
       getScenarioName: (i) => wasmModule.ccall('getScenarioName', 'string', ['number'], [i]),
       getCanvasWidth: () => wasmModule.ccall('getCanvasWidth', 'number', [], []),
       getCanvasHeight: () => wasmModule.ccall('getCanvasHeight', 'number', [], []),
+      recreateContext: () => wasmModule.ccall('recreateContext', 'number', [], []),
     };
   </script>
   <script src="3d_webgl_test.js"></script>

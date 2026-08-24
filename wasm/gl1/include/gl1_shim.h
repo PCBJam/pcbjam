@@ -217,6 +217,23 @@ void stateBlendFunc( GLenum sfactor, GLenum dfactor );
 void stateLineWidth( GLfloat width );
 void stateAlphaFunc( GLenum func, GLclampf ref );
 
+// --- context-generation guard (gl1_state.cpp) ---
+// GL object names live and die with the WebGL context, and the 3D viewer's
+// close/reopen destroys and recreates it (~wxGLCanvas destroys the context
+// with the canvas; the next open mints new ones). Called from programSync()
+// ONLY: that is the single choke point every shim draw crosses, it always
+// runs under the 3D context, and — critically — it is a path the 2D GAL never
+// reaches, so alternating 2D/3D paints cannot ping-pong the owner (a check in
+// the glBindTexture wrap did exactly that: every caller crosses a wrap).
+// On a context change it drops every cached name so the shim rebuilds lazily
+// in the new context. Deliberately never touches display-list or
+// immediate-mode state: the change can be detected mid-scene-rebuild, and
+// those modules are context-agnostic CPU state.
+void contextSync();
+// Per-TU cache drops invoked by contextSync() on a context change.
+void shadersDropContextObjects(); // FFP program + uniform locations + fail latch
+void drawDropContextObjects();    // stream/scratch VBOs
+
 // GL1 normalized-attribute rule: integer colors and normals are normalized,
 // floats are not (positions/texcoords are float-only in this codebase).
 bool attribNormalized( int arrayIndex, GLenum type );

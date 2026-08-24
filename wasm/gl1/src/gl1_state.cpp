@@ -4,6 +4,8 @@
 
 #include "gl1_shim.h"
 
+#include <emscripten.h>
+
 namespace gl1
 {
 
@@ -11,6 +13,66 @@ State& S()
 {
     static State s;
     return s;
+}
+
+
+// Identity of the current WebGL context, stable for the context's lifetime and
+// never reused. The EMSCRIPTEN_WEBGL_CONTEXT_HANDLE is NOT that: Emscripten
+// recycles freed handle slots, so the context created after a destroy can get
+// the very same numeric handle. Stamp a monotonic id on Emscripten's
+// per-context record (a fresh JS object per createContext) instead.
+static int currentContextId()
+{
+    return EM_ASM_INT( {
+        var ctx = ( typeof GL !== 'undefined' ) ? GL.currentContext : null;
+        if( !ctx )
+            return 0;
+        if( !ctx.gl1ContextId )
+        {
+            GL.gl1NextContextId = ( GL.gl1NextContextId | 0 ) + 1;
+            ctx.gl1ContextId = GL.gl1NextContextId;
+        }
+        return ctx.gl1ContextId;
+    } );
+}
+
+
+// The context generation the shim's cached GL objects belong to. 0 until the
+// first contextSync() under a live context.
+static int s_ownerContext = 0;
+
+void contextSync()
+{
+    int cur = currentContextId();
+
+    if( cur == s_ownerContext || cur == 0 )
+        return;
+
+    if( s_ownerContext != 0 )
+    {
+        // The context that owned the cached names is gone (3D viewer closed and
+        // reopened). No glDelete*: the names are invalid in the current context
+        // — forget them and let each module rebuild lazily.
+        std::printf( "[gl1] WebGL context changed — dropping cached GL objects\n" );
+
+        shadersDropContextObjects();
+        drawDropContextObjects();
+
+        State& s = S();
+        s.boundTexture2D = 0;
+
+        for( int i = 0; i < CA_COUNT; ++i )
+            s.clientArrays[i].boundBuffer = 0;
+
+        // The new program starts with default-initialized uniforms; force a
+        // full re-upload on its first sync.
+        s.matricesDirty = true;
+        s.lightingDirty = true;
+        s.texEnvDirty = true;
+        s.miscDirty = true;
+    }
+
+    s_ownerContext = cur;
 }
 
 

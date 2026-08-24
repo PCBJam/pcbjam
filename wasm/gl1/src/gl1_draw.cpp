@@ -22,6 +22,15 @@ namespace gl1
 static GLuint s_streamVBO = 0;  // immediate-mode interleaved stream
 static GLuint s_scratchVBO = 0; // client-array upload staging
 
+
+void drawDropContextObjects()
+{
+    // The owning context is gone; the buffer names are invalid in the current
+    // one. No glDeleteBuffers — just forget them so the draws re-gen lazily.
+    s_streamVBO = 0;
+    s_scratchVBO = 0;
+}
+
 enum
 {
     ATTR_POSITION = 0,

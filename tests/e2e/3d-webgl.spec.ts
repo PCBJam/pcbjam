@@ -58,6 +58,107 @@ test.describe('3D WebGL Regression', () => {
     expect(height).toBe(MANIFEST.height);
   });
 
+  /**
+   * Regression: WebGL context recreation (the 3D-viewer close/reopen model).
+   *
+   * The app's viewer close destroys the wxGLCanvas's WebGL context and DOM canvas;
+   * reopen creates fresh ones. The gl1 shim caches GL object names (FFP program,
+   * stream/scratch VBOs) in statics — pre-fix it kept using names owned by the
+   * destroyed context in the new one, so every draw died with INVALID_OPERATION and
+   * the reopened viewer rendered blank. recreateContext() reproduces exactly that
+   * (fresh canvas element + fresh context, no shim call — the shim must self-detect).
+   *
+   * Renders redraw-mini-board-navigator (the port-complete gate scenario: display
+   * lists, VBO models, grid, gizmo, materials) before and after recreation and
+   * requires the second render to be non-blank and pixel-identical-ish to the first.
+   */
+  test('re-renders identically after WebGL context recreation', async ({ page }) => {
+    test.setTimeout(120000);
+
+    await page.goto('/3d-webgl/3d_webgl_test.html');
+    await page.waitForFunction(() => (window as any).threeDTest?.isReady(), undefined, {
+      timeout: 60000,
+    });
+
+    const name = 'redraw-mini-board-navigator';
+    const idx = MANIFEST.scenarios.indexOf(name);
+    expect(idx, `${name} must exist in the committed manifest`).toBeGreaterThanOrEqual(0);
+
+    // Snapshot the canvas backing store into an in-page buffer (one drawImage readback,
+    // CPU-backed 2D canvas — SwiftShader-safe) plus a 16x16 distinct-colour count.
+    const capture = (slot: string) =>
+      page.evaluate((s) => {
+        const el = document.getElementById('canvas') as HTMLCanvasElement;
+        const tmp = document.createElement('canvas');
+        tmp.width = el.width;
+        tmp.height = el.height;
+        const ctx = tmp.getContext('2d', { willReadFrequently: true })!;
+        ctx.drawImage(el, 0, 0);
+        const img = ctx.getImageData(0, 0, el.width, el.height).data;
+        (window as any)[s] = img;
+        const colors = new Set<string>();
+        for (let i = 0; i < 16; i++) {
+          for (let j = 0; j < 16; j++) {
+            const p =
+              (Math.floor((el.height * j) / 16) * el.width + Math.floor((el.width * i) / 16)) * 4;
+            colors.add(`${img[p]},${img[p + 1]},${img[p + 2]}`);
+          }
+        }
+        return colors.size;
+      }, slot);
+
+    const first = await page.evaluate((i) => (window as any).threeDTest.runScenario(i), idx);
+    expect(first, `runScenario(${idx}) [${name}] before recreation`).toBe(0);
+    await page.evaluate(() => new Promise(requestAnimationFrame));
+    const colorsBefore = await capture('__reopenFirst');
+    expect(colorsBefore, 'the scenario must render before the context swap').toBeGreaterThan(8);
+    // NOT in OUTPUT_DIR: the parity compare treats that dir as scenario renders.
+    await page
+      .locator('#canvas')
+      .screenshot({ path: path.join(OUTPUT_DIR, '..', `3d-ctx-recreate-before.png`) });
+
+    const rc = await page.evaluate(() => (window as any).threeDTest.recreateContext());
+    expect(rc, 'recreateContext() should mint a fresh WebGL context').toBe(0);
+
+    const second = await page.evaluate((i) => (window as any).threeDTest.runScenario(i), idx);
+    expect(second, `runScenario(${idx}) [${name}] after recreation`).toBe(0);
+    await page.evaluate(() => new Promise(requestAnimationFrame));
+    const colorsAfter = await capture('__reopenSecond');
+    await page
+      .locator('#canvas')
+      .screenshot({ path: path.join(OUTPUT_DIR, '..', `3d-ctx-recreate-after.png`) });
+
+    expect(
+      colorsAfter,
+      'the re-rendered scenario must not be blank — a uniform canvas means the gl1 shim ' +
+        'drew with GL object names from the destroyed context'
+    ).toBeGreaterThan(8);
+
+    // Pixel-level identity check (same code, same context attributes → deterministic).
+    // Tolerance mirrors the suite's pixelmatch spirit: <0.1% differing pixels.
+    const diff = await page.evaluate(() => {
+      const a = (window as any).__reopenFirst as Uint8ClampedArray;
+      const b = (window as any).__reopenSecond as Uint8ClampedArray;
+      if (!a || !b || a.length !== b.length) return { changed: -1, total: 0 };
+      let changed = 0;
+      for (let p = 0; p < a.length; p += 4) {
+        if (
+          Math.abs(a[p] - b[p]) > 2 ||
+          Math.abs(a[p + 1] - b[p + 1]) > 2 ||
+          Math.abs(a[p + 2] - b[p + 2]) > 2
+        )
+          changed++;
+      }
+      return { changed, total: a.length / 4 };
+    });
+    expect(diff.changed, 'both captures must exist and agree in size').toBeGreaterThanOrEqual(0);
+    expect(
+      diff.changed / diff.total,
+      `render after context recreation must match the one before ` +
+        `(${diff.changed}/${diff.total} pixels differ)`
+    ).toBeLessThan(0.001);
+  });
+
   test('render all scenarios', async ({ page }) => {
     test.setTimeout(300000);
 

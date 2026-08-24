@@ -55,6 +55,22 @@ untouched.
   the goldens document; tolerating it would *diverge* from native.
 - **Lighting is per-vertex (Gouraud)** to match fixed-function output;
   per-fragment lighting visibly mismatches speculars on coarse meshes.
+- **GL object caches are per-context, and the context is mortal.** Closing the
+  3D viewer destroys its wxGLCanvas's WebGL context; reopening mints a new one
+  in which the cached names (FFP program, stream/scratch VBOs) are invalid —
+  every draw then dies with `INVALID_OPERATION` and the viewer is blank.
+  `contextSync()` (gl1_state.cpp) detects the change in `programSync()` — the
+  one choke point every shim draw crosses and a path the 2D GAL never reaches
+  (a check in any `__wrap_*` would see the GAL's context and ping-pong the
+  owner on 2D↔3D paint alternation) — and drops the caches so they rebuild
+  lazily. Identity comes from a monotonic id stamped on Emscripten's
+  per-context record — NOT the `EMSCRIPTEN_WEBGL_CONTEXT_HANDLE`, which
+  Emscripten recycles (a destroy-then-create can return the same number).
+  Display-list/immediate state is deliberately untouched: it is CPU-only, and
+  the change can be detected mid-scene-rebuild (even inside `glNewList`).
+  Known limit (pre-existing): two *simultaneously live* FFP contexts would
+  thrash the caches on every alternation — the shim still assumes one live
+  3D-viewer context at a time.
 
 ## Layout
 
