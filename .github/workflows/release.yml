@@ -188,13 +188,16 @@ jobs:
 
       # --plausible: the shared pa- script covering all pcbjam properties
       # (one dashboard, segment by hostname).
+      # --models-source registry: 3D models come from the closed registry's
+      # kind='model3d' origin libs (chunked packages3D ingest, libs/0016), not
+      # the CDN snapshot — MODELS_TAG only feeds the demo build above.
       - name: Build editor (remote mode)
         run: >
           node scripts/deploy/build-editor.mjs --tag "$RELEASE_TAG"
           --cdn "$CDN" --api-base "$EDITOR_API_BASE" --app-base "$EDITOR_APP_BASE"
           --plausible "https://plausible.io/js/pa-KjNS9YmidydULZTstsjRg.js"
           ${ERRORS_DSN:+--errors-dsn "$ERRORS_DSN" --errors-env production}
-          ${MODELS_TAG:+--models-tag "$MODELS_TAG"}
+          --models-source registry
 
       - name: Ensure Pages project exists
         run: >

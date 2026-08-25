@@ -97,7 +97,8 @@ jobs:
         run: |
           node scripts/deploy/build-editor.mjs --tag "$STAGING_TAG" \
             --cdn "$CDN_ORIGIN" --api-base "$API_ORIGIN" \
-            --app-base "$APP_ORIGIN" --errors-env staging
+            --app-base "$APP_ORIGIN" --errors-env staging \
+            --models-source registry
           # Worker Static Assets uses not_found_handling=single-page-application.
           # The generated _redirects file is for Pages and duplicates that fallback.
           rm -f web/standalone/dist/_redirects

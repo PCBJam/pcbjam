@@ -33,6 +33,10 @@ function parseArgs(argv) {
     yjsEndpoint: null,
     // kicad-packages3D snapshot (libs/kicad-models/<tag>/); omitted ⇒ 3D models off.
     modelsTag: null,
+    // 3D model backing override: "registry" serves the closed registry's
+    // kind='model3d' origin libs (docs/features/libs/0016) instead of the CDN
+    // snapshot; omitted ⇒ "cdn" when --models-tag is set, else models off.
+    modelsSource: null,
     plausible: null,
     // Better Stack error-tracking DSN (Sentry wire format). Omitted ⇒ no error
     // reporting from this build.
@@ -51,6 +55,7 @@ function parseArgs(argv) {
       case "--repo": a.repo = next(); break;
       case "--yjs-endpoint": a.yjsEndpoint = next(); break;
       case "--models-tag": a.modelsTag = next(); break;
+      case "--models-source": a.modelsSource = next(); break;
       case "--plausible": a.plausible = next(); break;
       case "--errors-dsn": a.errorsDsn = next(); break;
       case "--errors-env": a.errorsEnv = next(); break;
@@ -113,6 +118,7 @@ function main() {
           VITE_MODELS_MANIFEST_URL: `${a.cdn}/libs/kicad-models/${a.modelsTag}/manifest.json`,
         }
       : {}),
+    ...(a.modelsSource ? { VITE_MODELS_SOURCE: a.modelsSource } : {}),
     // Build identity for the version badge (GPLv3 corresponding source).
     VITE_APP_TAG: a.tag,
     VITE_GIT_SHA: gitSha(repoRoot),
@@ -134,7 +140,7 @@ function main() {
   console.log(`  VITE_API_BASE_URL=${env.VITE_API_BASE_URL}`);
   console.log(`  VITE_YJS_ENDPOINT=${env.VITE_YJS_ENDPOINT} (provider=${env.VITE_YJS_PROVIDER}, doc=${env.VITE_DOC_SOURCE})`);
   console.log(`  VITE_LIBS_SOURCE=${env.VITE_LIBS_SOURCE}`);
-  console.log(`  VITE_MODELS_MANIFEST_URL=${env.VITE_MODELS_MANIFEST_URL ?? "(unset — 3D models off)"}`);
+  console.log(`  VITE_MODELS_SOURCE=${env.VITE_MODELS_SOURCE ?? (env.VITE_MODELS_MANIFEST_URL ? "cdn" : "off")} VITE_MODELS_MANIFEST_URL=${env.VITE_MODELS_MANIFEST_URL ?? "(unset)"}`);
   console.log(`  VITE_APP_TAG=${env.VITE_APP_TAG} VITE_GIT_SHA=${env.VITE_GIT_SHA || "(none)"}`);
   console.log(`  VITE_PLAUSIBLE_SRC=${env.VITE_PLAUSIBLE_SRC || "(off)"}`);
   console.log(`  VITE_ERRORS_DSN=${env.VITE_ERRORS_DSN ? `(set, env=${env.VITE_ERRORS_ENV})` : "(off)"}`);
