@@ -41,6 +41,16 @@ static int currentContextId()
 // first contextSync() under a live context.
 static int s_ownerContext = 0;
 
+bool contextIsOwner()
+{
+    int cur = currentContextId();
+
+    // No live context: nothing can be drawn anyway. No owner yet: the first
+    // FFP consumer under any context becomes the owner (adopted in
+    // contextSync() on its first programSync()).
+    return cur != 0 && ( s_ownerContext == 0 || cur == s_ownerContext );
+}
+
 void contextSync()
 {
     int cur = currentContextId();
@@ -61,8 +71,13 @@ void contextSync()
         State& s = S();
         s.boundTexture2D = 0;
 
+        // Client-array state dies with its context: the enables, the captured
+        // VBO names AND the CPU pointers all described the dead context's
+        // world. Keeping `.enabled` was the engine-toggle bug's tail — a flag
+        // left set by the old context kept routing modern-GL draws through the
+        // FFP pipeline in the new one.
         for( int i = 0; i < CA_COUNT; ++i )
-            s.clientArrays[i].boundBuffer = 0;
+            s.clientArrays[i] = ClientArray();
 
         // The new program starts with default-initialized uniforms; force a
         // full re-upload on its first sync.

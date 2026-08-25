@@ -159,6 +159,136 @@ test.describe('3D WebGL Regression', () => {
     ).toBeLessThan(0.001);
   });
 
+  /**
+   * Engine-toggle regressions: the raytracing round-trip poisons the shim's global
+   * FFP routing state (a MODEL_3D BeginDrawMulti-style window leaves GL_VERTEX_ARRAY
+   * enabled with a VBO captured), after which modern-GL consumers (the raytracer
+   * blit, the 2D GAL) get their glDrawArrays misrouted through the FFP pipeline.
+   * Three deterministic reproductions of the traced failure modes:
+   *  - T1: a misrouted draw must not corrupt the CALLER's VAO (blit collision).
+   *  - T2: a draw under a FOREIGN context (the 2D GAL model) must pass through.
+   *  - T3: FFP client-array state must die with its context.
+   */
+  test.describe('FFP routing isolation (engine-toggle model)', () => {
+    const glLines = (arr: string[]) => arr.filter((l) => l.includes('[gl1] WebGL context changed'));
+
+    test('T1: misrouted draw does not corrupt the victim VAO', async ({ page }) => {
+      await page.goto('/3d-webgl/3d_webgl_test.html');
+      await page.waitForFunction(() => (window as any).threeDTest?.isReady(), undefined, { timeout: 60000 });
+
+      const rc = await page.evaluate(() => {
+        const t = (window as any).threeDTest;
+        const r: Record<string, number> = {};
+        r.init = t.appQuadInit();
+        r.clean = t.appQuadDraw(1);           // sanity: quad renders before poisoning
+        t.ffpMakeStale();                     // the BeginDrawMulti-window leak shape
+        r.routed = t.appQuadDraw(0);          // blit-style draw with victim VAO bound → misrouted today
+        t.ffpClearStale();                    // later state cleanup (flag off again)
+        r.after = t.appQuadDraw(1);           // the victim draws again — must still work
+        return r;
+      });
+      await page.evaluate(() => new Promise(requestAnimationFrame));
+      const green = await page.evaluate(() => {
+        const el = document.getElementById('canvas') as HTMLCanvasElement;
+        const c = document.createElement('canvas');
+        c.width = el.width; c.height = el.height;
+        const x = c.getContext('2d', { willReadFrequently: true })!;
+        x.drawImage(el, 0, 0);
+        const d = x.getImageData(0, 0, el.width, el.height).data;
+        let g = 0, n = 0;
+        for (let i = 0; i < 16; i++)
+          for (let j = 0; j < 16; j++) {
+            const p = (Math.floor((el.height * j) / 16) * el.width + Math.floor((el.width * i) / 16)) * 4;
+            n++;
+            if (d[p] < 40 && d[p + 1] > 200 && d[p + 2] < 40) g++;
+          }
+        return g / n;
+      });
+      console.log(`[TEST] T1 rc=${JSON.stringify(rc)} greenFraction=${green}`);
+      expect(rc.init, 'app quad init').toBe(0);
+      expect(rc.clean, 'app quad renders before poisoning').toBe(0);
+      expect(rc.after,
+        'the victim VAO must survive a misrouted draw (nonzero = the shim scribbled its attributes)')
+        .toBe(0);
+      expect(green,
+        'the victim quad must still render green after the misroute (blank = corrupted VAO)')
+        .toBeGreaterThan(0.9);
+    });
+
+    test('T2: stale FFP flag must not route draws under a foreign context', async ({ page }) => {
+      const consoleLines: string[] = [];
+      page.on('console', (m) => consoleLines.push(m.text()));
+
+      await page.goto('/3d-webgl/3d_webgl_test.html');
+      await page.waitForFunction(() => (window as any).threeDTest?.isReady(), undefined, { timeout: 60000 });
+
+      const rc = await page.evaluate((idx) => {
+        const t = (window as any).threeDTest;
+        const r: Record<string, number> = {};
+        r.scenario = t.runScenario(idx);      // adopt ctx1 as the shim owner (real FFP work)
+        t.ffpMakeStale();                     // poison the global mirror under ctx1
+        r.ctx2 = t.createSecondContext();     // the "2D GAL" context
+        r.use2 = t.useContext(2);
+        r.draw2 = t.quadDrawFresh();          // GAL-style modern draw → must pass through
+        t.useContext(1);
+        (window as any).threeDTest.ffpClearStale();
+        return r;
+      }, MANIFEST.scenarios.indexOf('redraw-mini-board-navigator'));
+      const thrash = glLines(consoleLines);
+      console.log(`[TEST] T2 rc=${JSON.stringify(rc)} gl1Lines=${thrash.length}`);
+      expect(rc.scenario, 'owner-context scenario render').toBe(0);
+      expect(rc.ctx2, 'second context created').toBe(0);
+      expect(rc.use2, 'second context current').toBe(0);
+      expect(rc.draw2,
+        'a modern-GL draw under a foreign context must pass through untouched '
+        + '(nonzero = it was routed through the FFP pipeline)')
+        .toBe(0);
+      expect(thrash,
+        'the context guard must not fire for foreign-context draws (thrash)').toEqual([]);
+    });
+
+    test('T3: FFP client-array state dies with its context', async ({ page }) => {
+      await page.goto('/3d-webgl/3d_webgl_test.html');
+      await page.waitForFunction(() => (window as any).threeDTest?.isReady(), undefined, { timeout: 60000 });
+
+      const rc = await page.evaluate(() => {
+        const t = (window as any).threeDTest;
+        const r: Record<string, number> = {};
+        t.ffpMakeStale();                     // poison under the original context
+        r.recreate = t.recreateContext();     // context (and its VBO) destroyed
+        r.draw = t.quadDrawFresh();           // fresh modern draw in the new context
+        return r;
+      });
+      await page.evaluate(() => new Promise(requestAnimationFrame));
+      const green = await page.evaluate(() => {
+        const el = document.getElementById('canvas') as HTMLCanvasElement;
+        const c = document.createElement('canvas');
+        c.width = el.width; c.height = el.height;
+        const x = c.getContext('2d', { willReadFrequently: true })!;
+        x.drawImage(el, 0, 0);
+        const d = x.getImageData(0, 0, el.width, el.height).data;
+        let g = 0, n = 0;
+        for (let i = 0; i < 16; i++)
+          for (let j = 0; j < 16; j++) {
+            const p = (Math.floor((el.height * j) / 16) * el.width + Math.floor((el.width * i) / 16)) * 4;
+            n++;
+            if (d[p] < 40 && d[p + 1] > 200 && d[p + 2] < 40) g++;
+          }
+        return g / n;
+      });
+      console.log(`[TEST] T3 rc=${JSON.stringify(rc)} greenFraction=${green}`);
+      expect(rc.recreate, 'context recreation').toBe(0);
+      expect(rc.draw,
+        'client-array state from a dead context must not route draws in the new one '
+        + '(nonzero = the stale enabled flag survived the context change)')
+        .toBe(0);
+      expect(green,
+        'the fresh-context quad must render green (blank/garbage = draw was routed '
+        + 'through the FFP pipeline with dead-context state)')
+        .toBeGreaterThan(0.9);
+    });
+  });
+
   test('render all scenarios', async ({ page }) => {
     test.setTimeout(300000);
 

@@ -230,6 +230,12 @@ void stateAlphaFunc( GLenum func, GLclampf ref );
 // immediate-mode state: the change can be detected mid-scene-rebuild, and
 // those modules are context-agnostic CPU state.
 void contextSync();
+// True when the CURRENT WebGL context is the shim's owner context (or no owner
+// exists yet). The __wrap_* draw interceptors gate FFP routing on this: only
+// the owner context's draws can be fixed-function traffic — a draw under any
+// other context (the 2D GAL, a recreated canvas) always passes through, no
+// matter what the global client-array mirror says. (gl1_state.cpp)
+bool contextIsOwner();
 // Per-TU cache drops invoked by contextSync() on a context change.
 void shadersDropContextObjects(); // FFP program + uniform locations + fail latch
 void drawDropContextObjects();    // stream/scratch VBOs

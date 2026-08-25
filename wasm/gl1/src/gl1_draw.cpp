@@ -40,10 +40,39 @@ enum
 };
 
 
+// The shim's attribute setup assumes the DEFAULT VAO (see the VAO-policy note
+// above) — but a routed draw can arrive with the CALLER's VAO bound (the
+// raytracer blit and the 2D GAL both bind their own VAO right before drawing,
+// and their attribute 0 collides with ATTR_POSITION). Scribbling attribute
+// state into that VAO corrupts the caller PERMANENTLY — the engine-toggle
+// blank-viewer amplifier. Every draw executor therefore isolates itself on
+// VAO 0 and restores the caller's binding afterwards.
+class ScopedDefaultVAO
+{
+public:
+    ScopedDefaultVAO()
+    {
+        glGetIntegerv( GL_VERTEX_ARRAY_BINDING, &m_prev );
+        if( m_prev != 0 )
+            glBindVertexArray( 0 );
+    }
+    ~ScopedDefaultVAO()
+    {
+        if( m_prev != 0 )
+            glBindVertexArray( (GLuint) m_prev );
+    }
+
+private:
+    GLint m_prev = 0;
+};
+
+
 void drawImmVertices( GLenum mode, const ImmVertex* verts, GLsizei count )
 {
     if( !programSync() )
         return;
+
+    ScopedDefaultVAO vaoGuard;
 
     if( !s_streamVBO )
         glGenBuffers( 1, &s_streamVBO );
@@ -202,6 +231,8 @@ void drawArraysWithSources( GLenum mode, GLsizei count, const AttribSource aSrc[
         GL1_WARN_ONCE( "array draw with unsupported primitive 0x%x — dropped", mode );
         return;
     }
+
+    ScopedDefaultVAO vaoGuard;
 
     GLint prevArrayBuffer = 0;
     glGetIntegerv( GL_ARRAY_BUFFER_BINDING, &prevArrayBuffer );

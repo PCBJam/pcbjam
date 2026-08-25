@@ -78,6 +78,18 @@ void __wrap_glGetFloatv( GLenum pname, GLfloat* params )
 
 void __wrap_glDrawArrays( GLenum mode, GLint first, GLsizei count )
 {
+    // Only the shim's owner context can carry FFP traffic. A draw under any
+    // other context (the 2D GAL, the raytracer blit after a canvas swap) is a
+    // modern-GL consumer by definition — pass it through even if the global
+    // client-array mirror was left enabled by an interrupted FFP window, and
+    // even while a display list is recording (a foreign draw must never be
+    // swallowed into the owner's open list).
+    if( !contextIsOwner() )
+    {
+        __real_glDrawArrays( mode, first, count );
+        return;
+    }
+
     if( dlistRecording() )
     {
         dlistRecordDrawArrays( mode, first, count );
@@ -98,6 +110,13 @@ void __wrap_glDrawArrays( GLenum mode, GLint first, GLsizei count )
 
 void __wrap_glDrawElements( GLenum mode, GLsizei count, GLenum type, const GLvoid* indices )
 {
+    // Same owner-context gate as __wrap_glDrawArrays.
+    if( !contextIsOwner() )
+    {
+        __real_glDrawElements( mode, count, type, indices );
+        return;
+    }
+
     if( dlistRecording() )
     {
         GL1_WARN_ONCE( "glDrawElements inside glNewList is not supported — dropped" );

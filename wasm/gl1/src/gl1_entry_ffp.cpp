@@ -407,6 +407,15 @@ void glColorMaterial( GLenum face, GLenum mode )
 
 static ClientArray* clientArraySlot( GLenum cap )
 {
+    // FFP client-state mutation is the earliest signal that fixed-function
+    // code is working in the CURRENT context — adopt/refresh ownership here,
+    // BEFORE the mutation lands in the mirror. This is what moves ownership
+    // to a recreated 3D context (its scene rebuild calls gl*Pointer /
+    // glEnableClientState long before its first draw), and what guarantees a
+    // context change wipes stale client-array state before new state is
+    // recorded. Only FFP callers reach these names; the 2D GAL never does.
+    contextSync();
+
     State& s = S();
 
     switch( cap )
@@ -456,6 +465,7 @@ static GLuint currentArrayBufferBinding()
 
 void glVertexPointer( GLint size, GLenum type, GLsizei stride, const GLvoid* ptr )
 {
+    contextSync(); // see clientArraySlot()
     ClientArray& a = S().clientArrays[CA_VERTEX];
     a.size = size;
     a.type = type;

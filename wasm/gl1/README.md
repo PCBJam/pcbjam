@@ -34,11 +34,28 @@ Link sites (both read `sources.txt` + `wrapped_symbols.txt`):
 
 ## Draw routing
 
-A `glDrawArrays`/`glDrawElements` call is FFP traffic iff `GL_VERTEX_ARRAY`
-client state is enabled: only GL1 code calls `glEnableClientState`, while the
-raytracer blit (`eda_3d_canvas_wasm.cpp`) and the 2D WebGL GAL drive their own
-GLSL programs and never touch client state — their draws pass through
-untouched.
+A `glDrawArrays`/`glDrawElements` call is FFP traffic iff BOTH hold:
+
+- the CURRENT WebGL context is the shim's **owner context** (`contextIsOwner()`,
+  adopted at the first FFP client-state mutation or `programSync()` in a
+  context — a draw under any other context is a modern-GL consumer by
+  definition and always passes through, even mid-display-list-recording);
+- `GL_VERTEX_ARRAY` client state is enabled (only GL1 code calls
+  `glEnableClientState`; the raytracer blit and the 2D WebGL GAL drive their
+  own GLSL programs).
+
+The owner gate exists because the client-state flag is process-global and an
+interrupted FFP window (e.g. `MODEL_3D::BeginDrawMulti` loops crossing a JSPI
+suspension) can leave it set — without the gate, the 2D GAL's draws got routed
+through the FFP pipeline (the engine-toggle blank-viewer bug). Two further
+hardenings from the same bug:
+
+- **VAO isolation** (`ScopedDefaultVAO`, gl1_draw.cpp): draw executors bind
+  VAO 0 for their attribute setup and restore the caller's binding — a routed
+  draw arriving with the caller's VAO bound (the blit's attribute 0 collides
+  with `ATTR_POSITION`) must never scribble it.
+- `contextSync()` resets the client-array mirror entirely on a context change:
+  enables, pointers and captured VBO names all described the dead context.
 
 ## Invariants that are easy to break (learned from the native goldens)
 
