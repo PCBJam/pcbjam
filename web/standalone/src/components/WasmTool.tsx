@@ -1991,9 +1991,20 @@ export function WasmTool({
         // Read-only sessions register neither upload nor the save-driven room
         // writers (onSaved onboarding, onSavedText layout sync) — saves, were
         // any reachable past the wasm lock, stay MEMFS-only.
+        // Room-backed files (ydoc/live in the boot listing) never upload on
+        // save in ydoc mode: the room owns their state (save-flow uploadPolicy).
+        // A file created this session, or one whose room is first seeded now,
+        // has no ydoc row yet and still uploads — that is the registration +
+        // first fallback copy the backend file list needs.
+        const roomBacked = new Set(
+          docSource === "ydoc"
+            ? files.filter((f) => f.hasYdoc || f.isLive).map((f) => f.path)
+            : [],
+        );
         const saveHookHandle = registerSaveHook(win, {
           slug,
           saveBytes: readOnly ? undefined : saveBytes,
+          uploadPolicy: (relPath) => (roomBacked.has(relPath) ? "room" : "upload"),
           log: append,
           onStatus: setStatus,
           ...(readOnly

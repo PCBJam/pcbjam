@@ -113,6 +113,15 @@ export function registerSaveHook(
     maxPaths?: number;
     /** Durable per-path safety block; only hook retirement clears it. */
     onBlocked?: (block: SaveBlock) => void;
+    /**
+     * Per-path upload policy. "room" ⇒ the file's live state is owned by its
+     * collab room (ydoc-backed in the listing): the save stays MEMFS-only and
+     * is NOT uploaded — the items already reached the room at commit time and
+     * `onSavedText` reconciled the layout heads, so a raw PUT would only bump
+     * the revision, risk a spurious CAS block on the target, and leave a stale
+     * shadow row the ydoc supersedes on every read. Absent/"upload" ⇒ upload.
+     */
+    uploadPolicy?: (relPath: string) => "upload" | "room";
   },
 ): SaveHookHandle {
   const maxRetainedBytes = opts.maxRetainedBytes ?? MAX_RETAINED_SAVE_BYTES;
@@ -321,6 +330,16 @@ export function registerSaveHook(
     if (statusClearTimer) {
       clearTimeout(statusClearTimer);
       statusClearTimer = undefined;
+    }
+
+    if (opts.uploadPolicy?.(relPath) === "room") {
+      opts.log(`[save] ${relPath} is room-backed — synced via collab room, not uploaded`);
+      opts.onStatus(`Saved ${relPath} ✓ (collab room)`);
+      statusClearTimer = setTimeout(() => {
+        statusClearTimer = undefined;
+        if (generation === statusGeneration) opts.onStatus("");
+      }, 2500);
+      return;
     }
 
     let data: Uint8Array;

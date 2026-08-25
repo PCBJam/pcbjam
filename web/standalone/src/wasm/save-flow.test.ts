@@ -552,3 +552,33 @@ describe("registerSaveHook lifetime", () => {
     expect(statuses.at(-1)).toBe("Saved board.kicad_pcb ✓");
   });
 });
+
+describe("registerSaveHook uploadPolicy", () => {
+  it("a room-backed path is NOT uploaded; other paths still are", () => {
+    const saveBytes = vi.fn(async (_p: string, _b: Uint8Array) => SAVE_COMMITTED);
+    const onSavedText = vi.fn();
+    const status: string[] = [];
+    const win: SaveHookWindow = {
+      FS: { readFile: () => new Uint8Array([40, 41]) } as unknown as SaveHookWindow["FS"],
+      kicadCollab: {},
+    };
+    registerSaveHook(win, {
+      slug: SLUG,
+      saveBytes,
+      onSavedText,
+      uploadPolicy: (relPath) => (relPath === "root.kicad_sch" ? "room" : "upload"),
+      log: () => {},
+      onStatus: (t) => status.push(t),
+    });
+    win.kicadCollab!.onSave!(`${PROJ}/root.kicad_sch`);
+    win.kicadCollab!.onSave!(`${PROJ}/root.kicad_pro`);
+    // Layout save-sync still observed the room-backed save.
+    expect(onSavedText.mock.calls.map((c) => c[0])).toEqual([
+      "root.kicad_sch",
+      "root.kicad_pro",
+    ]);
+    expect(saveBytes).toHaveBeenCalledTimes(1);
+    expect(saveBytes.mock.calls[0]?.[0]).toBe("root.kicad_pro");
+    expect(status.some((s) => /root\.kicad_sch.*collab room/.test(s))).toBe(true);
+  });
+});
