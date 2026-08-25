@@ -1,21 +1,13 @@
 import * as React from "react";
 import {
-  collabRoomId,
-  docToFile,
   commentAuthorColors,
-  EXTENSION_TOOL,
   FILELESS_TOOLS,
   fileToDoc,
   projectPath,
-  projectToolPath,
-  toolSchema,
-  ydocHasState,
   syncLayoutToY,
-  yToDoc,
-  type KicadDoc,
   type Tool,
 } from "@pcbjam/shared";
-import { ChevronDown, ChevronUp, Crosshair, Download, Eye, EyeOff, Layers, Loader2, Moon, PanelsTopLeft, Sun } from "lucide-react";
+import { AlertTriangle, ChevronDown, ChevronUp, Crosshair, Download, EyeOff, Layers, Loader2, Moon, PanelsTopLeft, RefreshCw, Sun } from "lucide-react";
 import {
   API_BASE_URL,
   APP_URL,
@@ -28,20 +20,16 @@ import {
   yjsProviderConfig,
   type DocSource,
 } from "@/lib/config";
-import { defaultFileName, newFileTemplate, withExtension } from "@/lib/new-file";
 import { redirectTargetFor } from "@/lib/redirect";
 import { loadSessionIdentity, seedSessionIdentity } from "@/lib/session-identity";
 import { setTheme, useThemeValue } from "@/lib/theme";
 import { bootKicadTool } from "@/wasm/boot";
 import {
   autoDownloadEnabled,
-  fetchWasmStoredSize,
-  hasAnyWasmDownload,
   isWasmDownloaded,
   markWasmDownloaded,
   resolveWasmMeta,
   setAutoDownloadEnabled,
-  type WasmMeta,
 } from "@/wasm/wasm-assets";
 import {
   LIB_BUSY_EVENT,
@@ -55,20 +43,14 @@ import {
   type LibLoadingDetail,
   type LibSetChangedDetail,
   type LibsSource,
-  type LibsSyncState,
 } from "@/wasm/libs/source";
 import { addAnnouncedLib } from "@/wasm/libs/runtime-add";
 
-/** The libset toast's message once live-loading failed and reload is the offer. */
-function reloadFallbackMsg(notice: { detail: LibSetChangedDetail }): string {
-  const label = notice.detail.name ? `"${notice.detail.name}"` : "the new library";
-  return `Couldn't load ${label} into the running session — click to reload the editor.`;
-}
 import {
   MODELS_LOADING_EVENT,
   type ModelsLoadingDetail,
 } from "@/wasm/libs/models-bridge";
-import { memfsFilePath, memfsProjectDir, TOOL_BUNDLE, TOOL_FRAME } from "@/wasm/constants";
+import { TOOL_FRAME } from "@/wasm/constants";
 import {
   driveProjectIntoTool,
   readStagedFile,
@@ -77,14 +59,12 @@ import {
   type ToolFile,
 } from "@/wasm/kicad-runner";
 import { startFilesWatch, type FilesWatchHandle } from "@/wasm/collab/files-watch";
-import { resolveSheetHierarchy } from "@/wasm/collab/sheet-hierarchy";
 import { dump as dumpTrace, mark } from "@/wasm/load-trace";
 import { errorMessage, isTerminalError } from "@/wasm/terminal-error";
 import { registerSaveHook, type SaveBlock, type SaveBytes } from "@/wasm/save-flow";
 import type {
   KicadCollabHandle,
   KicadDocSession,
-  KicadItemsWindow,
   YjsProvider,
 } from "@/wasm/collab";
 import {
@@ -127,15 +107,8 @@ import { hasLayersBridge, LayerPanel, type LayersModule } from "@/components/Lay
 import { SelectionInspector } from "@/components/SelectionInspector";
 import { bindLocalSelectionFeed } from "@/wasm/collab/local-selection";
 import {
-  createSheetCollabManager,
-  registerSheetChangedHook,
-  registerSheetCreatedHook,
-  type ActiveSheet,
-  type SheetChangedWindow,
   type SheetCollabManager,
-  type SheetCreatedWindow,
 } from "@/wasm/collab/sheet-manager";
-import { clog, cwarn } from "@/wasm/collab/debug";
 import type * as Y from "yjs";
 import { createOomWatch, respawnInNewTab } from "@/recovery/oom-watch";
 import { MemoryExhaustedDialog } from "@/recovery/MemoryExhaustedDialog";
@@ -148,817 +121,31 @@ import {
   useChromeHidden,
 } from "@/lib/chrome-visibility";
 import { recordFatalLog, showFatalScreen } from "@/wasm/fatal-screen";
-
-// Tools with the v2 items bridge (kicadCollabSnapshotItems/ApplyItems embind exports).
-const COLLAB_TOOLS = new Set<Tool>(["pl_editor", "eeschema", "pcbnew"]);
-
-// Chrome (editor UI) toggle: only the merged kicad_editor bundle exports
-// kicadSetChrome (gerbview/calculator/pl_editor don't) — everything about the
-// toggle is feature-gated on the export being there.
-function chromeSetter(win: Window): ((show: boolean) => boolean) | null {
-  const fn = (win as { Module?: { kicadSetChrome?: unknown } }).Module
-    ?.kicadSetChrome;
-  return typeof fn === "function" ? (fn as (show: boolean) => boolean) : null;
-}
-
-// Viewer panels (viewer-panels): floating layer selector + selection
-// inspector open-state persistence, mirroring the comments panel's keys.
-const LAYERS_OPEN_KEY = "pcbjam:layers-panel-open";
-const INSPECTOR_OPEN_KEY = "pcbjam:inspector-panel-open";
-
-// Tooltip only — the matcher accepts both chords on any platform.
-const CHROME_HOTKEY_LABEL =
-  typeof navigator !== "undefined" && /Mac/i.test(navigator.platform)
-    ? "⌘\\"
-    : "Ctrl+\\";
-
-// Which library item kind each tool browses — drives the load-screen pre-sync
-// (warm the right bundles into IDB while the wasm downloads). Tools that don't
-// browse a library are omitted (no pre-sync).
-const LIB_KIND_FOR_TOOL: Partial<Record<Tool, "symbol" | "footprint">> = {
-  symbol_editor: "symbol",
-  eeschema: "symbol",
-  footprint_editor: "footprint",
-  pcbnew: "footprint",
-};
-
-/** What the download-consent dialog quotes (standalone-load-ux 0001). */
-interface ConsentInfo {
-  /** Over-the-wire (COMPRESSED) bytes for the editor bundle — null when the CDN
-   *  carries no size info and HEAD yielded none ("large download" wording then).
-   *  Quoted as "compressed" in the dialog: the load screen's progress bar counts
-   *  RAW decoded bytes, which are several times this. */
-  toolBytes: number | null;
-  /** Raw (decoded) wasm bytes — the same total the progress bar counts, quoted
-   *  next to `toolBytes` so the two figures can't read as a contradiction. Null
-   *  when the manifest prices nothing (HEAD fallback knows the wire size only). */
-  toolRawBytes: number | null;
-  /** A previous version of this bundle was downloaded → word it as an update. */
-  update: boolean;
-  /** The lib kind this tool pre-syncs — warmed in parallel with the wasm
-   *  download (the boot fan-out; see startLibPresync). Editors with a project
-   *  file open without waiting on it; the lib editors wait (enumerate gate). */
-  libNowKind: "symbol" | "footprint" | null;
-  libNow: LibsSyncState | null;
-  /** The other kind a merged-bundle session can pull lazily ("only if used"). */
-  libLaterKind: "symbol" | "footprint" | null;
-  libLater: LibsSyncState | null;
-}
-
-/**
- * Gather the consent dialog's figures. Everything is best-effort: only small
- * JSON/HEAD requests run here (never a bundle or the wasm), and any missing
- * piece degrades to vaguer wording rather than blocking the dialog.
- */
-async function gatherConsentInfo(
-  meta: WasmMeta,
-  source: LibsSource | null,
-  tool: Tool,
-): Promise<ConsentInfo> {
-  let toolBytes = meta.sizes?.totalStored ?? null;
-  if (toolBytes === null) {
-    toolBytes = await fetchWasmStoredSize(meta.base, meta.bundle);
-  }
-  const libNowKind = LIB_KIND_FOR_TOOL[tool] ?? null;
-  // The merged kicad_editor bundle seeds BOTH lib tables — the other kind loads
-  // lazily per-lib when a cross-face feature reaches it (see boot.ts libKinds).
-  const libLaterKind =
-    TOOL_BUNDLE[tool] === "kicad_editor" && libNowKind
-      ? libNowKind === "symbol"
-        ? ("footprint" as const)
-        : ("symbol" as const)
-      : null;
-  const state = async (
-    kind: "symbol" | "footprint" | null,
-  ): Promise<LibsSyncState | null> => {
-    if (!kind || !source?.syncState) return null;
-    try {
-      return await source.syncState(kind);
-    } catch {
-      return null;
-    }
-  };
-  return {
-    toolBytes,
-    // Only the manifest prices the DECODED wasm (wasm-assets WasmBundleSizes);
-    // the HEAD fallback above sees the compressed body alone.
-    toolRawBytes: meta.sizes?.wasm ?? null,
-    update: hasAnyWasmDownload(meta.bundle),
-    libNowKind,
-    libNow: await state(libNowKind),
-    libLaterKind,
-    libLater: await state(libLaterKind),
-  };
-}
-const LEGACY_EXTENSION_TOOL: Record<string, Tool> = {
-  ".sch": "eeschema",
-  ".brd": "pcbnew",
-};
-
-let activeToolNavigationHook:
-  | ((toolName: string, fileName: string) => boolean)
-  | undefined;
-
-const toolNavigationDispatcher = (toolName: string, fileName: string) =>
-  activeToolNavigationHook?.(toolName, fileName) ?? false;
-
-function ensureToolNavigationDispatcher(win: ToolWindow): boolean {
-  if (win.kicadWebOpenTool === toolNavigationDispatcher) return true;
-
-  try {
-    Object.defineProperty(win, "kicadWebOpenTool", {
-      configurable: true,
-      value: toolNavigationDispatcher,
-    });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-if (typeof window !== "undefined") {
-  ensureToolNavigationDispatcher(window as ToolWindow);
-}
-
-function normalizeToolName(rawName: string): Tool | null {
-  const basename = rawName.replace(/\\/g, "/").split("/").pop() ?? rawName;
-  const withoutExe = basename.replace(/\.exe$/i, "");
-  const toolName = withoutExe === "pcb_calculator" ? "calculator" : withoutExe;
-  const parsed = toolSchema.safeParse(toolName);
-  return parsed.success ? parsed.data : null;
-}
-
-function relativeProjectPath(slug: string, path: string): string | undefined {
-  if (!path) return undefined;
-
-  const normalized = path.replace(/\\/g, "/");
-  const prefix = `${memfsProjectDir(slug)}/`;
-
-  if (normalized.startsWith(prefix)) return normalized.slice(prefix.length);
-
-  const marker = `/projects/${slug}/`;
-  const markerIndex = normalized.indexOf(marker);
-
-  if (markerIndex >= 0) return normalized.slice(markerIndex + marker.length);
-
-  return normalized.startsWith("/") ? undefined : normalized;
-}
-
-function fileStem(path: string): string {
-  const name = path.replace(/\\/g, "/").split("/").pop() ?? path;
-  return name.replace(/\.[^.]+$/, "");
-}
-
-function fileTool(path: string): Tool | undefined {
-  const lower = path.toLowerCase();
-
-  for (const [extension, mappedTool] of Object.entries({
-    ...EXTENSION_TOOL,
-    ...LEGACY_EXTENSION_TOOL,
-  })) {
-    if (lower.endsWith(extension)) return mappedTool;
-  }
-
-  return undefined;
-}
-
-function chooseToolFile(
-  files: ToolFile[],
-  nextTool: Tool,
-  requestedPath?: string,
-  currentPath?: string,
-): string | undefined {
-  if (requestedPath && files.some((file) => file.path === requestedPath)) {
-    return requestedPath;
-  }
-
-  const candidates = files.filter((file) => fileTool(file.path) === nextTool);
-  const preferredStem = requestedPath
-    ? fileStem(requestedPath)
-    : currentPath
-      ? fileStem(currentPath)
-      : undefined;
-
-  if (preferredStem) {
-    const matchingStem = candidates.find(
-      (file) => fileStem(file.path) === preferredStem,
-    );
-    if (matchingStem) return matchingStem.path;
-  }
-
-  return candidates[0]?.path;
-}
-
-function installToolNavigationHook(
-  win: ToolWindow,
-  opts: {
-    slug: string;
-    files: ToolFile[];
-    targetPath?: string;
-    /** Persist a new file into the project (see the WasmTool prop). Absent ⇒
-     *  this session can't create one, and a missing target stays a no-op. */
-    createFile?: (relPath: string, bytes: Uint8Array) => Promise<void>;
-    log: (m: string) => void;
-  },
-): () => void {
-  // One create at a time: a double-fired menu item must not upload twice.
-  // Cleared only on failure — success navigates the page away.
-  let pendingCreate: string | null = null;
-
-  const hook = (rawToolName: string, rawFileName: string): boolean => {
-    const nextTool = normalizeToolName(rawToolName);
-
-    if (!nextTool) {
-      opts.log(`[nav] unsupported KiCad tool: ${rawToolName}`);
-      return false;
-    }
-
-    const requestedPath = relativeProjectPath(opts.slug, rawFileName);
-    const nextPath = FILELESS_TOOLS.has(nextTool)
-      ? undefined
-      : chooseToolFile(opts.files, nextTool, requestedPath, opts.targetPath);
-
-    if (!FILELESS_TOOLS.has(nextTool) && !nextPath) {
-      // Native KiCad's "Switch to PCB Editor" with no board opens pcbnew on a
-      // NEW empty board at the derived path — mirror it by creating the
-      // templated counterpart in the project (the shape NewFileDialog writes)
-      // and navigating to it. Only sessions that can persist pass `createFile`
-      // (ToolPage); viewers and scratch/local-folder sessions keep the quiet
-      // no-op. C++ calls this hook synchronously (EM_ASM_INT) and ignores the
-      // result beyond a log line, so the create+navigate runs async and we
-      // answer true optimistically once it's kicked off.
-      const createFile = opts.createFile;
-      if (!createFile) {
-        opts.log(`[nav] no project file found for ${nextTool}: ${rawFileName}`);
-        return false;
-      }
-      if (pendingCreate) {
-        opts.log(`[nav] create already pending: ${pendingCreate}`);
-        return true;
-      }
-      const relPath =
-        requestedPath ??
-        (opts.targetPath
-          ? withExtension(nextTool, fileStem(opts.targetPath))
-          : defaultFileName(nextTool));
-      const url =
-        projectPath(currentScope(), opts.slug, relPath) + win.location.search;
-      pendingCreate = relPath;
-      void (async () => {
-        try {
-          const bytes = new TextEncoder().encode(
-            newFileTemplate(nextTool, crypto.randomUUID()),
-          );
-          await createFile(relPath, bytes);
-          opts.log(`[nav] created missing ${nextTool} file ${relPath} -> ${url}`);
-          markDeliberateNavigation();
-          win.location.assign(url);
-        } catch (e) {
-          pendingCreate = null;
-          opts.log(
-            `[nav] create failed for ${relPath}: ${e instanceof Error ? e.message : String(e)}`,
-          );
-        }
-      })();
-      return true;
-    }
-
-    // Scope/kind/name grammar: a fileless tool boots at `…/-/:tool`; a file route
-    // carries the path (its tool is inferred). Scope = the current URL's scope.
-    const scope = currentScope();
-    const url =
-      (FILELESS_TOOLS.has(nextTool)
-        ? projectToolPath(scope, opts.slug, nextTool)
-        : projectPath(scope, opts.slug, nextPath)) + win.location.search;
-
-    opts.log(`[nav] ${rawToolName} ${rawFileName || "(no file)"} -> ${url}`);
-    markDeliberateNavigation();
-    win.location.assign(url);
-    return true;
-  };
-
-  if (!ensureToolNavigationDispatcher(win)) {
-    opts.log("[nav] unable to install KiCad tool navigation hook");
-  }
-
-  activeToolNavigationHook = hook;
-
-  return () => {
-    if (activeToolNavigationHook === hook) activeToolNavigationHook = undefined;
-  };
-}
-
-// The wx wasm port calls window.wxAppTopWindowClosed() when the app's MAIN
-// frame is destroyed (wxwidgets src/wasm/toplevel.cpp) — i.e. on a real
-// File→Quit / window close. A close vetoed by the unsaved-changes prompt never
-// destroys the frame, so it never fires. The port also closes the frame while
-// the page itself unloads (app.cpp UnloadCallback), so the dispatcher latches
-// off as soon as any unload/navigation is under way.
-
-let activeQuitHook: (() => void) | undefined;
-let quitHandled = false;
-
-/**
- * Latch the quit dispatcher off ahead of a deliberate in-app navigation (the
- * tool-switch hook's location.assign). The wx port's UnloadCallback runs on
- * BEFOREUNLOAD — i.e. the instant the navigation starts, while this document
- * keeps running until the next one commits — and closes the top frame, which
- * fires wxAppTopWindowClosed. Without the latch the quit hook then navigates
- * to the exit URL over the in-flight navigation (the pagehide latch below is
- * too late: pagehide only fires at commit time). One-shot per document, same
- * as the pagehide latch — this page is on its way out.
- */
-function markDeliberateNavigation() {
-  quitHandled = true;
-}
-
-const quitDispatcher = () => {
-  if (quitHandled) return;
-  quitHandled = true;
-  // The wasm side only calls this when the app's top window is genuinely
-  // destroyed. When that happens unexpectedly (2026-08-03: a guarded-off
-  // settle-window dispatch cascaded into a silent frame close), the stack is
-  // the only artifact that says WHO closed it — keep it in every log.
-  console.warn("[quit] wxAppTopWindowClosed invoked — top window destroyed", new Error("quit-origin").stack);
-  activeQuitHook?.();
-};
-
-function ensureQuitDispatcher(win: ToolWindow): boolean {
-  if (win.wxAppTopWindowClosed === quitDispatcher) return true;
-
-  try {
-    Object.defineProperty(win, "wxAppTopWindowClosed", {
-      configurable: true,
-      value: quitDispatcher,
-    });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-if (typeof window !== "undefined") {
-  ensureQuitDispatcher(window as ToolWindow);
-  // Latch off for a BROWSER-initiated unload: reload (F5), Back, closing the
-  // tab, typing a URL. markDeliberateNavigation covers only our own in-app
-  // navigations, and the pagehide latch below fires at commit time — too late.
-  // The wx port's UnloadCallback runs on beforeunload and closes the top frame,
-  // which fires wxAppTopWindowClosed; unlatched, the quit hook then navigated to
-  // the project overview OVER the in-flight reload, so every refresh of an
-  // editor URL bounced to the management app instead of reloading.
-  //
-  // Registered at MODULE scope, which runs on import — before the wasm boots and
-  // installs its own beforeunload handler. Listeners fire in registration order,
-  // so this latch is always set before UnloadCallback can close the frame.
-  //
-  // Tradeoff: if a beforeunload prompt is shown and the user chooses to stay,
-  // the latch stays set and a later File→Quit won't navigate on its own. That
-  // is strictly better than the alternative — a page that cannot be refreshed —
-  // and the user can still navigate manually.
-  window.addEventListener(
-    "beforeunload",
-    () => {
-      quitHandled = true;
-    },
-    { capture: true },
-  );
-}
-
-function installQuitHook(
-  win: ToolWindow,
-  opts: { exitUrl: string; log: (m: string) => void },
-): () => void {
-  const hook = () => {
-    // Quit always navigates to the exit URL (project overview / home). Never
-    // history.back(): every in-app entry AND every tool switch is a hard
-    // location.assign(), so after a schematic ⇄ pcb switch the previous
-    // history entry is another editor — unwinding history strands the user
-    // there instead of leaving the editor.
-    //
-    // Defer the navigation out of the wasm callback: this fires from inside the
-    // frame's C++ destructor (via EM_ASM), and the teardown keeps
-    // running after we return. A cross-document location.assign() started here is
-    // aborted by that continuing teardown — so hand it to a fresh task once the
-    // wasm stack has unwound.
-    setTimeout(() => {
-      opts.log(`[quit] editor closed — going to ${opts.exitUrl}`);
-      win.location.assign(opts.exitUrl);
-    }, 0);
-  };
-
-  if (!ensureQuitDispatcher(win)) {
-    opts.log("[quit] unable to install quit hook");
-  }
-  activeQuitHook = hook;
-
-  // Once the page is unloading for any reason, the hook must never navigate.
-  const markUnloading = () => {
-    quitHandled = true;
-  };
-  win.addEventListener("pagehide", markUnloading);
-
-  // A bfcache restore (Forward after quitting) would resurrect a page whose wx
-  // frame was already destroyed — force a clean re-boot instead.
-  const onPageShow = (e: PageTransitionEvent) => {
-    if (e.persisted) win.location.reload();
-  };
-  win.addEventListener("pageshow", onPageShow);
-
-  return () => {
-    if (activeQuitHook === hook) activeQuitHook = undefined;
-    win.removeEventListener("pagehide", markUnloading);
-    win.removeEventListener("pageshow", onPageShow);
-  };
-}
-
-/**
- * Read the opened file back from MEMFS (what the editor actually loaded) and
- * parse it into the full `KicadDoc` (ysync 0007 `fileToDoc`). Used to seed the
- * Y.Doc LOSSLESSLY when this client opens an empty room (ysync 0005): the doc
- * then carries meta + layout + items, so the file is recoverable from the Y.Doc
- * alone. Falls back to undefined (→ editor-snapshot seed, items only) when the
- * file is absent or doesn't parse as a KiCad s-expr document.
- */
-function seedDocFromMemfs(
-  win: ToolWindow,
-  slug: string,
-  targetPath?: string,
-): KicadDoc | undefined {
-  if (!targetPath) return undefined;
-  try {
-    const text = win.FS?.readFile(memfsFilePath(slug, targetPath), { encoding: "utf8" });
-    if (typeof text !== "string") return undefined;
-    return fileToDoc(text);
-  } catch (err) {
-    cwarn("seed: fileToDoc failed — falling back to editor-snapshot seed", err);
-    return undefined;
-  }
-}
-
-/**
- * The `docSource: "ydoc"` pre-step (config/env-selected — same /p/ URLs as "api"
- * mode): connect the document's collab room BEFORE the file opens and, when the
- * room already holds the doc, materialize the file from it (docToFile) so the
- * editor opens the doc's state instead of the API's copy. An empty room (first
- * ever open) falls back to the API fetch — the seed() that follows file-seeds
- * the room from it. Returns the session for `maybeStartCollab` to attach to.
- */
-async function maybeConnectDocSession(
-  win: ToolWindow,
-  opts: {
-    docSource?: DocSource;
-    tool: Tool;
-    scopeId: string;
-    projectId: string;
-    targetPath?: string;
-    /** Unmount abort — cancels the connect and destroys partials (C-1/C-3). */
-    signal?: AbortSignal;
-    log: (m: string) => void;
-  },
-): Promise<{ session?: KicadDocSession; targetBytes?: Uint8Array }> {
-  if (opts.docSource !== "ydoc") return {};
-  if (!opts.targetPath || !COLLAB_TOOLS.has(opts.tool)) return {};
-
-  const { connectKicadDoc } = await import("@/wasm/collab");
-  const room = collabRoomId(opts.scopeId, opts.projectId, opts.targetPath);
-  const session = await connectKicadDoc({
-    provider: yjsProviderConfig(),
-    room,
-    signal: opts.signal,
-  });
-
-  // Use the full doc state (meta + layout + items), NOT just item count: a
-  // populated drawing sheet (pl_editor `.kicad_wks`) has zero uuid items, so an
-  // items-only check makes a joining tab refetch the stale file instead of
-  // materializing the shared doc's current state.
-  if (!ydocHasState(session.doc)) {
-    opts.log(`[ydoc] room ${room} is empty — falling back to the API fetch (will file-seed)`);
-    return { session };
-  }
-  try {
-    const text = docToFile(yToDoc(session.doc));
-    opts.log(`[ydoc] materialized ${opts.targetPath} from room ${room} (${text.length} chars)`);
-    return { session, targetBytes: new TextEncoder().encode(text) };
-  } catch (err) {
-    cwarn("ydoc: materialize failed — falling back to the API fetch", err);
-    return { session };
-  }
-}
-
-/**
- * Collaborative editing (ysync 0008, Slot-model items wire), ON BY DEFAULT for any
- * tool that has the collab bridge. Open the same project URL in two tabs to edit
- * together: the channel is keyed to project+file, so both tabs share one Y.Doc over
- * BroadcastChannel. Editor edits (add/move items) fire the tool's change hook → the
- * bridge → the peer tab.
- *
- * Opt OUT with `?collab=0` (or `collab=false`). Tools without a bridge are skipped anyway.
- */
-async function maybeStartCollab(
-  win: ToolWindow,
-  opts: {
-    tool: Tool;
-    slug: string;
-    scopeId: string;
-    projectId: string;
-    targetPath?: string;
-    collabSession?: KicadDocSession;
-    /** The opened file was materialized from collabSession's doc (ydoc source). */
-    editorMatchesDoc?: boolean;
-    /** Read-only viewer (read-only-viewer): see `bindKicadCollab`. */
-    readOnly?: boolean;
-    log: (m: string) => void;
-    onStatus: (t: string) => void;
-  },
-): Promise<KicadCollabHandle | undefined> {
-  const collabParam = new URLSearchParams(win.location.search).get("collab");
-  const mod = win.Module;
-  clog("maybeStartCollab gate:", {
-    collabParam,
-    tool: opts.tool,
-    hasModule: !!mod,
-    hasSnapshotItems: typeof mod?.kicadCollabSnapshotItems,
-    hasApplyItems: typeof mod?.kicadCollabApplyItems,
-    url: win.location.href,
-  });
-
-  // On by default; only an explicit opt-out disables it. A pre-connected doc
-  // session (Y.Doc-load path) ignores the opt-out: the doc IS the data source,
-  // so detaching would silently drop every edit.
-  if (!opts.collabSession && (collabParam === "0" || collabParam === "false")) {
-    clog("disabled (?collab=0) — skipping");
-    return undefined;
-  }
-  if (!COLLAB_TOOLS.has(opts.tool)) {
-    clog(`tool ${opts.tool} has no collab bridge — skipping`);
-    return undefined;
-  }
-  if (typeof mod?.kicadCollabSnapshotItems !== "function") {
-    cwarn(
-      "BRIDGE NOT PRESENT: Module.kicadCollabSnapshotItems is",
-      typeof mod?.kicadCollabSnapshotItems,
-      `— the loaded ${opts.tool}.wasm predates the v2 items bridge (ysync 0008 Stage C). Rebuild + \`npm run setup:kicad\` and restart the dev server.`,
-    );
-    return undefined;
-  }
-
-  const { startKicadCollab, attachKicadCollab } = await import("@/wasm/collab");
-  const seedDoc = seedDocFromMemfs(win, opts.slug, opts.targetPath);
-
-  if (opts.collabSession) {
-    // docSource "ydoc": the provider is already connected. When the editor
-    // opened the file materialized from this very doc, attach + baseline only;
-    // when the room was empty (API fallback), seed() file-seeds it as usual.
-    clog("attaching to pre-connected doc session; editorMatchesDoc:", !!opts.editorMatchesDoc);
-    const handle = attachKicadCollab(mod, win as unknown as KicadItemsWindow, opts.collabSession, {
-      seedDoc,
-      editorMatchesDoc: opts.editorMatchesDoc,
-      readOnly: opts.readOnly,
-    });
-    opts.log(`[collab] attached to Y.Doc session`);
-    opts.onStatus("Collab: connected");
-    clog("connected ✓");
-    return handle;
-  }
-
-  const provider = yjsProviderConfig();
-  // One room per (project, document). Two tabs of the same build compute the
-  // same id, so cross-tab BroadcastChannel still works; network providers use it
-  // verbatim to namespace + persist (see @pcbjam/shared collabRoomId).
-  const room = collabRoomId(opts.scopeId, opts.projectId, opts.targetPath ?? opts.tool);
-  clog("starting collab", provider.kind, "room", room, "seedDoc:", !!seedDoc);
-  const handle = await startKicadCollab(mod, win as unknown as KicadItemsWindow, {
-    provider,
-    room,
-    seedDoc,
-    readOnly: opts.readOnly,
-  });
-  opts.log(`[collab] ${provider.kind} connected on ${room}`);
-  opts.onStatus("Collab: connected");
-  clog("connected ✓");
-  return handle;
-}
-
-/**
- * Hierarchical-sheet (subschema) collaborative editing for eeschema: every `.kicad_sch`
- * in the design is its own WARM collab room (provider kept open for the session), and the
- * editor's single active-screen binding is re-routed between them on sheet navigation (the
- * C++ `onSheetChanged` hook). Supersedes the single-room `maybeStartCollab` for eeschema;
- * background sheets stay synced at the data layer, the active sheet is bound to the editor.
- *
- * Opt OUT with `?collab=0`; a pre-connected ydoc session ignores the opt-out (the doc IS
- * the data source). Returns undefined when collab is off or the wasm predates the Phase-0
- * items+sheet bridge.
- */
-async function startSheetCollab(
-  win: ToolWindow,
-  opts: {
-    slug: string;
-    scopeId: string;
-    projectId: string;
-    targetPath?: string;
-    files: ToolFile[];
-    /** ydoc mode: the entry sheet's pre-connected room (from maybeConnectDocSession). */
-    session?: KicadDocSession;
-    /** The entry file was materialized from `session`'s doc (baseline-only first seed). */
-    editorMatchesDoc?: boolean;
-    onActiveChange: (active: ActiveSheet | null) => void;
-    /** Upload sink (project-backed sessions) — used to register a just-created subsheet. */
-    saveBytes?: SaveBytes;
-    /** Read-only viewer (read-only-viewer): see `createSheetCollabManager`. */
-    readOnly?: boolean;
-    log: (m: string) => void;
-    onStatus: (t: string) => void;
-  },
-): Promise<SheetCollabManager | undefined> {
-  const collabParam = new URLSearchParams(win.location.search).get("collab");
-  const mod = win.Module;
-
-  if (!opts.session && (collabParam === "0" || collabParam === "false")) {
-    clog("[sheet] collab disabled (?collab=0) — skipping");
-    return undefined;
-  }
-  if (typeof mod?.kicadCollabSnapshotItems !== "function") {
-    cwarn(
-      "[sheet] BRIDGE NOT PRESENT: Module.kicadCollabSnapshotItems is",
-      typeof mod?.kicadCollabSnapshotItems,
-      "— the loaded eeschema.wasm predates the items+sheet bridge (subschema Phase 0). Rebuild + `npm run setup:kicad` and restart the dev server.",
-    );
-    return undefined;
-  }
-
-  const manager = createSheetCollabManager({
-    mod,
-    win: win as unknown as KicadItemsWindow,
-    scopeId: opts.scopeId,
-    projectId: opts.projectId,
-    provider: yjsProviderConfig(),
-    seedDocForPath: (sheet) => seedDocFromMemfs(win, opts.slug, sheet),
-    onActiveChange: opts.onActiveChange,
-    // Parked rooms carry a skeleton presence ("this user is on sheet X") so
-    // any sheet's roster shows the whole schematic's crew (0003). Read-only
-    // viewers publish none (invisible observer) — skeletons are broadcasts.
-    presenceUser: opts.readOnly ? undefined : presenceUser(),
-    readOnly: opts.readOnly,
-    log: opts.log,
-    initial:
-      opts.session && opts.targetPath
-        ? {
-            sheetPath: opts.targetPath,
-            session: opts.session,
-            editorMatchesDoc: !!opts.editorMatchesDoc,
-          }
-        : undefined,
-  });
-
-  // Warm ONLY the opened hierarchy (root + transitive Sheetfile references),
-  // not every schematic in the project: a repo-as-project upload can hold
-  // dozens of unrelated boards' schematics that the wasm never loads — no
-  // in-memory copy, no divergence risk, no room needed (sheet-hierarchy.ts).
-  // A root we can't scope (fileless boot, unreadable staging) falls back to
-  // all project sheets — over-warming costs sockets, under-warming would cost
-  // collab. In-editor "Add Sheet" children are warmed by the created hook.
-  const allSheets = opts.files
-    .filter((f) => f.path.endsWith(".kicad_sch"))
-    .map((f) => f.path);
-  const sheetPaths =
-    opts.targetPath?.endsWith(".kicad_sch") && allSheets.includes(opts.targetPath)
-      ? resolveSheetHierarchy(
-          opts.targetPath,
-          (p) => {
-            const bytes = readStagedFile(win, opts.slug, p);
-            return bytes ? new TextDecoder().decode(bytes) : null;
-          },
-          allSheets,
-        )
-      : allSheets;
-
-  // C++ navigation → rebind the active room to the now-shown sheet.
-  registerSheetChangedHook(win as unknown as SheetChangedWindow, (abs) => {
-    const rel = relativeProjectPath(opts.slug, abs);
-    // switchTo rejects on TERMINAL failures only (SexprVersionError — C-5);
-    // transient failures retry internally. A skewed sheet mid-session can't
-    // fail the whole boot anymore, so log it and leave the sheet unbound.
-    if (rel) {
-      manager.switchTo(rel).catch((err: unknown) => {
-        opts.log(
-          `[sheet] ${rel} needs a newer app version — collab disabled for this sheet: ${String(err)}`,
-        );
-        opts.onStatus("Collab: version skew on this sheet");
-      });
-    }
-  });
-
-  // C++ sheet creation ("Add Sheet") → the child .kicad_sch was just written to MEMFS by
-  // the hook; register it with the backend + warm its room, so a subsheet placed but never
-  // entered or saved still persists (the file-list snapshot can't contain it).
-  registerSheetCreatedHook(win as unknown as SheetCreatedWindow, (abs) => {
-    const rel = relativeProjectPath(opts.slug, abs);
-    if (rel && rel.endsWith(".kicad_sch")) {
-      persistCreatedSheet(win, opts.slug, rel, opts.saveBytes, manager, opts.log);
-    }
-  });
-
-  // Warm every schematic file in the project so later sheet switches are instant.
-  void manager.connectAll(sheetPaths);
-
-  if (opts.targetPath) {
-    try {
-      await manager.switchTo(opts.targetPath);
-    } catch (err) {
-      // switchTo only rejects on TERMINAL failures (SexprVersionError — C-5).
-      // The manager already owns the entry session + every warmed room; tear
-      // it down before surfacing, or the boot error leaks the pool (C-1).
-      manager.destroy();
-      throw err;
-    }
-  }
-  opts.log(`[sheet] multi-room collab active (${sheetPaths.length} sheet(s) warmed)`);
-  opts.onStatus("Collab: connected");
-  return manager;
-}
-
-/**
- * A subsheet was just created in-editor — the C++ `onSheetCreated` hook has already written
- * the child .kicad_sch to MEMFS. Register it with the backend (so it survives reload and
- * reaches peers) and warm its collab room. Covers a subsheet that's placed but never entered
- * or saved, which the page-load file list can't contain.
- */
-function persistCreatedSheet(
-  win: ToolWindow,
-  slug: string,
-  relPath: string,
-  saveBytes: SaveBytes | undefined,
-  manager: SheetCollabManager,
-  log: (m: string) => void,
-): void {
-  void manager.onboard(relPath);
-  if (!saveBytes) return;
-  try {
-    const bytes = win.FS?.readFile(memfsFilePath(slug, relPath));
-    if (!(bytes instanceof Uint8Array)) return;
-    void saveBytes(relPath, bytes)
-      .then((outcome) => {
-        if (outcome.kind === "committed") {
-          log(`[sheet] registered created subsheet ${relPath} (${bytes.length} bytes)`);
-        } else {
-          cwarn(
-            `[sheet] upload of created subsheet ${relPath} did not commit`,
-            outcome,
-          );
-        }
-      })
-      .catch((err) => cwarn(`[sheet] upload of created subsheet ${relPath} failed`, err));
-  } catch (err) {
-    cwarn(`[sheet] read of created subsheet ${relPath} failed`, err);
-  }
-}
-
-/**
- * Wait until the wxWidgets UI has actually built some elements — it populates a
- * frame or two AFTER the boot sequence resolves, so dropping the loading overlay
- * on boot-resolve flashes a blank editor. Polls `wxElementRegistry` (the same
- * "UI built" signal the e2e suite uses) and falls through after a timeout so a
- * tool with a minimal UI can never hang the overlay.
- */
-async function waitForWxUi(win: ToolWindow, timeoutMs = 25_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if ((win.wxElementRegistry?.findAll({}).length ?? 0) > 3) return;
-    await new Promise((r) => setTimeout(r, 150));
-  }
-}
-
-/**
- * Keeps a poisoned wasm runtime from taking the React tree down with it.
- *
- * The v0.1.21 prod crash logs showed the actual white-screen mechanism: after
- * a wasm trap, some child's EFFECT calls into the dead runtime (an embind
- * entry via a react-query subscription), the throw lands in React's commit,
- * and React unmounts the whole root — destroying the fatal overlay AND the
- * console panel, the two things built to report exactly this. The boundary
- * absorbs descendant render/effect throws: it reports up (the parent promotes
- * its fatal screen, which lives OUTSIDE this boundary) and renders nothing in
- * place of the dead subtree. WasmTool's own state — logs included — survives.
- */
-class WasmErrorBoundary extends React.Component<
-  { onFatal: (msg: string) => void; children: React.ReactNode },
-  { dead: boolean }
-> {
-  state = { dead: false };
-
-  static getDerivedStateFromError() {
-    return { dead: true };
-  }
-
-  componentDidCatch(err: unknown) {
-    this.props.onFatal(err instanceof Error ? err.message : String(err));
-  }
-
-  render() {
-    return this.state.dead ? null : this.props.children;
-  }
-}
+import { WasmErrorBoundary } from "@/components/wasm-tool/WasmErrorBoundary";
+import {
+  DownloadConsent,
+  DownloadProgress,
+  gatherConsentInfo,
+  libSyncLabel,
+  type ConsentInfo,
+} from "@/components/wasm-tool/DownloadConsent";
+import {
+  maybeConnectDocSession,
+  maybeStartCollab,
+  startSheetCollab,
+  waitForWxUi,
+} from "@/components/wasm-tool/collab-start";
+import { installQuitHook } from "@/components/wasm-tool/quit-hook";
+import { installToolNavigationHook } from "@/components/wasm-tool/tool-navigation";
+import {
+  CHROME_HOTKEY_LABEL,
+  chromeSetter,
+  COLLAB_TOOLS,
+  INSPECTOR_OPEN_KEY,
+  LAYERS_OPEN_KEY,
+  LIB_KIND_FOR_TOOL,
+  reloadFallbackMsg,
+} from "@/components/wasm-tool/ui-helpers";
 
 /**
  * Boots a KiCad tool directly in this React document (no iframe): builds the
@@ -1145,6 +332,86 @@ export function WasmTool({
   // A collaborator updated library items that are PLACED in the open document
   // (LIB_ITEM_UPDATED_EVENT) — placed copies keep the previous version, so warn.
   const [libUpdate, setLibUpdate] = React.useState<string | null>(null);
+  // Persistent "behind the library" state (libs 0017 §2b): every PLACED item a
+  // peer's lib edit touched, keyed `<kind>\u0000<lib>` → names. The toast above
+  // is disposable; this survives until the user updates from the library
+  // (2c) or dismisses it, and drives the FAB's amber triangle + the Document
+  // section row. Symbols/footprints only — the kinds with a placed-usage
+  // bridge (kicadLibsSymbolUsage / kicadLibsFootprintUsage).
+  const [staleLibItems, setStaleLibItems] = React.useState<
+    Map<string, { kind: string; lib: string; names: Set<string> }>
+  >(() => new Map());
+  const [staleUpdating, setStaleUpdating] = React.useState(false);
+  const staleKey = (kind: string, lib: string) => `${kind}\u0000${lib}`;
+  const noteStale = React.useCallback((kind: string, lib: string, names: string[]) => {
+    if (names.length === 0) return;
+    setStaleLibItems((prev) => {
+      const next = new Map(prev);
+      const k = staleKey(kind, lib);
+      const cur = next.get(k) ?? { kind, lib, names: new Set<string>() };
+      const merged = new Set(cur.names);
+      for (const n of names) merged.add(n);
+      next.set(k, { kind, lib, names: merged });
+      return next;
+    });
+  }, []);
+  const clearStale = React.useCallback((key?: string) => {
+    setStaleLibItems((prev) => {
+      if (key === undefined) return new Map();
+      const next = new Map(prev);
+      next.delete(key);
+      return next;
+    });
+  }, []);
+  /** Update every placed instance of the stale items from the library (2c). */
+  const updateStaleFromLibrary = React.useCallback(async () => {
+    const mod = (window as { Module?: { kicadUpdateFromLibrary?: unknown } }).Module;
+    const fn = mod?.kicadUpdateFromLibrary;
+    if (typeof fn !== "function") {
+      setLibError("This editor build can't update placed items from the library — reload to refresh them.");
+      return;
+    }
+    setStaleUpdating(true);
+    try {
+      for (const [key, entry] of staleLibItems) {
+        // The bridge queues the edit on the frame's coroutine and answers
+        // {queued:true}; the outcome arrives as a `pcbjam:lib-update-done`
+        // window event (or {ok:false,error} synchronously).
+        const done = new Promise<{ ok: boolean; updated?: number; error?: string }>((resolve) => {
+          const onDone = (e: Event) => {
+            window.removeEventListener("pcbjam:lib-update-done", onDone);
+            resolve((e as CustomEvent<{ ok: boolean; updated?: number }>).detail);
+          };
+          window.addEventListener("pcbjam:lib-update-done", onDone);
+          setTimeout(() => {
+            window.removeEventListener("pcbjam:lib-update-done", onDone);
+            resolve({ ok: false, error: "timed out" });
+          }, 30_000);
+        });
+        let res: { ok?: boolean; queued?: boolean; error?: string } = {};
+        try {
+          res = JSON.parse(
+            (fn as (kind: string, lib: string, namesJson: string) => string)(
+              entry.kind,
+              entry.lib,
+              JSON.stringify([...entry.names]),
+            ),
+          ) as typeof res;
+        } catch {
+          res = { ok: false, error: "bridge call failed" };
+        }
+        const outcome = res.ok === false ? { ok: false, error: res.error } : await done;
+        if (!outcome.ok) {
+          setLibError(`Couldn't update from the library: ${outcome.error ?? "unknown error"}`);
+          continue;
+        }
+        console.log(`[libs] updated ${outcome.updated ?? "?"} placed ${entry.kind}(s) from "${entry.lib}"`);
+        clearStale(key);
+      }
+    } finally {
+      setStaleUpdating(false);
+    }
+  }, [staleLibItems, clearStale]);
   // The backend rolled this document back to its last valid state
   // (kicad-validity 0001 — DOC_REVERTED_EVENT from the collab binding).
   const [docReverted, setDocReverted] = React.useState<string | null>(null);
@@ -1370,24 +637,17 @@ export function WasmTool({
       // Footprints have no placed-usage bridge (kicadLibsSymbolUsage is
       // symbol-only), so every applied peer edit is announced — silently
       // refreshing the lib under the user was the worse failure mode.
-      if (d.kind === "footprint") {
-        if (d.names.length === 0) return;
-        const names = d.names.map((n) => `"${n}"`).join(", ");
-        setLibUpdate(
-          `${d.names.length === 1 ? "Footprint" : "Footprints"} ${names} in "${d.lib}" ` +
-            `${d.names.length === 1 ? "was" : "were"} updated by a collaborator — ` +
-            `placed copies keep the previous version until updated from the library.`,
-        );
-        return;
-      }
       // Only warn when the update touches something PLACED here — the library
-      // tree already reflects updates to everything else.
+      // tree already reflects updates to everything else. Both kinds have a
+      // placed-usage bridge now (libs 0017 §2d added the footprint one).
       if (d.usedNames.length === 0) return;
+      const label = d.kind === "footprint" ? "Footprint" : "Symbol";
       const names = d.usedNames.map((n) => `"${n}"`).join(", ");
+      noteStale(d.kind, d.lib, d.usedNames);
       setLibUpdate(
-        `${d.usedNames.length === 1 ? "Symbol" : "Symbols"} ${names} in "${d.lib}" ` +
+        `${d.usedNames.length === 1 ? label : `${label}s`} ${names} in "${d.lib}" ` +
           `${d.usedNames.length === 1 ? "was" : "were"} updated by a collaborator — ` +
-          `placed copies keep the previous version until updated from the library.`,
+          `placed copies keep the previous version. Update them from the session menu.`,
       );
     };
     const onDocReverted = (e: Event) => {
@@ -1423,7 +683,7 @@ export function WasmTool({
       window.removeEventListener(LIB_SET_CHANGED_EVENT, onLibSet);
       window.removeEventListener(DOC_REVERTED_EVENT, onDocReverted);
     };
-  }, []);
+  }, [noteStale]);
 
   // Auto-dismiss the lib error toast.
   React.useEffect(() => {
@@ -2700,6 +1960,7 @@ export function WasmTool({
           badge={peers.length}
           unread={commentsUnread.threads}
           unreadMention={commentsUnread.mentioned}
+          alert={staleLibItems.size > 0}
         >
           {/* PEOPLE — who else is here, and whose view you're locked to. The
               follow state lives on each person's own row (PresenceRoster), so
@@ -2722,8 +1983,60 @@ export function WasmTool({
               SourceChip is shared with the light project pages, so instead of
               restyling it we ask for its `muted` tone: colour drops to a dot,
               and the chip sits in a normal row like everything else. */}
-          {(sourceDescriptor || readOnly) && (
+          {(sourceDescriptor || readOnly || staleLibItems.size > 0) && (
             <OverlayMenuSection label="Document">
+              {/* Behind-the-library state (libs 0017 §2b/2c): placed items a
+                  peer updated in the library. Persistent — unlike the toast —
+                  and actionable without a page reload: "Update from library"
+                  re-reads just those items into the placed instances. */}
+              {staleLibItems.size > 0 && (
+                <div
+                  data-testid="stale-libs-row"
+                  className="flex w-full flex-col gap-1 rounded-md bg-amber-500/10 px-2 py-1.5 text-xs text-neutral-800 dark:text-white/90"
+                >
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle size={14} className="shrink-0 text-amber-500" />
+                    <span>
+                      {[...staleLibItems.values()].reduce((n, e) => n + e.names.size, 0)} placed{" "}
+                      {[...staleLibItems.values()].every((e) => e.kind === "footprint")
+                        ? "footprint(s)"
+                        : [...staleLibItems.values()].every((e) => e.kind === "symbol")
+                          ? "symbol(s)"
+                          : "item(s)"}{" "}
+                      behind the library
+                    </span>
+                  </div>
+                  <ul className="ml-6 list-disc font-mono text-[11px] text-neutral-600 dark:text-white/70">
+                    {[...staleLibItems.values()].flatMap((e) =>
+                      [...e.names].map((n) => (
+                        <li key={`${e.kind}:${e.lib}:${n}`} data-testid="stale-lib-item">
+                          {e.lib}:{n}
+                        </li>
+                      )),
+                    )}
+                  </ul>
+                  <div className="ml-6 flex gap-2">
+                    <button
+                      type="button"
+                      data-testid="update-from-library"
+                      disabled={staleUpdating || readOnly}
+                      onClick={() => void updateStaleFromLibrary()}
+                      className="inline-flex items-center gap-1 rounded bg-amber-500 px-2 py-0.5 text-[11px] font-medium text-neutral-900 hover:bg-amber-400 disabled:opacity-50"
+                    >
+                      <RefreshCw size={11} className={staleUpdating ? "animate-spin" : ""} />
+                      Update from library
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="stale-libs-dismiss"
+                      onClick={() => clearStale()}
+                      className="rounded px-2 py-0.5 text-[11px] text-neutral-500 hover:bg-black/5 dark:text-white/50 dark:hover:bg-white/10"
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                </div>
+              )}
               {sourceDescriptor && (
                 <div className={`${overlayRowClass} cursor-default`}>
                   <SourceChip descriptor={sourceDescriptor} tone="muted" />
@@ -3064,233 +2377,3 @@ export function WasmTool({
 }
 
 /** "~173 MB" — coarse on purpose; these are quotes, not meters. */
-function approxMB(bytes: number): string {
-  const mb = bytes / 1e6;
-  return `~${mb >= 10 ? Math.round(mb) : Math.max(0.1, mb).toFixed(1)} MB`;
-}
-
-/** "1 library" / "155 libraries". */
-function libCount(n: number): string {
-  return `${n} librar${n === 1 ? "y" : "ies"}`;
-}
-
-/**
- * One consent row's size figure — MB only; the COUNTS live in the row's detail
- * line (libNowDetail/libLaterDetail), because "download" and "check" cover
- * different sets of libs and one number can't stand for both.
- */
-function libStateLabel(s: LibsSyncState | null): string | null {
-  if (!s || s.total === 0) return null;
-  if (s.warm >= s.total) return "already cached";
-  // sizesKnown false ⇒ some cold libs carry no published size, so coldBytes is a
-  // FLOOR, never the total: say "at least", and quote nothing at all when not a
-  // single cold lib was priced.
-  if (!s.sizesKnown) {
-    return s.coldBytes > 0 ? `at least ${approxMB(s.coldBytes)}` : null;
-  }
-  return approxMB(s.coldBytes);
-}
-
-/**
- * Detail line for the kind this editor PRE-SYNCS at boot. Two different numbers
- * matter here and quoting either alone reads as a lie: only the libs that aren't
- * cached yet download their contents ("1 library"), but the pre-sync walks EVERY
- * library of the kind to see whether it changed — and that walk is what the
- * "Syncing footprint libraries — 99/155" bar counts. A null state (source can't
- * tell) keeps the old count-free wording.
- */
-function libNowDetail(s: LibsSyncState | null): string {
-  const base = "this editor browses them";
-  // No warmth answer at all: say only what stays true regardless of counts —
-  // the warm-up runs alongside the editor download and finishes in the
-  // background, so "downloaded now" would overpromise as well as vague.
-  if (!s || s.total === 0) return `${base} — fetched in the background`;
-  const cold = s.total - s.warm;
-  if (cold === 0) {
-    return `${base} — ${libCount(s.total)} already here, just checked for updates`;
-  }
-  if (s.warm === 0) return `${base} — downloads ${libCount(s.total)}`;
-  return `${base} — downloads ${libCount(cold)}, checks all ${s.total} for updates`;
-}
-
-/**
- * Detail line for the OTHER kind of a merged-bundle session: never walked at
- * boot (no pre-sync, no update check) — each lib is fetched lazily the first
- * time a cross-face feature reaches it.
- */
-function libLaterDetail(s: LibsSyncState | null): string {
-  const base = "downloaded later, only if you use them";
-  if (!s || s.total === 0) return base;
-  const cold = s.total - s.warm;
-  if (cold === 0) return `${libCount(s.total)} already here — nothing to download`;
-  return `${base} (${libCount(cold)} not here yet)`;
-}
-
-/**
- * The editor bundle's figure. `toolBytes` is the OVER-THE-WIRE (compressed)
- * size, while the load screen's progress bar counts RAW decoded bytes — quoting
- * the first bare is what made "~32 MB" look like a lie next to a ~150 MB bar.
- * Show both whenever the manifest prices them; the HEAD fallback knows only the
- * wire size, so it says just that.
- */
-function toolFigure(info: ConsentInfo): React.ReactNode {
-  if (info.toolBytes === null) return "large (hundreds of MB)";
-  const wire = `${approxMB(info.toolBytes)} compressed`;
-  if (info.toolRawBytes === null) return wire;
-  return (
-    <>
-      {wire}
-      <br />
-      <span className="text-white/50">
-        {approxMB(info.toolRawBytes)} uncompressed
-      </span>
-    </>
-  );
-}
-
-/**
- * The download-consent card (standalone-load-ux 0001): what's about to be
- * pulled onto this device — the editor bundle now, the tool's lib kind now,
- * the other kind later on demand — and an OK that actually gates the fetches.
- */
-function DownloadConsent({
-  info,
-  onAccept,
-}: {
-  info: ConsentInfo;
-  onAccept: (always: boolean) => void;
-}) {
-  const [always, setAlways] = React.useState(false);
-  const kindTitle = (k: "symbol" | "footprint") =>
-    k === "symbol" ? "Symbol libraries" : "Footprint libraries";
-  const row = (
-    title: string,
-    detail: string,
-    figure: React.ReactNode,
-    testid: string,
-  ) => (
-    <li
-      data-testid={testid}
-      className="flex items-baseline gap-3 border-t border-white/10 py-2 first:border-t-0"
-    >
-      <div className="min-w-0 flex-1">
-        <p className="text-sm text-white/90">{title}</p>
-        <p className="text-xs text-white/50">{detail}</p>
-      </div>
-      {figure && (
-        <span className="whitespace-nowrap text-right font-mono text-xs leading-snug text-white/70">
-          {figure}
-        </span>
-      )}
-    </li>
-  );
-  return (
-    <div
-      data-testid="download-consent"
-      className="flex w-full max-w-md flex-col items-center gap-4 px-6"
-    >
-      <Download size={32} className="text-white/70" />
-      <h2 className="text-base font-semibold">
-        {info.update ? "Editor update available" : "One-time download needed"}
-      </h2>
-      <p className="text-center text-sm text-white/70">
-        PCBJam runs KiCad fully in your browser.{" "}
-        {info.update
-          ? "This release ships a new editor build, so it needs downloading again — it's cached after that."
-          : "Opening this tool downloads it once — repeat visits load from your browser's cache."}
-      </p>
-      <ul className="w-full rounded-lg bg-white/5 px-4 py-1">
-        {row(
-          "Editor engine",
-          "the KiCad build, downloaded now",
-          toolFigure(info),
-          "consent-row-tool",
-        )}
-        {info.libNowKind &&
-          row(
-            kindTitle(info.libNowKind),
-            libNowDetail(info.libNow),
-            libStateLabel(info.libNow),
-            "consent-row-now",
-          )}
-        {info.libLaterKind &&
-          row(
-            kindTitle(info.libLaterKind),
-            libLaterDetail(info.libLater),
-            libStateLabel(info.libLater),
-            "consent-row-later",
-          )}
-      </ul>
-      <label className="flex cursor-pointer items-center gap-2 text-xs text-white/60">
-        <input
-          type="checkbox"
-          checked={always}
-          onChange={(e) => setAlways(e.target.checked)}
-          className="accent-white/80"
-        />
-        Always download without asking
-      </label>
-      <button
-        data-testid="consent-accept"
-        className="rounded bg-white/90 px-4 py-1.5 text-sm font-medium text-[#1a1a2e] hover:bg-white"
-        onClick={() => onAccept(always)}
-      >
-        Download &amp; open
-      </button>
-    </div>
-  );
-}
-
-/**
- * Fixed-width lib pre-sync line, e.g. "Checking symbol libraries —  42/208".
- * "Checking", not "downloading": the walk visits every lib of the kind but
- * downloads only the new/changed ones — a bare counter read as 155 downloads
- * (standalone-load-ux follow-up). The prefix is constant and `done` is
- * space-padded to `total`'s digit count, so the text stays still while the
- * counter ticks (render it in a font-mono + whitespace-pre element so the pad
- * spaces hold their width).
- */
-function libSyncLabel(s: { kind: string; done: number; total: number }): string {
-  const total = String(s.total);
-  const done = String(Math.min(s.done, s.total)).padStart(total.length, " ");
-  return `Checking ${s.kind} libraries — ${done}/${total}`;
-}
-
-/**
- * WASM download progress for the boot overlay. A determinate bar when the server
- * sent a Content-Length the decoded stream agrees with; otherwise just MB so far
- * (gzip/br makes Content-Length the COMPRESSED size, so `loaded` can pass it).
- */
-function DownloadProgress({
-  progress,
-}: {
-  progress: { loaded: number; total: number } | null;
-}) {
-  if (!progress) return null;
-  const mb = (n: number) => `${(n / 1e6).toFixed(1)} MB`;
-  const determinate = progress.total > 0 && progress.loaded <= progress.total;
-  const pct = determinate
-    ? Math.round((progress.loaded / progress.total) * 100)
-    : 0;
-  return (
-    <div className="w-64 max-w-[80vw]">
-      {determinate ? (
-        <>
-          <div className="h-1.5 w-full overflow-hidden rounded bg-white/15">
-            <div
-              className="h-full rounded bg-white/70 transition-[width]"
-              style={{ width: `${pct}%` }}
-            />
-          </div>
-          <p className="mt-1 text-center font-mono text-xs text-white/50">
-            {mb(progress.loaded)} / {mb(progress.total)} ({pct}%)
-          </p>
-        </>
-      ) : (
-        <p className="text-center font-mono text-xs text-white/50">
-          {mb(progress.loaded)} downloaded…
-        </p>
-      )}
-    </div>
-  );
-}

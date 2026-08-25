@@ -243,6 +243,16 @@ export interface LibSetChangedDetail {
   name?: string;
 }
 
+/** The item name inside a `save` request's `{name, body}` envelope (or "" when unparsable). */
+function saveArgName(arg: string): string {
+  try {
+    const parsed = JSON.parse(arg) as { name?: unknown };
+    return typeof parsed.name === "string" ? parsed.name : "";
+  } catch {
+    return "";
+  }
+}
+
 function emitLibBusy(detail: LibBusyDetail): void {
   if (typeof window === "undefined") return;
   window.dispatchEvent(new CustomEvent(LIB_BUSY_EVENT, { detail }));
@@ -398,7 +408,10 @@ export function installLibsProvider(
     // "get"/"save" are user-triggered (open/save an item) and otherwise give no
     // visible feedback — broadcast busy + errors so the editor can show them.
     const userFacing = op === "get" || op === "save";
-    if (userFacing) emitLibBusy({ busy: true, op, kind, name: arg });
+    // The busy notice names the ITEM: for `save` the arg is the JSON envelope
+    // `{name, body}` (the whole body would otherwise be printed — libs 0017 §B).
+    const busyName = op === "save" ? saveArgName(arg) : arg;
+    if (userFacing) emitLibBusy({ busy: true, op, kind, name: busyName });
     try {
       switch (op) {
         case "list": {
@@ -513,7 +526,7 @@ export function installLibsProvider(
       if (userFacing) emitLibError(`Failed to ${op} "${arg}".`);
       return null;
     } finally {
-      if (userFacing) emitLibBusy({ busy: false, op, kind, name: arg });
+      if (userFacing) emitLibBusy({ busy: false, op, kind, name: busyName });
     }
   };
 

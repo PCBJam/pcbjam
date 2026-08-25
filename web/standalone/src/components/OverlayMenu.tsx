@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Users } from "lucide-react";
+import { AlertTriangle, Users } from "lucide-react";
 import { useDraggablePanel } from "@/components/useDraggablePanel";
 
 /**
@@ -64,10 +64,15 @@ export function OverlayMenu({
   badge,
   unread = 0,
   unreadMention = false,
+  alert = false,
   children,
 }: {
   /** Peer count shown on the FAB (0 hides the badge). */
   badge: number;
+  /** Something in this session is behind the latest state (libs 0017 §2b —
+   *  e.g. placed library items updated by a peer): amber warning triangle on
+   *  the FAB, persisting until the session-menu row resolves it. */
+  alert?: boolean;
   /** Unread comment threads (comments-ux 0001 C) — amber FAB badge, bottom
    *  corner; rose when one of them mentions the current user. 0 hides it. */
   unread?: number;
@@ -154,6 +159,15 @@ export function OverlayMenu({
             className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-sky-500 px-1 text-[10px] font-semibold text-white"
           >
             {badge}
+          </span>
+        )}
+        {alert && (
+          <span
+            data-testid="overlay-menu-alert"
+            title="Some of what you see is behind the latest library state — open the session menu"
+            className="absolute -bottom-1 -left-1 flex h-4 w-4 items-center justify-center rounded-full bg-amber-400 text-neutral-900 ring-1 ring-white/70 dark:ring-neutral-950"
+          >
+            <AlertTriangle size={10} strokeWidth={2.5} />
           </span>
         )}
         {unread > 0 && (

@@ -1272,12 +1272,137 @@ std::string schCollabTestMoveFirst( int aDx, int aDy )
 }
 
 
+// Outcome of a deferred update-from-library run → window event
+// `pcbjam:lib-update-done` {ok, updated, missing[]} (libs 0017 §2c).
+static void emitLibUpdateDone( int aUpdated, const std::vector<std::string>& aMissing )
+{
+    nlohmann::json j;
+    j["ok"] = true;
+    j["updated"] = aUpdated;
+    j["missing"] = aMissing;
+    std::string s = j.dump();
+    EM_ASM( {
+        if( typeof window !== 'undefined' )
+            window.dispatchEvent( new CustomEvent( 'pcbjam:lib-update-done',
+                                                   { detail: JSON.parse( UTF8ToString( $0 ) ) } ) );
+    }, s.c_str() );
+}
+
 // How many placed instances of a library symbol the open schematic holds —
 // the JS lib-sync bridge asks after a remote lib update so the editor chrome
 // can warn "a symbol you are using changed" (placed SCH_SYMBOLs keep their
 // embedded copy across a lib reload, so the user must update explicitly).
 // Counts across all unique screens of the hierarchy; 0 without a schematic
 // frame (symbol editor / viewer sessions).
+// Re-read the named library symbols into every placed instance — the headless
+// core of Tools ▸ Update Symbols from Library… (DIALOG_CHANGE_SYMBOLS::
+// processSymbols with the dialog's defaults: keep field text/positions, take
+// the new body/pins/attributes), scoped to `aNamesJson` of `aLibNickname`.
+// Runs as a normal SCH_COMMIT on the frame's coroutine so peers receive it as
+// an ordinary edit. Returns {ok, updated, missing[]}. (libs 0017 §2c)
+std::string schUpdateFromLibrary( std::string aLibNickname, std::string aNamesJson )
+{
+    nlohmann::json  out;
+    SCH_EDIT_FRAME* fr = schFrame();
+
+    if( !fr )
+    {
+        out["ok"] = false;
+        out["error"] = "no schematic frame";
+        return out.dump();
+    }
+
+    std::set<wxString> names;
+
+    try
+    {
+        for( const auto& n : nlohmann::json::parse( aNamesJson ) )
+            names.insert( wxString::FromUTF8( n.get<std::string>().c_str() ) );
+    }
+    catch( ... )
+    {
+        out["ok"] = false;
+        out["error"] = "bad names";
+        return out.dump();
+    }
+
+    const wxString           lib = wxString::FromUTF8( aLibNickname.c_str() );
+    pcbjam_collab::runOnCoroutine( fr, [fr, lib, names]()
+    {
+        int                      updated = 0;
+        std::vector<std::string> missing;
+        SCH_COMMIT               commit( fr );
+        SCH_SCREENS screens( fr->Schematic().Root() );
+
+        for( SCH_SCREEN* screen = screens.GetFirst(); screen; screen = screens.GetNext() )
+        {
+            std::vector<SCH_SYMBOL*> targets;
+
+            for( SCH_ITEM* item : screen->Items().OfType( SCH_SYMBOL_T ) )
+            {
+                SCH_SYMBOL*   sym = static_cast<SCH_SYMBOL*>( item );
+                const LIB_ID& id = sym->GetLibId();
+
+                if( wxString( id.GetLibNickname() ) == lib && names.count( wxString( id.GetLibItemName() ) ) )
+                    targets.push_back( sym );
+            }
+
+            for( SCH_SYMBOL* sym : targets )
+            {
+                LIB_SYMBOL* libSymbol = fr->GetLibSymbol( sym->GetLibId() );
+
+                if( !libSymbol )
+                {
+                    missing.push_back( std::string( sym->GetLibId().Format().c_str() ) );
+                    continue;
+                }
+
+                std::unique_ptr<LIB_SYMBOL> flattened = libSymbol->Flatten();
+
+                if( flattened->GetUnitCount() < sym->GetUnit() )
+                {
+                    missing.push_back( std::string( sym->GetLibId().Format().c_str() ) );
+                    continue;
+                }
+
+                // Same order as the dialog: remove, record, swap the lib symbol,
+                // re-append (the screen's RTree + connectivity re-index).
+                screen->Remove( sym );
+                commit.Modified( sym, static_cast<SCH_SYMBOL*>( sym->Clone() ), screen );
+                sym->SetLibSymbol( flattened.release() );
+                sym->SetExcludedFromSim( sym->GetLibSymbolRef()->GetExcludedFromSim() );
+                sym->SetExcludedFromBOM( sym->GetLibSymbolRef()->GetExcludedFromBOM() );
+                sym->SetExcludedFromBoard( sym->GetLibSymbolRef()->GetExcludedFromBoard() );
+                sym->SetShowPinNames( sym->GetLibSymbolRef()->GetShowPinNames() );
+                sym->SetShowPinNumbers( sym->GetLibSymbolRef()->GetShowPinNumbers() );
+                sym->SetSchSymbolLibraryName( wxEmptyString );
+                screen->Append( sym );
+                updated++;
+            }
+        }
+
+        commit.Push( wxT( "Update symbols from library" ) );
+        fr->GetCanvas()->Refresh();
+        emitLibUpdateDone( updated, missing );
+    } );
+
+    // The body runs deferred on the frame's coroutine (runOnCoroutine =
+    // CallAfter): the caller awaits the `pcbjam:lib-update-done` window event
+    // for the outcome.
+    out["ok"] = true;
+    out["queued"] = true;
+    return out.dump();
+}
+
+// Standalone-eeschema shape of kicadUpdateFromLibrary(kind, lib, namesJson).
+static std::string schUpdateFromLibraryShim( std::string aKind, std::string aLib, std::string aNames )
+{
+    if( aKind != "symbol" )
+        return "{\"ok\":false,\"error\":\"kind not handled by this editor\"}";
+
+    return schUpdateFromLibrary( aLib, aNames );
+}
+
 int schLibsSymbolUsage( std::string aLibNickname, std::string aSymbolName )
 {
     SCH_EDIT_FRAME* fr = schFrame();
@@ -2110,6 +2235,8 @@ EMSCRIPTEN_BINDINGS(eeschema) {
     // Placed-instance count for a library symbol (drives the "a symbol you are
     // using was updated" toast after a remote lib edit).
     function("kicadLibsSymbolUsage", &schLibsSymbolUsage);
+    // Update placed symbols from the library (libs 0017 §2c).
+    function("kicadUpdateFromLibrary", &schUpdateFromLibraryShim);
 #endif // !KICAD_MERGED_EMBIND
 }
 #endif

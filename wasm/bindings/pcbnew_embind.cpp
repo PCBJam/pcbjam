@@ -26,6 +26,7 @@
 #include <zone.h>
 #include <eda_text.h>
 #include <pcb_edit_frame.h>
+#include <lib_id.h>
 #include <kicad_clipboard.h>
 #include <io/kicad/kicad_io_utils.h>
 #include <richio.h>
@@ -2480,6 +2481,140 @@ static bool kicadCollabBusyProbe()
     return pcbjam_collab::applyBusy() || !pcbjam_collab::applyQueue().empty();
 }
 
+
+// ── libs 0017 §2d/§2c: placed-footprint usage + update-from-library ──────────
+
+// Placed-instance count for a library footprint (mirror of schLibsSymbolUsage):
+// drives the "a footprint you placed was updated" notice after a remote lib
+// edit. 0 without a board frame.
+int pcbLibsFootprintUsage( std::string aLibNickname, std::string aFootprintName )
+{
+    PCB_EDIT_FRAME* fr = pcbFrame();
+
+    if( !fr || !fr->GetBoard() )
+        return 0;
+
+    const LIB_ID target( wxString::FromUTF8( aLibNickname.c_str() ),
+                         wxString::FromUTF8( aFootprintName.c_str() ) );
+    int count = 0;
+
+    for( FOOTPRINT* fp : fr->GetBoard()->Footprints() )
+    {
+        if( fp->GetFPID() == target )
+            count++;
+    }
+
+    return count;
+}
+
+// Outcome of a deferred update-from-library run → window event
+// `pcbjam:lib-update-done` {ok, updated, missing[]} (libs 0017 §2c).
+static void emitLibUpdateDone( int aUpdated, const std::vector<std::string>& aMissing )
+{
+    nlohmann::json j;
+    j["ok"] = true;
+    j["updated"] = aUpdated;
+    j["missing"] = aMissing;
+    std::string s = j.dump();
+    EM_ASM( {
+        if( typeof window !== 'undefined' )
+            window.dispatchEvent( new CustomEvent( 'pcbjam:lib-update-done',
+                                                   { detail: JSON.parse( UTF8ToString( $0 ) ) } ) );
+    }, s.c_str() );
+}
+
+// Re-read the named library footprints into every placed instance — the
+// headless core of Tools ▸ Update Footprints from Library… (DIALOG_EXCHANGE_
+// FOOTPRINTS::processFootprint with the dialog's defaults), scoped to
+// `aNamesJson` (a JSON array of footprint names) of `aLibNickname`. Runs as a
+// normal BOARD_COMMIT on the frame's coroutine so peers receive it as an
+// ordinary edit. Returns {ok, updated, missing[]}.
+std::string pcbUpdateFromLibrary( std::string aLibNickname, std::string aNamesJson )
+{
+    nlohmann::json out;
+    PCB_EDIT_FRAME* fr = pcbFrame();
+
+    if( !fr || !fr->GetBoard() )
+    {
+        out["ok"] = false;
+        out["error"] = "no board frame";
+        return out.dump();
+    }
+
+    std::set<wxString> names;
+
+    try
+    {
+        for( const auto& n : nlohmann::json::parse( aNamesJson ) )
+            names.insert( wxString::FromUTF8( n.get<std::string>().c_str() ) );
+    }
+    catch( ... )
+    {
+        out["ok"] = false;
+        out["error"] = "bad names";
+        return out.dump();
+    }
+
+    const wxString lib = wxString::FromUTF8( aLibNickname.c_str() );
+    pcbjam_collab::runOnCoroutine( fr, [fr, lib, names]()
+    {
+        int                      updated = 0;
+        std::vector<std::string> missing;
+        BOARD_COMMIT             commit( fr );
+        // Reverse: ExchangeFootprint appends the replacement at the end of the list.
+        std::vector<FOOTPRINT*> targets;
+
+        for( FOOTPRINT* fp : fr->GetBoard()->Footprints() )
+        {
+            const LIB_ID& id = fp->GetFPID();
+
+            if( wxString( id.GetLibNickname() ) == lib && names.count( wxString( id.GetLibItemName() ) ) )
+                targets.push_back( fp );
+        }
+
+        for( auto it = targets.rbegin(); it != targets.rend(); ++it )
+        {
+            FOOTPRINT* fp = *it;
+            FOOTPRINT* fresh = fr->LoadFootprint( fp->GetFPID() );
+
+            if( !fresh )
+            {
+                missing.push_back( std::string( fp->GetFPID().Format().c_str() ) );
+                continue;
+            }
+
+            bool changed = fp->FootprintNeedsUpdate( fresh );
+            fr->ExchangeFootprint( fp, fresh, commit, /*deleteExtraTexts*/ true,
+                                   /*resetTextLayers*/ true, /*resetTextEffects*/ true,
+                                   /*resetTextPositions*/ true, /*resetTextContent*/ true,
+                                   /*resetFabricationAttrs*/ true,
+                                   /*resetClearanceOverrides*/ true, /*reset3DModels*/ true,
+                                   &changed );
+            updated++;
+        }
+
+        commit.Push( wxT( "Update footprints from library" ) );
+        fr->GetCanvas()->Refresh();
+        emitLibUpdateDone( updated, missing );
+    } );
+
+    // The body runs deferred on the frame's coroutine (runOnCoroutine =
+    // CallAfter): the caller awaits the `pcbjam:lib-update-done` window event
+    // for the outcome.
+    out["ok"] = true;
+    out["queued"] = true;
+    return out.dump();
+}
+
+// Standalone-pcbnew shape of kicadUpdateFromLibrary(kind, lib, namesJson).
+static std::string pcbUpdateFromLibraryShim( std::string aKind, std::string aLib, std::string aNames )
+{
+    if( aKind != "footprint" )
+        return "{\"ok\":false,\"error\":\"kind not handled by this editor\"}";
+
+    return pcbUpdateFromLibrary( aLib, aNames );
+}
+
 EMSCRIPTEN_BINDINGS(pcbnew) {
     // Register vector types for iteration
     register_vector<FOOTPRINT*>("FootprintVector");
@@ -2497,6 +2632,11 @@ EMSCRIPTEN_BINDINGS(pcbnew) {
 
     // Programmatic save of the in-memory board (round-trip tests, README §A).
     function("kicadSaveBoard", &kicadSaveBoard);
+#ifndef KICAD_MERGED_EMBIND
+    // Placed-footprint usage + update-from-library (libs 0017 §2c/2d).
+    function("kicadLibsFootprintUsage", &pcbLibsFootprintUsage);
+    function("kicadUpdateFromLibrary", &pcbUpdateFromLibraryShim);
+#endif
     // Layer bridge (viewer-panels) — pcbnew-only names, merged-image safe
     // (null-frame no-op when eeschema is the live frame).
     function("kicadLayersGetState", &pcbLayersGetState);

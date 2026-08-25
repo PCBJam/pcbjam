@@ -208,3 +208,35 @@ describe("installLibsProvider — enumerate gate (load-fanout)", () => {
     expect(gateKinds).toEqual(["symbol", "symbol"]);
   });
 });
+
+describe("busy notices (libs 0017 §B)", () => {
+  it("a save announces the ITEM NAME, never the JSON envelope", async () => {
+    const busy: Array<{ busy: boolean; op: string; name?: string }> = [];
+    (globalThis as unknown as { window: unknown }).window = {
+      location: { search: "" },
+      dispatchEvent: (e: Event) => {
+        if (e.type === "pcbjam:lib-busy") {
+          busy.push((e as CustomEvent<{ busy: boolean; op: string; name?: string }>).detail);
+        }
+        return true;
+      },
+    };
+    try {
+      const request = installAndGetRequest({
+        listLibs: async () => [{ id: "L", name: "L", kind: "symbol" }],
+        listItems: async () => [],
+        getItemBody: async () => null,
+        saveItemBody: async () => true,
+      } as unknown as LibsSource);
+      const body = '(kicad_symbol_lib (symbol "R_0402"))';
+      await request("save", libUri("L"), JSON.stringify({ name: "R_0402", body }), "symbol");
+      expect(busy.length).toBeGreaterThan(0);
+      for (const b of busy) {
+        expect(b.op).toBe("save");
+        expect(b.name).toBe("R_0402");
+      }
+    } finally {
+      delete (globalThis as unknown as { window?: unknown }).window;
+    }
+  });
+});

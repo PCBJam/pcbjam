@@ -240,6 +240,40 @@ describe("syncedLibsSource → editor reload bridge", () => {
     }
   });
 
+  it("footprint edits flag PLACED footprints via kicadLibsFootprintUsage (libs 0017 §2d)", async () => {
+    const dispatched: Array<{ type: string; detail: unknown }> = [];
+    (globalThis as { window?: unknown }).window = {
+      dispatchEvent: (e: CustomEvent) =>
+        dispatched.push({ type: e.type, detail: e.detail }),
+    };
+    const fpUsage = vi.fn((_lib: string, name: string) =>
+      name === "USED_FP" ? 1 : 0,
+    );
+    (globalThis as { Module?: unknown }).Module = {
+      kicadLibsReload: reload,
+      kicadLibsFootprintUsage: fpUsage,
+    };
+    try {
+      const server = await fakeServer({});
+      const source = makeSource(server);
+      await source.listItems(LIB_ID);
+
+      await server.remotePut("footprint/USED_FP", "(footprint USED_FP)");
+      await server.remotePut("footprint/NEW_FP", "(footprint NEW_FP)");
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(fpUsage).toHaveBeenCalledWith("My Lib", "USED_FP");
+      expect(dispatched).toHaveLength(1);
+      expect(dispatched[0]!.detail).toMatchObject({
+        lib: "My Lib",
+        kind: "footprint",
+        usedNames: ["USED_FP"],
+      });
+    } finally {
+      delete (globalThis as { window?: unknown }).window;
+    }
+  });
+
   it("a change before the editor booted (no Module export) is a no-op", async () => {
     delete (globalThis as { Module?: unknown }).Module;
     const server = await fakeServer({});

@@ -133,9 +133,17 @@ export function syncedLibsSource(
     mod: Record<string, unknown> | undefined,
   ): void {
     if (typeof window === "undefined" || names.length === 0) return;
-    const usage = mod?.kicadLibsSymbolUsage;
+    // Placed-instance queries: symbols (schematic frame) and, since libs 0017
+    // §2d, footprints (board frame). A kind without a bridge announces nothing
+    // as "used" — the caller treats that as informational.
+    const usage =
+      kind === "symbol"
+        ? mod?.kicadLibsSymbolUsage
+        : kind === "footprint"
+          ? mod?.kicadLibsFootprintUsage
+          : undefined;
     const usedNames =
-      kind === "symbol" && typeof usage === "function"
+      typeof usage === "function"
         ? names.filter((n) => {
             try {
               return (

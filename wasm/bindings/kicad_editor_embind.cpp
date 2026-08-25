@@ -50,6 +50,10 @@ using namespace emscripten;
 // Per-editor entry points and frame probes — defined (with external linkage) in
 // pcbnew_embind.cpp / eeschema_embind.cpp.
 bool        pcbEditorActive();
+// libs 0017 §2c/2d: placed-footprint usage + update-from-library.
+int         pcbLibsFootprintUsage( std::string aLib, std::string aName );
+std::string pcbUpdateFromLibrary( std::string aLib, std::string aNamesJson );
+std::string schUpdateFromLibrary( std::string aLib, std::string aNamesJson );
 void        pcbCollabApply( std::string aJson );
 void        pcbCollabApplyItems( std::string aJson );
 std::string pcbCollabSnapshot();
@@ -409,6 +413,26 @@ static int libsSymbolUsage( std::string aLib, std::string aName )
     return schEditorActive() ? schLibsSymbolUsage( aLib, aName ) : 0;
 }
 
+// Placed-instance count for a library footprint — board frame only (libs 0017 §2d).
+static int libsFootprintUsage( std::string aLib, std::string aName )
+{
+    return pcbEditorActive() ? pcbLibsFootprintUsage( aLib, aName ) : 0;
+}
+
+// Update placed instances of the named lib items from the library (libs 0017
+// §2c): `aKind` picks the editor — "footprint" needs the board frame,
+// "symbol" the schematic frame; a mismatch answers {ok:false}.
+static std::string updateFromLibrary( std::string aKind, std::string aLib, std::string aNamesJson )
+{
+    if( aKind == "footprint" && pcbEditorActive() )
+        return pcbUpdateFromLibrary( aLib, aNamesJson );
+
+    if( aKind == "symbol" && schEditorActive() )
+        return schUpdateFromLibrary( aLib, aNamesJson );
+
+    return "{\"ok\":false,\"error\":\"no editor for this kind\"}";
+}
+
 // Presence shims (collab-presence 0002 pcbnew / 0003 eeschema): route to the live
 // editor's implementation, same pattern as the collab bridge shims above.
 static void collabPresenceStart()
@@ -603,6 +627,9 @@ EMSCRIPTEN_BINDINGS(kicad_editor) {
     // 0 from any other frame; drives the "symbol you are using was updated"
     // toast after a remote lib edit).
     function("kicadLibsSymbolUsage", &libsSymbolUsage);
+    // Placed-footprint usage + update-from-library (libs 0017 §2c/2d).
+    function("kicadLibsFootprintUsage", &libsFootprintUsage);
+    function("kicadUpdateFromLibrary", &updateFromLibrary);
 }
 
 #endif // __EMSCRIPTEN__
