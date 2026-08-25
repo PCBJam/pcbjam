@@ -72,9 +72,11 @@ import { memfsFilePath, memfsProjectDir, TOOL_BUNDLE, TOOL_FRAME } from "@/wasm/
 import {
   driveProjectIntoTool,
   readStagedFile,
+  restageFile,
   usedLibNicknames,
   type ToolFile,
 } from "@/wasm/kicad-runner";
+import { startFilesWatch, type FilesWatchHandle } from "@/wasm/collab/files-watch";
 import { resolveSheetHierarchy } from "@/wasm/collab/sheet-hierarchy";
 import { dump as dumpTrace, mark } from "@/wasm/load-trace";
 import { errorMessage, isTerminalError } from "@/wasm/terminal-error";
@@ -974,6 +976,8 @@ export function WasmTool({
   targetPath,
   fetchBytes,
   onStagedRevision,
+  observedRevision,
+  rememberObservedRevision,
   saveBytes,
   createFile,
   docSource,
@@ -1015,6 +1019,15 @@ export function WasmTool({
    * the CAS ancestry `saveBytes` must publish against (see DriveOptions).
    */
   onStagedRevision?: (relPath: string, revision: number) => void;
+  /**
+   * Files-route change hints (project-sync 0002): the latest server revision
+   * this client observed for a path (its own PUT ack — the echo check) and
+   * the recorder for revisions learned from a peer's hint. Absent ⇒ hints
+   * still restage siblings but every hint stamped with our user is treated
+   * as a peer's (no echo suppression).
+   */
+  observedRevision?: (relPath: string) => number | undefined;
+  rememberObservedRevision?: (relPath: string, revision: number) => void;
   /**
    * Persist one file the user saved in the editor (File→Save writes MEMFS, then
    * the wasm fires window.kicadCollab.onSave → this). API upload for backend
@@ -1072,6 +1085,7 @@ export function WasmTool({
   // eeschema sheet rebinds — the bridge re-reads it on every startPresence.
   const crossAppRef = React.useRef<CrossAppHandle | null>(null);
   const siblingRestageRef = React.useRef<SiblingRestageHandle | null>(null);
+  const filesWatchRef = React.useRef<FilesWatchHandle | null>(null);
   // Set at the boot effect's cleanup; deferred starters bail on it (the
   // sibling-restage idle stagger can fire after unmount).
   const disposedRef = React.useRef(false);
@@ -1252,6 +1266,8 @@ export function WasmTool({
     crossAppRef.current = null;
     siblingRestageRef.current?.destroy();
     siblingRestageRef.current = null;
+    filesWatchRef.current?.destroy();
+    filesWatchRef.current = null;
     driftRef.current?.stop();
     driftRef.current = null;
     // Tears down every warm room's provider/doc (the only place providers are
@@ -2286,6 +2302,40 @@ export function WasmTool({
               log: append,
             });
           }
+        }
+        // Files-route change hints (project-sync 0002 §3): peers' PUT-channel
+        // writes (.kicad_pro after assign-footprints, uploads, job resaves)
+        // restage into MEMFS; a hint for the open non-room target becomes a
+        // reload/conflict notice. Rides the same gateway socket as presence.
+        if ((tool === "pcbnew" || tool === "eeschema") && !readOnly && !collabOptOut) {
+          void startFilesWatch({
+            scopeId,
+            projectId,
+            provider: yjsProviderConfig(),
+            targetPath,
+            selfUser: presenceUser().id,
+            knownPaths: files.map((f) => f.path),
+            isRoomBacked: (p) => roomBacked.has(p),
+            observedRevision: (p) => observedRevision?.(p),
+            rememberObserved: (p, r) => rememberObservedRevision?.(p, r),
+            fetchBytes,
+            restage: (p, bytes) => restageFile(win, slug, p, bytes, append),
+            onNewPath: (p) => {
+              if (p.endsWith(".kicad_sch")) void sheetManagerRef.current?.onboard(p);
+            },
+            onTargetChanged: (c) => {
+              const who = c.by ?? "a collaborator";
+              setStatus(
+                `${c.path} was updated by ${who} (rev ${c.revision}) — reload to see it; your next save will report a conflict`,
+              );
+            },
+            onListingStale: () => append("[files] hint gap — project listing is stale until reload"),
+            log: append,
+          }).then((handle) => {
+            if (!handle) return;
+            if (disposedRef.current) handle.destroy();
+            else filesWatchRef.current = handle;
+          });
         }
         // Viewer selection feed (viewer-panels): read-only sessions never
         // bind presence (no room, no awareness), so the SelectionInspector's

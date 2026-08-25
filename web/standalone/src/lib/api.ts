@@ -165,6 +165,20 @@ export function rememberFileBaseRevision(
   projectSource().rememberBaseRevision?.(slug, relPath, revision);
 }
 
+/** Latest server revision seen for a path (project-sync 0002 echo check). */
+export function observedFileRevision(slug: string, relPath: string): number | undefined {
+  return projectSource().observedRevision?.(slug, relPath);
+}
+
+/** Record a revision learned from a `files` hint; observed only, never base. */
+export function rememberFileObservedRevision(
+  slug: string,
+  relPath: string,
+  revision: number,
+): void {
+  projectSource().rememberObservedRevision?.(slug, relPath, revision);
+}
+
 /** Observe the server revision after an ambiguous save; never rebases this model. */
 export async function refreshFileRevision(
   slug: string,

@@ -5,7 +5,9 @@ import { Loader2 } from "lucide-react";
 import {
   createProjectFileIfMissing,
   fetchFileBytes,
+  observedFileRevision,
   rememberFileBaseRevision,
+  rememberFileObservedRevision,
   uploadFileBytes,
   useProjectBoot,
   useSourceDescriptor,
@@ -103,6 +105,10 @@ export function ToolPage() {
         }
         onStagedRevision={(relPath, revision) =>
           rememberFileBaseRevision(slug, relPath, revision)
+        }
+        observedRevision={(relPath) => observedFileRevision(slug, relPath)}
+        rememberObservedRevision={(relPath, revision) =>
+          rememberFileObservedRevision(slug, relPath, revision)
         }
         saveBytes={
           readOnly

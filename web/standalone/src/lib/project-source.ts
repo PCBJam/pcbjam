@@ -91,6 +91,14 @@ export interface ProjectSource {
    * was vouched against, so it IS the model's ancestry, not merely observed.
    */
   rememberBaseRevision?(slug: string, relPath: string, revision: number): void;
+  /**
+   * Latest server revision this source has SEEN for a path (listing, GET or
+   * PUT response, or a file-change hint) — diagnostic/observed only, never a
+   * write precondition. Undefined when the path was never observed.
+   */
+  observedRevision?(slug: string, relPath: string): number | undefined;
+  /** Record an observed revision (e.g. from a `files` hint). Never rebases. */
+  rememberObservedRevision?(slug: string, relPath: string, revision: number): void;
 }
 
 // --- remote (REST backend over the shared contract) ---------------------------
@@ -269,6 +277,12 @@ function remoteProjectSource(): ProjectSource {
       if (!Number.isSafeInteger(revision) || revision < 0) return;
       rememberObservedRevision(slug, relPath, revision);
       baseRevisions.set(revisionKey(slug, relPath), revision);
+    },
+    observedRevision(slug, relPath) {
+      return observedRevisions.get(revisionKey(slug, relPath));
+    },
+    rememberObservedRevision(slug, relPath, revision) {
+      rememberObservedRevision(slug, relPath, revision);
     },
     // Editor saves publish through the CAS PUT (findings D-3 client half): the
     // expected revision is the model's ANCESTRY (baseRevisions), never the
@@ -508,6 +522,13 @@ function compositeProjectSource(
     },
     rememberBaseRevision: (slug, p, revision) => {
       void route(slug).then((s) => s.rememberBaseRevision?.(slug, p, revision));
+    },
+    // Composite reads route asynchronously; the observed getter is sync, so
+    // it answers from whichever source already routed this slug (primary
+    // first — local projects never carry server revisions).
+    observedRevision: (slug, p) => primary.observedRevision?.(slug, p),
+    rememberObservedRevision: (slug, p, revision) => {
+      void route(slug).then((s) => s.rememberObservedRevision?.(slug, p, revision));
     },
   };
 }

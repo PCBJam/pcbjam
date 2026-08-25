@@ -25,9 +25,11 @@ import * as syncProtocol from "y-protocols/sync";
 import type * as Y from "yjs";
 import {
   type GatewayClientMsg,
+  type GatewayFileChange,
   type GatewayServerMsg,
   type GatewaySubMode,
   parseGatewayServerMsg,
+  FILES_DOC_PATH,
   PRESENCE_DOC_PATH,
   projectRoomName,
   tagGatewayFrame,
@@ -267,6 +269,10 @@ export class GatewayDocFacade implements YjsProvider {
   private synced = false;
   private subEverSent = false;
   private readonly touchedCbs: Array<() => void> = [];
+  /** `files` hints (project-sync 0002) — only ever delivered on `~files`. */
+  private readonly filesCbs: Array<(seq: number, changes: GatewayFileChange[]) => void> = [];
+  /** The hint-only channel: no doc, no awareness — control frames only. */
+  private readonly isHintOnly: boolean;
   private readonly syncWaiters: Array<{
     resolve: () => void;
     reject: (e: unknown) => void;
@@ -281,8 +287,10 @@ export class GatewayDocFacade implements YjsProvider {
     opts: GatewayFacadeOpts,
   ) {
     this.isPresence = opts.docPath === PRESENCE_DOC_PATH;
+    this.isHintOnly = opts.docPath === FILES_DOC_PATH;
     this.docPath = opts.docPath;
-    this.mode = opts.passive && !this.isPresence ? "passive" : "active";
+    this.mode =
+      (opts.passive && !this.isPresence) || this.isHintOnly ? "passive" : "active";
     this.awareness = new Awareness(doc);
     this.conn = acquireConnection(
       opts.endpoint,
@@ -319,7 +327,7 @@ export class GatewayDocFacade implements YjsProvider {
    */
   activate(): Promise<void> {
     if (this.dead) return Promise.reject(this.dead);
-    if (this.isPresence) return this.whenSynced();
+    if (this.isPresence || this.isHintOnly) return this.whenSynced();
     if (this.synced) return Promise.resolve();
     const wasPassive = this.mode === "passive";
     this.mode = "active";
@@ -358,6 +366,11 @@ export class GatewayDocFacade implements YjsProvider {
     this.touchedCbs.push(cb);
   }
 
+  /** `files` hints — project rows changed on the files route (0002 §1). */
+  onFiles(cb: (seq: number, changes: GatewayFileChange[]) => void): void {
+    this.filesCbs.push(cb);
+  }
+
   destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;
@@ -387,6 +400,7 @@ export class GatewayDocFacade implements YjsProvider {
     if (this.destroyed || this.dead) return;
     this.subEverSent = true;
     for (const w of this.subWaiters.splice(0)) w.resolve();
+    if (this.isHintOnly) return; // nothing to announce, nothing to sync
     // (Re)announce presence: a query for peers' states + our own, if any.
     this.sendQueryAwareness();
     if (this.awareness.getLocalState() !== null) this.publishLocalAwareness();
@@ -421,6 +435,10 @@ export class GatewayDocFacade implements YjsProvider {
     if (msg.t === "resync") {
       // The doc's relay (re)connected server-side — our Step1 pulls the news.
       if (this.mode === "active" && !this.isPresence) this.sendSyncStep1();
+      return;
+    }
+    if (msg.t === "files") {
+      for (const cb of this.filesCbs) cb(msg.seq, msg.changes);
       return;
     }
     // touched
@@ -497,6 +515,7 @@ export class GatewayDocFacade implements YjsProvider {
   }
 
   private publishLocalAwareness(): void {
+    if (this.isHintOnly) return;
     const encoder = encoding.createEncoder();
     encoding.writeVarUint(encoder, MESSAGE_AWARENESS);
     encoding.writeVarUint8Array(
