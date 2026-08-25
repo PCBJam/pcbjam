@@ -7,7 +7,7 @@ import {
   syncLayoutToY,
   type Tool,
 } from "@pcbjam/shared";
-import { AlertTriangle, ChevronDown, ChevronUp, Crosshair, Download, EyeOff, Layers, Loader2, Moon, PanelsTopLeft, RefreshCw, Sun } from "lucide-react";
+import { Download } from "lucide-react";
 import {
   API_BASE_URL,
   APP_URL,
@@ -22,34 +22,18 @@ import {
 } from "@/lib/config";
 import { redirectTargetFor } from "@/lib/redirect";
 import { loadSessionIdentity, seedSessionIdentity } from "@/lib/session-identity";
-import { setTheme, useThemeValue } from "@/lib/theme";
+import { useThemeValue } from "@/lib/theme";
 import { bootKicadTool } from "@/wasm/boot";
 import {
   autoDownloadEnabled,
   isWasmDownloaded,
   markWasmDownloaded,
   resolveWasmMeta,
-  setAutoDownloadEnabled,
 } from "@/wasm/wasm-assets";
 import {
-  LIB_BUSY_EVENT,
-  LIB_ERROR_EVENT,
-  LIB_ITEM_UPDATED_EVENT,
-  LIB_LOADING_EVENT,
-  LIB_SET_CHANGED_EVENT,
-  type LibBusyDetail,
-  type LibErrorDetail,
-  type LibItemUpdatedDetail,
-  type LibLoadingDetail,
-  type LibSetChangedDetail,
   type LibsSource,
 } from "@/wasm/libs/source";
-import { addAnnouncedLib } from "@/wasm/libs/runtime-add";
 
-import {
-  MODELS_LOADING_EVENT,
-  type ModelsLoadingDetail,
-} from "@/wasm/libs/models-bridge";
 import { TOOL_FRAME } from "@/wasm/constants";
 import {
   driveProjectIntoTool,
@@ -88,7 +72,6 @@ import {
   startSiblingRestage,
   type SiblingRestageHandle,
 } from "@/wasm/collab/sibling-restage";
-import { DOC_REVERTED_EVENT } from "@/wasm/collab/kicad-binding";
 import {
   createComments,
   hasCommentsBridge,
@@ -97,11 +80,6 @@ import {
 } from "@/wasm/collab/comments";
 import { PresenceRoster } from "@/components/PresenceRoster";
 import { CommentLayer } from "@/components/CommentLayer";
-import {
-  OverlayMenu,
-  OverlayMenuSection,
-  overlayRowClass,
-} from "@/components/OverlayMenu";
 import { hasTunerBridge, PresenceTuner, type TunerModule } from "@/components/PresenceTuner";
 import { hasLayersBridge, LayerPanel, type LayersModule } from "@/components/LayerPanel";
 import { SelectionInspector } from "@/components/SelectionInspector";
@@ -122,11 +100,15 @@ import {
 } from "@/lib/chrome-visibility";
 import { recordFatalLog, showFatalScreen } from "@/wasm/fatal-screen";
 import { WasmErrorBoundary } from "@/components/wasm-tool/WasmErrorBoundary";
+import { BootOverlay } from "@/components/wasm-tool/BootOverlay";
+import { ConsolePanel } from "@/components/wasm-tool/ConsolePanel";
+import { FatalOverlay } from "@/components/wasm-tool/FatalOverlay";
+import { LibLoadingOverlay } from "@/components/wasm-tool/LibLoadingOverlay";
+import { NoticeStack } from "@/components/wasm-tool/NoticeStack";
+import { FollowBanner, SessionMenu } from "@/components/wasm-tool/SessionMenu";
+import { useLibNotices } from "@/components/wasm-tool/useLibNotices";
 import {
-  DownloadConsent,
-  DownloadProgress,
   gatherConsentInfo,
-  libSyncLabel,
   type ConsentInfo,
 } from "@/components/wasm-tool/DownloadConsent";
 import {
@@ -138,13 +120,11 @@ import {
 import { installQuitHook } from "@/components/wasm-tool/quit-hook";
 import { installToolNavigationHook } from "@/components/wasm-tool/tool-navigation";
 import {
-  CHROME_HOTKEY_LABEL,
   chromeSetter,
   COLLAB_TOOLS,
   INSPECTOR_OPEN_KEY,
   LAYERS_OPEN_KEY,
   LIB_KIND_FOR_TOOL,
-  reloadFallbackMsg,
 } from "@/components/wasm-tool/ui-helpers";
 
 /**
@@ -310,8 +290,6 @@ export function WasmTool({
   // This bundle+version finished downloading before (completion marker) — the
   // load overlay says "from cache" instead of the first-download excuse.
   const [warmBoot, setWarmBoot] = React.useState(false);
-  // A library item currently being fetched (open/save), for a transient spinner.
-  const [libBusy, setLibBusy] = React.useState<string | null>(null);
   // Load-screen pre-sync progress: warming the project's lib bundles into IDB in
   // parallel with the wasm download. Null when idle/done. Counts only (no
   // "current lib") — the fetches run several-at-a-time, so there is no single
@@ -327,124 +305,19 @@ export function WasmTool({
     done: number;
     total: number;
   } | null>(null);
-  // Last lib error (e.g. a backend 404 on open), shown as a dismissible toast.
-  const [libError, setLibError] = React.useState<string | null>(null);
-  // A collaborator updated library items that are PLACED in the open document
-  // (LIB_ITEM_UPDATED_EVENT) — placed copies keep the previous version, so warn.
-  const [libUpdate, setLibUpdate] = React.useState<string | null>(null);
-  // Persistent "behind the library" state (libs 0017 §2b): every PLACED item a
-  // peer's lib edit touched, keyed `<kind>\u0000<lib>` → names. The toast above
-  // is disposable; this survives until the user updates from the library
-  // (2c) or dismisses it, and drives the FAB's amber triangle + the Document
-  // section row. Symbols/footprints only — the kinds with a placed-usage
-  // bridge (kicadLibsSymbolUsage / kicadLibsFootprintUsage).
-  const [staleLibItems, setStaleLibItems] = React.useState<
-    Map<string, { kind: string; lib: string; names: Set<string> }>
-  >(() => new Map());
-  const [staleUpdating, setStaleUpdating] = React.useState(false);
-  const staleKey = (kind: string, lib: string) => `${kind}\u0000${lib}`;
-  const noteStale = React.useCallback((kind: string, lib: string, names: string[]) => {
-    if (names.length === 0) return;
-    setStaleLibItems((prev) => {
-      const next = new Map(prev);
-      const k = staleKey(kind, lib);
-      const cur = next.get(k) ?? { kind, lib, names: new Set<string>() };
-      const merged = new Set(cur.names);
-      for (const n of names) merged.add(n);
-      next.set(k, { kind, lib, names: merged });
-      return next;
-    });
-  }, []);
-  const clearStale = React.useCallback((key?: string) => {
-    setStaleLibItems((prev) => {
-      if (key === undefined) return new Map();
-      const next = new Map(prev);
-      next.delete(key);
-      return next;
-    });
-  }, []);
-  /** Update every placed instance of the stale items from the library (2c). */
-  const updateStaleFromLibrary = React.useCallback(async () => {
-    const mod = (window as { Module?: { kicadUpdateFromLibrary?: unknown } }).Module;
-    const fn = mod?.kicadUpdateFromLibrary;
-    if (typeof fn !== "function") {
-      setLibError("This editor build can't update placed items from the library — reload to refresh them.");
-      return;
-    }
-    setStaleUpdating(true);
-    try {
-      for (const [key, entry] of staleLibItems) {
-        // The bridge queues the edit on the frame's coroutine and answers
-        // {queued:true}; the outcome arrives as a `pcbjam:lib-update-done`
-        // window event (or {ok:false,error} synchronously).
-        const done = new Promise<{ ok: boolean; updated?: number; error?: string }>((resolve) => {
-          const onDone = (e: Event) => {
-            window.removeEventListener("pcbjam:lib-update-done", onDone);
-            resolve((e as CustomEvent<{ ok: boolean; updated?: number }>).detail);
-          };
-          window.addEventListener("pcbjam:lib-update-done", onDone);
-          setTimeout(() => {
-            window.removeEventListener("pcbjam:lib-update-done", onDone);
-            resolve({ ok: false, error: "timed out" });
-          }, 30_000);
-        });
-        let res: { ok?: boolean; queued?: boolean; error?: string } = {};
-        try {
-          res = JSON.parse(
-            (fn as (kind: string, lib: string, namesJson: string) => string)(
-              entry.kind,
-              entry.lib,
-              JSON.stringify([...entry.names]),
-            ),
-          ) as typeof res;
-        } catch {
-          res = { ok: false, error: "bridge call failed" };
-        }
-        const outcome = res.ok === false ? { ok: false, error: res.error } : await done;
-        if (!outcome.ok) {
-          setLibError(`Couldn't update from the library: ${outcome.error ?? "unknown error"}`);
-          continue;
-        }
-        console.log(`[libs] updated ${outcome.updated ?? "?"} placed ${entry.kind}(s) from "${entry.lib}"`);
-        clearStale(key);
-      }
-    } finally {
-      setStaleUpdating(false);
-    }
-  }, [staleLibItems, clearStale]);
-  // The backend rolled this document back to its last valid state
-  // (kicad-validity 0001 — DOC_REVERTED_EVENT from the collab binding).
-  const [docReverted, setDocReverted] = React.useState<string | null>(null);
-  // A peer changed the team's lib SET mid-session (LIB_SET_CHANGED_EVENT —
-  // the scope room's `libset` broadcast). The lib table is frozen at boot, so
-  // the toast's click action loads the new lib live (addAnnouncedLib), with a
-  // reload fallback when the runtime bridge is missing.
-  const [libSetNotice, setLibSetNotice] = React.useState<{
-    message: string;
-    detail: LibSetChangedDetail;
-    mode: "load" | "reload";
-  } | null>(null);
   // The one libs source instance the running editor uses (set by the boot
   // effect) — the libset toast's action needs it to re-list and load.
   const activeLibsSourceRef = React.useRef<LibsSource | null>(null);
+  // Every library / document notice (toasts, stale-lib state, load badges) —
+  // state + listeners in useLibNotices, rendered by NoticeStack / SessionMenu
+  // / LibLoadingOverlay below.
+  const notices = useLibNotices({ getLibsSource: () => activeLibsSourceRef.current });
   // A save path entered the DURABLE blocked state (409 conflict / unknown
   // commit state — save-flow's absorbing blockedPaths). Rendered as a
   // persistent banner, never auto-dismissed: further Ctrl+S on the path is
   // silently absorbed, so without this surface the user would keep "saving"
   // into the void.
   const [saveBlocked, setSaveBlocked] = React.useState<SaveBlock | null>(null);
-  // Eager whole-library idb→wasm load in flight (the ~tens-of-seconds fat-load on
-  // first chooser/editor open). Drives a full-cover overlay so the freeze reads as
-  // "loading, just slow" rather than a hang. Null when idle; `done/total` count the
-  // per-lib fat-load crossings so the overlay can show a progress bar.
-  const [libLoading, setLibLoading] = React.useState<{
-    kind: string;
-    done: number;
-    total: number;
-  } | null>(null);
-  // Board 3D-model prefetch in flight (background; the viewer works without it —
-  // anything still missing lazy-loads per model). Small badge, not an overlay.
-  const [modelsSync, setModelsSync] = React.useState<string | null>(null);
   // The OTHER users in this document's collab room (awareness roster) — drives
   // the PresenceRoster chip next to SourceChip. Empty when collab is off, the
   // provider has no awareness (kind "none"), or nobody else is here.
@@ -612,142 +485,6 @@ export function WasmTool({
     // unmounts itself on a crash, the DOM floor still has the full log.
     recordFatalLog(msg);
     setLogs((prev) => [...prev.slice(-800), msg]);
-  }, []);
-
-  // Loading/error chrome for library item fetches (open/save), driven by events
-  // the libs bridge dispatches (wasm/libs/source). The fetch is otherwise
-  // invisible; a 404 would silently do nothing without this.
-  React.useEffect(() => {
-    let busyTimer: ReturnType<typeof setTimeout> | undefined;
-    const onBusy = (e: Event) => {
-      const d = (e as CustomEvent<LibBusyDetail>).detail;
-      clearTimeout(busyTimer);
-      if (d.busy) {
-        // Debounce — only flag slow fetches, so fast ones don't flicker.
-        busyTimer = setTimeout(() => setLibBusy(d.name || "library item"), 180);
-      } else {
-        setLibBusy(null);
-      }
-    };
-    const onError = (e: Event) => {
-      setLibError((e as CustomEvent<LibErrorDetail>).detail.message);
-    };
-    const onItemUpdated = (e: Event) => {
-      const d = (e as CustomEvent<LibItemUpdatedDetail>).detail;
-      // Footprints have no placed-usage bridge (kicadLibsSymbolUsage is
-      // symbol-only), so every applied peer edit is announced — silently
-      // refreshing the lib under the user was the worse failure mode.
-      // Only warn when the update touches something PLACED here — the library
-      // tree already reflects updates to everything else. Both kinds have a
-      // placed-usage bridge now (libs 0017 §2d added the footprint one).
-      if (d.usedNames.length === 0) return;
-      const label = d.kind === "footprint" ? "Footprint" : "Symbol";
-      const names = d.usedNames.map((n) => `"${n}"`).join(", ");
-      noteStale(d.kind, d.lib, d.usedNames);
-      setLibUpdate(
-        `${d.usedNames.length === 1 ? label : `${label}s`} ${names} in "${d.lib}" ` +
-          `${d.usedNames.length === 1 ? "was" : "were"} updated by a collaborator — ` +
-          `placed copies keep the previous version. Update them from the session menu.`,
-      );
-    };
-    const onDocReverted = (e: Event) => {
-      const d = (e as CustomEvent<{ reason?: string; at?: string }>).detail;
-      setDocReverted(
-        `This document was rolled back to its last valid state — invalid content ` +
-          `was detected${d?.reason ? ` (${d.reason})` : ""}. Recent edits may have been undone.`,
-      );
-    };
-    const onLibSet = (e: Event) => {
-      const d = (e as CustomEvent<LibSetChangedDetail>).detail;
-      // Only additions get a call to action — a removed lib's table row is
-      // inert until the next boot and needs no interruption.
-      if (d.op !== "add") return;
-      setLibSetNotice({
-        message: d.name
-          ? `A collaborator added library "${d.name}" — click to load it into this session.`
-          : `A collaborator added a new library — click to load it into this session.`,
-        detail: d,
-        mode: "load",
-      });
-    };
-    window.addEventListener(LIB_BUSY_EVENT, onBusy);
-    window.addEventListener(LIB_ERROR_EVENT, onError);
-    window.addEventListener(LIB_ITEM_UPDATED_EVENT, onItemUpdated);
-    window.addEventListener(LIB_SET_CHANGED_EVENT, onLibSet);
-    window.addEventListener(DOC_REVERTED_EVENT, onDocReverted);
-    return () => {
-      clearTimeout(busyTimer);
-      window.removeEventListener(LIB_BUSY_EVENT, onBusy);
-      window.removeEventListener(LIB_ERROR_EVENT, onError);
-      window.removeEventListener(LIB_ITEM_UPDATED_EVENT, onItemUpdated);
-      window.removeEventListener(LIB_SET_CHANGED_EVENT, onLibSet);
-      window.removeEventListener(DOC_REVERTED_EVENT, onDocReverted);
-    };
-  }, [noteStale]);
-
-  // Auto-dismiss the lib error toast.
-  React.useEffect(() => {
-    if (!libError) return;
-    const t = setTimeout(() => setLibError(null), 6000);
-    return () => clearTimeout(t);
-  }, [libError]);
-
-  // Auto-dismiss the lib update toast (a touch longer — it carries a caveat).
-  React.useEffect(() => {
-    if (!libUpdate) return;
-    const t = setTimeout(() => setLibUpdate(null), 10_000);
-    return () => clearTimeout(t);
-  }, [libUpdate]);
-
-  // Auto-dismiss the lib-set toast (long — it carries a click action).
-  React.useEffect(() => {
-    if (!libSetNotice) return;
-    const t = setTimeout(() => setLibSetNotice(null), 30_000);
-    return () => clearTimeout(t);
-  }, [libSetNotice]);
-
-  // Auto-dismiss the doc-reverted toast (longest — the user should see it).
-  React.useEffect(() => {
-    if (!docReverted) return;
-    const t = setTimeout(() => setDocReverted(null), 15_000);
-    return () => clearTimeout(t);
-  }, [docReverted]);
-
-  // Full-library eager load overlay. The fat-load fires one loading:true/false
-  // pair PER library (222 on the full set), and between them the C++ side parses
-  // with the main thread blocked. Show immediately on `true`, and only hide after
-  // a short quiet gap on `false` (reset by the next lib's `true`) — so the overlay
-  // stays continuous across the whole run and drops shortly after the last lib,
-  // instead of flickering 222 times.
-  React.useEffect(() => {
-    let hideTimer: ReturnType<typeof setTimeout> | undefined;
-    const onLoading = (e: Event) => {
-      const d = (e as CustomEvent<LibLoadingDetail>).detail;
-      clearTimeout(hideTimer);
-      // Update the bar on every event (true and false) so the count reflects the
-      // latest lib; arm the hide only when the run reports it's winding down.
-      setLibLoading({ kind: d.kind || "library", done: d.done, total: d.total });
-      if (!d.loading) {
-        hideTimer = setTimeout(() => setLibLoading(null), 700);
-      }
-    };
-    window.addEventListener(LIB_LOADING_EVENT, onLoading);
-    return () => {
-      clearTimeout(hideTimer);
-      window.removeEventListener(LIB_LOADING_EVENT, onLoading);
-    };
-  }, []);
-
-  // Board 3D-model prefetch progress (models-bridge prescan) — background badge.
-  React.useEffect(() => {
-    const onModels = (e: Event) => {
-      const d = (e as CustomEvent<ModelsLoadingDetail>).detail;
-      setModelsSync(
-        d.loading ? `Fetching 3D models — ${d.done}/${d.total}` : null,
-      );
-    };
-    window.addEventListener(MODELS_LOADING_EVENT, onModels);
-    return () => window.removeEventListener(MODELS_LOADING_EVENT, onModels);
   }, []);
 
   // "Taking too long": once the tool has been loading for a while without
@@ -1811,116 +1548,20 @@ export function WasmTool({
         />
       )}
 
-      {/* Boot overlay — covers the big WASM download/compile freeze until the
-          tool has booted + opened. */}
       {!ready && (
-        <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-3 bg-[#1a1a2e] text-white">
-          {status.startsWith("Error") ? (
-            <>
-              <p className="max-w-md px-6 text-center font-mono text-sm text-red-300">
-                {status}
-              </p>
-              <button
-                className="rounded border border-white/30 px-3 py-1 text-xs hover:bg-white/10"
-                onClick={() => window.location.reload()}
-              >
-                Reload
-              </button>
-            </>
-          ) : consent ? (
-            <DownloadConsent
-              info={consent}
-              onAccept={(always) => {
-                if (always) setAutoDownloadEnabled(true);
-                consentResolveRef.current?.(true);
-              }}
-            />
-          ) : (
-            <>
-              <Loader2 className="animate-spin" size={32} />
-              <p className="font-mono text-sm text-white/80">
-                {status || "Loading…"}
-              </p>
-              <DownloadProgress progress={progress} />
-              {/* The parallel fan-out's other progress: project files staging
-                  into MEMFS, and the lib warm-up. The lib line says "checking"
-                  on purpose — the walk visits every lib but downloads only new
-                  or changed ones, so a bare 15/155 next to the consent dialog's
-                  MB figures would read as 155 big downloads. */}
-              {fileSync && fileSync.total > 0 && (
-                <p className="whitespace-pre font-mono text-xs text-white/50">
-                  Project files — {String(fileSync.done).padStart(String(fileSync.total).length, " ")}/{fileSync.total}
-                </p>
-              )}
-              {libSync && (
-                <p className="whitespace-pre font-mono text-xs text-white/50">
-                  {libSyncLabel(libSync)}
-                </p>
-              )}
-              <p className="font-mono text-xs text-white/40">
-                {warmBoot
-                  ? "Loading from your browser's cache — no download needed."
-                  : "Downloading the editor — it's cached for future visits."}
-              </p>
-              {slow && (
-                <>
-                  <p className="max-w-sm px-6 text-center font-mono text-xs text-amber-300/90">
-                    This is taking longer than usual — a slow connection, or
-                    something may be wrong. You can keep waiting, or reload.
-                  </p>
-                  <button
-                    className="rounded border border-white/30 px-3 py-1 text-xs hover:bg-white/10"
-                    onClick={() => window.location.reload()}
-                  >
-                    Reload
-                  </button>
-                </>
-              )}
-            </>
-          )}
-        </div>
+        <BootOverlay
+          status={status}
+          consent={consent}
+          onConsentAccept={() => consentResolveRef.current?.(true)}
+          progress={progress}
+          fileSync={fileSync}
+          libSync={libSync}
+          warmBoot={warmBoot}
+          slow={slow}
+        />
       )}
 
-      {/* Eager library load overlay — the first chooser/editor open hydrates the
-          whole library set from IDB into wasm (tens of seconds on the full CDN
-          set) with the main thread blocked. Cover the (frozen) editor so it reads
-          as "loading, just slow" rather than a hang. Shown post-boot; before
-          `ready` the boot overlay already covers it. */}
-      {ready && libLoading && (
-        <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-3 bg-[#1a1a2e]/95 text-white">
-          <Loader2 className="animate-spin" size={32} />
-          <p className="font-mono text-sm text-white/80">
-            {libLoading.kind === "library"
-              ? "Loading libraries…"
-              : `Loading ${libLoading.kind} libraries…`}
-          </p>
-          {libLoading.total > 0 && (
-            <div className="w-64 max-w-[70vw]">
-              <div className="h-1.5 overflow-hidden rounded-full bg-white/15">
-                <div
-                  className="h-full rounded-full bg-emerald-400 transition-[width] duration-200 ease-out"
-                  style={{
-                    width: `${Math.min(100, Math.round((libLoading.done / libLoading.total) * 100))}%`,
-                  }}
-                />
-              </div>
-              {/* Space-pad `done` to `total`'s width so the centered line
-                  doesn't shift as the count gains a digit. */}
-              <p className="mt-1 whitespace-pre text-center font-mono text-[11px] text-white/50">
-                {String(Math.min(libLoading.done, libLoading.total)).padStart(
-                  String(libLoading.total).length,
-                  " ",
-                )}{" "}
-                / {libLoading.total} libraries
-              </p>
-            </div>
-          )}
-          <p className="max-w-sm px-6 text-center font-mono text-xs text-white/40">
-            Moving the library set into the editor. The first open can take a
-            moment — it's cached after this.
-          </p>
-        </div>
-      )}
+      {ready && notices.libLoading && <LibLoadingOverlay libLoading={notices.libLoading} />}
 
       {/* Transient post-boot status (e.g. file open). */}
       {ready && status && (
@@ -1929,210 +1570,41 @@ export function WasmTool({
         </div>
       )}
 
-      {/* Follow-user (0008): who we're following + how to stop. Esc also works
-          because any canvas key input breaks the follow via noteLocalViewport
-          only when the viewport moves — this banner is the explicit out. */}
       {ready && followingTarget && (
-        <div
-          data-testid="follow-banner"
-          className="absolute left-1/2 top-3 z-20 flex -translate-x-1/2 items-center gap-2 rounded-full bg-black/70 px-3 py-1 text-xs text-white shadow-sm ring-1 ring-inset ring-white/20"
-        >
-          <span>
-            Following <span className="font-semibold">{followingTarget.name}</span> — move to stop
-          </span>
-          <button
-            type="button"
-            className="rounded-full bg-white/15 px-2 py-0.5 font-medium hover:bg-white/25"
-            onClick={() => followRef.current?.unfollow()}
-          >
-            Stop
-          </button>
-        </div>
+        <FollowBanner target={followingTarget} onStop={() => followRef.current?.unfollow()} />
       )}
 
-      {/* Overlay menu (0010): the single draggable circular icon replacing the
-          old top-right row. Its badge is the peer count; the panel stacks the
-          session sections — roster, source chip, view-only pill, follow row,
-          comments (portal slot filled by CommentLayer), chrome toggle. It is
-          the one control that stays up in canvas-only (chrome-hidden) mode. */}
+      {/* Session menu (0010): the draggable FAB + its sections. */}
       {ready && (
-        <OverlayMenu
-          badge={peers.length}
-          unread={commentsUnread.threads}
-          unreadMention={commentsUnread.mentioned}
-          alert={staleLibItems.size > 0}
-        >
-          {/* PEOPLE — who else is here, and whose view you're locked to. The
-              follow state lives on each person's own row (PresenceRoster), so
-              there is no separate "Following…" banner to keep in sync. */}
-          {peers.length > 0 && (
-            <OverlayMenuSection label="People">
-              <PresenceRoster
-                peers={peers}
-                activeSheetPath={activeSheetPath}
-                following={followingTarget}
-                onFollow={(t) => {
-                  if (t) followRef.current?.follow(t);
-                  else followRef.current?.unfollow();
-                }}
-              />
-            </OverlayMenuSection>
-          )}
-
-          {/* DOCUMENT — where this file came from and whether you may edit it.
-              SourceChip is shared with the light project pages, so instead of
-              restyling it we ask for its `muted` tone: colour drops to a dot,
-              and the chip sits in a normal row like everything else. */}
-          {(sourceDescriptor || readOnly || staleLibItems.size > 0) && (
-            <OverlayMenuSection label="Document">
-              {/* Behind-the-library state (libs 0017 §2b/2c): placed items a
-                  peer updated in the library. Persistent — unlike the toast —
-                  and actionable without a page reload: "Update from library"
-                  re-reads just those items into the placed instances. */}
-              {staleLibItems.size > 0 && (
-                <div
-                  data-testid="stale-libs-row"
-                  className="flex w-full flex-col gap-1 rounded-md bg-amber-500/10 px-2 py-1.5 text-xs text-neutral-800 dark:text-white/90"
-                >
-                  <div className="flex items-center gap-2">
-                    <AlertTriangle size={14} className="shrink-0 text-amber-500" />
-                    <span>
-                      {[...staleLibItems.values()].reduce((n, e) => n + e.names.size, 0)} placed{" "}
-                      {[...staleLibItems.values()].every((e) => e.kind === "footprint")
-                        ? "footprint(s)"
-                        : [...staleLibItems.values()].every((e) => e.kind === "symbol")
-                          ? "symbol(s)"
-                          : "item(s)"}{" "}
-                      behind the library
-                    </span>
-                  </div>
-                  <ul className="ml-6 list-disc font-mono text-[11px] text-neutral-600 dark:text-white/70">
-                    {[...staleLibItems.values()].flatMap((e) =>
-                      [...e.names].map((n) => (
-                        <li key={`${e.kind}:${e.lib}:${n}`} data-testid="stale-lib-item">
-                          {e.lib}:{n}
-                        </li>
-                      )),
-                    )}
-                  </ul>
-                  <div className="ml-6 flex gap-2">
-                    <button
-                      type="button"
-                      data-testid="update-from-library"
-                      disabled={staleUpdating || readOnly}
-                      onClick={() => void updateStaleFromLibrary()}
-                      className="inline-flex items-center gap-1 rounded bg-amber-500 px-2 py-0.5 text-[11px] font-medium text-neutral-900 hover:bg-amber-400 disabled:opacity-50"
-                    >
-                      <RefreshCw size={11} className={staleUpdating ? "animate-spin" : ""} />
-                      Update from library
-                    </button>
-                    <button
-                      type="button"
-                      data-testid="stale-libs-dismiss"
-                      onClick={() => clearStale()}
-                      className="rounded px-2 py-0.5 text-[11px] text-neutral-500 hover:bg-black/5 dark:text-white/50 dark:hover:bg-white/10"
-                    >
-                      Dismiss
-                    </button>
-                  </div>
-                </div>
-              )}
-              {sourceDescriptor && (
-                <div className={`${overlayRowClass} cursor-default`}>
-                  <SourceChip descriptor={sourceDescriptor} tone="muted" />
-                </div>
-              )}
-              {readOnly && (
-                <div
-                  data-testid="view-only-pill"
-                  className={`${overlayRowClass} cursor-default`}
-                >
-                  <EyeOff size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
-                  <span>View only</span>
-                  <span className="ml-auto text-[10px] text-neutral-400 dark:text-white/40">
-                    read-only
-                  </span>
-                </div>
-              )}
-            </OverlayMenuSection>
-          )}
-
-          {commentsCtl && (
-            <OverlayMenuSection label="Comments">
-              <div
-                data-testid="overlay-menu-comments"
-                ref={setCommentsSlot}
-                className="flex w-full flex-col items-start gap-2"
-              />
-            </OverlayMenuSection>
-          )}
-
-          <OverlayMenuSection label="View">
-            {/* Viewer panels (viewer-panels): canvas-only stand-ins for the
-                chrome-hidden wx panes — available to viewers and to editors
-                in hide-UI mode alike. */}
-            {effectiveChromeHidden && layersMod && (
-              <button
-                data-testid="layers-panel-toggle"
-                aria-pressed={layersOpen}
-                className={overlayRowClass}
-                title="Board layers — visibility and active layer"
-                onClick={() => setLayersOpen(!layersOpen)}
-              >
-                <Layers size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
-                <span>{layersOpen ? "Hide layers" : "Layers"}</span>
-              </button>
-            )}
-            {effectiveChromeHidden && (tool === "pcbnew" || tool === "eeschema") && (
-              <button
-                data-testid="inspector-panel-toggle"
-                aria-pressed={inspectorOpen}
-                className={overlayRowClass}
-                title="Properties of the selected items"
-                onClick={() => setInspectorOpen(!inspectorOpen)}
-              >
-                <Crosshair size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
-                <span>{inspectorOpen ? "Hide inspector" : "Inspector"}</span>
-              </button>
-            )}
-            {setChromeFn !== null && !readOnly && (
-              <button
-                data-testid="chrome-toggle"
-                aria-pressed={chromeHidden}
-                className={overlayRowClass}
-                title={`${chromeHidden ? "Show" : "Hide"} UI (${CHROME_HOTKEY_LABEL})`}
-                onClick={() => toggleChromeHidden()}
-              >
-                {chromeHidden ? (
-                  <PanelsTopLeft size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
-                ) : (
-                  <EyeOff size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
-                )}
-                <span>{chromeHidden ? "Show UI" : "Hide UI"}</span>
-                <kbd className="ml-auto rounded bg-black/10 px-1.5 py-0.5 text-[10px] font-medium text-neutral-500 dark:bg-white/10 dark:text-white/50">
-                  {CHROME_HOTKEY_LABEL}
-                </kbd>
-              </button>
-            )}
-            {/* Light/dark toggle (comments-ux 0002): flips the shell theme;
-                the F4 effect above re-themes the GAL canvas through the
-                bridge. Available to viewers too — theming isn't editing. */}
-            <button
-              data-testid="overlay-theme-toggle"
-              aria-pressed={theme === "dark"}
-              className={overlayRowClass}
-              title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
-              onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-            >
-              {theme === "dark" ? (
-                <Sun size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
-              ) : (
-                <Moon size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
-              )}
-              <span>{theme === "dark" ? "Light mode" : "Dark mode"}</span>
-            </button>
-          </OverlayMenuSection>
-        </OverlayMenu>
+        <SessionMenu
+          tool={tool}
+          readOnly={readOnly}
+          theme={theme}
+          peers={peers}
+          activeSheetPath={activeSheetPath}
+          followingTarget={followingTarget}
+          onFollow={(t) => {
+            if (t) followRef.current?.follow(t);
+            else followRef.current?.unfollow();
+          }}
+          sourceDescriptor={sourceDescriptor}
+          staleLibItems={notices.staleLibItems}
+          staleUpdating={notices.staleUpdating}
+          onUpdateStale={() => void notices.updateStaleFromLibrary()}
+          onDismissStale={() => notices.clearStale()}
+          commentsUnread={commentsUnread}
+          hasComments={commentsCtl !== null}
+          setCommentsSlot={setCommentsSlot}
+          effectiveChromeHidden={effectiveChromeHidden}
+          hasLayers={layersMod !== null}
+          layersOpen={layersOpen}
+          setLayersOpen={setLayersOpen}
+          inspectorOpen={inspectorOpen}
+          setInspectorOpen={setInspectorOpen}
+          canToggleChrome={setChromeFn !== null}
+          chromeHidden={chromeHidden}
+          onToggleChrome={() => toggleChromeHidden()}
+        />
       )}
 
       {/* Figma-like comments (0005): GAL pin dots + this DOM layer (hit targets,
@@ -2176,201 +1648,31 @@ export function WasmTool({
       {/* DEV: presence style tuner (VITE_PRESENCE_TUNER=1). */}
       {ready && tunerMod && <PresenceTuner mod={tunerMod} tool={tool} />}
 
-      {/* Lib pre-sync warming IDB after the editor opened (big set) — the ONLY
-          surface for it now that the warm-up starts post-open: a small unobtrusive
-          indicator so the user knows browsing is still filling in behind them,
-          never something they are waiting on. */}
-      {ready && libSync && (
-        <div className="pointer-events-none absolute bottom-9 left-3 z-20 flex items-center gap-2 rounded bg-black/80 px-3 py-1.5 font-mono text-xs text-emerald-200">
-          <Loader2 className="animate-spin" size={14} />{" "}
-          <span className="whitespace-pre">{libSyncLabel(libSync)}</span>
-        </div>
-      )}
-
-      {/* Board 3D models still prefetching into the cache (background). */}
-      {ready && modelsSync && (
-        <div className="pointer-events-none absolute bottom-[4.25rem] left-3 z-20 flex items-center gap-2 rounded bg-black/80 px-3 py-1.5 text-xs text-sky-200">
-          <Loader2 className="animate-spin" size={14} /> {modelsSync}
-        </div>
-      )}
-
-      {/* A library item is being fetched (open/save). */}
-      {ready && libBusy && (
-        <div className="pointer-events-none absolute left-1/2 top-3 z-20 flex -translate-x-1/2 items-center gap-2 rounded bg-black/80 px-3 py-1.5 text-xs text-white">
-          <Loader2 className="animate-spin" size={14} /> Loading {libBusy}…
-        </div>
-      )}
-
-      {/* A save path is durably BLOCKED (CAS conflict / unknown commit state) —
-          persistent full-width banner, no auto-dismiss: subsequent Ctrl+S on
-          the path is absorbed by the save lane, so this must stay visible. */}
-      {saveBlocked && (
-        <div
-          data-testid="save-blocked-banner"
-          className="absolute inset-x-0 top-0 z-40 bg-red-900/95 px-4 py-2 text-center text-xs font-medium text-red-100 shadow-lg"
-        >
-          {saveBlocked.message}
-        </div>
-      )}
-
-      {/* Top-center toast column: simultaneous notices stack instead of
-          overlapping (they all used to render at the same absolute spot). */}
-      <div className="absolute left-1/2 top-3 z-40 flex -translate-x-1/2 flex-col items-center gap-2">
-
-      {/* Library error (e.g. a backend 404 on open) — auto-dismisses. */}
-      {libError && (
-        <button
-          className="max-w-md rounded bg-red-950/95 px-3 py-2 text-center text-xs text-red-100 shadow-lg ring-1 ring-red-500/40"
-          onClick={() => setLibError(null)}
-          title="Dismiss"
-        >
-          {libError}
-        </button>
-      )}
-
-      {/* A collaborator updated a symbol PLACED in this document — auto-dismisses. */}
-      {libUpdate && (
-        <button
-          data-testid="lib-update-toast"
-          className="max-w-md rounded bg-amber-950/95 px-3 py-2 text-center text-xs text-amber-100 shadow-lg ring-1 ring-amber-500/40"
-          onClick={() => setLibUpdate(null)}
-          title="Dismiss"
-        >
-          {libUpdate}
-        </button>
-      )}
-
-      {/* A peer changed the team's lib set — click loads the new lib live
-          (kicadLibsAddEntry bridge), falling back to a reload offer. */}
-      {libSetNotice && (
-        <button
-          data-testid="lib-set-toast"
-          className="max-w-md rounded bg-sky-950/95 px-3 py-2 text-center text-xs text-sky-100 shadow-lg ring-1 ring-sky-500/40"
-          onClick={() => {
-            const notice = libSetNotice;
-            if (notice.mode === "reload") {
-              window.location.reload();
-              return;
-            }
-            const source = activeLibsSourceRef.current;
-            if (!source) {
-              setLibSetNotice({ ...notice, mode: "reload", message: reloadFallbackMsg(notice) });
-              return;
-            }
-            setLibSetNotice(null);
-            void addAnnouncedLib(source, notice.detail, (m) => console.log(m)).then(
-              (ok) => {
-                if (!ok) {
-                  setLibSetNotice({
-                    ...notice,
-                    mode: "reload",
-                    message: reloadFallbackMsg(notice),
-                  });
-                }
-              },
-            );
-          }}
-          title={libSetNotice.mode === "reload" ? "Reload" : "Load the new library"}
-        >
-          {libSetNotice.message}
-        </button>
-      )}
-
-      {/* Backend rolled this doc back to the last valid state (kicad-validity). */}
-      {docReverted && (
-        <button
-          data-testid="doc-reverted-toast"
-          className="max-w-md rounded bg-orange-950/95 px-3 py-2 text-center text-xs text-orange-100 shadow-lg ring-1 ring-orange-500/40"
-          onClick={() => setDocReverted(null)}
-          title="Dismiss"
-        >
-          {docReverted}
-        </button>
-      )}
-
-      </div>
+      <NoticeStack
+        ready={ready}
+        libSync={libSync}
+        modelsSync={notices.modelsSync}
+        libBusy={notices.libBusy}
+        saveBlocked={saveBlocked}
+        libError={notices.libError}
+        onDismissLibError={notices.dismissLibError}
+        libUpdate={notices.libUpdate}
+        onDismissLibUpdate={notices.dismissLibUpdate}
+        libSetNotice={notices.libSetNotice}
+        onLibSetClick={notices.onLibSetClick}
+        docReverted={notices.docReverted}
+        onDismissDocReverted={notices.dismissDocReverted}
+      />
 
       </WasmErrorBoundary>
 
-      {/* Terminal failure — z-35, ABOVE the boot overlay but below the console
-          panel, OUTSIDE the error boundary, and independent of `ready`: a
-          post-boot runtime death gets a proper blue screen instead of a blank
-          page, with the console panel forced open beneath it. */}
-      {fatal && (
-        <div
-          data-testid="fatal-overlay"
-          className="absolute inset-0 z-[35] flex flex-col items-center justify-center gap-3 bg-[#1a1a2e] text-white"
-        >
-          <p className="font-mono text-4xl text-white/90">:(</p>
-          <p className="font-mono text-sm text-white">
-            The editor hit an unrecoverable error and stopped.
-          </p>
-          <p className="max-w-lg px-6 text-center font-mono text-xs text-blue-100/90">
-            {fatal}
-          </p>
-          <p className="max-w-md px-6 text-center font-mono text-xs text-blue-200/60">
-            The console below records what was loading when this happened —
-            please copy it into a bug report.
-          </p>
-          <div className="flex gap-2">
-            <button
-              className="rounded border border-white/40 px-3 py-1 text-xs hover:bg-white/10"
-              onClick={() => window.location.reload()}
-            >
-              Reload
-            </button>
-          </div>
-        </div>
-      )}
+      {fatal && <FatalOverlay message={fatal} />}
 
-      {/* z-40 (above the z-30 boot overlay and the z-35 fatal overlay): when a
-          load fails, the log this panel holds is the only account of WHY, so it
-          must never end up underneath the thing reporting the failure. Forced
-          visible on a fatal even with chrome hidden, for the same reason. */}
+      {/* The log console (z-40, above boot + fatal overlays) — forced visible
+          on a fatal even with chrome hidden: the log is the only account of
+          WHY a load failed. */}
       {(!effectiveChromeHidden || fatal) && (
-        /* Closed: a content-width tab pinned bottom-left (no right-0), so the
-           version badge and the app's bottom edge stay visible/clickable.
-           Open: the full-width footer panel. */
-        <div
-          ref={consolePanelRef}
-          className={
-            showLog ? "absolute bottom-0 left-0 right-0 z-40" : "absolute bottom-0 left-0 z-40"
-          }
-        >
-          {showLog ? (
-            <>
-              <div className="flex items-center bg-black/70">
-                <button
-                  className="flex items-center gap-1 px-3 py-1 font-mono text-xs text-white"
-                  onClick={() => setShowLog(false)}
-                >
-                  <ChevronDown size={14} /> console ({logs.length})
-                </button>
-                <button
-                  className="ml-auto px-3 py-1 font-mono text-xs text-white/70 hover:text-white"
-                  onClick={() => {
-                    void navigator.clipboard.writeText(logs.join("\n")).then(
-                      () => append("[console] copied to clipboard"),
-                      () => append("[console] clipboard copy failed"),
-                    );
-                  }}
-                >
-                  copy
-                </button>
-              </div>
-              <pre className="max-h-64 select-text cursor-text overflow-auto bg-black/85 p-3 font-mono text-[11px] leading-tight text-green-300">
-                {logs.join("\n")}
-              </pre>
-            </>
-          ) : (
-            <button
-              className="flex items-center gap-1 bg-black/70 px-3 py-1 font-mono text-xs text-white"
-              onClick={() => setShowLog(true)}
-            >
-              <ChevronUp size={14} /> console ({logs.length})
-            </button>
-          )}
-        </div>
+        <ConsolePanel ref={consolePanelRef} logs={logs} open={showLog} setOpen={setShowLog} append={append} />
       )}
     </div>
   );
