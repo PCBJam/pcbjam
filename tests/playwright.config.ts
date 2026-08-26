@@ -192,6 +192,9 @@ export default defineConfig({
       use: {
         ...devices['Desktop Chrome'],
         viewport: { width: 1280, height: 720 },
+        // eeschema-copy-paste asserts the copied s-expression reaches
+        // navigator.clipboard in full (firefox cannot grant these).
+        permissions: ['clipboard-read', 'clipboard-write'],
         ...CHROMIUM_CI_ARGS,
       },
     },

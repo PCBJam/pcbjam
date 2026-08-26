@@ -170,6 +170,7 @@ all: minimal_test.html \
      $(S)/scrollbar/scrollbar_test.html \
      $(S)/notebook/notebook_test.html \
      $(S)/clipboard/clipboard_test.html \
+     $(S)/textdataobj/textdataobj_test.html \
      $(S)/filedialog/filedialog_test.html \
      $(S)/layout/layout_test.html \
      $(S)/aui/aui_test.html \
@@ -319,6 +320,18 @@ $(S)/clipboard/clipboard_test.o: $(S)/clipboard/clipboard_test.cpp
 	$(CXX) -c $(CXXFLAGS) $< -o $@
 
 $(S)/clipboard/clipboard_test.html: $(S)/clipboard/clipboard_test.o $(WX_CORE_LIB) $(JS_FILES)
+	$(CXX) $< $(LDFLAGS_NOGL) --pre-js $(JS) --shell-file $(HTML) -o $@
+
+# wxTextDataObject encoding test (no GL). The source lives in the wxWidgets
+# repo — the regression under test is a wx bug (wxNEEDS_UTF8_FOR_TEXT_DATAOBJ
+# on the wasm port), so the test case travels with it.
+WX_TESTS_WASM_DIR = ../../wxwidgets/tests/wasm
+
+$(S)/textdataobj/textdataobj_test.o: $(WX_TESTS_WASM_DIR)/textdataobj_test.cpp
+	@mkdir -p $(@D)
+	$(CXX) -c $(CXXFLAGS) $< -o $@
+
+$(S)/textdataobj/textdataobj_test.html: $(S)/textdataobj/textdataobj_test.o $(WX_CORE_LIB) $(JS_FILES)
 	$(CXX) $< $(LDFLAGS_NOGL) --pre-js $(JS) --shell-file $(HTML) -o $@
 
 # FileDialog test (no GL)
@@ -776,6 +789,7 @@ contextmenu: $(S)/contextmenu/contextmenu_test.html
 scrollbar: $(S)/scrollbar/scrollbar_test.html
 notebook: $(S)/notebook/notebook_test.html
 clipboard: $(S)/clipboard/clipboard_test.html
+textdataobj: $(S)/textdataobj/textdataobj_test.html
 filedialog: $(S)/filedialog/filedialog_test.html
 layout: $(S)/layout/layout_test.html
 aui: $(S)/aui/aui_test.html
@@ -850,7 +864,7 @@ clean:
 	rm -f $(S)/*/*_test*.html $(S)/*/*_test*.js $(S)/*/*_test*.wasm
 	rm -f $(S)/*/*_repro*.html $(S)/*/*_repro*.js $(S)/*/*_repro*.wasm
 
-.PHONY: all clean menu contextmenu scrollbar clipboard filedialog layout aui toolbar grid dialog timer tree dataview htmlwin stc print dnd propgrid pickers collapsible listctrl infobar dataviewvirtual auinotebook wizard gridedit calendar gridrenderers printpreview bitmapbuttons specialized validators ownerdrawn popup xml wasmedge fontenum textdecor bitmask regions maximize earlysize selectheight uipolish threadpool logerror retinascale coroutine coroutine-nested asyncify-races notebook radiogroups collapse-relayout
+.PHONY: all clean menu contextmenu scrollbar clipboard textdataobj filedialog layout aui toolbar grid dialog timer tree dataview htmlwin stc print dnd propgrid pickers collapsible listctrl infobar dataviewvirtual auinotebook wizard gridedit calendar gridrenderers printpreview bitmapbuttons specialized validators ownerdrawn popup xml wasmedge fontenum textdecor bitmask regions maximize earlysize selectheight uipolish threadpool logerror retinascale coroutine coroutine-nested asyncify-races notebook radiogroups collapse-relayout
 
 # === Coroutine pthread variant — historically reproduced the KiCad coroutine x pthreads crash ===
 # Same modal-free harness as `coroutine`, but compiled/linked with pthreads to match

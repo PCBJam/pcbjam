@@ -22,6 +22,9 @@ test.describe('wxClipboard Tests', () => {
     await page.goto('/standalone/clipboard/clipboard_test.html');
     await waitForWxApp(page);
 
+    // Seed the clipboard so a silently-failed write cannot pass as success.
+    await page.evaluate(() => navigator.clipboard.writeText('SENTINEL-BEFORE-COPY'));
+
     // Click "Copy to Clipboard" button
     await clickByLabel(page, 'Copy to Clipboard');
 
@@ -29,6 +32,11 @@ test.describe('wxClipboard Tests', () => {
     await expect.poll(() => testLogger.consoleLogs.some(l =>
       (l.includes('SUCCESS') && l.includes('Copied')) || l.includes('Attempting to copy')
     ), { message: 'Copy should succeed or at least attempt' }).toBe(true);
+
+    // The FULL input text must reach the browser clipboard — the UTF-32/UTF-8
+    // mixup in wxTextDataObject used to truncate it to its first character.
+    const clip = await page.evaluate(() => navigator.clipboard.readText());
+    expect(clip).toBe('Sample text for clipboard test');
 
     await stableShot(page, 'clipboard-02-copy-clicked.png', { fullPage: true });
   });
