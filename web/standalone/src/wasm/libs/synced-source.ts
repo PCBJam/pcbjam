@@ -111,13 +111,21 @@ export function syncedLibsSource(
         const names = [...(pendingNames.get(kind) ?? [])];
         pendingNames.delete(kind);
         const mod = (globalThis as { Module?: Record<string, unknown> }).Module;
+        // libs 0019 F2: a remote edit only INVALIDATES the editor's caches
+        // (cheap); the fat re-load happens lazily when the user looks at the
+        // lib, or explicitly from "Update from library" (kicadLibsReload).
+        // Older builds without the invalidate export keep the eager reload.
+        const invalidate = mod?.kicadLibsInvalidate;
         const reload = mod?.kicadLibsReload;
-        if (typeof reload !== "function") return;
-        log(`[synced] remote change → reload ${kind} lib "${info.name}"`);
+        const fn = typeof invalidate === "function" ? invalidate : reload;
+        if (typeof fn !== "function") return;
+        log(
+          `[synced] remote change → ${fn === invalidate ? "invalidate" : "reload"} ${kind} lib "${info.name}"`,
+        );
         try {
-          (reload as (kind: string, nickname: string) => void)(kind, info.name);
+          (fn as (kind: string, nickname: string) => void)(kind, info.name);
         } catch (e) {
-          log(`[synced] editor reload failed: ${String(e)}`);
+          log(`[synced] editor cache invalidation failed: ${String(e)}`);
           return;
         }
         emitItemUpdated(info, kind, names, mod);

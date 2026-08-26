@@ -602,6 +602,10 @@ compile_embind_tu() {
     local _src="$1" _obj="$2" _subdir="$3" _defines="${4:-}"
 
     local _includes="-I${KICAD_BUILD} -I${KICAD_DIR}/include -I${KICAD_DIR}/${_subdir} -I${KICAD_DIR}/common"
+    # The editor-frame headers the bindings reach into (libs 0019 F3: the
+    # Symbol Editor's open copy) live one level down, like eeschema's own
+    # CMake include list (./symbol_editor).
+    _includes+=" -I${KICAD_DIR}/${_subdir}/symbol_editor -I${KICAD_DIR}/${_subdir}/widgets"
     # Generated DSN-lexer headers (e.g. pcb_lexer.h, used transitively via kicad_clipboard.h →
     # pcb_io_kicad_sexpr_parser.h) are emitted into the common build subdir by make_lexer.
     _includes+=" -I${KICAD_BUILD}/common"

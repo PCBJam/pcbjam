@@ -78,6 +78,33 @@ inline void reloadLibrary( std::string aKind, std::string aNickname )
 }
 
 /**
+ * Cheap counterpart of reloadLibrary (libs 0019): drop the lib's LIB_DATA
+ * entry (plugin instance + parsed cache) so the NEXT access re-reads the
+ * provider — no eager LoadLibraryEntry fat-load, no tree mail. A remote edit
+ * calls this; the fat-load happens lazily when the user looks at the lib,
+ * or explicitly through reloadLibrary from "Update from library".
+ * (pcbnew's FOOTPRINT_LIBRARY_ADAPTER::PreloadedFootprints is invalidated by
+ * the pcbnew-side caller — this header stays common-code only.)
+ */
+inline void invalidateLibrary( std::string aKind, std::string aNickname )
+{
+    KIWAY_PLAYER* top =
+            wxTheApp ? dynamic_cast<KIWAY_PLAYER*>( wxTheApp->GetTopWindow() ) : nullptr;
+
+    if( !top )
+        return;
+
+    const bool     fp = aKind == "footprint";
+    const wxString nick = wxString::FromUTF8( aNickname.c_str() );
+
+    pcbjam_collab::runOnCoroutine( top, [fp, nick]()
+    {
+        Pgm().GetLibraryManager().ReloadLibraryEntry(
+                fp ? LIBRARY_TABLE_TYPE::FOOTPRINT : LIBRARY_TABLE_TYPE::SYMBOL, nick );
+    } );
+}
+
+/**
  * Add one PCBJAM lib-table row at RUNTIME and load it — the lib SET is
  * otherwise frozen at boot (sym/fp-lib-table are written once in preRun).
  * Used by the "a new team library appeared" flow: the JS side has already

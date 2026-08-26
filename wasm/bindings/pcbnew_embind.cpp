@@ -26,6 +26,9 @@
 #include <zone.h>
 #include <eda_text.h>
 #include <pcb_edit_frame.h>
+#include <footprint_edit_frame.h>
+#include <footprint_library_adapter.h>
+#include <project_pcb.h>
 #include <lib_id.h>
 #include <kicad_clipboard.h>
 #include <io/kicad/kicad_io_utils.h>
@@ -2484,9 +2487,129 @@ static bool kicadCollabBusyProbe()
 
 // ── libs 0017 §2d/§2c: placed-footprint usage + update-from-library ──────────
 
+// The Footprint Editor frame opened from this board session (nullptr when
+// none exists — Player(…, false) never creates one).
+static FOOTPRINT_EDIT_FRAME* fpEditorFrame( PCB_EDIT_FRAME* aFrame )
+{
+    if( !aFrame )
+        return nullptr;
+
+    return dynamic_cast<FOOTPRINT_EDIT_FRAME*>(
+            aFrame->Kiway().Player( FRAME_FOOTPRINT_EDITOR, false ) );
+}
+
+// libs 0019 F1: drop pcbnew's SECOND footprint cache for one library.
+// FOOTPRINT_LIBRARY_ADAPTER::PreloadedFootprints is read before the plugin by
+// the tree, the preview and LoadFootprint, and its only invalidation is
+// timestamp-gated (PCB_IO_PCBJAM_FP pins the timestamp), so a remote edit
+// never reached it — the tree/preview/update kept serving the old body.
+void pcbLibsInvalidatePreloaded( std::string aLibNickname )
+{
+    PCB_EDIT_FRAME* fr = pcbFrame();
+
+    if( !fr )
+        return;
+
+    PROJECT_PCB::FootprintLibAdapter( &fr->Prj() )
+            ->InvalidatePreloaded( wxString::FromUTF8( aLibNickname.c_str() ) );
+}
+
+// Test probes (libs 0019 smoke): warm the adapter's preloaded cache the way the
+// footprint editor's tree does, and read a footprint's pad sizes through the
+// SAME LoadFootprint path the preview / update-from-library use.
+int pcbLibsTestPreload( std::string aLibNickname )
+{
+    PCB_EDIT_FRAME* fr = pcbFrame();
+
+    if( !fr )
+        return -1;
+
+    FOOTPRINT_LIBRARY_ADAPTER* adapter = PROJECT_PCB::FootprintLibAdapter( &fr->Prj() );
+    adapter->AsyncLoad();
+    adapter->BlockUntilLoaded();
+    return (int) adapter->GetFootprints( wxString::FromUTF8( aLibNickname.c_str() ), true ).size();
+}
+
+std::string pcbLibsTestLoadFootprint( std::string aLibNickname, std::string aFootprintName )
+{
+    PCB_EDIT_FRAME* fr = pcbFrame();
+
+    if( !fr )
+        return "";
+
+    FOOTPRINT_LIBRARY_ADAPTER* adapter = PROJECT_PCB::FootprintLibAdapter( &fr->Prj() );
+    std::unique_ptr<FOOTPRINT> fp;
+
+    try
+    {
+        fp.reset( adapter->LoadFootprint( wxString::FromUTF8( aLibNickname.c_str() ),
+                                          wxString::FromUTF8( aFootprintName.c_str() ), false ) );
+    }
+    catch( ... )
+    {
+        return "";
+    }
+
+    if( !fp )
+        return "";
+
+    std::string out;
+
+    for( PAD* pad : fp->Pads() )
+    {
+        out += std::string( pad->GetNumber().utf8_str() ) + ":"
+               + std::to_string( pad->GetSize( PADSTACK::ALL_LAYERS ).x ) + "x"
+               + std::to_string( pad->GetSize( PADSTACK::ALL_LAYERS ).y ) + ";";
+    }
+
+    return out;
+}
+
+// Smoke plumbing: load a library footprint into the (already open) Footprint
+// Editor frame — what a tree double-click does, without tree geometry.
+bool pcbLibsTestEditorLoad( std::string aLibNickname, std::string aFootprintName )
+{
+    FOOTPRINT_EDIT_FRAME* fe = fpEditorFrame( pcbFrame() );
+
+    if( !fe )
+        return false;
+
+    const LIB_ID id( wxString::FromUTF8( aLibNickname.c_str() ),
+                     wxString::FromUTF8( aFootprintName.c_str() ) );
+    pcbjam_collab::runOnCoroutine( fe, [fe, id]() { fe->LoadFootprintFromLibrary( id ); } );
+    return true;
+}
+
+// Smoke probe: the Footprint Editor's OPEN copy — "<lib>:<name>|<pads>" or "".
+std::string pcbLibsTestEditorFootprint()
+{
+    FOOTPRINT_EDIT_FRAME* fe = fpEditorFrame( pcbFrame() );
+
+    if( !fe || !fe->GetBoard() )
+        return "";
+
+    FOOTPRINT* fp = fe->GetBoard()->GetFirstFootprint();
+
+    if( !fp )
+        return "";
+
+    std::string out = std::string( fe->GetLoadedFPID().Format().c_str() ) + "|";
+
+    for( PAD* pad : fp->Pads() )
+    {
+        out += std::string( pad->GetNumber().utf8_str() ) + ":"
+               + std::to_string( pad->GetSize( PADSTACK::ALL_LAYERS ).x ) + "x"
+               + std::to_string( pad->GetSize( PADSTACK::ALL_LAYERS ).y ) + ";";
+    }
+
+    return out;
+}
+
 // Placed-instance count for a library footprint (mirror of schLibsSymbolUsage):
 // drives the "a footprint you placed was updated" notice after a remote lib
-// edit. 0 without a board frame.
+// edit. Counts the board's placements PLUS the copy open in the Footprint
+// Editor (libs 0019 F3 — an open-but-unplaced footprint is "used" too).
+// 0 without a board frame.
 int pcbLibsFootprintUsage( std::string aLibNickname, std::string aFootprintName )
 {
     PCB_EDIT_FRAME* fr = pcbFrame();
@@ -2501,6 +2624,12 @@ int pcbLibsFootprintUsage( std::string aLibNickname, std::string aFootprintName 
     for( FOOTPRINT* fp : fr->GetBoard()->Footprints() )
     {
         if( fp->GetFPID() == target )
+            count++;
+    }
+
+    if( FOOTPRINT_EDIT_FRAME* fe = fpEditorFrame( fr ) )
+    {
+        if( fe->GetLoadedFPID() == target )
             count++;
     }
 
@@ -2595,6 +2724,26 @@ std::string pcbUpdateFromLibrary( std::string aLibNickname, std::string aNamesJs
 
         commit.Push( wxT( "Update footprints from library" ) );
         fr->GetCanvas()->Refresh();
+
+        // The Footprint Editor's own copy (libs 0019 F3): re-open it from the
+        // (fresh) library when it is one of the named items and has no local
+        // edits; with edits pending it is left alone and reported, never
+        // clobbered.
+        if( FOOTPRINT_EDIT_FRAME* fe = fpEditorFrame( fr ) )
+        {
+            const LIB_ID loaded = fe->GetLoadedFPID();
+
+            if( wxString( loaded.GetLibNickname() ) == lib
+                && names.count( wxString( loaded.GetLibItemName() ) ) )
+            {
+                if( fe->IsContentModified() )
+                    missing.push_back( std::string( loaded.Format().c_str() )
+                                       + " (open in the Footprint Editor with unsaved edits — save or revert it first)" );
+                else
+                    fe->LoadFootprintFromLibrary( loaded );
+            }
+        }
+
         emitLibUpdateDone( updated, missing );
     } );
 
@@ -2636,6 +2785,10 @@ EMSCRIPTEN_BINDINGS(pcbnew) {
     // Placed-footprint usage + update-from-library (libs 0017 §2c/2d).
     function("kicadLibsFootprintUsage", &pcbLibsFootprintUsage);
     function("kicadUpdateFromLibrary", &pcbUpdateFromLibraryShim);
+    function("kicadLibsTestPreload", &pcbLibsTestPreload);
+    function("kicadLibsTestLoadFootprint", &pcbLibsTestLoadFootprint);
+    function("kicadLibsTestEditorFootprint", &pcbLibsTestEditorFootprint);
+    function("kicadLibsTestEditorLoad", &pcbLibsTestEditorLoad);
 #endif
     // Layer bridge (viewer-panels) — pcbnew-only names, merged-image safe
     // (null-frame no-op when eeschema is the live frame).

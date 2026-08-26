@@ -90,8 +90,11 @@ export function useLibNotices(opts: {
   }, []);
   /** Update every placed instance of the stale items from the library (2c). */
   const updateStaleFromLibrary = React.useCallback(async () => {
-    const mod = (window as { Module?: { kicadUpdateFromLibrary?: unknown } }).Module;
+    const mod = (window as {
+      Module?: { kicadUpdateFromLibrary?: unknown; kicadLibsReload?: unknown };
+    }).Module;
     const fn = mod?.kicadUpdateFromLibrary;
+    const reload = mod?.kicadLibsReload;
     if (typeof fn !== "function") {
       setLibError("This editor build can't update placed items from the library — reload to refresh them.");
       return;
@@ -102,10 +105,20 @@ export function useLibNotices(opts: {
         // The bridge queues the edit on the frame's coroutine and answers
         // {queued:true}; the outcome arrives as a `pcbjam:lib-update-done`
         // window event (or {ok:false,error} synchronously).
-        const done = new Promise<{ ok: boolean; updated?: number; error?: string }>((resolve) => {
+        // libs 0019 F2: the remote edit only invalidated the caches — bring the
+        // lib back to LOADED first (same coroutine queue, so it lands before
+        // the exchange below).
+        if (typeof reload === "function") {
+          try {
+            (reload as (kind: string, lib: string) => void)(entry.kind, entry.lib);
+          } catch {
+            /* the update below falls back to the lazy load */
+          }
+        }
+        const done = new Promise<{ ok: boolean; updated?: number; missing?: string[]; error?: string }>((resolve) => {
           const onDone = (e: Event) => {
             window.removeEventListener("pcbjam:lib-update-done", onDone);
-            resolve((e as CustomEvent<{ ok: boolean; updated?: number }>).detail);
+            resolve((e as CustomEvent<{ ok: boolean; updated?: number; missing?: string[] }>).detail);
           };
           window.addEventListener("pcbjam:lib-update-done", onDone);
           setTimeout(() => {
@@ -131,6 +144,10 @@ export function useLibNotices(opts: {
           continue;
         }
         console.log(`[libs] updated ${outcome.updated ?? "?"} placed ${entry.kind}(s) from "${entry.lib}"`);
+        // An open editor copy with local edits is left alone (0019 F3) — say so.
+        if (outcome.missing && outcome.missing.length > 0) {
+          setLibError(`Not updated: ${outcome.missing.join("; ")}`);
+        }
         clearStale(key);
       }
     } finally {

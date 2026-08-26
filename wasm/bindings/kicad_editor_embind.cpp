@@ -52,6 +52,11 @@ using namespace emscripten;
 bool        pcbEditorActive();
 // libs 0017 §2c/2d: placed-footprint usage + update-from-library.
 int         pcbLibsFootprintUsage( std::string aLib, std::string aName );
+void        pcbLibsInvalidatePreloaded( std::string aLib );
+int         pcbLibsTestPreload( std::string aLib );
+std::string pcbLibsTestLoadFootprint( std::string aLib, std::string aName );
+std::string pcbLibsTestEditorFootprint();
+bool        pcbLibsTestEditorLoad( std::string aLib, std::string aName );
 std::string pcbUpdateFromLibrary( std::string aLib, std::string aNamesJson );
 std::string schUpdateFromLibrary( std::string aLib, std::string aNamesJson );
 void        pcbCollabApply( std::string aJson );
@@ -413,6 +418,47 @@ static int libsSymbolUsage( std::string aLib, std::string aName )
     return schEditorActive() ? schLibsSymbolUsage( aLib, aName ) : 0;
 }
 
+// libs 0019 F2: a remote lib edit only INVALIDATES (cheap: drop the plugin
+// entry + pcbnew's preloaded footprint cache); the fat re-load runs lazily on
+// the next access or explicitly via kicadLibsReload from "Update from library".
+static void libsInvalidate( std::string aKind, std::string aNick )
+{
+    if( aKind == "footprint" && pcbEditorActive() )
+        pcbLibsInvalidatePreloaded( aNick );
+
+    pcbjam_libs::invalidateLibrary( aKind, aNick );
+}
+
+// Full refresh: the preloaded cache must go too, or the re-loaded plugin sits
+// under stale parsed copies (libs 0019 F1).
+static void libsReload( std::string aKind, std::string aNick )
+{
+    if( aKind == "footprint" && pcbEditorActive() )
+        pcbLibsInvalidatePreloaded( aNick );
+
+    pcbjam_libs::reloadLibrary( aKind, aNick );
+}
+
+static int libsTestPreload( std::string aLib )
+{
+    return pcbEditorActive() ? pcbLibsTestPreload( aLib ) : -1;
+}
+
+static std::string libsTestLoadFootprint( std::string aLib, std::string aName )
+{
+    return pcbEditorActive() ? pcbLibsTestLoadFootprint( aLib, aName ) : "";
+}
+
+static std::string libsTestEditorFootprint()
+{
+    return pcbEditorActive() ? pcbLibsTestEditorFootprint() : "";
+}
+
+static bool libsTestEditorLoad( std::string aLib, std::string aName )
+{
+    return pcbEditorActive() ? pcbLibsTestEditorLoad( aLib, aName ) : false;
+}
+
 // Placed-instance count for a library footprint — board frame only (libs 0017 §2d).
 static int libsFootprintUsage( std::string aLib, std::string aName )
 {
@@ -619,7 +665,13 @@ EMSCRIPTEN_BINDINGS(kicad_editor) {
     function("kicadCollabTestSelectFirst", &collabTestSelectFirst);
     function("kicadCollabTestClearSelection", &collabTestClearSelection);
     // Library reload after a remote (synced) lib edit — r2-idb-sync realtime.
-    function("kicadLibsReload", &pcbjam_libs::reloadLibrary PCBJAM_PARKER_POLICY);
+    function("kicadLibsReload", &libsReload PCBJAM_PARKER_POLICY);
+    // Cheap invalidation for remote edits (libs 0019 F2) + smoke probes.
+    function("kicadLibsInvalidate", &libsInvalidate PCBJAM_PARKER_POLICY);
+    function("kicadLibsTestPreload", &libsTestPreload PCBJAM_PARKER_POLICY);
+    function("kicadLibsTestLoadFootprint", &libsTestLoadFootprint PCBJAM_PARKER_POLICY);
+    function("kicadLibsTestEditorFootprint", &libsTestEditorFootprint);
+    function("kicadLibsTestEditorLoad", &libsTestEditorLoad);
     // Runtime lib-table row insert + load (a new team library appeared
     // mid-session; the lib set is otherwise frozen at boot).
     function("kicadLibsAddEntry", &pcbjam_libs::addLibraryEntry PCBJAM_PARKER_POLICY);

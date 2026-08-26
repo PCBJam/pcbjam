@@ -26,6 +26,7 @@
 #include <project.h>
 #include <schematic.h>
 #include <sch_edit_frame.h>
+#include <symbol_edit_frame.h>
 #include <sch_io/kicad_sexpr/sch_io_kicad_sexpr.h>
 #include <sch_sheet.h>
 #include <richio.h>
@@ -1383,6 +1384,29 @@ std::string schUpdateFromLibrary( std::string aLibNickname, std::string aNamesJs
 
         commit.Push( wxT( "Update symbols from library" ) );
         fr->GetCanvas()->Refresh();
+
+        // The Symbol Editor's own copy (libs 0019 F3): re-open it from the
+        // fresh library when unmodified; report and leave it with local edits.
+        if( SYMBOL_EDIT_FRAME* se = dynamic_cast<SYMBOL_EDIT_FRAME*>(
+                    fr->Kiway().Player( FRAME_SCH_SYMBOL_EDITOR, false ) ) )
+        {
+            if( LIB_SYMBOL* cur = se->GetCurSymbol() )
+            {
+                const wxString curName = cur->GetName();
+
+                if( se->GetCurLib() == lib && names.count( curName ) )
+                {
+                    const LIB_ID id( lib, curName );
+
+                    if( se->IsContentModified() )
+                        missing.push_back( std::string( id.Format().c_str() )
+                                           + " (open in the Symbol Editor with unsaved edits — save or revert it first)" );
+                    else
+                        se->LoadSymbol( id, 1, 1 );
+                }
+            }
+        }
+
         emitLibUpdateDone( updated, missing );
     } );
 
@@ -1421,6 +1445,18 @@ int schLibsSymbolUsage( std::string aLibNickname, std::string aSymbolName )
         for( SCH_ITEM* item : screen->Items().OfType( SCH_SYMBOL_T ) )
         {
             if( static_cast<SCH_SYMBOL*>( item )->GetLibId() == target )
+                count++;
+        }
+    }
+
+    // The Symbol Editor's open copy counts as "used" too (libs 0019 F3).
+    if( SYMBOL_EDIT_FRAME* se = dynamic_cast<SYMBOL_EDIT_FRAME*>(
+                fr->Kiway().Player( FRAME_SCH_SYMBOL_EDITOR, false ) ) )
+    {
+        if( LIB_SYMBOL* cur = se->GetCurSymbol() )
+        {
+            if( se->GetCurLib() == wxString( target.GetLibNickname() )
+                && cur->GetName() == wxString( target.GetLibItemName() ) )
                 count++;
         }
     }
