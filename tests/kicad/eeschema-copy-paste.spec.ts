@@ -124,7 +124,9 @@ async function bootWithSchematic(page: import('@playwright/test').Page) {
     // panels are wx widgets, so the click must land right of them
     // (drawing area ≈ x 340-1250, y 90-660 at the 1280x720 viewport).
     await page.mouse.click(700, 400);
-    await page.waitForTimeout(500);
+    // Interaction dwell: the click's focus handoff rides the wx scheduler with
+    // no page-observable; hotkeys sent too early land before the frame focuses.
+    await page.waitForTimeout(500); // dwell
 }
 
 // The kicad projects run under devices['Desktop Chrome'/'Desktop Firefox'],
@@ -135,11 +137,15 @@ async function bootWithSchematic(page: import('@playwright/test').Page) {
 // ignores (observed: 'a' alone opened the Place Symbol dialog).
 async function selectAllAndCopy(page: import('@playwright/test').Page) {
     await page.keyboard.press('Control+a');
-    await page.waitForTimeout(800);
+    // Interaction dwell: select-all resolves inside the wx tool framework with
+    // no page-observable (the element registry doesn't expose selection).
+    await page.waitForTimeout(800); // dwell
     await page.keyboard.press('Control+c');
-    // The clipboard write suspends via JSPI (browser round-trip, 2s timeout
-    // budget inside wxClipboard) — give it room before acting on the result.
-    await page.waitForTimeout(2500);
+    // Interaction dwell: the copy's clipboard write suspends via JSPI (browser
+    // round-trip, 2 s timeout budget inside wxClipboard) and firefox offers no
+    // readText to poll; chromium callers re-verify via expect.poll on the
+    // clipboard content.
+    await page.waitForTimeout(2500); // dwell
 }
 
 test.describe('Eeschema copy/paste', () => {
@@ -156,12 +162,18 @@ test.describe('Eeschema copy/paste', () => {
 
         await selectAllAndCopy(page);
 
-        const clip = await page.evaluate(() => navigator.clipboard.readText());
         // eeschema's clipboard blob is the multi-form shape
         // `(lib_symbols ...)\n(symbol ...)` (see pcbjam-shared items-wire.ts).
         // The original bug left exactly "(" here (UTF-32 truncated at its
-        // first NUL by the clipboard write helper).
-        expect(clip).toMatch(/^\(lib_symbols/);
+        // first NUL by the clipboard write helper). Poll: the write lands
+        // asynchronously after the JSPI suspension.
+        await expect
+            .poll(() => page.evaluate(() => navigator.clipboard.readText()), {
+                message: 'copied s-expression should reach navigator.clipboard in full',
+                timeout: 10000,
+            })
+            .toMatch(/^\(lib_symbols/);
+        const clip = await page.evaluate(() => navigator.clipboard.readText());
         expect(clip).toContain('(symbol "Device:R"');
         expect(clip).toContain('(lib_id "Device:R")');
     });
@@ -173,17 +185,23 @@ test.describe('Eeschema copy/paste', () => {
 
         await selectAllAndCopy(page);
         await page.keyboard.press('Escape');
-        await page.waitForTimeout(300);
+        // Interaction dwell: selection-clear has no page-observable.
+        await page.waitForTimeout(300); // dwell
 
         // Paste attaches the items to the cursor; click commits the placement.
         await page.mouse.move(500, 300);
         await page.keyboard.press('Control+v');
-        await page.waitForTimeout(2500);
+        // Interaction dwell: paste parses the clipboard (a JSPI-suspending
+        // read) and attaches the preview with no page-observable; the real
+        // gate is the FS-save poll below.
+        await page.waitForTimeout(2500); // dwell
         await stableShot(page, 'eeschema-copy-paste-preview.png');
         await page.mouse.click(500, 300);
-        await page.waitForTimeout(800);
+        // Interaction dwell: the placement commit has no page-observable.
+        await page.waitForTimeout(800); // dwell
         await page.keyboard.press('Escape');
-        await page.waitForTimeout(300);
+        // Interaction dwell: exit-move-tool has no page-observable.
+        await page.waitForTimeout(300); // dwell
 
         await page.keyboard.press('Control+s');
 
