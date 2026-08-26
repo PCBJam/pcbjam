@@ -106,8 +106,8 @@ test.describe('Modal dialog border + drag (pcbjam #22)', () => {
       if (!el) return null;
       const cs = getComputedStyle(el);
       return {
-        borderTopStyle: cs.borderTopStyle,
-        borderTopWidth: cs.borderTopWidth,
+        outlineStyle: cs.outlineStyle,
+        outlineWidth: cs.outlineWidth,
         boxShadow: cs.boxShadow,
       };
     }, MODAL_SEL);
@@ -115,10 +115,14 @@ test.describe('Modal dialog border + drag (pcbjam #22)', () => {
     expect(style, 'modal element should exist').not.toBeNull();
     testLogger.consoleLogs.push(`[MODAL_BORDER] ${JSON.stringify(style)}`);
 
-    const hasBorder = style!.borderTopStyle !== 'none' && parseFloat(style!.borderTopWidth) > 0;
+    // The 1px ring is an outline, not a border: a border shifts the padding
+    // box (where .window-canvas and wx-dom controls anchor) 1px off the wx
+    // model rect, while an outline draws outside the box with no layout
+    // effect.
+    const hasRing = style!.outlineStyle !== 'none' && parseFloat(style!.outlineWidth) > 0;
     const hasShadow = style!.boxShadow !== 'none' && style!.boxShadow !== '';
 
-    expect(hasBorder, `expected a visible border, got ${JSON.stringify(style)}`).toBe(true);
+    expect(hasRing, `expected a visible outline ring, got ${JSON.stringify(style)}`).toBe(true);
     expect(hasShadow, `expected a box-shadow, got ${JSON.stringify(style)}`).toBe(true);
   });
 
