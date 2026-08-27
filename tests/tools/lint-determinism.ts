@@ -28,11 +28,24 @@ type Rule = {
 
 const marker = (s: string) => /eslint-disable|documented|dwell/i.test(s);
 
+// The canonical dwell marker (tests/TESTING.md) is
+//   `// eslint-disable-line -- documented interaction dwell: <why>`
+// — a marker without the `: <why>` is a blind sleep wearing the uniform.
+const DWELL_MARKER = /documented interaction dwell/;
+const DWELL_MARKER_WITH_WHY = /documented interaction dwell:\s*\S/;
+const bareDwellMarker = (s: string) => DWELL_MARKER.test(s) && !DWELL_MARKER_WITH_WHY.test(s);
+
 const RULES: Rule[] = [
   {
     name: 'no-blind-waitForTimeout',
     message: 'blind waitForTimeout — use waitUntil/expect.poll/web-first assertion, or annotate a documented interaction dwell',
     hit: (line, prev) => /\.waitForTimeout\s*\(/.test(line) && !marker(line) && !marker(prev),
+  },
+  {
+    name: 'dwell-marker-needs-why',
+    message: 'dwell marker without its reason — the mandated form is `// eslint-disable-line -- documented interaction dwell: <why>` (tests/TESTING.md)',
+    hit: (line, prev) => /\.waitForTimeout\s*\(/.test(line)
+      && (bareDwellMarker(line) || (!DWELL_MARKER.test(line) && bareDwellMarker(prev))),
   },
   {
     name: 'no-toHaveScreenshot',

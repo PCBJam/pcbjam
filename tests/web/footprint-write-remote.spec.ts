@@ -36,7 +36,7 @@ async function clickTreeRow(page: Page, label: string): Promise<boolean> {
   }, label);
   if (!hit) return false;
   await page.mouse.click(hit.x, hit.y);
-  await page.waitForTimeout(300); // eslint-disable-line -- documented interaction dwell
+  await page.waitForTimeout(300); // eslint-disable-line -- documented interaction dwell: tree-row selection commit; no observable
   return true;
 }
 
@@ -79,7 +79,7 @@ test.fixme(
 
   // New Footprint → auto-saves into the writable lib (tryToSaveFootprintInLibrary).
   expect(await clickByTooltip(page, 'New Footprint'), 'New Footprint clicked').toBe(true);
-  await page.waitForTimeout(1500); // eslint-disable-line -- documented interaction dwell
+  await page.waitForTimeout(1500); // eslint-disable-line -- documented interaction dwell: New Footprint dialog/creation commit
   // Belt-and-braces explicit save.
   await focusCanvas(page);
   await page.keyboard.press('Control+s');

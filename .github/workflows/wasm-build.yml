@@ -387,6 +387,14 @@ jobs:
           corepack enable
           pnpm install --frozen-lockfile
 
+      # The web/standalone vitest suites carry the red/green evidence for the
+      # findings-E service-layer fixes (worker lifecycle, transport credits,
+      # admission gate, models prefetch). Node-env, no wasm build needed.
+      - name: web standalone unit tests (vitest)
+        if: inputs.run_tests
+        working-directory: web
+        run: pnpm --filter @pcbjam/standalone test
+
       # kicad_tools gates (tasks-runner 0001 R2): the corpus lint (fixtures +
       # shared-codec round-trips — the wrapInBoardEnvelope-class E3 gate,
       # kicad-validity 0001 §5) and the CLI contract the backend job runner
@@ -400,6 +408,18 @@ jobs:
         run: |
           npm run corpus:lint
           npm run tools:contract
+
+      # Findings-E gates: the ngspice transport reducer (production worker
+      # source in a node:vm), the C++/shim source contract, and the
+      # stub/production parity tripwire. lint-ci-coverage asserts these exact
+      # invocations stay wired (NON_PLAYWRIGHT_GATES).
+      - name: findings-E transport reducer + source/parity contracts
+        if: inputs.run_tests
+        working-directory: tests
+        run: |
+          npm run ngspice:worker-batch
+          npm run findings-e:contract
+          npm run findings-e:parity
 
       # Browser binaries keyed on the lockfile (which pins the playwright version).
       # On a hit `playwright install` skips the downloads; --with-deps still

@@ -45,7 +45,7 @@ test.describe('secondary-frame DOM title bar (drag / close)', () => {
             const after = await listWindows();
             const id = after.find((w) => !before.includes(w));
             expect(id, `${buttonLabel} should open a new window`).toBeTruthy();
-            await page.waitForTimeout(200); // eslint-disable-line -- documented interaction dwell (new-window DOM population settle; no event/registry observable)
+            await page.waitForTimeout(200); // eslint-disable-line -- documented interaction dwell: new-window DOM population settle; no event/registry observable
             return id as string;
         }
 
@@ -61,14 +61,14 @@ test.describe('secondary-frame DOM title bar (drag / close)', () => {
             await page.mouse.down();
             await page.mouse.move(sx, sy + 90, { steps: 10 });
             await page.mouse.up();
-            await page.waitForTimeout(250); // eslint-disable-line -- documented interaction dwell (title-bar drag commit; no event/registry observable)
+            await page.waitForTimeout(250); // eslint-disable-line -- documented interaction dwell: title-bar drag commit; no event/registry observable
             const after = await styleRect(winId);
             return !!before && !!after && (Math.abs(after.top - before.top) > 5 || Math.abs(after.left - before.left) > 5);
         }
 
         async function closeViaTitlebar(winId: string): Promise<boolean> {
             await page.locator(`#${winId} .window-titlebar-close`).click();
-            await page.waitForTimeout(400); // eslint-disable-line -- documented interaction dwell (× close / modal EndModal commit; no event/registry observable)
+            await page.waitForTimeout(400); // eslint-disable-line -- documented interaction dwell: × close / modal EndModal commit; no event/registry observable
             return page.evaluate((wid) => {
                 const el = document.getElementById(wid);
                 return !el || getComputedStyle(el).display === 'none';
@@ -87,7 +87,7 @@ test.describe('secondary-frame DOM title bar (drag / close)', () => {
             await page.mouse.down();
             await page.mouse.move(sx + 60, sy + 60, { steps: 10 });
             await page.mouse.up();
-            await page.waitForTimeout(250); // eslint-disable-line -- documented interaction dwell (se-corner resize drag commit; no event/registry observable)
+            await page.waitForTimeout(250); // eslint-disable-line -- documented interaction dwell: se-corner resize drag commit; no event/registry observable
             const after = await styleRect(winId);
             return !!before && !!after
                 && (after.width - before.width > 20) && (after.height - before.height > 20);

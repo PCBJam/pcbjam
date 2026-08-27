@@ -55,13 +55,13 @@ test.fixme(
   });
   expect(hdr, 'Item column header found').not.toBeNull();
   await page.mouse.click(hdr!.cx, hdr!.cy + hdr!.hgt + 8);
-  await page.waitForTimeout(200); // eslint-disable-line -- documented interaction dwell
+  await page.waitForTimeout(200); // eslint-disable-line -- documented interaction dwell: tree focus commit
   await page.keyboard.press('Home');
-  await page.waitForTimeout(150); // eslint-disable-line -- documented interaction dwell
+  await page.waitForTimeout(150); // eslint-disable-line -- documented interaction dwell: tree-nav keystroke commit
   await page.keyboard.press('ArrowDown');
-  await page.waitForTimeout(150); // eslint-disable-line -- documented interaction dwell
+  await page.waitForTimeout(150); // eslint-disable-line -- documented interaction dwell: tree-nav keystroke commit
   await page.keyboard.press('ArrowUp');
-  await page.waitForTimeout(400); // eslint-disable-line -- documented interaction dwell
+  await page.waitForTimeout(400); // eslint-disable-line -- documented interaction dwell: tree selection commit
 
   expect(await clickByTooltip(page, 'New Symbol...'), 'New Symbol clicked').toBe(true);
   await stableShot(page, 'symremote-02-newsym.png');
@@ -77,7 +77,7 @@ test.fixme(
   });
   expect(nameField, 'New Symbol name field present').toBeTruthy();
   await page.mouse.click(nameField!.cx, nameField!.cy);
-  await page.waitForTimeout(150); // eslint-disable-line -- documented interaction dwell
+  await page.waitForTimeout(150); // eslint-disable-line -- documented interaction dwell: name field focus commit
   await page.keyboard.press('Control+a');
   await page.keyboard.press('Delete');
   await page.keyboard.type('RemoteRes', { delay: 40 });

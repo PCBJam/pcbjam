@@ -48,7 +48,7 @@ test.describe('DOM-port scrollbars', () => {
       await page.mouse.down();
       await page.mouse.move(tx, ty, { steps: 6 });
       await page.mouse.up();
-      await page.waitForTimeout(150); // eslint-disable-line -- documented interaction dwell
+      await page.waitForTimeout(150); // eslint-disable-line -- documented interaction dwell: slider drag commit before the next drag
     }
 
     // At least one standalone scrollbar must have reported a non-zero position.

@@ -144,9 +144,9 @@ async function loadBoard(page: Page, testLogger: { consoleLogs: string[]; errors
 
     await page.mouse.click(filenameInput.x, filenameInput.y);
     // Documented interaction dwells: focus + typed-text registration have no observable signal.
-    await page.waitForTimeout(200); // eslint-disable-line -- documented interaction dwell
+    await page.waitForTimeout(200); // eslint-disable-line -- documented interaction dwell: focus registration has no observable signal
     await page.keyboard.type(pcbFilename);
-    await page.waitForTimeout(300); // eslint-disable-line -- documented interaction dwell
+    await page.waitForTimeout(300); // eslint-disable-line -- documented interaction dwell: typed-text registration has no observable signal
     await page.keyboard.press('Enter');
 
     const result = await waitForBoardLoaded(page, testLogger, 60000);
@@ -215,7 +215,7 @@ test.describe('3D viewer component models', () => {
             SERVED_REF, { timeout: 120000 });
         // Let the rest of the model-enumeration ensures flush after the served ref lands —
         // the total count isn't known up front, so this is a documented settle interval.
-        await page.waitForTimeout(3000); // eslint-disable-line -- documented interaction dwell
+        await page.waitForTimeout(3000); // eslint-disable-line -- documented interaction dwell: model-enumeration ensures flush; total count unknown up front
 
         // --- bridge assertions (run on CI too) ---------------------------------
         const ensures = await page.evaluate(() => window.__modelEnsures ?? []);

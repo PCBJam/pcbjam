@@ -1,7 +1,9 @@
 import type { Page } from '@playwright/test';
 import { waitForCanvasStable } from '../../e2e/utils/element-tracker';
+import { assertNoNativeFailure, findNativeFailure } from './native-failure';
 
-export type RuntimeLogger = { consoleLogs: string[]; errors: string[] };
+export type { RuntimeLogger } from './native-failure';
+import type { RuntimeLogger } from './native-failure';
 
 /**
  * Wait for pcbnew to finish opening a board.
@@ -34,10 +36,7 @@ export async function waitForBoardLoaded(
         // goes away and we'd burn the full timeout. KiCad logs the abort
         // line through Module.printErr, which our test logger captures as
         // a console error. We re-read the live arrays each tick.
-        const allLines = [...logger.consoleLogs, ...logger.errors];
-        const abort = allLines.find((l) =>
-            l.includes('Aborted(') || l.includes('RuntimeError: unreachable')
-        );
+        const abort = findNativeFailure([...logger.consoleLogs, ...logger.errors]);
         if (abort) {
             throw new Error(`WASM aborted during LoadBoard:\n${abort}`);
         }
@@ -77,16 +76,6 @@ function assertExpectedBoard(expectedBoard: string): void {
     if (!expectedBoard.trim()) {
         throw new Error('Expected board identity must not be empty');
     }
-}
-
-function assertNoNativeFailure(logger: RuntimeLogger | undefined, phase: string): void {
-    if (!logger) return;
-    const failure = [...logger.consoleLogs, ...logger.errors].find((line) =>
-        line.includes('Aborted(')
-        || line.includes('RuntimeError: unreachable')
-        || line.includes('memory access out of bounds')
-    );
-    if (failure) throw new Error(`WASM failed during ${phase}:\n${failure}`);
 }
 
 async function waitForBoardIdentityAndPaint(

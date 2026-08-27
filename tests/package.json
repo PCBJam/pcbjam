@@ -31,7 +31,8 @@
     "3d:test:webgl": "playwright test --project=wx-chromium e2e/3d-webgl.spec.ts",
     "tools:contract": "tsx tools/cli-contract.ts",
     "ngspice:worker-batch": "tsx tools/ngspice-worker-batch-unit.ts",
-    "findings-e:contract": "tsx tools/findings-e-source-contract.ts"
+    "findings-e:contract": "tsx tools/findings-e-source-contract.ts",
+    "findings-e:parity": "tsx tools/service-stub-parity.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",

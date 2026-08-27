@@ -57,13 +57,13 @@ test.fixme(
   // Click focuses the tree row but doesn't always select it; drive the keyboard
   // to make the first (only) library row the SELECTED item (GetTargetLibId).
   await page.mouse.click(hdr!.cx, hdr!.cy + hdr!.hgt + 8); // focus the tree
-  await page.waitForTimeout(200); // eslint-disable-line -- documented interaction dwell
+  await page.waitForTimeout(200); // eslint-disable-line -- documented interaction dwell: tree focus commit
   await page.keyboard.press('Home');
-  await page.waitForTimeout(150); // eslint-disable-line -- documented interaction dwell
+  await page.waitForTimeout(150); // eslint-disable-line -- documented interaction dwell: tree-nav keystroke commit
   await page.keyboard.press('ArrowDown');
-  await page.waitForTimeout(150); // eslint-disable-line -- documented interaction dwell
+  await page.waitForTimeout(150); // eslint-disable-line -- documented interaction dwell: tree-nav keystroke commit
   await page.keyboard.press('ArrowUp');
-  await page.waitForTimeout(400); // eslint-disable-line -- documented interaction dwell
+  await page.waitForTimeout(400); // eslint-disable-line -- documented interaction dwell: tree selection commit
   await stableShot(page, 'symwrite-02-lib-selected.png');
 
   // New Symbol via the toolbar button (tooltip), proven-clickable in the harness.
@@ -91,11 +91,11 @@ test.fixme(
   const nameField = dlg.texts.find((t) => Math.abs(t.cy - 65) > 30 && Math.abs(t.cy - 87) > 30);
   expect(nameField, 'New Symbol name field present').toBeTruthy();
   await page.mouse.click(nameField!.cx, nameField!.cy);
-  await page.waitForTimeout(150); // eslint-disable-line -- documented interaction dwell
+  await page.waitForTimeout(150); // eslint-disable-line -- documented interaction dwell: name field focus commit
   await page.keyboard.press('Control+a');
   await page.keyboard.press('Delete');
   await page.keyboard.type(SYM, { delay: 40 });
-  await page.waitForTimeout(300); // eslint-disable-line -- documented interaction dwell
+  await page.waitForTimeout(300); // eslint-disable-line -- documented interaction dwell: typed-name registration commit
   await stableShot(page, 'symwrite-04-name-typed.png');
   await page.keyboard.press('Enter');
   await waitUntil(
@@ -139,7 +139,7 @@ test.fixme(
   expect(body).toContain(`(symbol "${savedName}"`);
 
   // No post-save error dialog (the placeholder-file fix for GetModificationTime).
-  await page.waitForTimeout(500); // eslint-disable-line -- documented interaction dwell
+  await page.waitForTimeout(500); // eslint-disable-line -- documented interaction dwell: negative-assert window for a post-save error dialog
   const errDialog = await page.evaluate(() =>
     window.wxElementRegistry
       .findAll({ visible: true })

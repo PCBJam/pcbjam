@@ -169,9 +169,9 @@ test.describe('Modal dialog border + drag (pcbjam #22)', () => {
     const startX = tbox!.x + tbox!.width / 2;
     const startY = tbox!.y + tbox!.height / 2;
     await page.mouse.move(startX, startY);
-    await page.waitForTimeout(350); // eslint-disable-line -- documented interaction dwell (pointer settle before grabbing the title bar)
+    await page.waitForTimeout(350); // eslint-disable-line -- documented interaction dwell: pointer settle before grabbing the title bar
     await page.mouse.down();
-    await page.waitForTimeout(150); // eslint-disable-line -- documented interaction dwell (press commit before the drag begins)
+    await page.waitForTimeout(150); // eslint-disable-line -- documented interaction dwell: press commit before the drag begins
 
     // Drag in many small steps, sampling the modal canvas immediately after each
     // move. Each move calls setWindowRect, which clears the canvas; the dialog's
@@ -253,7 +253,7 @@ test.describe('Modal dialog border + drag (pcbjam #22)', () => {
     const startY = hbox!.y + hbox!.height / 2;
     await page.mouse.move(startX, startY);
     await page.mouse.down();
-    await page.waitForTimeout(120); // eslint-disable-line -- documented interaction dwell (press commit before the resize drag begins)
+    await page.waitForTimeout(120); // eslint-disable-line -- documented interaction dwell: press commit before the resize drag begins
 
     let minOpaque = 1;
     let lowFrames = 0;

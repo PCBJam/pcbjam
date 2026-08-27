@@ -649,6 +649,13 @@ async function doBoot(opts: BootOptions): Promise<void> {
     onAbort: (what: unknown) => {
       const msg = what === undefined ? "" : String(what);
       log(`[boot] abort: ${msg}`);
+      // Authoritative trap notification: latch the scheduler's terminal gate
+      // so no parked frame resumes into the aborted instance (E-8/E-14).
+      // Safe w.r.t. recovery — oom-watch recovers via a full page reload,
+      // never an in-realm module replacement.
+      (globalThis as {
+        __wxScheduler?: { terminalize?: (site: string, e?: unknown) => void };
+      }).__wxScheduler?.terminalize?.("emscripten abort", msg);
       onAbort?.(msg);
     },
     monitorRunDependencies: () => {},

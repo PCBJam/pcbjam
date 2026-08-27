@@ -108,25 +108,9 @@ export async function installNgspiceServiceStub(
             name?: string;
             minimumLength?: number;
         }
-        interface RequestWaiter {
-            after: number;
-            criteria: RequestCriteria;
-            resolve: (summary: RequestSummary) => void;
-            reject: (reason?: unknown) => void;
-            timer: ReturnType<typeof setTimeout>;
-        }
         interface AppliedGenerationReceipt {
             generation: number;
             t: number;
-        }
-        interface AppliedGenerationWaiter {
-            after: number;
-            resolve: (receipt: AppliedGenerationReceipt) => void;
-            reject: (reason?: unknown) => void;
-            timer: ReturnType<typeof setTimeout>;
-        }
-        interface CancellableReceipt<T> extends Promise<T> {
-            cancel: (reason?: string) => void;
         }
 
         const RECEIPT_TIMEOUT_MS = 2 * 60_000;
@@ -140,11 +124,11 @@ export async function installNgspiceServiceStub(
         let maxPending = 0;
         let bootMessageErrorArmed = false;
         let runtimeMessageErrorThreshold: number | null = null;
+        let dieOnNextBgRunArmed = false;
+        let corruptNextGetVecArmed = false;
         const retiredGenerations: number[] = [];
         let nextRequestSequence = 1;
-        const requestWaiters = new Set<RequestWaiter>();
         const appliedGenerations: AppliedGenerationReceipt[] = [];
-        const appliedGenerationWaiters = new Set<AppliedGenerationWaiter>();
         let disposed = false;
 
         const validateReceiptTimeout = (timeoutMs: number): string | undefined => {
@@ -153,15 +137,6 @@ export async function installNgspiceServiceStub(
                 return `receipt timeout must be an integer from 1 to ${MAX_RECEIPT_TIMEOUT_MS} ms`;
             }
             return undefined;
-        };
-
-        const cancellable = <T>(
-            promise: Promise<T>,
-            cancel: (reason?: string) => void,
-        ): CancellableReceipt<T> => {
-            const receipt = promise as CancellableReceipt<T>;
-            Object.defineProperty(receipt, 'cancel', { value: cancel });
-            return receipt;
         };
 
         const requestMatches = (
@@ -175,115 +150,130 @@ export async function installNgspiceServiceStub(
             && (criteria.minimumLength === undefined
                 || (summary.length ?? -1) >= criteria.minimumLength);
 
-        const rejectRequestWaiter = (waiter: RequestWaiter, reason: Error): void => {
-            if (!requestWaiters.delete(waiter)) return;
-            clearTimeout(waiter.timer);
-            waiter.reject(reason);
+        interface ReceiptWaiter<TReceipt, TCriteria> {
+            after: number;
+            criteria: TCriteria;
+            resolve: (receipt: TReceipt) => void;
+            reject: (reason?: unknown) => void;
+            timer: ReturnType<typeof setTimeout>;
+        }
+
+        /**
+         * One scan-then-subscribe receipt channel (shared by the request and
+         * applied-generation receipts, which differ only in their match
+         * predicate, existing-receipt scan, and error strings): scan the
+         * already-published receipts first, otherwise subscribe a bounded,
+         * timed waiter — so a receipt cannot land in the gap between an array
+         * scan and listener installation.
+         */
+        const makeReceiptChannel = <TReceipt, TCriteria>(channel: {
+            validate: (after: number, criteria: TCriteria) => string | undefined;
+            /** Defensive copy of the criteria, taken only after validation. */
+            snapshotCriteria?: (criteria: TCriteria) => TCriteria;
+            scanExisting: (after: number, criteria: TCriteria) => TReceipt | undefined;
+            matches: (receipt: TReceipt, after: number, criteria: TCriteria) => boolean;
+            capacityError: string;
+            timeoutError: (timeoutMs: number) => string;
+        }) => {
+            const waiters = new Set<ReceiptWaiter<TReceipt, TCriteria>>();
+            const rejectWaiter = (
+                waiter: ReceiptWaiter<TReceipt, TCriteria>,
+                reason: Error,
+            ): void => {
+                if (!waiters.delete(waiter)) return;
+                clearTimeout(waiter.timer);
+                waiter.reject(reason);
+            };
+            return {
+                wait(after: number, criteria: TCriteria, timeoutMs: number): Promise<TReceipt> {
+                    if (disposed)
+                        return Promise.reject(new Error('ngspice receipt service was disposed'));
+                    const invalid = channel.validate(after, criteria)
+                        ?? validateReceiptTimeout(timeoutMs);
+                    if (invalid) return Promise.reject(new Error(invalid));
+                    const existing = channel.scanExisting(after, criteria);
+                    if (existing) return Promise.resolve(existing);
+                    if (waiters.size >= MAX_RECEIPT_WAITERS)
+                        return Promise.reject(new Error(channel.capacityError));
+                    const held = channel.snapshotCriteria
+                        ? channel.snapshotCriteria(criteria) : criteria;
+                    return new Promise<TReceipt>((resolve, reject) => {
+                        const waiter: ReceiptWaiter<TReceipt, TCriteria> = {
+                            after,
+                            criteria: held,
+                            resolve,
+                            reject,
+                            timer: setTimeout(() => rejectWaiter(
+                                waiter,
+                                new Error(channel.timeoutError(timeoutMs)),
+                            ), timeoutMs),
+                        };
+                        waiters.add(waiter);
+                    });
+                },
+                publish(receipt: TReceipt): void {
+                    for (const waiter of [...waiters]) {
+                        if (!channel.matches(receipt, waiter.after, waiter.criteria)) continue;
+                        waiters.delete(waiter);
+                        clearTimeout(waiter.timer);
+                        waiter.resolve(receipt);
+                    }
+                },
+                drain(reason: string): void {
+                    for (const waiter of [...waiters]) rejectWaiter(waiter, new Error(reason));
+                },
+                size: () => waiters.size,
+            };
         };
+
+        const requestReceipts = makeReceiptChannel<RequestSummary, RequestCriteria>({
+            validate: (after, criteria) => {
+                if (!Number.isSafeInteger(after) || after < 0)
+                    return 'request checkpoint must be a non-negative integer';
+                if (!criteria || typeof criteria !== 'object')
+                    return 'request receipt criteria must be an object';
+                if (criteria.minimumLength !== undefined
+                    && (!Number.isSafeInteger(criteria.minimumLength)
+                        || criteria.minimumLength < 0)) {
+                    return 'minimumLength must be a non-negative integer';
+                }
+                return undefined;
+            },
+            snapshotCriteria: (criteria) => ({ ...criteria }),
+            scanExisting: (after, criteria) => ((window as any).__ngspiceLog as RequestSummary[])
+                .find((entry) => requestMatches(entry, after, criteria)),
+            matches: requestMatches,
+            capacityError: 'ngspice request receipt waiter capacity exceeded',
+            timeoutError: (timeoutMs) =>
+                `ngspice request receipt timed out after ${timeoutMs} ms`,
+        });
+
+        const appliedReceipts = makeReceiptChannel<AppliedGenerationReceipt, undefined>({
+            validate: (after) => (!Number.isSafeInteger(after) || after < 0)
+                ? 'applied generation checkpoint must be a non-negative integer'
+                : undefined,
+            scanExisting: (after) => appliedGenerations.find((entry) => entry.generation > after),
+            matches: (receipt, after) => receipt.generation > after,
+            capacityError: 'ngspice applied-generation waiter capacity exceeded',
+            timeoutError: (timeoutMs) =>
+                `ngspice applied generation timed out after ${timeoutMs} ms`,
+        });
 
         const publishRequestReceipt = (summary: RequestSummary) => {
             (window as any).__ngspiceLog.push(summary);
-            for (const waiter of [...requestWaiters]) {
-                if (!requestMatches(summary, waiter.after, waiter.criteria)) continue;
-                requestWaiters.delete(waiter);
-                clearTimeout(waiter.timer);
-                waiter.resolve(summary);
-            }
+            requestReceipts.publish(summary);
         };
 
         const waitForRequestAfter = (
             after: number,
             criteria: RequestCriteria,
             timeoutMs = RECEIPT_TIMEOUT_MS,
-        ): CancellableReceipt<RequestSummary> => {
-            const rejected = (message: string) => cancellable(
-                Promise.reject(new Error(message)),
-                () => undefined,
-            );
-            if (disposed) return rejected('ngspice receipt service was disposed');
-            if (!Number.isSafeInteger(after) || after < 0)
-                return rejected('request checkpoint must be a non-negative integer');
-            if (!criteria || typeof criteria !== 'object')
-                return rejected('request receipt criteria must be an object');
-            if (criteria.minimumLength !== undefined
-                && (!Number.isSafeInteger(criteria.minimumLength)
-                    || criteria.minimumLength < 0)) {
-                return rejected('minimumLength must be a non-negative integer');
-            }
-            const timeoutError = validateReceiptTimeout(timeoutMs);
-            if (timeoutError) return rejected(timeoutError);
-            const log = (window as any).__ngspiceLog as RequestSummary[];
-            const existing = log.find((entry) =>
-                requestMatches(entry, after, criteria));
-            if (existing) return cancellable(Promise.resolve(existing), () => undefined);
-            if (requestWaiters.size >= MAX_RECEIPT_WAITERS)
-                return rejected('ngspice request receipt waiter capacity exceeded');
-
-            let waiter!: RequestWaiter;
-            const promise = new Promise<RequestSummary>((resolve, reject) => {
-                waiter = {
-                    after,
-                    criteria: { ...criteria },
-                    resolve,
-                    reject,
-                    timer: setTimeout(() => rejectRequestWaiter(
-                        waiter,
-                        new Error(`ngspice request receipt timed out after ${timeoutMs} ms`),
-                    ), timeoutMs),
-                };
-                requestWaiters.add(waiter);
-            });
-            return cancellable(promise, (reason = 'canceled') => rejectRequestWaiter(
-                waiter,
-                new Error(`ngspice request receipt ${reason}`),
-            ));
-        };
-
-        const rejectAppliedGenerationWaiter = (
-            waiter: AppliedGenerationWaiter,
-            reason: Error,
-        ): void => {
-            if (!appliedGenerationWaiters.delete(waiter)) return;
-            clearTimeout(waiter.timer);
-            waiter.reject(reason);
-        };
+        ): Promise<RequestSummary> => requestReceipts.wait(after, criteria, timeoutMs);
 
         const waitForAppliedGenerationAfter = (
             after: number,
             timeoutMs = RECEIPT_TIMEOUT_MS,
-        ): CancellableReceipt<AppliedGenerationReceipt> => {
-            const rejected = (message: string) => cancellable(
-                Promise.reject(new Error(message)),
-                () => undefined,
-            );
-            if (disposed) return rejected('ngspice receipt service was disposed');
-            if (!Number.isSafeInteger(after) || after < 0)
-                return rejected('applied generation checkpoint must be a non-negative integer');
-            const timeoutError = validateReceiptTimeout(timeoutMs);
-            if (timeoutError) return rejected(timeoutError);
-            const existing = appliedGenerations.find((entry) => entry.generation > after);
-            if (existing) return cancellable(Promise.resolve(existing), () => undefined);
-            if (appliedGenerationWaiters.size >= MAX_RECEIPT_WAITERS)
-                return rejected('ngspice applied-generation waiter capacity exceeded');
-
-            let waiter!: AppliedGenerationWaiter;
-            const promise = new Promise<AppliedGenerationReceipt>((resolve, reject) => {
-                waiter = {
-                    after,
-                    resolve,
-                    reject,
-                    timer: setTimeout(() => rejectAppliedGenerationWaiter(
-                        waiter,
-                        new Error(`ngspice applied generation timed out after ${timeoutMs} ms`),
-                    ), timeoutMs),
-                };
-                appliedGenerationWaiters.add(waiter);
-            });
-            return cancellable(promise, (reason = 'canceled') => rejectAppliedGenerationWaiter(
-                waiter,
-                new Error(`ngspice applied-generation receipt ${reason}`),
-            ));
-        };
+        ): Promise<AppliedGenerationReceipt> => appliedReceipts.wait(after, undefined, timeoutMs);
 
         const previousAppliedHook = (globalThis as any).__pcbjamNgspiceFinalRefreshApplied;
         const publishAppliedGeneration = (generation: number): void => {
@@ -301,12 +291,7 @@ export async function installNgspiceServiceStub(
             }
             const receipt = { generation, t: Date.now() - t0 };
             appliedGenerations.push(receipt);
-            for (const waiter of [...appliedGenerationWaiters]) {
-                if (generation <= waiter.after) continue;
-                appliedGenerationWaiters.delete(waiter);
-                clearTimeout(waiter.timer);
-                waiter.resolve(receipt);
-            }
+            appliedReceipts.publish(receipt);
             if (typeof previousAppliedHook === 'function') previousAppliedHook(generation);
         };
         (globalThis as any).__pcbjamNgspiceFinalRefreshApplied = publishAppliedGeneration;
@@ -353,15 +338,21 @@ export async function installNgspiceServiceStub(
             (window as any).__ngspiceEvents.push({ ...evt, t: Date.now() - t0 });
             const handler = (globalThis as any).__ngspiceOnEvent;
             if (handler) {
-                while (evtQueue.length) {
-                    const queued = evtQueue.shift()!;
-                    evtQueueBytes -= queued.bytes;
-                    if (queued.generation !== slot.generation) continue;
-                    // Queued frames were acked at enqueue (ownership taken then).
-                    handler(queued.evt);
+                // Mirrors the production service: the host owns the frame's
+                // credit from onmessage on, so the ack survives a throwing
+                // handler (which keeps propagating).
+                try {
+                    while (evtQueue.length) {
+                        const queued = evtQueue.shift()!;
+                        evtQueueBytes -= queued.bytes;
+                        if (queued.generation !== slot.generation) continue;
+                        // Queued frames were acked at enqueue (ownership taken then).
+                        handler(queued.evt);
+                    }
+                    handler(evt);
+                } finally {
+                    ackEvent(slot, frame);
                 }
-                handler(evt);
-                ackEvent(slot, frame);
             } else {
                 if (evtQueue.length >= MAX_QUEUED_EVENT_FRAMES
                     || evtQueueBytes > MAX_QUEUED_EVENT_BYTES - bytes) {
@@ -377,6 +368,26 @@ export async function installNgspiceServiceStub(
             }
         };
 
+        // Mirrors the production service: the worker's terminal notice carries
+        // the deferred frames it had already accepted — deliver best-effort,
+        // in order, WITHOUT acking (the fatal frame is outside the credit
+        // protocol), and record them for the specs like any live frame.
+        const deliverTerminalEvents = (entries: unknown): void => {
+            if (!Array.isArray(entries) || entries.length === 0) return;
+            const handler = (globalThis as any).__ngspiceOnEvent;
+            for (const entry of entries) {
+                const evt = (entry as { evt?: any } | null)?.evt;
+                if (!evt) continue;
+                (window as any).__ngspiceEvents.push({ ...evt, t: Date.now() - t0 });
+                if (!handler) continue;
+                try {
+                    handler(evt);
+                } catch (error) {
+                    console.log(`[TEST-NGSPICE] terminal event delivery failed: ${String(error)}`);
+                }
+            }
+        };
+
         const failPending = (generation: number, why: string) => {
             for (const [id, request] of pending) {
                 if (request.generation !== generation) continue;
@@ -389,6 +400,7 @@ export async function installNgspiceServiceStub(
         const retireWorker = (slot: WorkerSlot, why: string) => {
             if (slot.failed) return;
             slot.failed = true;
+            console.log(`[TEST-NGSPICE] retiring generation ${slot.generation}: ${why}`);
             retiredGenerations.push(slot.generation);
             if (slot.bootTimer !== undefined) {
                 clearTimeout(slot.bootTimer);
@@ -412,6 +424,23 @@ export async function installNgspiceServiceStub(
             const reject = slot.rejectBoot;
             slot.rejectBoot = undefined;
             reject?.(new Error(why));
+
+            // Mirrors the production service (E-10): a retired worker emits
+            // no bg/exit frame of its own, so synthesize the controlled-exit
+            // the crashed engine could not send — straight to the installed
+            // handler, never through dispatchEvt (no fabricated credit).
+            const handler = (globalThis as any).__ngspiceOnEvent;
+            if (handler) {
+                (window as any).__ngspiceEvents.push({
+                    kind: 'exit', status: 1, immediate: true, quit: false,
+                    t: Date.now() - t0,
+                });
+                try {
+                    handler({ kind: 'exit', status: 1, immediate: true, quit: false });
+                } catch (error) {
+                    console.log(`[TEST-NGSPICE] synthetic exit dispatch failed: ${String(error)}`);
+                }
+            }
         };
 
         const ensureWorker = (): Promise<WorkerSlot> => {
@@ -446,6 +475,7 @@ export async function installNgspiceServiceStub(
                         if (slot.failed || workerSlot !== slot) return;
                         const data = e.data ?? {};
                         if (data.fatal) {
+                            deliverTerminalEvents(data.pendingEvents);
                             failWorker(`event stream failure: ${String(data.fatal)}`);
                             return;
                         }
@@ -555,6 +585,27 @@ export async function installNgspiceServiceStub(
             // checkpoint can therefore never satisfy that simulation.
             if (disposed) return { error: 'ngspice service was disposed' };
             const requestSequence = nextRequestSequence++;
+            // Armed fault: the transport dies on the bg_run launch itself —
+            // AFTER the native side published its run generation, BEFORE any
+            // RUNNING transition could fire (the E-12 window). Retirement
+            // runs the production funnel (and its synthetic exit).
+            if (dieOnNextBgRunArmed && req.kind === 'command'
+                && typeof req.cmd === 'string' && req.cmd.startsWith('bg_run')) {
+                dieOnNextBgRunArmed = false;
+                console.log('[TEST-NGSPICE] armed fault: transport death on bg_run');
+                const res = {
+                    error: 'ngspice_service crashed: transport died on bg_run (armed fault)',
+                };
+                if (workerSlot) retireWorker(workerSlot, res.error);
+                publishRequestReceipt({
+                    sequence: requestSequence,
+                    kind: req.kind,
+                    cmd: req.cmd,
+                    error: res.error,
+                    t: Date.now() - t0,
+                });
+                return res;
+            }
             let slot: WorkerSlot;
             try {
                 slot = await ensureWorker();
@@ -571,6 +622,15 @@ export async function installNgspiceServiceStub(
                 return res;
             }
             const res: any = await post(slot, req);
+            // Armed fault: corrupt the next get_vec_info answer's LENGTH field
+            // only (the arrays stay small) — the corrupted-worker shape the
+            // sharedspice client must clamp against.
+            if (corruptNextGetVecArmed && req.kind === 'get_vec_info'
+                && res && !res.error) {
+                corruptNextGetVecArmed = false;
+                console.log('[TEST-NGSPICE] armed fault: inflating get_vec_info length');
+                res.length = 1 << 29;
+            }
             publishRequestReceipt({
                 sequence: requestSequence,
                 kind: req.kind,
@@ -588,15 +648,8 @@ export async function installNgspiceServiceStub(
             if (disposed) return;
             disposed = true;
             if (workerSlot) retireWorker(workerSlot, 'ngspice service was disposed');
-            for (const waiter of [...requestWaiters]) {
-                rejectRequestWaiter(waiter, new Error('ngspice request receipt canceled by teardown'));
-            }
-            for (const waiter of [...appliedGenerationWaiters]) {
-                rejectAppliedGenerationWaiter(
-                    waiter,
-                    new Error('ngspice applied-generation receipt canceled by teardown'),
-                );
-            }
+            requestReceipts.drain('ngspice request receipt canceled by teardown');
+            appliedReceipts.drain('ngspice applied-generation receipt canceled by teardown');
             if ((globalThis as any).__pcbjamNgspiceFinalRefreshApplied
                 === publishAppliedGeneration) {
                 (globalThis as any).__pcbjamNgspiceFinalRefreshApplied = previousAppliedHook;
@@ -623,6 +676,25 @@ export async function installNgspiceServiceStub(
                     throw new Error('pending threshold must be a positive safe integer');
                 runtimeMessageErrorThreshold = count;
             },
+            /** Retire the active generation through the production funnel
+             *  (the same retireWorker every watchdog/onerror path uses). */
+            forceRetire(reason: string): boolean {
+                const slot = workerSlot;
+                if (!slot) return false;
+                retireWorker(slot, String(reason || 'forced retirement'));
+                return true;
+            },
+            /** One-shot: the transport dies on the next bg_run launch (the
+             *  generation retires through the production funnel before any
+             *  RUNNING transition can fire). */
+            dieOnNextBgRun() {
+                dieOnNextBgRunArmed = true;
+            },
+            /** One-shot: the next successful get_vec_info answer reports a
+             *  huge vector length while its arrays stay small. */
+            corruptNextGetVec() {
+                corruptNextGetVecArmed = true;
+            },
             snapshot() {
                 return {
                     activeGeneration: workerSlot?.generation ?? null,
@@ -632,9 +704,9 @@ export async function installNgspiceServiceStub(
                     bootFaultArmed: bootMessageErrorArmed,
                     runtimeFaultArmed: runtimeMessageErrorThreshold !== null,
                     lastRequestSequence: nextRequestSequence - 1,
-                    requestReceiptWaiters: requestWaiters.size,
+                    requestReceiptWaiters: requestReceipts.size(),
                     appliedGenerations: appliedGenerations.map((entry) => entry.generation),
-                    appliedGenerationWaiters: appliedGenerationWaiters.size,
+                    appliedGenerationWaiters: appliedReceipts.size(),
                     disposed,
                 };
             },

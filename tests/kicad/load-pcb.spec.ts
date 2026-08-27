@@ -139,9 +139,9 @@ function runLoadPcbTest(demo: DemoCfg): void {
         await page.mouse.click(filenameInput.x, filenameInput.y);
         // Small settle so the focus click lands before typing — no JS-observable "input
         // focused" signal here (documented interaction wait).
-        await page.waitForTimeout(200); // eslint-disable-line -- documented interaction dwell
+        await page.waitForTimeout(200); // eslint-disable-line -- documented interaction dwell: focus click commit; no JS-observable focus signal
         await page.keyboard.type(pcbFilename);
-        await page.waitForTimeout(300); // eslint-disable-line -- documented interaction dwell
+        await page.waitForTimeout(300); // eslint-disable-line -- documented interaction dwell: typed-text registration has no observable signal
         await page.keyboard.press('Enter');
 
         // ── Wait for the load to complete (no dialogs visible). The

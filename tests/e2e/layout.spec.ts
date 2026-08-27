@@ -82,7 +82,7 @@ test.describe('wxSplitterWindow & wxScrolledWindow Tests', () => {
     await page.mouse.down();
     await page.mouse.move(sash!.centerX + 100, sash!.centerY, { steps: 5 });
     await page.mouse.up();
-    await page.waitForTimeout(300); // eslint-disable-line -- documented interaction dwell (splitter drag commit before re-reading sash from registry)
+    await page.waitForTimeout(300); // eslint-disable-line -- documented interaction dwell: splitter drag commit before re-reading sash from registry
 
     // Get updated sash position after drag
     const sashAfter = await getSplitterSash(page);
@@ -91,7 +91,7 @@ test.describe('wxSplitterWindow & wxScrolledWindow Tests', () => {
     // Scroll left pane (use position left of sash)
     await page.mouse.move(sashAfter!.centerX - 100, sashAfter!.centerY);
     await page.mouse.wheel(0, 50);
-    await page.waitForTimeout(200); // eslint-disable-line -- documented interaction dwell (scroll commit between the two pane scrolls)
+    await page.waitForTimeout(200); // eslint-disable-line -- documented interaction dwell: scroll commit between the two pane scrolls
 
     // Scroll right pane (use position right of sash)
     await page.mouse.move(sashAfter!.centerX + 100, sashAfter!.centerY);

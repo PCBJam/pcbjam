@@ -91,6 +91,15 @@ const materialized = new Map<string, string>();
 /** In-flight ensures, coalesced per ref (prescan and the C++ fallback race). */
 const ensuring = new Map<string, Promise<string | null>>();
 
+/**
+ * Which fallback candidate served each ref on the pure-source collect path
+ * (positive results only). Kills the repeated failed-candidate probes — a
+ * `.wrl` ref served by its `.step` fallback re-probed the missing `.wrl` on
+ * every export — without caching bodies (the source's IDB layer does that) and
+ * without touching the editor MEMFS. Cleared on source replacement.
+ */
+const servingCandidate = new Map<string, string>();
+
 /** Wire the model source used by the provider dispatch + prescan. */
 export function installModel3dHandler(
   source: Model3dSource,
@@ -98,6 +107,7 @@ export function installModel3dHandler(
 ): void {
   installedSource = source;
   installedLog = log;
+  servingCandidate.clear();
 }
 
 /** Fetch one model body and write it under MODELS_3D_ROOT. Resolves to the
@@ -195,6 +205,18 @@ export interface BoardModelFile {
 }
 
 /**
+ * Caller-owned progress sink for collectBoardModelFiles: `models` receives
+ * each accepted body the moment it is accepted, `totalRefs` is set as soon as
+ * the board scan completes. A caller that abandons the collection (prefetch
+ * timeout) reads the partial set synchronously — awaiting the collector after
+ * abort would be unbounded (an in-flight source fetch is not abortable).
+ */
+export interface CollectProgress {
+  totalRefs: number;
+  models: BoardModelFile[];
+}
+
+/**
  * Fetch every lib model a board references for an occ_service export. This is
  * deliberately a pure source/IDB/network path (E-4): the OCC worker has a
  * different MEMFS, so materializing and reading the bytes through the editor's
@@ -209,8 +231,10 @@ export async function collectBoardModelFiles(
   boardText: string,
   concurrency = 6,
   signal?: AbortSignal,
+  progress?: CollectProgress,
 ): Promise<BoardModelFile[]> {
-  if (!installedSource) return [];
+  const out: BoardModelFile[] = progress?.models ?? [];
+  if (!installedSource) return out;
   const source = installedSource;
   const isCurrent = () => source === installedSource;
   const throwIfAborted = (): void => {
@@ -219,9 +243,9 @@ export async function collectBoardModelFiles(
   };
   throwIfAborted();
   const refs = scanModelRefs(boardText);
-  if (!refs.length) return [];
+  if (progress) progress.totalRefs = refs.length;
+  if (!refs.length) return out;
 
-  const out: BoardModelFile[] = [];
   const seen = new Set<string>();
   let idx = 0;
   const worker = async (): Promise<void> => {
@@ -229,7 +253,14 @@ export async function collectBoardModelFiles(
       throwIfAborted();
       if (!isCurrent() || idx >= refs.length) return;
       const ref = refs[idx++]!;
-      for (const candidate of refCandidates(ref)) {
+      // The remembered serving candidate goes first (skips re-probing
+      // fallbacks that failed on an earlier export); the rest stay as backup
+      // in case it can no longer serve (IDB eviction).
+      const remembered = servingCandidate.get(ref);
+      const candidates = remembered
+        ? [remembered, ...refCandidates(ref).filter((c) => c !== remembered)]
+        : refCandidates(ref);
+      for (const candidate of candidates) {
         let body: Uint8Array | null = null;
         try {
           body = await source.getModelBody(candidate);
@@ -241,6 +272,7 @@ export async function collectBoardModelFiles(
         if (!isCurrent()) return;
         if (!body) continue;
 
+        servingCandidate.set(ref, candidate);
         if (!seen.has(candidate)) {
           seen.add(candidate);
           // The OCC worker receives this buffer as a transferable. Keep its

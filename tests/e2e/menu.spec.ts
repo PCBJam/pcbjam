@@ -67,7 +67,7 @@ test.describe('wxMenuBar Tests', () => {
     for (const label of menuLabels) {
       const clicked = await clickMenuBarItem(page, label);
       expect(clicked, `Menu "${label}" should be found and clicked`).toBe(true);
-      await page.waitForTimeout(300); // eslint-disable-line -- documented interaction dwell
+      await page.waitForTimeout(300); // eslint-disable-line -- documented interaction dwell: menu open commit between menu-bar clicks
     }
 
     await stableShot(page, 'menu-05-all-menus.png', { fullPage: true });

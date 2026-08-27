@@ -248,6 +248,16 @@
     resolveWait: function (token, result) {
       var entry = this.waits.get(token);
       if (!entry || entry.resolved) return false;
+      if (this.terminal) {
+        // Resolving would resume the parked frame INSIDE the trapped module
+        // (the runWaitCompletion invariant, which the bare finishers used to
+        // bypass). Refuse WITHOUT consuming the entry — the frame stays
+        // visibly parked in dump() and the ring says why.
+        this._note("resolveRefused", entry.kind, token);
+        console.warn("[wx-scheduler] resolveWait(" + token + ", " + entry.kind
+          + ") refused: instance is terminal");
+        return false;
+      }
       entry.resolved = true;
       this.waitsResolved++;
       var stack = this.waitStacks[entry.kind];
@@ -280,27 +290,36 @@
 
     dead: false,
     // --- E-8: admission gate for delayed worker/MEMFS completions -----------
-    // `terminal` means the wasm instance TRAPPED (WebAssembly.RuntimeError or
-    // its cross-realm string equivalent): the heap may be mid-mutation, so no
-    // further native work (malloc / heap stores / FS writes) may run and no
-    // parked frame may be resumed into it. Distinct from `dead` (orderly
-    // shutdown). One-way.
+    // `terminal` means the wasm instance TRAPPED (WebAssembly.RuntimeError,
+    // or emscripten's abort — which throws a RuntimeError itself and is also
+    // latched authoritatively via Module.onAbort → terminalize): the heap may
+    // be mid-mutation, so no further native work (malloc / heap stores / FS
+    // writes) may run and no parked frame may be resumed into it. Distinct
+    // from `dead` (orderly shutdown). One-way.
     terminal: false,
     canTouchNative: function () { return !this.dead && !this.terminal; },
+    // Public one-way latch (also wired from boot's Module.onAbort — the
+    // authoritative abort notification).
+    terminalize: function (site, e) {
+      if (this.terminal) return;
+      this.terminal = true;
+      this._note("terminal", site, 0);
+      console.error("[wx-scheduler] instance is terminal (" + site
+        + ") — all further native completions are inert: " + (e || ""));
+    },
     _terminalizeNativeTrap: function (site, e) {
+      // Structural signals only: a genuine engine trap in this same-realm
+      // prepare/entry IS a WebAssembly.RuntimeError instance; the duck-typed
+      // name fallback survives realm loss on a relayed error object. The old
+      // message-substring sniff ('Aborted(', 'index out of bounds', …) only
+      // added false positives — any plain JS error QUOTING such text bricked
+      // a healthy instance permanently.
       var isTrap = (typeof WebAssembly !== "undefined"
             && WebAssembly.RuntimeError
             && e instanceof WebAssembly.RuntimeError)
-        || /unreachable|memory access out of bounds|index out of bounds|null function or function signature mismatch|Aborted\(/i
-            .test(String((e && e.message) || e));
+        || !!(e && e.name === "RuntimeError");
       if (!isTrap) return false;
-      if (!this.terminal) {
-        this.terminal = true;
-        this._note("terminal", site, 0);
-        console.error("[wx-scheduler] native trap in " + site
-          + " — instance is terminal; all further native completions are inert: "
-          + e);
-      }
+      this.terminalize(site, e);
       return true;
     },
     // The one admission boundary for delayed completions that both touch
@@ -548,7 +567,11 @@
     },
 
     _pumpResume: function () {
-      if (this.dead) return;
+      // `terminal` too: a queued wake must never re-enter a trapped module —
+      // resuming swaps SP into (and runs wasm on) a heap that may be
+      // mid-mutation. Freezing the pump on a terminal instance is by design:
+      // the fatal overlay owns the page from here.
+      if (this.dead || this.terminal) return;
       if (this._windowLive) {
         // Self-heal: an activation that suspended RAW (bypassing the shim)
         // or completed untracked never ends its window here; without this

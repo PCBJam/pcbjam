@@ -269,13 +269,13 @@ test.describe('3D viewer from pcbnew', () => {
         // Let the frame-move op (wx_window_move → wxWindow::Move) fully settle before the
         // next interaction: the DOM style.top updates before the wx-side op completes, so
         // polling the outcome races the following close click (documented interaction dwell).
-        await page.waitForTimeout(300); // eslint-disable-line -- documented interaction dwell
+        await page.waitForTimeout(300); // eslint-disable-line -- documented interaction dwell: frame-move op settle; polling races the close click
         const afterTop = await styleTop(winId as string);
         expect(afterTop, 'dragging the title bar should move the 3D viewer frame').not.toBe(beforeTop);
 
         // Close via the × (wx_window_close → wx Close() → OnCloseWindow).
         await page.locator(`#${winId} .window-titlebar-close`).click();
-        await page.waitForTimeout(600); // eslint-disable-line -- documented interaction dwell
+        await page.waitForTimeout(600); // eslint-disable-line -- documented interaction dwell: wx Close() commit before checking the frame is gone
         const gone = await page.evaluate((wid) => {
             const el = document.getElementById(wid);
             return !el || getComputedStyle(el).display === 'none';
@@ -352,7 +352,7 @@ test.describe('3D viewer from pcbnew', () => {
         await page.mouse.up();
         // Let the resize op (wx_window_resize → SetSize → relayout + GL canvas resize)
         // settle before reading widths (documented interaction dwell).
-        await page.waitForTimeout(500); // eslint-disable-line -- documented interaction dwell
+        await page.waitForTimeout(500); // eslint-disable-line -- documented interaction dwell: resize + GL canvas relayout settle before reading widths
 
         const afterFrame = await frameWidth(winId as string);
         const afterGl = await glWidth();

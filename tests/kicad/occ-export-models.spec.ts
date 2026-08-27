@@ -5,6 +5,7 @@ import { test, expect } from './fixtures';
 import { clickMenuBarItem, clickMenuItem, waitForEditorReady, waitForRenderedByLabel, waitUntil } from '../e2e/utils/element-tracker';
 import { injectFromSubmodule } from './utils/fs-inject';
 import { waitForBoardLoaded } from './utils/board-ready';
+import { clickWxButton, openStepExportDialog, waitForMenuItems, dismissReportDialog } from './utils/wx-dialogs';
 
 /**
  * STEP export × 3D model delivery (docs/features/3d-models, 0007): File →
@@ -52,19 +53,6 @@ interface ExportCapture {
     productCount: number;
 }
 
-/** Wait for a rendered popup menu to have its items (replaces a fixed post-menu-click sleep). */
-async function waitForMenuItems(page: Page): Promise<void> {
-    await waitUntil(
-        page,
-        () => {
-            const r = window.wxElementRegistry;
-            if (!r?.findAllRendered) return false;
-            return r.findAllRendered({ elementType: 'menuitem' }).length > 3;
-        },
-        'popup menu items rendered',
-    );
-}
-
 /**
  * Record every model3d bridge request and serve ALL of them from the fixture —
  * the delivery side is never the bottleneck in this spec (mirrors the serveAll
@@ -92,7 +80,6 @@ async function installModelProviderStub(page: Page): Promise<void> {
 
                 // Mirror models-bridge.ts ensureModelInMemfs: write under the
                 // JS-owned model root, answer with the ABSOLUTE path.
-                // @ts-expect-error — Emscripten FS lives on window
                 const FS = (window as any).FS;
                 const dest = `${stockDir}/${arg}`;
                 FS.mkdirTree(dest.slice(0, dest.lastIndexOf('/')));
@@ -149,48 +136,18 @@ async function loadBoard(page: Page, testLogger: { consoleLogs: string[]; errors
 
     await page.mouse.click(filenameInput.x, filenameInput.y);
     // Documented interaction dwells: focus + typed-text registration have no observable signal.
-    await page.waitForTimeout(200); // eslint-disable-line -- documented interaction dwell
+    await page.waitForTimeout(200); // eslint-disable-line -- documented interaction dwell: focus registration has no observable signal
     await page.keyboard.type(pcbFilename);
-    await page.waitForTimeout(300); // eslint-disable-line -- documented interaction dwell
+    await page.waitForTimeout(300); // eslint-disable-line -- documented interaction dwell: typed-text registration has no observable signal
     await page.keyboard.press('Enter');
 
     const result = await waitForBoardLoaded(page, testLogger, 60000);
     console.log(`[TEST] ${DEMO.name} board-ready result: ${result}`);
 }
 
-/** Click a visible wx button by label; returns whether it was found. */
-async function clickWxButton(page: Page, label: string): Promise<boolean> {
-    const pos = await page.evaluate((wanted: string) => {
-        const registry = window.wxElementRegistry;
-        if (!registry) return null;
-        const el = registry.findAll({ visible: true })
-            .find((e) => (e.label === wanted || e.label === `&${wanted}`)
-                && (e.typeName ?? '').includes('Button'));
-        return el ? { x: el.centerX, y: el.centerY } : null;
-    }, label);
-    if (!pos) return false;
-    await page.mouse.click(pos.x, pos.y);
-    return true;
-}
-
 /** Drive File → Export → STEP through the (unchanged) dialog; return the capture. */
 async function runStepExport(page: Page): Promise<{ exp: ExportCapture; ensures: Array<{ op: string; arg: string }> }> {
-    expect(await clickMenuBarItem(page, 'File'), 'File menu').toBe(true);
-    await waitForMenuItems(page);
-    await waitForRenderedByLabel(page, 'Export', { elementType: 'menuitem' });
-    expect(await clickMenuItem(page, 'Export'), 'Export submenu').toBe(true);
-    // Wait for the SUBMENU's item — waitForMenuItems(>3) is satisfied by
-    // the still-rendered File menu items before the submenu paints.
-    await waitForRenderedByLabel(page, 'STEP/GLB/BREP/XAO/PLY/STL...', { elementType: 'menuitem' });
-    expect(await clickMenuItem(page, 'STEP/GLB/BREP/XAO/PLY/STL...'),
-        'STEP export menu item').toBe(true);
-
-    await page.waitForFunction(() => {
-        const registry = window.wxElementRegistry;
-        return !!registry && registry.findAll({ visible: true })
-            .some((el) => (el.label === 'Export' || el.label === '&Export')
-                && (el.typeName ?? '').includes('Button'));
-    }, null, { timeout: 20000 });
+    await openStepExportDialog(page);
 
     expect(await clickWxButton(page, 'Export'), 'Export button click').toBe(true);
 
@@ -258,10 +215,9 @@ test.describe('STEP export × 3D model delivery', () => {
         for (const f of missing.lib.slice(0, 5)) console.log(`[TEST]   missing lib: ${f}`);
         for (const f of missing.project) console.log(`[TEST]   missing project: ${f}`);
 
-        // Dismiss the export report dialog (its appearance after the worker
-        // returns has no distinct registry signal to poll).
-        await page.waitForTimeout(1000); // eslint-disable-line -- documented interaction dwell
-        await clickWxButton(page, 'OK');
+        // Dismiss the export report dialog via its modal lease (the export
+        // dialog holds 1; the report raises it to 2).
+        await dismissReportDialog(page, 1, 'export report');
 
         expect(testLogger.errors, 'no page errors during the export flow').toEqual([]);
     });

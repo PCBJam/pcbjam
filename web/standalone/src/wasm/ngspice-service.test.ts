@@ -7,54 +7,17 @@ vi.mock("./wasm-assets", () => ({
 
 import {
   installNgspiceService,
+  type NgspiceEvent,
   type NgspiceRequest,
   type NgspiceResponse,
 } from "./ngspice-service";
 import { resolveWasmBase } from "./wasm-assets";
+import { FakeWorker, waitForWorker } from "./test-utils/fake-worker";
 
 const mockedResolveWasmBase = vi.mocked(resolveWasmBase);
 
 const TEST_BOOT_TIMEOUT_MS = 1_000;
 const TEST_RESPONSE_TIMEOUT_MS = 5_000;
-
-type MessageListener = (event: MessageEvent) => void;
-
-class FakeWorker {
-  static instances: FakeWorker[] = [];
-
-  onmessage: MessageListener | null = null;
-  onerror: ((event: ErrorEvent) => void) | null = null;
-  onmessageerror: ((event: MessageEvent) => void) | null = null;
-  readonly postMessage = vi.fn();
-  readonly terminate = vi.fn();
-  private readonly messageListeners = new Set<MessageListener>();
-
-  constructor() {
-    FakeWorker.instances.push(this);
-  }
-
-  addEventListener(type: string, listener: EventListenerOrEventListenerObject): void {
-    if (type === "message") this.messageListeners.add(listener as MessageListener);
-  }
-
-  removeEventListener(type: string, listener: EventListenerOrEventListenerObject): void {
-    if (type === "message") this.messageListeners.delete(listener as MessageListener);
-  }
-
-  emitMessage(data: unknown): void {
-    const event = { data } as MessageEvent;
-    this.onmessage?.(event);
-    for (const listener of [...this.messageListeners]) listener(event);
-  }
-
-  emitError(message: string): void {
-    this.onerror?.({ message } as ErrorEvent);
-  }
-
-  emitMessageError(): void {
-    this.onmessageerror?.({} as MessageEvent);
-  }
-}
 
 const commandRequest = (cmd = "run"): NgspiceRequest => ({ kind: "command", cmd });
 
@@ -63,11 +26,6 @@ const service = () => {
   if (!installed) throw new Error("ngspice service was not installed");
   return installed;
 };
-
-async function waitForWorker(index: number): Promise<FakeWorker> {
-  await vi.waitFor(() => expect(FakeWorker.instances.length).toBeGreaterThan(index));
-  return FakeWorker.instances[index]!;
-}
 
 async function readyRequest(
   workerIndex: number,
@@ -452,6 +410,142 @@ describe("ngspice service worker lifetime", () => {
 
     first.worker.emitMessage({ id: first.id, res: { ret: 0 } });
     await expect(first.request).resolves.toEqual({ ret: 0 });
+  });
+
+  it("acks a frame whose handler throws — one throw must not leak credit", async () => {
+    // E-19: the host takes transport ownership at onmessage; the sharedspice
+    // client deliberately rethrows non-trap errors, and each throw that
+    // escaped before the ack leaked one unit of the worker's 64-frame credit
+    // window until the stream died with a misattributed overload.
+    const first = await readyRequest(0);
+    globalThis.__ngspiceOnEvent = () => {
+      throw new Error("plot apply bug");
+    };
+
+    expect(() => first.worker.emitMessage({
+      evt: { kind: "char", lines: ["boom"] },
+      eventSequence: 1,
+      eventBytes: 32,
+    }), "the handler throw keeps propagating (trap machinery must see it)")
+      .toThrow("plot apply bug");
+
+    const acks = () => first.worker.postMessage.mock.calls
+      .map((call) => (call[0] as { eventAck?: { sequence: number; bytes: number } }).eventAck)
+      .filter(Boolean);
+    expect(acks(), "the frame is acked despite the throwing handler")
+      .toEqual([{ sequence: 1, bytes: 32 }]);
+
+    // The stream stays live: a later frame delivers and acks normally.
+    const events: string[] = [];
+    globalThis.__ngspiceOnEvent = (event) => events.push(event.lines?.[0] ?? event.kind);
+    first.worker.emitMessage({
+      evt: { kind: "char", lines: ["after"] },
+      eventSequence: 2,
+      eventBytes: 33,
+    });
+    expect(events).toEqual(["after"]);
+    expect(acks()).toEqual([
+      { sequence: 1, bytes: 32 },
+      { sequence: 2, bytes: 33 },
+    ]);
+
+    first.worker.emitMessage({ id: first.id, res: { ret: 0 } });
+    await expect(first.request).resolves.toEqual({ ret: 0 });
+  });
+
+  it("acks the live frame exactly once when the queued-frame drain throws", async () => {
+    // E-19, drain path: a throw while draining the pre-handler queue aborts
+    // delivery, but the live frame's credit was owned at onmessage — its ack
+    // must still go out, and the queued frame (acked at enqueue) not twice.
+    const first = await readyRequest(0);
+    first.worker.emitMessage({
+      evt: { kind: "char", lines: ["early"] },
+      eventSequence: 1,
+      eventBytes: 33,
+    });
+    globalThis.__ngspiceOnEvent = (event) => {
+      if (event.lines?.[0] === "early") throw new Error("drain bug");
+    };
+
+    expect(() => first.worker.emitMessage({
+      evt: { kind: "char", lines: ["live"] },
+      eventSequence: 2,
+      eventBytes: 32,
+    })).toThrow("drain bug");
+
+    const acks = first.worker.postMessage.mock.calls
+      .map((call) => (call[0] as { eventAck?: { sequence: number; bytes: number } }).eventAck)
+      .filter(Boolean);
+    expect(acks, "exactly one ack per owned frame, none doubled").toEqual([
+      { sequence: 1, bytes: 33 },
+      { sequence: 2, bytes: 32 },
+    ]);
+
+    first.worker.emitMessage({ id: first.id, res: { ret: 0 } });
+    await expect(first.request).resolves.toEqual({ ret: 0 });
+  });
+
+  it("delivers the terminal notice's pending events, then retires, then exits", async () => {
+    // E-20: the worker's fatal frame carries the deferred batches it had
+    // already accepted (typically the diagnostics explaining the failure) —
+    // they must reach the handler, in order, without acks; the retirement's
+    // synthetic controlled-exit (E-10) follows them.
+    const first = await readyRequest(0);
+    const events: string[] = [];
+    globalThis.__ngspiceOnEvent = (event) => events.push(event.lines?.[0] ?? event.kind);
+
+    first.worker.emitMessage({
+      fatal: "ngspice event line exceeds 1048576 UTF-8 bytes",
+      pendingEvents: [
+        { evt: { kind: "char", lines: ["tail diagnostics"] }, eventBytes: 42 },
+        { evt: { kind: "bg", finished: true }, eventBytes: 30 },
+      ],
+    });
+
+    await expect(first.request).resolves.toEqual({
+      error: "ngspice_service crashed: event stream failure: "
+        + "ngspice event line exceeds 1048576 UTF-8 bytes",
+    });
+    expect(events, "accepted frames first, synthetic exit last").toEqual([
+      "tail diagnostics",
+      "bg",
+      "exit",
+    ]);
+    const acks = first.worker.postMessage.mock.calls
+      .map((call) => (call[0] as { eventAck?: unknown }).eventAck)
+      .filter(Boolean);
+    expect(acks, "terminal delivery is outside the credit protocol").toEqual([]);
+  });
+
+  it("synthesizes one controlled exit per retirement so the run mirror unlatches", async () => {
+    // E-10: a retired worker emits no bg/exit frame of its own; without the
+    // synthetic exit the sharedspice s_bgRunning mirror stays latched true
+    // and the simulator's Run action is disabled for the session.
+    const first = await readyRequest(0);
+    const events: NgspiceEvent[] = [];
+    globalThis.__ngspiceOnEvent = (event) => events.push(event);
+
+    first.worker.emitError("wasm trap");
+    await expect(first.request).resolves.toEqual({
+      error: "ngspice_service crashed: wasm trap",
+    });
+    expect(events).toEqual([
+      { kind: "exit", status: 1, immediate: true, quit: false },
+    ]);
+
+    // Retirement is idempotent — a late second fault emits nothing more.
+    first.worker.emitError("late echo");
+    expect(events).toHaveLength(1);
+
+    // And a throwing handler must not break the retirement itself.
+    const second = await readyRequest(1);
+    globalThis.__ngspiceOnEvent = () => {
+      throw new Error("exit handler bug");
+    };
+    second.worker.emitError("second trap");
+    await expect(second.request).resolves.toEqual({
+      error: "ngspice_service crashed: second trap",
+    });
   });
 
   it("retires a worker whose bounded event stream reports a fatal line", async () => {

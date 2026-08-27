@@ -1,5 +1,5 @@
 import { downloadBytes } from "@/lib/download";
-import { collectBoardModelFiles, type BoardModelFile } from "./libs/models-bridge";
+import { collectBoardModelFiles, type BoardModelFile, type CollectProgress } from "./libs/models-bridge";
 // The worker-side wrapper as text (vite ?raw): one shared source of truth,
 // also injected by the e2e harness stub (tests/kicad/utils/occ-service.ts).
 import occWorkerSource from "./occ-worker.js?raw";
@@ -291,7 +291,7 @@ export function installOccService(
 
   const prefetchBoardModels = async (
     board: Uint8Array,
-  ): Promise<BoardModelFile[]> => {
+  ): Promise<{ models: BoardModelFile[]; note?: string }> => {
     type Outcome =
       | { kind: "ready"; models: BoardModelFile[] }
       | { kind: "failed"; error: unknown }
@@ -300,12 +300,18 @@ export function installOccService(
     // collectBoardModelFiles keeps its own bounded network parallelism and does
     // no editor-native work. The controller owns this exact optional
     // collection: a timeout stops it from selecting more models and makes its
-    // already-started source results inert.
+    // already-started source results inert. The progress sink receives every
+    // accepted model as it lands — on timeout the partial set still ships
+    // (an aborted collection can never be awaited: an in-flight source fetch
+    // is not abortable), and the omission is surfaced in the export report
+    // instead of silently exporting without models.
     const controller = new AbortController();
+    const progress: CollectProgress = { totalRefs: 0, models: [] };
     const collected: Promise<Outcome> = collectBoardModelFiles(
       new TextDecoder().decode(board),
       6,
       controller.signal,
+      progress,
     ).then(
       (models) => ({ kind: "ready", models }),
       (error) => ({ kind: "failed", error }),
@@ -327,25 +333,29 @@ export function installOccService(
     const outcome = await Promise.race([collected, deadline]);
     if (timer !== undefined) clearTimeout(timer);
 
-    if (outcome.kind === "ready") return outcome.models;
+    if (outcome.kind === "ready") return { models: outcome.models };
     if (!controller.signal.aborted) {
       controller.abort(
         new DOMException("OCC model prefetch retired", "AbortError"),
       );
     }
     if (outcome.kind === "failed") {
-      log(`[occ] model prefetch failed (exporting without models): ${outcome.error}`);
-    } else {
-      log(
-        `[occ] model prefetch timed out after ${modelPrefetchTimeoutMs} ms ` +
-          "(exporting without models)",
-      );
+      const note =
+        `model prefetch failed — exported without models: ${String(outcome.error)}`;
+      log(`[occ] ${note}`);
+      return { models: [], note };
     }
-    return [];
+    const models = [...progress.models];
+    const note =
+      `model prefetch timed out after ${modelPrefetchTimeoutMs} ms — ` +
+      `${progress.totalRefs - models.length} of ${progress.totalRefs} model(s) omitted`;
+    log(`[occ] ${note}`);
+    return { models, note };
   };
 
   const request = async (req: OccRequest): Promise<OccResponse> => {
     let prepared: OccRequest;
+    let prefetchNote: string | undefined;
     if (req.kind === "export") {
       // Capture the caller-owned request fields before the first await and
       // build a private dispatch object. A late optional prefetch can then
@@ -356,8 +366,10 @@ export function installOccService(
       // Ship the board's lib model bodies with the request: the worker's
       // EXPORTER_STEP resolves them from its own MEMFS (delivery gap doc:
       // docs/features/3d-models/0007). Best-effort — an export without
-      // models still succeeds, each miss reported by the exporter.
-      const models = await prefetchBoardModels(board);
+      // models still succeeds, each miss reported by the exporter — but a
+      // curtailed prefetch is surfaced in the export report (E-21).
+      const { models, note } = await prefetchBoardModels(board);
+      prefetchNote = note;
       if (models.length)
         log(`[occ] shipping ${models.length} board model(s) with the export`);
       prepared = { kind: "export", board, jobJson, fileName, models };
@@ -387,7 +399,12 @@ export function installOccService(
         downloadBytes(name, res.bytes);
         log(`[occ] export downloaded: ${name} (${res.bytes.length} bytes)`);
       }
-      return { ok: res.ok, report: res.report, fileName: res.fileName };
+      // A curtailed prefetch reaches the user through the export report
+      // dialog, not only the console.
+      const report = prefetchNote
+        ? (res.report ? `${res.report}\n${prefetchNote}` : prefetchNote)
+        : res.report;
+      return { ok: res.ok, report, fileName: res.fileName };
     }
 
     return res;
