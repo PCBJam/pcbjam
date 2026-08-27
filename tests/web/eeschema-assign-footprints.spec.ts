@@ -210,6 +210,60 @@ test('Tools → Assign Footprints opens CvPcb (merged third kiface)', async ({ p
     `a footprint bridge call settled 'ok'; fp calls:\n${JSON.stringify(fpCalls)}`,
   ).toBe(true);
 
+  // Regression: the "Footprint Filters" text box must be laid out BELOW the
+  // CvPcb menubar and take real clicks. CVPCB_MAINFRAME realizes its toolbars
+  // BEFORE SetMenuBar(); the wx wasm port then grows the frame's client-area
+  // origin by the menubar height without any child rect changing, so the
+  // DOM-backed wxTextCtrl kept its pre-menubar projection: drawn a menubar
+  // height too high (a second white box above the toolbar) and sitting under
+  // the menubar's own DOM node, which swallowed every click. wxFrame::OnSize
+  // now re-projects the DOM subtree when the client origin moves.
+  const geom = await page.evaluate(() => {
+    const inputs = [...document.querySelectorAll('input.wx-dom-control[type=text]')]
+      .filter((el) => getComputedStyle(el).display !== 'none')
+      .map((el) => el.getBoundingClientRect());
+    const bars = [...document.querySelectorAll('[data-wx-menu-bar]')]
+      .filter((el) => getComputedStyle(el).display !== 'none')
+      .map((el) => el.getBoundingClientRect());
+    const input = inputs.find((r) => r.width >= 140) ?? null; // SetMinSize(150)
+    if (!input) return { input: null, bars: bars.length, hit: '' };
+    const hit = document.elementFromPoint(input.x + input.width / 2, input.y + input.height / 2);
+    return {
+      input: { x: input.x, y: input.y, w: input.width, h: input.height },
+      bars: bars.map((r) => ({ y: r.y, h: r.height })),
+      hit: hit ? `${hit.tagName}${hit.getAttribute('data-wx-menu-bar') ? '[menubar]' : ''}` : '',
+    };
+  });
+  expect(geom.input, 'filter <input> present').not.toBeNull();
+  const filterBox = geom.input!;
+  for (const bar of geom.bars as { y: number; h: number }[]) {
+    const overlaps = filterBox.y < bar.y + bar.h && filterBox.y + filterBox.h > bar.y;
+    expect(overlaps, `filter box ${JSON.stringify(filterBox)} overlaps menubar ${JSON.stringify(bar)}`).toBe(false);
+  }
+  expect(geom.hit, 'filter box is the topmost element at its centre').toBe('INPUT');
+
+  // …and typing + Enter actually filters (status bar reports the search text).
+  await page.mouse.click(filterBox.x + filterBox.w / 2, filterBox.y + filterBox.h / 2);
+  await page.keyboard.type('0603');
+  await page.keyboard.press('Enter');
+  // The filter runs off a 200ms wxTimer; the wasm port only pumps timers on
+  // input, so wiggle the mouse between polls.
+  let wiggle = 0;
+  await expect
+    .poll(
+      async () => {
+        await page.mouse.move(c.x + (wiggle++ % 5) * 3, c.y + (wiggle % 3) * 3);
+        return page.evaluate(() =>
+          ((window as any).wxElementRegistry.findAll({ visible: true }) as any[])
+            .map((e) => e.label ?? '')
+            .find((l) => /matching footprints/i.test(l)) ?? '',
+        );
+      },
+      { timeout: 20000, intervals: [500] },
+    )
+    .toMatch(/Search Text \(0603\)/);
+  await page.screenshot({ path: SHOT('03-filtered'), scale: 'css' });
+
   // Runtime survived opening the third kiface + the netlist mail. Match real
   // crash signatures only — app text legitimately contains the word "abort"
   // (AbortAsyncLoad, "aborted=0" traces).
