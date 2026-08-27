@@ -3,6 +3,7 @@ import {
   collabRoomId,
   fileToDoc,
   syncLayoutToY,
+  ydocHasState,
   type KicadDoc,
   type PresenceUser,
 } from "@pcbjam/shared";
@@ -372,6 +373,15 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
     const room = rooms.get(sheetPath);
     if (!room) return; // not a collab sheet (or still onboarding) — nothing to sync
     const write = (): void => {
+      // A room nobody has entered yet (never bound this session) and whose
+      // doc is still empty has nothing to reconcile: a layout-only write
+      // would leave a HOLLOW doc (layout, zero items) that every later first
+      // entry would adopt by removing the whole sheet. The first bind
+      // file-seeds it — layout included — so nothing is lost by skipping.
+      if (!room.seeded && !ydocHasState(room.doc)) {
+        clog(`[sheet] layout save-sync: ${sheetPath} skipped (room never seeded)`);
+        return;
+      }
       try {
         // Writing to a PARKED room's doc marks it dirty via startWatch — fine:
         // the diff-on-rebind adopt makes the catch-up cost the real delta only.

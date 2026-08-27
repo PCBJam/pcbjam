@@ -1,4 +1,4 @@
-import { collabRoomId, docToFile, ydocHasState, yToDoc } from "@pcbjam/shared";
+import { collabRoomId, docToFile, ydocHasState, ydocIsHollow, yToDoc } from "@pcbjam/shared";
 import type * as Y from "yjs";
 import { restageFile } from "../kicad-runner";
 import { connectKicadDoc, type KicadDocSession } from "./index";
@@ -102,6 +102,9 @@ export async function startSiblingRestage(opts: {
       // An empty room means no one ever seeded this sheet — the boot-staged
       // API snapshot is the freshest copy there is; leave it alone.
       if (!ydocHasState(doc)) return;
+      // A hollow doc (layout only, never seeded) would restage a title-block-only
+      // file over the real one — the staged copy is the freshest there is.
+      if (ydocIsHollow(doc)) return;
       const text = docToFile(yToDoc(doc));
       restageFile(win, slug, sheetPath, new TextEncoder().encode(text), log);
     } catch (err) {

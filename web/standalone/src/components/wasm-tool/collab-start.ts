@@ -4,6 +4,7 @@ import {
   docToFile,
   fileToDoc,
   ydocHasState,
+  ydocIsHollow,
   yToDoc,
   type KicadDoc,
   type Tool,
@@ -87,7 +88,7 @@ export async function maybeConnectDocSession(
   // populated drawing sheet (pl_editor `.kicad_wks`) has zero uuid items, so an
   // items-only check makes a joining tab refetch the stale file instead of
   // materializing the shared doc's current state.
-  if (!ydocHasState(session.doc)) {
+  if (!ydocHasState(session.doc) || ydocIsHollow(session.doc)) {
     opts.log(`[ydoc] room ${room} is empty — falling back to the API fetch (will file-seed)`);
     return { session };
   }

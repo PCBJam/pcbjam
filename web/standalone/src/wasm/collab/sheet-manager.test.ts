@@ -10,8 +10,16 @@ const { connectKicadDoc, bindKicadCollab, moduleItemsBridge } = vi.hoisted(() =>
 
 vi.mock("./index", () => ({ connectKicadDoc }));
 vi.mock("./kicad-binding", () => ({ bindKicadCollab, moduleItemsBridge }));
+const { ydocHasState, syncLayoutToY, fileToDoc } = vi.hoisted(() => ({
+  ydocHasState: vi.fn(() => false),
+  syncLayoutToY: vi.fn(() => true),
+  fileToDoc: vi.fn((t: string) => ({ text: t })),
+}));
 vi.mock("@pcbjam/shared", () => ({
   collabRoomId: (s: string, p: string, d: string) => `${s}:${p}:${d}`,
+  ydocHasState,
+  syncLayoutToY,
+  fileToDoc,
 }));
 
 import { createSheetCollabManager } from "./sheet-manager";
@@ -192,6 +200,35 @@ describe("sheet-manager warm pool", () => {
     expect(connectKicadDoc).not.toHaveBeenCalled(); // entry room already connected
     // The ydoc-entry seed is baseline-only (its file was materialized from the doc).
     expect(bindings[0]!.lastSeedOpts).toEqual({ editorMatchesDoc: true });
+  });
+});
+
+describe("sheet-manager layout save-sync (hollow-room guard)", () => {
+  beforeEach(() => {
+    ydocHasState.mockReset().mockReturnValue(false);
+    syncLayoutToY.mockReset().mockReturnValue(true);
+  });
+
+  it("skips a warmed-but-never-entered sheet whose doc is empty (save-all before first entry)", async () => {
+    const m = makeManager();
+    await m.connectAll(["root.kicad_sch", "Headers.kicad_sch"]);
+    await m.switchTo("root.kicad_sch");
+    // KiCad's SaveProject writes EVERY sheet → the hook fires for Headers too.
+    m.syncLayoutFromSave("Headers.kicad_sch", "(kicad_sch …)");
+    // Nothing written: a layout-only doc would be adopted as "remove everything"
+    // on the first entry into Headers.
+    expect(syncLayoutToY).not.toHaveBeenCalled();
+  });
+
+  it("still syncs the bound (seeded) sheet and any sheet whose doc already has state", async () => {
+    const m = makeManager();
+    await m.connectAll(["root.kicad_sch", "Headers.kicad_sch"]);
+    await m.switchTo("root.kicad_sch");
+    m.syncLayoutFromSave("root.kicad_sch", "(kicad_sch …)");
+    expect(syncLayoutToY).toHaveBeenCalledTimes(1);
+    ydocHasState.mockReturnValue(true); // Headers was seeded by a peer
+    m.syncLayoutFromSave("Headers.kicad_sch", "(kicad_sch …)");
+    expect(syncLayoutToY).toHaveBeenCalledTimes(2);
   });
 });
 

@@ -9,7 +9,9 @@ import {
   renderItem,
   SEXPR_VERSION_CURRENT,
   sexprToItems,
+  syncLayoutToY,
   ydocHasState,
+  ydocIsHollow,
   ydocSexprVersion,
   yToDoc,
   type KicadItem,
@@ -196,6 +198,49 @@ describe("bindKicadCollab — two editors over relayed Y.Docs", () => {
 
     expect(edB.store["fp-DIVERGENT"]).toBeUndefined(); // dropped
     expect(edB.store["fp-1"]).toBeDefined(); // adopted
+  });
+
+  it("a HOLLOW room (layout only from a save-all sync, never seeded) is file-seeded, NOT adopted", () => {
+    // Save-all fired the layout sync into a room nobody had entered: the doc got
+    // meta/layout but zero items and no seedNonce. Adopting it removed every
+    // item on the subsheet the editor had just shown (arduino subsheet blank bug).
+    const { a, edA, edB, bindA, bindB } = setup();
+    const file = `(kicad_wks (version 20220228) (generator "pl_editor")
+  (setup (textsize 1.5 1.5) (linewidth 0.15))
+  (rect (uuid "r-1") (name "border") (start 0 0 ltcorner) (end 0 0 rbcorner))
+)
+`;
+    const seedDoc = fileToDoc(file);
+    syncLayoutToY(seedDoc, a, "layout-save"); // the hollow footprint
+    expect(ydocHasState(a)).toBe(true);
+    expect(ydocIsHollow(a)).toBe(true);
+
+    Object.assign(edA.store, seedDoc.items); // editor shows the file
+    bindA.seed(seedDoc);
+
+    expect(edA.applied.length).toBe(0); // nothing removed from the editor
+    expect(edA.store["r-1"]).toBeDefined();
+    expect(ydocIsHollow(a)).toBe(false); // healed: items + seed marker in the doc
+    expect(docToFile(yToDoc(a))).toBe(docToFile(seedDoc));
+    bindB.seed(); // a peer joining now adopts the real content
+    expect(edB.store["r-1"]).toBeDefined();
+  });
+
+  it("a seeded room that was legitimately emptied is still adopted (not mistaken for hollow)", () => {
+    const { a, edA, edB, bindA, bindB } = setup();
+    const file = `(kicad_wks (version 20220228) (generator "pl_editor")
+  (rect (uuid "r-1") (name "border") (start 0 0 ltcorner) (end 0 0 rbcorner))
+)
+`;
+    const seedDoc = fileToDoc(file);
+    Object.assign(edA.store, seedDoc.items);
+    bindA.seed(seedDoc); // file-seeded → seed marker present
+    edA.localRemove("r-1"); // the peer deletes everything on the sheet
+    expect(ydocHasState(a)).toBe(true);
+    expect(ydocIsHollow(a)).toBe(false); // seeded, merely empty
+    Object.assign(edB.store, seedDoc.items); // B cold-opens the stale file
+    bindB.seed(seedDoc);
+    expect(edB.store["r-1"]).toBeUndefined(); // doc authority: the deletion wins
   });
 
   it("pre-seed remote state does NOT stream into the editor (adopt covers it)", () => {

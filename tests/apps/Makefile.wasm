@@ -180,6 +180,7 @@ all: minimal_test.html \
      $(S)/dialog/dialog_test.html \
      $(S)/timer/timer_test.html \
      $(S)/tree/tree_test.html \
+     $(S)/tree-hier/tree_hier_test.html \
      $(S)/radiogroups/radiogroups_test.html \
      $(S)/dataview/dataview_test.html \
      $(S)/htmlwin/htmlwin_test.html \
@@ -398,6 +399,13 @@ $(S)/tree/tree_test.o: $(S)/tree/tree_test.cpp
 	$(CXX) -c $(CXXFLAGS) $< -o $@
 
 $(S)/tree/tree_test.html: $(S)/tree/tree_test.o $(WX_CORE_LIB) $(JS_FILES)
+	$(CXX) $< $(LDFLAGS_NOGL) --pre-js $(JS) --shell-file $(HTML) -o $@
+
+# Hierarchy-pane-like tree test (no GL): hidden root + images + bold item
+$(S)/tree-hier/tree_hier_test.o: $(S)/tree-hier/tree_hier_test.cpp
+	$(CXX) -c $(CXXFLAGS) $< -o $@
+
+$(S)/tree-hier/tree_hier_test.html: $(S)/tree-hier/tree_hier_test.o $(WX_CORE_LIB) $(JS_FILES)
 	$(CXX) $< $(LDFLAGS_NOGL) --pre-js $(JS) --shell-file $(HTML) -o $@
 
 # Radio button groups test (no GL) - multiple wxRB_GROUP groups in one window
@@ -808,6 +816,7 @@ grid: $(S)/grid/grid_test.html
 dialog: $(S)/dialog/dialog_test.html
 timer: $(S)/timer/timer_test.html
 tree: $(S)/tree/tree_test.html
+tree-hier: $(S)/tree-hier/tree_hier_test.html
 radiogroups: $(S)/radiogroups/radiogroups_test.html
 dataview: $(S)/dataview/dataview_test.html
 htmlwin: $(S)/htmlwin/htmlwin_test.html

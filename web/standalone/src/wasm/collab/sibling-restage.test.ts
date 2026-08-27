@@ -13,6 +13,7 @@ vi.mock("../kicad-runner", () => ({ restageFile }));
 vi.mock("@pcbjam/shared", () => ({
   collabRoomId: (s: string, p: string, d: string) => `${s}:${p}:${d}`,
   ydocHasState,
+  ydocIsHollow: () => false,
   yToDoc: (doc: unknown) => doc,
   docToFile: () => "(kicad_sch materialized)",
 }));

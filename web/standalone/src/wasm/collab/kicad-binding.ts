@@ -20,6 +20,7 @@ import {
   Y_KDOC_REVERT_REASON,
   Y_KDOC_SEED_NONCE,
   ydocHasState,
+  ydocIsHollow,
   ydocSexprVersion,
   yToItemUnchecked,
   type ItemsWireDelta,
@@ -264,7 +265,14 @@ export function bindKicadCollab(
     // `ydocHasState` (meta + layout + items), NOT `items.size`: a populated
     // drawing sheet (pl_editor .kicad_wks) has zero uuid items, so an items-only
     // check would mis-classify a seeded room as empty and re-seed/clobber it.
-    if (opts?.editorMatchesDoc && ydocHasState(doc)) {
+    // A HOLLOW doc (layout/meta, zero items, never seeded — a save-all's
+    // layout sync into a room nobody had entered) counts as empty here:
+    // adopting it would remove every item on the sheet the editor just
+    // showed (the "subsheet renders then goes blank" bug), and a file
+    // materialized from it is title-block-only.
+    const hollow = ydocIsHollow(doc);
+    if (hollow) clog("seed: doc is HOLLOW (layout only, never seeded) → treating as empty");
+    if (opts?.editorMatchesDoc && ydocHasState(doc) && !hollow) {
       // The editor opened exactly this doc's content (Y.Doc-load path): no
       // adopt apply needed. snapshotItems() still runs to BASELINE the wasm
       // differ — otherwise the first local edit would re-emit the full model.
@@ -276,7 +284,7 @@ export function bindKicadCollab(
       }
       return;
     }
-    if (!ydocHasState(doc) && seedDoc) {
+    if ((!ydocHasState(doc) || hollow) && seedDoc) {
       if (readOnly) {
         // A viewer never authors a room. The editor keeps showing the file it
         // opened; when a writer later seeds this room, the (now-open) UP
@@ -336,7 +344,7 @@ export function bindKicadCollab(
       return;
     }
 
-    const hasState = ydocHasState(doc);
+    const hasState = ydocHasState(doc) && !hollow;
 
     if (!hasState) {
       if (readOnly) {
@@ -349,6 +357,12 @@ export function bindKicadCollab(
       doc.transact(() => {
         applyDeltaToY(doc, local, ORIGIN);
         upsertLibSymbolsToY(doc, wireLibSymbols(wire), ORIGIN);
+        // Stamp the seed marker like the file path does: a seeded-then-emptied
+        // sheet must stay distinguishable from a hollow one (ydocIsHollow).
+        doc.getMap(Y_KDOC_META).set(
+          Y_KDOC_SEED_NONCE,
+          `${doc.clientID}:${Math.random().toString(36).slice(2)}`,
+        );
       }, ORIGIN);
       return;
     }
