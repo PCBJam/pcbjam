@@ -240,6 +240,30 @@ export async function collectBoardModelFiles(
   return out;
 }
 
+/** Board text whose prescan was deferred (read-only sessions): run on the
+ *  first 3D open via {@link runDeferredModelPrescan}. */
+let deferredBoardText: string | null = null;
+
+/**
+ * Read-only viewers download nothing 3D until they actually open the viewer:
+ * park the board text instead of prescanning it at project open. The last
+ * board staged wins (one board per session).
+ */
+export function deferBoardModelPrescan(boardText: string): void {
+  deferredBoardText = boardText;
+}
+
+/** Run the parked prescan (no-op when nothing was deferred or it already ran).
+ *  Resolves when the models are in MEMFS, so a caller can open the 3D viewer
+ *  right after and have it resolve refs locally (the per-model C++ ensure
+ *  still covers any miss). */
+export async function runDeferredModelPrescan(): Promise<void> {
+  const text = deferredBoardText;
+  if (text === null) return;
+  deferredBoardText = null;
+  await prescanBoardModels(text);
+}
+
 /**
  * Prefetch every model a board references (fire-and-forget from the project
  * sync). Bodies land in IDB + MEMFS before the user opens the 3D viewer in the
@@ -250,6 +274,7 @@ export async function prescanBoardModels(
   concurrency = 6,
 ): Promise<void> {
   if (!installedSource) return;
+  deferredBoardText = null;
   const refs = scanModelRefs(boardText);
   if (!refs.length) return;
 

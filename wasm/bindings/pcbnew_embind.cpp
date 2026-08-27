@@ -1898,6 +1898,23 @@ void pcbCollabFitViewport( double aCx, double aCy, double aHalfW, double aHalfH 
     presenceCore().fitViewport( aCx, aCy, aHalfW, aHalfH );
 }
 
+// JS → C++: open the board's 3D viewer (read-only-viewer / hide-UI sessions have
+// no wx View menu). Dispatched like a native edit — CallAfter + COROUTINE via
+// runOnCoroutine — so the tool runs on its own stack, where the 3D frame's
+// RunMainStack bounce (the 8/12 sleep-park fix) is valid; never from inside a
+// parked bridge crossing. Returns false when no board frame is up.
+bool pcbShow3DViewer()
+{
+    PCB_EDIT_FRAME* fr = pcbFrame();
+
+    if( !fr )
+        return false;
+
+    pcbjam_collab::runOnCoroutine(
+            fr, [fr]() { fr->GetToolManager()->RunAction( ACTIONS::show3DViewer ); } );
+    return true;
+}
+
 // JS pull of the current viewport transform (world↔screen mapping for the DOM layer):
 // `{cx,cy,scale,w,h}` — world center, pixels-per-IU scale, canvas size in px.
 std::string pcbCollabGetViewport()
@@ -2795,6 +2812,9 @@ EMSCRIPTEN_BINDINGS(pcbnew) {
     function("kicadLayersGetState", &pcbLayersGetState);
     function("kicadLayersSetVisible", &pcbLayersSetVisible);
     function("kicadLayersSetActive", &pcbLayersSetActive);
+    // Session-menu 3D entry (read-only-viewer 0003) — pcbnew-only name,
+    // merged-image safe (false when no board frame is up).
+    function("kicadShow3DViewer", &pcbShow3DViewer);
     // pcbnew-only test helper (no eeschema counterpart — name is not shared).
     function("kicadCollabTestItemBlob", &kicadCollabTestItemBlob);
     // pcbnew-only ysync-review repro hooks (names not shared with eeschema).

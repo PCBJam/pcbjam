@@ -20,6 +20,15 @@ export function chromeSetter(win: Window): ((show: boolean) => boolean) | null {
   return typeof fn === "function" ? (fn as (show: boolean) => boolean) : null;
 }
 
+/** kicadShow3DViewer (pcbnew bundle): opens the 3D viewer from the session
+ *  menu — the one way to reach it when the wx chrome is hidden (read-only
+ *  viewer / hide-UI). Null on bundles without it. */
+export function show3DOpener(win: Window): (() => boolean) | null {
+  const fn = (win as { Module?: { kicadShow3DViewer?: unknown } }).Module
+    ?.kicadShow3DViewer;
+  return typeof fn === "function" ? (fn as () => boolean) : null;
+}
+
 // Viewer panels (viewer-panels): floating layer selector + selection
 // inspector open-state persistence, mirroring the comments panel's keys.
 export const LAYERS_OPEN_KEY = "pcbjam:layers-panel-open";

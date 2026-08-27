@@ -4,7 +4,7 @@ import { SyncStack } from "@pcbjam/sync-client";
 import { defaultKicadPro } from "../lib/new-file";
 import { memfsFilePath, memfsProjectDir } from "./constants";
 import { mark } from "./load-trace";
-import { prescanBoardModels } from "./libs/models-bridge";
+import { deferBoardModelPrescan, prescanBoardModels } from "./libs/models-bridge";
 import { openFileInTool } from "./open-flow";
 
 /**
@@ -65,6 +65,9 @@ export interface DriveOptions {
    *  the boot overlay's "Project files — n/m" line. Reported once up front
    *  with done=0 so the line appears as soon as staging starts. */
   onFileProgress?: (done: number, total: number) => void;
+  /** Read-only sessions: park the board's 3D prescan until the viewer opens
+   *  (runDeferredModelPrescan) instead of prefetching every model at open. */
+  deferModelPrescan?: boolean;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -169,9 +172,11 @@ async function syncProjectToMemfs(win: ToolWindow, opts: DriveOptions): Promise<
     // ensure. No-op unless a model source is installed (bootKicadTool).
     if (path.endsWith(".kicad_pcb")) {
       const text = new TextDecoder().decode(bytes);
-      void prescanBoardModels(text).catch((e) =>
-        opts.log(`[3d] prescan failed: ${String(e)}`),
-      );
+      if (opts.deferModelPrescan) deferBoardModelPrescan(text);
+      else
+        void prescanBoardModels(text).catch((e) =>
+          opts.log(`[3d] prescan failed: ${String(e)}`),
+        );
     }
   };
 

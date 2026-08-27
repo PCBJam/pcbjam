@@ -3,6 +3,8 @@ import {
   collectBoardModelFiles,
   ensureModelInMemfs,
   installModel3dHandler,
+  deferBoardModelPrescan,
+  runDeferredModelPrescan,
   normalizeModelRef,
   scanModelRefs,
 } from "./models-bridge";
@@ -166,5 +168,50 @@ describe("scanModelRefs", () => {
 
   it("returns empty for a board with no models", () => {
     expect(scanModelRefs("(kicad_pcb (version 20240101))")).toEqual([]);
+  });
+});
+
+describe("deferred board prescan (read-only sessions)", () => {
+  function installCounting() {
+    const files = new Map<string, Uint8Array>();
+    const fs = {
+      mkdirTree: () => {},
+      writeFile: (p: string, b: Uint8Array) => void files.set(p, b),
+      analyzePath: (p: string) => ({ exists: files.has(p) }),
+    };
+    (globalThis as unknown as { window: unknown }).window ??= globalThis;
+    // The prescan emits its progress event on window (node: bare globalThis).
+    (globalThis as unknown as { dispatchEvent?: unknown }).dispatchEvent ??= () => true;
+    (globalThis as unknown as { FS: unknown }).FS = fs;
+    let fetches = 0;
+    const source: Model3dSource = {
+      getModelBody: async (ref) => {
+        fetches++;
+        return new TextEncoder().encode(`body:${ref}`);
+      },
+      hasModel: async () => true,
+    };
+    installModel3dHandler(source, () => {});
+    return { files, fetches: () => fetches };
+  }
+
+  it("fetches nothing at defer time and everything on the first run", async () => {
+    const t = installCounting();
+    deferBoardModelPrescan(
+      '(model "${KICAD10_3DMODEL_DIR}/DeferLib.3dshapes/A.step") (model "${KICAD10_3DMODEL_DIR}/DeferLib.3dshapes/B.step")',
+    );
+    expect(t.fetches()).toBe(0);
+    await runDeferredModelPrescan();
+    expect(t.fetches()).toBe(2);
+    expect(t.files.has("/pcbjam/3dmodels/DeferLib.3dshapes/A.step")).toBe(true);
+    // Consumed: a second open does not re-scan.
+    await runDeferredModelPrescan();
+    expect(t.fetches()).toBe(2);
+  });
+
+  it("is a no-op when nothing was deferred", async () => {
+    const t = installCounting();
+    await runDeferredModelPrescan();
+    expect(t.fetches()).toBe(0);
   });
 });

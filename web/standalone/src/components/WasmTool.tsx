@@ -118,9 +118,11 @@ import {
   waitForWxUi,
 } from "@/components/wasm-tool/collab-start";
 import { installQuitHook } from "@/components/wasm-tool/quit-hook";
+import { runDeferredModelPrescan } from "@/wasm/libs/models-bridge";
 import { installToolNavigationHook } from "@/components/wasm-tool/tool-navigation";
 import {
   chromeSetter,
+  show3DOpener,
   COLLAB_TOOLS,
   INSPECTOR_OPEN_KEY,
   LAYERS_OPEN_KEY,
@@ -1065,6 +1067,8 @@ export function WasmTool({
           slug,
           files,
           targetPath,
+          // Viewers fetch 3D bodies only if they open the viewer (session menu).
+          deferModelPrescan: readOnly,
           // ydoc source with a populated room: the target file's bytes come
           // from the doc; everything else (sibling files) still fetches.
           fetchBytes:
@@ -1386,7 +1390,10 @@ export function WasmTool({
         // DOCUMENT references — a peer editing a PLACED symbol must still
         // reach this session live (lib-update toast); everything else syncs
         // on the next load. Fire-and-forget: boot never waits on sockets.
-        if (targetPath && source?.enableRealtime) {
+        // Read-only sessions carry no editable libs (the boot payload is
+        // model3d-only for them) and may not open the team's scope room —
+        // skip the socket rather than collect a 401.
+        if (targetPath && source?.enableRealtime && !readOnly) {
           const staged = readStagedFile(win, slug, targetPath);
           const nicks = staged
             ? usedLibNicknames(new TextDecoder().decode(staged))
@@ -1471,6 +1478,22 @@ export function WasmTool({
     () => (ready ? chromeSetter(window) : null),
     [ready],
   );
+
+  // kicadShow3DViewer — the session-menu 3D entry (read-only-viewer / hide-UI
+  // have no wx View menu). Runs the deferred model prescan first so a viewer's
+  // first open resolves its refs from MEMFS instead of one C++ ensure each.
+  const show3DFn = React.useMemo(() => {
+    if (!ready || tool !== "pcbnew") return null;
+    const open = show3DOpener(window);
+    if (!open) return null;
+    return () => {
+      void runDeferredModelPrescan()
+        .catch((e) => append(`[3d] deferred prescan failed: ${String(e)}`))
+        .then(() => {
+          if (!open()) append("[3d] kicadShow3DViewer: no board frame");
+        });
+    };
+  }, [ready, tool, append]);
 
   // Layer bridge (viewer-panels), pcbnew sessions only — the merged bundle
   // exports the names for every frame, but they no-op on a non-PCB frame.
@@ -1604,6 +1627,7 @@ export function WasmTool({
           canToggleChrome={setChromeFn !== null}
           chromeHidden={chromeHidden}
           onToggleChrome={() => toggleChromeHidden()}
+          onShow3D={show3DFn}
         />
       )}
 

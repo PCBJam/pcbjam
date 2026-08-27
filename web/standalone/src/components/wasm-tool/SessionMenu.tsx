@@ -2,6 +2,7 @@
 import * as React from "react";
 import {
   AlertTriangle,
+  Box,
   Crosshair,
   EyeOff,
   Layers,
@@ -155,6 +156,7 @@ export function SessionMenu({
   canToggleChrome,
   chromeHidden,
   onToggleChrome,
+  onShow3D,
 }: {
   tool: Tool;
   readOnly: boolean;
@@ -184,6 +186,9 @@ export function SessionMenu({
   canToggleChrome: boolean;
   chromeHidden: boolean;
   onToggleChrome: () => void;
+  /** Open the board's 3D viewer (pcbnew only); null when the bundle lacks
+   *  the bridge. The only 3D entry point once the wx menus are hidden. */
+  onShow3D: (() => void) | null;
 }) {
   return (
     <OverlayMenu
@@ -277,6 +282,17 @@ export function SessionMenu({
           >
             <Crosshair size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
             <span>{inspectorOpen ? "Hide inspector" : "Inspector"}</span>
+          </button>
+        )}
+        {tool === "pcbnew" && onShow3D && (
+          <button
+            data-testid="show-3d-viewer"
+            className={overlayRowClass}
+            title="Open the 3D viewer"
+            onClick={onShow3D}
+          >
+            <Box size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
+            <span>3D viewer</span>
           </button>
         )}
         {canToggleChrome && !readOnly && (
