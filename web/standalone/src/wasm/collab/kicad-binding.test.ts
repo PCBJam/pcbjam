@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import * as Y from "yjs";
 import {
   docToFile,
+  duplicateSingletonHeadIndices,
   fileToDoc,
   itemsWireToDelta,
   kicadLibSymbolsMap,
@@ -223,6 +224,32 @@ describe("bindKicadCollab — two editors over relayed Y.Docs", () => {
     expect(ydocIsHollow(a)).toBe(false); // healed: items + seed marker in the doc
     expect(docToFile(yToDoc(a))).toBe(docToFile(seedDoc));
     bindB.seed(); // a peer joining now adopts the real content
+    expect(edB.store["r-1"]).toBeDefined();
+  });
+
+  it("a layout-only write racing a file seed converges to ONE header block (no double version)", () => {
+    // Session 1 (old client) save-all wrote a layout-only doc; session 2 file-seeded
+    // BEFORE that state arrived. Merged, the layout carried the header twice and
+    // KiCad rejected the materialized sheet ("Expecting … Got version").
+    const { a, b, edA, edB, bindA, bindB } = setup();
+    const file = `(kicad_wks (version 20220228) (generator "pl_editor")
+  (setup (textsize 1.5 1.5) (linewidth 0.15))
+  (rect (uuid "r-1") (name "border") (start 0 0 ltcorner) (end 0 0 rbcorner))
+)
+`;
+    const seedDoc = fileToDoc(file);
+    // Hold the relay: build the two histories independently, then merge.
+    const hollow = new Y.Doc();
+    syncLayoutToY(seedDoc, hollow, "layout-save");
+    Object.assign(edA.store, seedDoc.items);
+    bindA.seed(seedDoc); // A file-seeds an (apparently) empty room
+    Y.applyUpdate(a, Y.encodeStateAsUpdate(hollow), "relay"); // the stale layout lands
+    const text = docToFile(yToDoc(a));
+    expect((text.match(/\(version /g) ?? []).length).toBe(1);
+    expect(text).toBe(docToFile(seedDoc));
+    // The doc itself was repaired (not just the render): B sees a single header.
+    expect(duplicateSingletonHeadIndices(yToDoc(b).layout)).toEqual([]);
+    bindB.seed();
     expect(edB.store["r-1"]).toBeDefined();
   });
 

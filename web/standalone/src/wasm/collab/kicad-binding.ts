@@ -9,11 +9,13 @@ import {
   kicadItemsMap,
   kicadLibSymbolsMap,
   parseItemsWireDelta,
+  repairLayoutY,
   seedDocToY,
   SEXPR_VERSION_SUPPORTED,
   upsertLibSymbolsToY,
   wireItemUuids,
   wireLibSymbols,
+  Y_KDOC_LAYOUT,
   Y_KDOC_META,
   Y_KDOC_REVERT_AT,
   Y_KDOC_REVERT_NONCE,
@@ -235,6 +237,26 @@ export function bindKicadCollab(
   };
   items.observeDeep(observer);
 
+  // Layout convergence (ysync 0011 follow-up): a remote merge that lands a
+  // second copy of the header block (a layout-only save-sync racing a file
+  // seed) would materialize as a file KiCad refuses to load. Repair on every
+  // remote layout change and after seed(); peers delete the same entries, so
+  // the doc converges to one header. A viewer never writes.
+  const layout = doc.getArray(Y_KDOC_LAYOUT);
+  const repairLayout = (why: string): void => {
+    if (readOnly || destroyed) return;
+    try {
+      if (repairLayoutY(doc, ORIGIN)) clog(`layout repaired (duplicate header groups) — ${why}`);
+    } catch (err) {
+      cwarn("layout repair failed", err);
+    }
+  };
+  const onLayout = (_ev: unknown, txn: Y.Transaction) => {
+    if (txn.origin === ORIGIN) return;
+    repairLayout("remote layout change");
+  };
+  layout.observe(onLayout);
+
   // Validity-revert notice (kicad-validity 0001 B3): the backend stamps
   // kdoc_meta.revertNonce when it rolls the doc back to the last valid state
   // (the content itself arrives through the normal item sync above). Watched
@@ -261,6 +283,14 @@ export function bindKicadCollab(
   revMeta.observe(onRevertMeta);
 
   function seed(seedDoc?: KicadDoc, opts?: { editorMatchesDoc?: boolean }): void {
+    try {
+      seedInner(seedDoc, opts);
+    } finally {
+      repairLayout("post-seed");
+    }
+  }
+
+  function seedInner(seedDoc?: KicadDoc, opts?: { editorMatchesDoc?: boolean }): void {
     seeded = true; // open the UP gate; everything below runs synchronously
     // `ydocHasState` (meta + layout + items), NOT `items.size`: a populated
     // drawing sheet (pl_editor .kicad_wks) has zero uuid items, so an items-only
@@ -422,6 +452,7 @@ export function bindKicadCollab(
     seed,
     destroy: () => {
       destroyed = true; // gates the DOWN hook — see bug 07 note above
+      layout.unobserve(onLayout);
       detachSeedArbitration?.();
       detachSeedArbitration = undefined;
       items.unobserveDeep(observer);
