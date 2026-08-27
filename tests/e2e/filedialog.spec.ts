@@ -58,9 +58,9 @@ test.describe('wxFileDialog Tests', () => {
 
     // Try all three buttons
     await clickByLabel(page, 'Open File...');
-    await page.waitForTimeout(300); // eslint-disable-line -- documented interaction dwell
+    await page.waitForTimeout(300); // eslint-disable-line -- documented interaction dwell: click commit before the next dialog button click
     await clickByLabel(page, 'Save File...');
-    await page.waitForTimeout(300); // eslint-disable-line -- documented interaction dwell
+    await page.waitForTimeout(300); // eslint-disable-line -- documented interaction dwell: click commit before the next dialog button click
     await clickByLabel(page, 'Open Multiple...');
 
     await stableShot(page, 'filedialog-05-all-buttons.png', { fullPage: true });

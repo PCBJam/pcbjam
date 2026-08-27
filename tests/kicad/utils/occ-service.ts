@@ -39,9 +39,22 @@ const OCC_WORKER_SRC = fs.readFileSync(
         'web', 'standalone', 'src', 'wasm', 'occ-worker.js'),
     'utf8');
 
-export async function installOccServiceStub(page: Page): Promise<void> {
-    await page.addInitScript((workerSrc: string) => {
+export interface OccHarnessWatchdogs {
+    bootTimeoutMs?: number;
+}
+
+export async function installOccServiceStub(
+    page: Page,
+    watchdogs: OccHarnessWatchdogs = {},
+): Promise<void> {
+    const bootTimeoutMs = watchdogs.bootTimeoutMs ?? 2 * 60_000;
+    if (!Number.isSafeInteger(bootTimeoutMs) || bootTimeoutMs < 1)
+        throw new Error('bootTimeoutMs must be a positive safe integer');
+
+    await page.addInitScript((options: { workerSrc: string; bootTimeoutMs: number }) => {
         if ((globalThis as any).occService) return;
+
+        const { workerSrc, bootTimeoutMs } = options;
 
         (window as any).__occExports = [];
 
@@ -50,6 +63,9 @@ export async function installOccServiceStub(page: Page): Promise<void> {
             worker?: Worker;
             failed: boolean;
             ready: Promise<WorkerSlot>;
+            bootTimer?: ReturnType<typeof setTimeout>;
+            rejectBoot?: (reason?: unknown) => void;
+            removeBootListener?: () => void;
             /** The exact lifecycle transition used by Worker.onmessageerror. */
             failDecode: () => void;
         }
@@ -67,11 +83,9 @@ export async function installOccServiceStub(page: Page): Promise<void> {
         let requestsStarted = 0;
         let requestsPosted = 0;
         const workerGenerationsStarted: number[] = [];
-        let armedFault: {
-            count: number;
-            kind: 'terminate' | 'messageerror';
-            report: string;
-        } | null = null;
+        let armedFault: { count: number; report: string } | null = null;
+        /** One-shot: the next boot uses a worker that never answers. */
+        let wedgeNextBootArmed: { bootTimeoutMs?: number } | null = null;
         const retiredGenerations: number[] = [];
 
         const pendingInGeneration = (generation: number): number => {
@@ -94,6 +108,12 @@ export async function installOccServiceStub(page: Page): Promise<void> {
             if (slot.failed) return;
             slot.failed = true;
             retiredGenerations.push(slot.generation);
+            if (slot.bootTimer !== undefined) {
+                clearTimeout(slot.bootTimer);
+                slot.bootTimer = undefined;
+            }
+            slot.removeBootListener?.();
+            slot.removeBootListener = undefined;
             failPending(slot.generation, report);
             if (workerSlot === slot) workerSlot = null;
             try {
@@ -101,21 +121,22 @@ export async function installOccServiceStub(page: Page): Promise<void> {
             } catch {
                 /* already gone */
             }
+            const reject = slot.rejectBoot;
+            slot.rejectBoot = undefined;
+            reject?.(new Error(report));
         };
 
         const maybeTriggerArmedFault = (slot: WorkerSlot): void => {
             if (!armedFault || slot.failed) return;
             if (pendingInGeneration(slot.generation) < armedFault.count) return;
-            const { kind, report } = armedFault;
+            const { report } = armedFault;
             armedFault = null;
-            console.log(`[TEST-OCC] faulting generation ${slot.generation} (${kind}): ${report}`);
-            if (kind === 'messageerror' && slot.worker) {
+            console.log(`[TEST-OCC] faulting generation ${slot.generation} (messageerror): ${report}`);
+            if (slot.worker) {
                 // Synthetic dispatch on Worker is engine-dependent. Invoke
                 // the exact transition installed as the real event handler.
                 slot.failDecode();
             } else {
-                // Worker.terminate() intentionally emits no error event, so
-                // the hook supplies the fatal lifecycle transition explicitly.
                 retireWorker(slot, report);
             }
         };
@@ -127,36 +148,53 @@ export async function installOccServiceStub(page: Page): Promise<void> {
                     failed: false,
                 } as WorkerSlot;
                 workerGenerationsStarted.push(slot.generation);
+                workerSlot = slot;
 
-                slot.ready = (async () => {
+                const wedge = wedgeNextBootArmed;
+                wedgeNextBootArmed = null;
+                const bootDeadlineMs = wedge?.bootTimeoutMs ?? bootTimeoutMs;
+
+                // Legible boot (E-22): a worker DEATH shape that never posts
+                // ready OR bootError (importScripts hang, pthread spawn
+                // wedge, OOM-kill) used to hang every request until the
+                // spec's timeout with zero evidence. Bound the boot — same
+                // shape as the ngspice stub and the production service.
+                const bootDeadline = new Promise<never>((_resolve, reject) => {
+                    slot.rejectBoot = reject;
+                    slot.bootTimer = setTimeout(() => {
+                        if (slot.failed || workerSlot !== slot) return;
+                        const why = `occ_service boot timed out after ${bootDeadlineMs} ms`;
+                        console.log(`[TEST-OCC] ${why} — resetting service`);
+                        retireWorker(slot, why);
+                    }, bootDeadlineMs);
+                });
+
+                const boot = (async () => {
                     const glue = new URL('occ_service.js', window.location.href).href;
                     console.log(`[TEST-OCC] booting occ_service from ${glue}`);
-                    const worker = new Worker(URL.createObjectURL(new Blob(
-                        [`self.OCC_GLUE_URL = ${JSON.stringify(glue)};\n`, workerSrc],
-                        { type: 'text/javascript' })));
+                    // A wedged boot is a REAL silent Worker (an empty module:
+                    // it boots, runs nothing, never posts ready/bootError) —
+                    // the importScripts-hang / pthread-wedge shape, engine
+                    // independent.
+                    const worker = wedge
+                        ? new Worker('data:text/javascript,/* [TEST-OCC] wedged boot */')
+                        : new Worker(URL.createObjectURL(new Blob(
+                            [`self.OCC_GLUE_URL = ${JSON.stringify(glue)};\n`, workerSrc],
+                            { type: 'text/javascript' })));
                     slot.worker = worker;
-                    let rejectBoot: ((reason?: unknown) => void) | undefined;
-                    let removeBootListener: (() => void) | undefined;
 
+                    // All fatal transitions settle the boot through the ONE
+                    // retirement funnel (which clears the deadline, removes
+                    // the boot listener, and rejects the raced promise).
                     worker.onerror = (e) => {
                         const report = `occ_service crashed: ${e.message || 'worker error'}`;
                         console.error(`[TEST-OCC] ${report}; resetting service`);
                         retireWorker(slot, report);
-                        removeBootListener?.();
-                        removeBootListener = undefined;
-                        const reject = rejectBoot;
-                        rejectBoot = undefined;
-                        reject?.(new Error(report));
                     };
                     slot.failDecode = () => {
                         const report = 'occ_service transport failed: message decode failed';
                         console.error(`[TEST-OCC] ${report}; resetting service`);
                         retireWorker(slot, report);
-                        removeBootListener?.();
-                        removeBootListener = undefined;
-                        const reject = rejectBoot;
-                        rejectBoot = undefined;
-                        reject?.(new Error(report));
                     };
                     worker.onmessageerror = slot.failDecode;
                     worker.onmessage = (e) => {
@@ -169,38 +207,37 @@ export async function installOccServiceStub(page: Page): Promise<void> {
                             request.resolve(res);
                         }
                     };
-                    await new Promise<void>((resolve, reject) => {
-                        rejectBoot = reject;
+                    await new Promise<void>((resolve) => {
                         const onFirst = (e: MessageEvent) => {
                             if (e.data?.ready) {
-                                removeBootListener?.();
-                                removeBootListener = undefined;
-                                rejectBoot = undefined;
+                                if (slot.bootTimer !== undefined) {
+                                    clearTimeout(slot.bootTimer);
+                                    slot.bootTimer = undefined;
+                                }
+                                slot.removeBootListener?.();
+                                slot.removeBootListener = undefined;
+                                slot.rejectBoot = undefined;
                                 resolve();
                             } else if (e.data?.bootError) {
-                                removeBootListener?.();
-                                removeBootListener = undefined;
-                                rejectBoot = undefined;
-                                const report = `occ_service boot failed: ${String(e.data.bootError)}`;
-                                retireWorker(slot, report);
-                                reject(new Error(report));
+                                retireWorker(slot,
+                                    `occ_service boot failed: ${String(e.data.bootError)}`);
                             }
                         };
                         worker.addEventListener('message', onFirst);
-                        removeBootListener = () => worker.removeEventListener('message', onFirst);
+                        slot.removeBootListener = () => worker.removeEventListener('message', onFirst);
                     });
                     if (slot.failed || workerSlot !== slot)
                         throw new Error('occ_service worker retired during boot');
                     console.log('[TEST-OCC] occ_service ready');
                     return slot;
-                })().catch((e) => {
+                })();
+
+                slot.ready = Promise.race([boot, bootDeadline]).catch((e) => {
                     // A late rejection from a retired generation cannot clear
                     // the replacement slot created by a new request.
                     retireWorker(slot, `occ_service unavailable: ${String(e)}`);
                     throw e;
                 });
-
-                workerSlot = slot;
             }
             return workerSlot.ready;
         };
@@ -291,12 +328,13 @@ export async function installOccServiceStub(page: Page): Promise<void> {
         };
 
         (globalThis as any).__occServiceTestHooks = {
-            /** Arm one deterministic host-side fault after N real posts. */
-            terminateWhenPendingAtLeast(count: number, report = 'occ_service test fault') {
-                if (!Number.isSafeInteger(count) || count < 1)
-                    throw new Error('pending threshold must be a positive safe integer');
-                armedFault = { count, kind: 'terminate', report };
-                if (workerSlot) maybeTriggerArmedFault(workerSlot);
+            /** One-shot: wedge the next boot (silent worker, no ready and no
+             *  bootError), optionally shortening that boot's deadline. */
+            wedgeNextBoot(bootTimeoutMs?: number) {
+                if (bootTimeoutMs !== undefined
+                    && (!Number.isSafeInteger(bootTimeoutMs) || bootTimeoutMs < 1))
+                    throw new Error('bootTimeoutMs must be a positive safe integer');
+                wedgeNextBootArmed = { bootTimeoutMs };
             },
             /** Arm the real Worker's production-parity messageerror handler. */
             messageErrorWhenPendingAtLeast(count: number) {
@@ -304,7 +342,6 @@ export async function installOccServiceStub(page: Page): Promise<void> {
                     throw new Error('pending threshold must be a positive safe integer');
                 armedFault = {
                     count,
-                    kind: 'messageerror',
                     report: 'occ_service transport failed: message decode failed',
                 };
                 if (workerSlot) maybeTriggerArmedFault(workerSlot);
@@ -324,5 +361,5 @@ export async function installOccServiceStub(page: Page): Promise<void> {
         };
 
         (globalThis as any).occService = { request };
-    }, OCC_WORKER_SRC);
+    }, { workerSrc: OCC_WORKER_SRC, bootTimeoutMs });
 }

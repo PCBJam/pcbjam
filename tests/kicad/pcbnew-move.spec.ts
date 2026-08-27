@@ -118,15 +118,15 @@ test.describe('PCBnew move with "m" (#9)', () => {
         // JS-observable signal, and the asyncified pointer-move handler needs wall-clock
         // time to update the world cursor before each button press.
         await page.mouse.move(startPoint.x, startPoint.y);
-        await page.waitForTimeout(350); // eslint-disable-line -- documented interaction dwell
+        await page.waitForTimeout(350); // eslint-disable-line -- documented interaction dwell: asyncified pointer-move needs wall-clock time before press
         await page.mouse.down();
         await page.mouse.up();
-        await page.waitForTimeout(350); // eslint-disable-line -- documented interaction dwell
+        await page.waitForTimeout(350); // eslint-disable-line -- documented interaction dwell: line-vertex commit has no JS-observable signal
         await page.mouse.move(endPoint.x, endPoint.y);
-        await page.waitForTimeout(350); // eslint-disable-line -- documented interaction dwell
+        await page.waitForTimeout(350); // eslint-disable-line -- documented interaction dwell: asyncified pointer-move needs wall-clock time before press
         await page.mouse.down();
         await page.mouse.up();
-        await page.waitForTimeout(500); // eslint-disable-line -- documented interaction dwell
+        await page.waitForTimeout(500); // eslint-disable-line -- documented interaction dwell: line-vertex commit has no JS-observable signal
         // Finish the segment, then wait for the new board item to register
         // (deterministic — replaces two fixed 250ms sleeps).
         await page.keyboard.press('Escape');
@@ -150,21 +150,21 @@ test.describe('PCBnew move with "m" (#9)', () => {
         // asyncified event loop to process before the next. The outcome (the item moved
         // right) is asserted below via the embind position hook.
         await page.mouse.move(midPoint.x, midPoint.y);
-        await page.waitForTimeout(350); // eslint-disable-line -- documented interaction dwell
+        await page.waitForTimeout(350); // eslint-disable-line -- documented interaction dwell: asyncified pointer-move needs wall-clock time before select click
         await page.mouse.down();
         await page.mouse.up();
-        await page.waitForTimeout(350); // eslint-disable-line -- documented interaction dwell
+        await page.waitForTimeout(350); // eslint-disable-line -- documented interaction dwell: selection commit has no per-step observable
 
         const NUDGES = 10;
         await page.keyboard.press('m');
-        await page.waitForTimeout(400); // eslint-disable-line -- documented interaction dwell
+        await page.waitForTimeout(400); // eslint-disable-line -- documented interaction dwell: move-mode entry has no observable signal
         for (let i = 0; i < NUDGES; i++) {
             await page.keyboard.press('ArrowRight');
-            await page.waitForTimeout(150); // eslint-disable-line -- documented interaction dwell
+            await page.waitForTimeout(150); // eslint-disable-line -- documented interaction dwell: per-arrow nudge has no per-step observable
         }
         // Commit at the nudged position WITHOUT moving the cursor (Enter, not click).
         await page.keyboard.press('Enter');
-        await page.waitForTimeout(500); // eslint-disable-line -- documented interaction dwell
+        await page.waitForTimeout(500); // eslint-disable-line -- documented interaction dwell: keyboard move commit; outcome asserted via position hook
 
         const afterMove = await page.screenshot({ path: shotPath(page, 'pcbnew-move-01-after.png'), scale: 'css' });
 

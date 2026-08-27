@@ -61,6 +61,9 @@ function loadShim(opts: { busy: () => boolean }) {
   g.Module = {
     kicadOpenFileBusy: opts.busy,
     kicadCollabApplyItems: (x: unknown) => `applied:${String(x)}`,
+    // Headless stack ops so parked waits and the resume pump run under vitest.
+    stackSave: () => 0,
+    stackRestore: () => {},
   };
   // eslint-disable-next-line no-eval
   (0, eval)(readFileSync(SHIM_PATH, "utf8"));
@@ -312,18 +315,106 @@ describe("E-8: runWaitCompletion admission gate for worker completions", () => {
     }
   });
 
-  it("classifies cross-realm trap strings as terminal too", () => {
+  it("classifies a realm-crossed trap by its RuntimeError name", () => {
+    // An error object relayed across a realm loses its instanceof identity
+    // but keeps its name. (The old message-substring sniff is gone — see the
+    // false-positive gate below.)
     const S = loadShim({ busy: () => false });
     const err = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
       const token = S.beginWait("occ");
+      const crossed = new Error("unreachable");
+      crossed.name = "RuntimeError";
       S.runWaitCompletion("cross-realm trap", token, () => {
-        throw new Error("RuntimeError: unreachable");
+        throw crossed;
       });
       expect(S.terminal).toBe(true);
       expect(S.waitEarlyResolved(token)).toBe(0);
     } finally {
       err.mockRestore();
+    }
+  });
+
+  it("a plain error QUOTING trap text does not terminalize (E-14)", async () => {
+    // The old classifier matched message substrings ('Aborted(', 'index out
+    // of bounds', …) — any plain JS error whose text merely QUOTED such
+    // wording permanently bricked a healthy instance. Structural signals
+    // only: RuntimeError instance or name.
+    const S = loadShim({ busy: () => false });
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const token = S.beginWait("ngspice");
+      expect(
+        S.runWaitCompletion("relay bug", token, () => {
+          throw new Error(
+            "copy failed: memory access out of bounds in worker payload (Aborted(…))",
+          );
+        }, 1),
+      ).toBe(false);
+      expect(S.terminal, "a message-only match must not brick the instance").toBe(false);
+      expect(S.canTouchNative()).toBe(true);
+      await expect(S.waitPromise(token), "the wait fails with inertResult").resolves.toBe(1);
+    } finally {
+      err.mockRestore();
+    }
+  });
+
+  it("bare resolveWait after a terminal latch does not resume the parked waiter (E-15)", async () => {
+    const S = loadShim({ busy: () => false });
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const token = S.beginWait("3d");
+      let settled = false;
+      void S.waitPromise(token).then(() => {
+        settled = true;
+      });
+
+      const trapToken = S.beginWait("occ");
+      S.runWaitCompletion("trap", trapToken, () => {
+        throw new WebAssembly.RuntimeError("unreachable");
+      });
+      expect(S.terminal).toBe(true);
+
+      // The ten bare finishers (fontenum/clipboard/3d/fp-lib/…) all route
+      // through resolveWait — on a terminal instance it must refuse WITHOUT
+      // consuming the entry (the frame stays visibly parked in dump()).
+      expect(S.resolveWait(token, 7), "bare resolve refused on terminal").toBe(false);
+      expect(S.pendingWaits("3d"), "the entry is not consumed").toBe(1);
+
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(settled, "the parked frame must not resume into the trapped module")
+        .toBe(false);
+    } finally {
+      err.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
+  it("a wake already queued when terminal latches is never delivered (E-15)", async () => {
+    const S = loadShim({ busy: () => false });
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const token = S.beginWait("sleep");
+      let settled = false;
+      void S.waitPromise(token).then(() => {
+        settled = true;
+      });
+      // Resolve on a HEALTHY instance — the wake is now queued behind a
+      // microtask — then latch terminal before the pump can run it.
+      expect(S.resolveWait(token, 1)).toBe(true);
+      const trapToken = S.beginWait("occ");
+      S.runWaitCompletion("trap", trapToken, () => {
+        throw new WebAssembly.RuntimeError("unreachable");
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(settled, "the queued wake must not re-enter the trapped module")
+        .toBe(false);
+    } finally {
+      err.mockRestore();
+      warn.mockRestore();
     }
   });
 

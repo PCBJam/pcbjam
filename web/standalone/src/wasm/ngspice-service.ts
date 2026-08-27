@@ -169,15 +169,24 @@ export function installNgspiceService(
     const frame = { generation: slot.generation, evt, sequence, bytes };
     const handler = globalThis.__ngspiceOnEvent;
     if (handler) {
-      while (evtQueue.length) {
-        const queued = evtQueue.shift()!;
-        evtQueueBytes -= queued.bytes;
-        if (queued.generation !== slot.generation) continue;
-        // Queued frames were acked at enqueue (ownership was taken then).
-        handler(queued.evt);
+      // The host took transport ownership of this frame the moment it arrived
+      // in onmessage, so the ack must survive a throwing handler (the
+      // sharedspice client deliberately rethrows non-trap errors) — otherwise
+      // each throw leaks one unit of the worker's credit window until the
+      // stream dies with a misattributed overload. The throw itself keeps
+      // propagating: the client's trap-latch machinery needs to see it.
+      try {
+        while (evtQueue.length) {
+          const queued = evtQueue.shift()!;
+          evtQueueBytes -= queued.bytes;
+          if (queued.generation !== slot.generation) continue;
+          // Queued frames were acked at enqueue (ownership was taken then).
+          handler(queued.evt);
+        }
+        handler(evt);
+      } finally {
+        ackEvent(slot, frame);
       }
-      handler(evt);
-      ackEvent(slot, frame);
     } else {
       if (evtQueue.length >= MAX_QUEUED_EVENT_FRAMES
           || evtQueueBytes > MAX_QUEUED_EVENT_BYTES - bytes) {
@@ -192,6 +201,31 @@ export function installNgspiceService(
       // worker's window forever. The queue caps above stay the pre-handler
       // bound (M-6: count + bytes).
       ackEvent(slot, frame);
+    }
+  };
+
+  // The worker's terminal notice carries the deferred frames it had already
+  // accepted (its accepted-prefix contract — typically the last diagnostics
+  // explaining why the run died): deliver them best-effort, in order, WITHOUT
+  // acking — the fatal frame lives outside the credit protocol and the stream
+  // is gone. Best-effort: a throwing handler must not block later frames or
+  // the retirement that follows.
+  const deliverTerminalEvents = (entries: unknown): void => {
+    if (!Array.isArray(entries) || entries.length === 0) return;
+    const handler = globalThis.__ngspiceOnEvent;
+    if (!handler) {
+      log(`[ngspice] dropping ${entries.length} undelivered event frame(s) `
+        + "from a failed stream (no handler installed)");
+      return;
+    }
+    for (const entry of entries) {
+      const evt = (entry as { evt?: NgspiceEvent } | null)?.evt;
+      if (!evt) continue;
+      try {
+        handler(evt);
+      } catch (error) {
+        log(`[ngspice] terminal event delivery failed: ${String(error)}`);
+      }
     }
   };
 
@@ -237,6 +271,24 @@ export function installNgspiceService(
     const reject = slot.rejectBoot;
     slot.rejectBoot = undefined;
     reject?.(new Error(why));
+
+    // A retired worker emits no bg/exit frame of its own, so the sharedspice
+    // client's s_bgRunning mirror would stay latched true after a mid-run
+    // death — Run stays disabled and the promised fresh-worker restart is
+    // unreachable for the whole session. Synthesize the controlled-exit the
+    // crashed engine could not send. Dispatch straight to the installed
+    // handler, NOT through dispatchEvt: a fabricated frame must never touch
+    // the transport credit ledger. The client handler routes it through
+    // cbControlledExit (clears the mirror, reports, delivers SIM_IDLE) and
+    // self-drops on a dead/terminal instance.
+    const handler = globalThis.__ngspiceOnEvent;
+    if (handler) {
+      try {
+        handler({ kind: "exit", status: 1, immediate: true, quit: false });
+      } catch (error) {
+        log(`[ngspice] synthetic exit dispatch failed: ${String(error)}`);
+      }
+    }
   };
 
   const ensureWorker = (): Promise<WorkerSlot> => {
@@ -284,6 +336,9 @@ export function installNgspiceService(
           if (slot.failed || workerSlot !== slot) return;
           const data = e.data ?? {};
           if (data.fatal) {
+            // Deliver the accepted-but-undelivered frames the terminal
+            // notice carries before retiring the generation.
+            deliverTerminalEvents(data.pendingEvents);
             failWorker(`event stream failure: ${String(data.fatal)}`);
             return;
           }

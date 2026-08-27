@@ -120,14 +120,26 @@ EM_JS( void, js_ngspice_get_vec_start,
                 return 0;
             HEAP32[( aMeta >> 2 ) + 1] = res.vtype | 0;
             HEAP32[( aMeta >> 2 ) + 2] = res.flags | 0;
-            HEAP32[( aMeta >> 2 ) + 3] = res.length | 0;
-            if( res.real && res.real.length ) {
-                const p = _malloc( res.real.length * 8 );
+            // E-11: v_length must describe what was actually TRANSFERRED,
+            // never the worker's self-reported count — a corrupted worker
+            // answering a huge length with small arrays otherwise drives the
+            // native consumer through a multi-gigabyte copy (observed dying
+            // as an unhandled std::length_error that exits the main loop).
+            // Interleaved re,im doubles: 2 per complex element.
+            let length = Math.max( 0, res.length | 0 );
+            const nReal = ( res.real && res.real.length ) | 0;
+            const nComp = ( res.comp && res.comp.length ) | 0;
+            if( nReal ) length = Math.min( length, nReal );
+            if( nComp ) length = Math.min( length, nComp >> 1 );
+            if( !nReal && !nComp ) length = 0;
+            HEAP32[( aMeta >> 2 ) + 3] = length;
+            if( nReal ) {
+                const p = _malloc( nReal * 8 );
                 HEAPF64.set( res.real, p >> 3 );
                 HEAPU32[aReal >> 2] = p;
             }
-            if( res.comp && res.comp.length ) {
-                const p = _malloc( res.comp.length * 8 );
+            if( nComp ) {
+                const p = _malloc( nComp * 8 );
                 HEAPF64.set( res.comp, p >> 3 );
                 HEAPU32[aComp >> 2] = p;
             }
@@ -159,13 +171,19 @@ extern "C" int wxWasmYieldUntil( int aToken );
 // handler, and a superseded handler disarms itself.
 EM_JS( void, js_ngspice_install_events, (), {
     const installingModule = Module;
+    // E-16: capture the installing module's SCHEDULER too — the liveness gate
+    // and trap latch below must describe the exact instance this handler
+    // drives, not whatever scheduler the realm holds at dispatch time (under
+    // same-realm module replacement the realm-global would belong to the
+    // successor).
+    const installingScheduler = globalThis.__wxScheduler;
     const installed = globalThis.__ngspiceOnEvent;
     if( installed && installed.__pcbjamNgspiceOwnerModule === installingModule )
         return;
     const handler = ( evt ) => {
         if( globalThis.__ngspiceOnEvent !== handler )
             return; // superseded install — never drive a retired module
-        const sched = globalThis.__wxScheduler;
+        const sched = installingScheduler;
         if( !sched || !sched.canTouchNative || !sched.canTouchNative() ) {
             // E-8/M-2: a dead or terminal instance takes no native entry; the
             // drop is loud, never silent.
@@ -173,6 +191,11 @@ EM_JS( void, js_ngspice_install_events, (), {
                           + 'dead/terminal module' );
             return;
         }
+        // E-16: a plain-JS throw between the malloc and the native entry
+        // leaks the line buffer — track it so the non-trap rethrow path can
+        // free it (never free on the trap path: freeing re-enters a trapped
+        // module).
+        let pendingText = 0;
         const call = ( kind, text, a, b ) => {
             let p = 0;
             if( text != null ) {
@@ -185,7 +208,9 @@ EM_JS( void, js_ngspice_install_events, (), {
                 p = _malloc( n );
                 stringToUTF8( text, p, n );
             }
+            pendingText = p;
             installingModule._pcbjam_ngspice_event( kind, p, a | 0, b | 0 );
+            pendingText = 0; // the native entry freed it
         };
         try {
             if( evt.kind === 'char' || evt.kind === 'stat' ) {
@@ -201,8 +226,11 @@ EM_JS( void, js_ngspice_install_events, (), {
             // A trap on this fresh entry poisons the instance: latch the
             // terminal gate so no later completion re-enters it.
             if( !sched._terminalizeNativeTrap
-                    || !sched._terminalizeNativeTrap( 'ngspice event entry', e ) )
+                    || !sched._terminalizeNativeTrap( 'ngspice event entry', e ) ) {
+                if( pendingText )
+                    _free( pendingText );
                 throw e;
+            }
         }
     };
     handler.__pcbjamNgspiceOwnerModule = installingModule;
@@ -428,6 +456,33 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pcbjam_ngspice_reset_callbacks( void* aUser
     s_user = nullptr;
 }
 
+// E-7: the browser harness's final-refresh receipt — called by
+// SIMULATOR_FRAME::onSimFinished after every final native refresh (one
+// ifdef'd line there; the JS-side knowledge lives HERE, in the stub layer).
+// Optional test evidence, no mainline behavior.
+// clang-format off
+EM_JS( void, js_ngspice_sim_run_applied, ( uint32_t aGeneration ), {
+    const hook = globalThis.__pcbjamNgspiceFinalRefreshApplied;
+
+    if( typeof hook === 'function' )
+    {
+        try
+        {
+            hook( aGeneration >>> 0 );
+        }
+        catch( error )
+        {
+            console.error( '[ngspice] final-refresh hook failed', error );
+        }
+    }
+} );
+// clang-format on
+
+extern "C" EMSCRIPTEN_KEEPALIVE void pcbjam_sim_run_applied( uint32_t aGeneration )
+{
+    js_ngspice_sim_run_applied( aGeneration );
+}
+
 // -------------------------------------------------------------------------
 // The sharedspice API surface NGSPICE::init_dll binds to
 // -------------------------------------------------------------------------
@@ -506,11 +561,17 @@ pvector_info pcbjam_ngGet_Vec_Info( char* aVecName )
 
     js_ngspice_get_vec_start( token, aVecName ? aVecName : "", meta, &real, &comp, &vname );
 
-    if( wxWasmYieldUntil( token ) != 0 )
+    // E-11: a plain-JS throw mid-prepare (after some mallocs landed) resolves
+    // the inertResult without adopting the buffers into the arena — free
+    // whatever was written on EVERY failure path (free(nullptr) is a no-op,
+    // so this covers all partial orderings).
+    if( wxWasmYieldUntil( token ) != 0 || !meta[0] )
+    {
+        std::free( vname );
+        std::free( real );
+        std::free( comp );
         return nullptr;
-
-    if( !meta[0] )
-        return nullptr;
+    }
 
     s_name = vname;
     s_real = real;

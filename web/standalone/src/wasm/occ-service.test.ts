@@ -12,6 +12,7 @@ vi.mock("./wasm-assets", () => ({
 import { installOccService, type OccResponse } from "./occ-service";
 import { collectBoardModelFiles } from "./libs/models-bridge";
 import { resolveWasmBase } from "./wasm-assets";
+import { FakeWorker, waitForWorker } from "./test-utils/fake-worker";
 
 const mockedCollectBoardModelFiles = vi.mocked(collectBoardModelFiles);
 const mockedResolveWasmBase = vi.mocked(resolveWasmBase);
@@ -19,45 +20,6 @@ const mockedResolveWasmBase = vi.mocked(resolveWasmBase);
 const TEST_MODEL_PREFETCH_TIMEOUT_MS = 500;
 const TEST_BOOT_TIMEOUT_MS = 1_000;
 const TEST_RESPONSE_TIMEOUT_MS = 5_000;
-
-type MessageListener = (event: MessageEvent) => void;
-
-class FakeWorker {
-  static instances: FakeWorker[] = [];
-
-  onmessage: MessageListener | null = null;
-  onerror: ((event: ErrorEvent) => void) | null = null;
-  onmessageerror: ((event: MessageEvent) => void) | null = null;
-  readonly postMessage = vi.fn();
-  readonly terminate = vi.fn();
-  private readonly messageListeners = new Set<MessageListener>();
-
-  constructor() {
-    FakeWorker.instances.push(this);
-  }
-
-  addEventListener(type: string, listener: EventListenerOrEventListenerObject): void {
-    if (type === "message") this.messageListeners.add(listener as MessageListener);
-  }
-
-  removeEventListener(type: string, listener: EventListenerOrEventListenerObject): void {
-    if (type === "message") this.messageListeners.delete(listener as MessageListener);
-  }
-
-  emitMessage(data: unknown): void {
-    const event = { data } as MessageEvent;
-    this.onmessage?.(event);
-    for (const listener of [...this.messageListeners]) listener(event);
-  }
-
-  emitError(message: string): void {
-    this.onerror?.({ message } as ErrorEvent);
-  }
-
-  emitMessageError(): void {
-    this.onmessageerror?.({} as MessageEvent);
-  }
-}
 
 const loadRequest = () => ({
   kind: "loadModel" as const,
@@ -77,11 +39,6 @@ const service = () => {
   if (!installed) throw new Error("OCC service was not installed");
   return installed;
 };
-
-async function waitForWorker(index: number): Promise<FakeWorker> {
-  await vi.waitFor(() => expect(FakeWorker.instances.length).toBeGreaterThan(index));
-  return FakeWorker.instances[index]!;
-}
 
 async function readyRequest(workerIndex: number): Promise<{
   worker: FakeWorker;
@@ -255,9 +212,55 @@ describe("OCC service worker lifetime", () => {
     expect(worker.postMessage).toHaveBeenCalledTimes(1);
 
     worker.emitMessage({ id, res: { ok: true, report: "exported" } });
+    // The timeout is no longer silent at the headline level: the export
+    // report carries the omission note. (The mock feeds no progress sink,
+    // hence the 0-of-0 counts here.)
     await expect(request).resolves.toEqual({
       ok: true,
-      report: "exported",
+      report: "exported\nmodel prefetch timed out after "
+        + `${TEST_MODEL_PREFETCH_TIMEOUT_MS} ms — 0 of 0 model(s) omitted`,
+      fileName: undefined,
+    });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("ships the partial prefetch on timeout and reports the omission", async () => {
+    // E-21: a slow-but-alive prefetch used to be all-or-nothing — the 30s
+    // deadline discarded every model already collected and the export
+    // completed under a bare "Export complete." A timeout must ship the
+    // accepted partials and surface the omission in the report.
+    vi.useFakeTimers();
+    mockedCollectBoardModelFiles.mockImplementationOnce(
+      (_board, _concurrency, _signal, progress) => {
+        if (progress) {
+          progress.totalRefs = 3;
+          progress.models.push(
+            { path: "PartialA.3dshapes/a.step", bytes: new Uint8Array([1]) },
+            { path: "PartialB.3dshapes/b.step", bytes: new Uint8Array([2]) },
+          );
+        }
+        return new Promise(() => undefined); // hangs past the deadline
+      },
+    );
+
+    const request = service().request(exportRequest());
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(TEST_MODEL_PREFETCH_TIMEOUT_MS);
+    const worker = FakeWorker.instances[0]!;
+    expect(worker).toBeDefined();
+    worker.emitMessage({ ready: true });
+    await vi.advanceTimersByTimeAsync(0);
+    const [{ id, req: dispatched }] = worker.postMessage.mock.calls[0] as [
+      { id: number; req: { models: Array<{ path: string }> } },
+    ];
+    expect(dispatched.models.map((m) => m.path), "the accepted partials ship")
+      .toEqual(["PartialA.3dshapes/a.step", "PartialB.3dshapes/b.step"]);
+
+    worker.emitMessage({ id, res: { ok: true, report: "Export complete." } });
+    await expect(request).resolves.toEqual({
+      ok: true,
+      report: "Export complete.\nmodel prefetch timed out after "
+        + `${TEST_MODEL_PREFETCH_TIMEOUT_MS} ms — 1 of 3 model(s) omitted`,
       fileName: undefined,
     });
     expect(vi.getTimerCount()).toBe(0);

@@ -7,6 +7,7 @@ import {
   runDeferredModelPrescan,
   normalizeModelRef,
   scanModelRefs,
+  type BoardModelFile,
 } from "./models-bridge";
 import type { Model3dSource } from "./models-source";
 
@@ -170,6 +171,104 @@ describe("collectBoardModelFiles", () => {
 
     await expect(collection).rejects.toBe(retired);
     expect(source.getModelBody).toHaveBeenCalledTimes(1);
+  });
+
+  it("feeds the caller's progress sink as models are accepted", async () => {
+    // E-21: the prefetch caller reads the sink synchronously at its timeout —
+    // the accepted models must be there the moment they are accepted, and the
+    // scan total as soon as it is known.
+    (globalThis as unknown as { window: unknown }).window ??= globalThis;
+    let resolveSecond!: (body: Uint8Array | null) => void;
+    const source: Model3dSource = {
+      getModelBody: vi.fn((ref: string) => {
+        if (ref.startsWith("SinkA")) {
+          return Promise.resolve(new TextEncoder().encode(`body:${ref}`));
+        }
+        return new Promise<Uint8Array | null>((resolve) => {
+          resolveSecond = resolve;
+        });
+      }),
+      hasModel: async () => true,
+    };
+    installModel3dHandler(source, () => {});
+    const progress = { totalRefs: 0, models: [] as BoardModelFile[] };
+    const collection = collectBoardModelFiles(
+      '(model "SinkA.3dshapes/A.step")\n(model "SinkB.3dshapes/B.step")',
+      1,
+      undefined,
+      progress,
+    );
+
+    await vi.waitFor(() => expect(progress.models).toHaveLength(1));
+    expect(progress.totalRefs, "scan total known up front").toBe(2);
+    expect(progress.models[0]!.path).toBe("SinkA.3dshapes/A.step");
+
+    resolveSecond(new TextEncoder().encode("body:SinkB.3dshapes/B.step"));
+    const models = await collection;
+    expect(models, "the sink IS the result array").toBe(progress.models);
+    expect(models).toHaveLength(2);
+  });
+
+  it("gains no sink entries after abort (in-flight result stays inert)", async () => {
+    // E-4 barrier, restated through the sink: an aborted collection may not
+    // retain a body that resolves after the abort — not in its result, and
+    // not in the caller's progress sink either.
+    (globalThis as unknown as { window: unknown }).window ??= globalThis;
+    let resolveFirst!: (body: Uint8Array | null) => void;
+    const source: Model3dSource = {
+      getModelBody: vi.fn(
+        () => new Promise<Uint8Array | null>((resolve) => {
+          resolveFirst = resolve;
+        }),
+      ),
+      hasModel: async () => true,
+    };
+    installModel3dHandler(source, () => {});
+    const controller = new AbortController();
+    const retired = new Error("exact OCC prefetch retired");
+    const progress = { totalRefs: 0, models: [] as BoardModelFile[] };
+    const collection = collectBoardModelFiles(
+      '(model "SinkAbortA.3dshapes/A.step")\n'
+        + '(model "SinkAbortB.3dshapes/B.step")',
+      1,
+      controller.signal,
+      progress,
+    );
+
+    await vi.waitFor(() => expect(source.getModelBody).toHaveBeenCalledTimes(1));
+    controller.abort(retired);
+    resolveFirst(new Uint8Array([1, 2, 3]));
+
+    await expect(collection).rejects.toBe(retired);
+    expect(progress.totalRefs).toBe(2);
+    expect(progress.models, "no post-abort retention through the sink").toEqual([]);
+  });
+
+  it("remembers the serving fallback candidate across collects (no re-probes)", async () => {
+    // E-21 memo: a .wrl ref served by its .step fallback re-probed the missing
+    // .wrl on every export (IDB + network round-trips). The serving candidate
+    // is remembered per ref — positive results only, no body caching.
+    (globalThis as unknown as { window: unknown }).window ??= globalThis;
+    const getModelBody = vi.fn(async (ref: string) =>
+      ref.endsWith(".step") ? new TextEncoder().encode(`body:${ref}`) : null);
+    const source: Model3dSource = { getModelBody, hasModel: async () => true };
+    installModel3dHandler(source, () => {});
+    const board = '(model "${KICAD10_3DMODEL_DIR}/MemoLib.3dshapes/M1.wrl")';
+
+    await collectBoardModelFiles(board);
+    expect(getModelBody.mock.calls.map((call) => call[0]),
+      "first collect probes the .wrl miss then the .step hit").toEqual([
+      "MemoLib.3dshapes/M1.wrl",
+      "MemoLib.3dshapes/M1.step",
+    ]);
+
+    getModelBody.mockClear();
+    const models = await collectBoardModelFiles(board);
+    expect(getModelBody.mock.calls.map((call) => call[0]),
+      "second collect goes straight to the remembered candidate").toEqual([
+      "MemoLib.3dshapes/M1.step",
+    ]);
+    expect(models[0]!.path).toBe("MemoLib.3dshapes/M1.step");
   });
 
   it("never touches the editor MEMFS (pure source/IDB/network path)", async () => {

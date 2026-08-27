@@ -58,7 +58,7 @@ test.describe('wxWizard Tests', () => {
 
     // Let the Next page-transition commit before clicking Back (the Back/Next
     // buttons persist across pages, so there is no registry delta to poll on).
-    await page.waitForTimeout(200); // eslint-disable-line -- documented interaction dwell
+    await page.waitForTimeout(200); // eslint-disable-line -- documented interaction dwell: Next page-transition commit; no registry delta to poll
 
     // Click Back using element registry
     const backClicked = await clickByLabel(page, 'Back');

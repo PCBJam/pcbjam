@@ -52,6 +52,38 @@ const EXCLUDED_DIRS = new Set([
   'scripts',
 ]);
 
+// Non-playwright gates CI must keep invoking. This lint's per-spec model only
+// understands "npm run test:*" playwright scripts; these gates (vitest for
+// web/standalone, the ngspice transport reducer, and the findings-E source/
+// parity contracts) live outside that model — so pin their literal workflow
+// invocations here. Deleting a step from a workflow re-fails this lint,
+// closing the exact "nothing runs it" rot class findings-E was about. (The
+// vitest include glob auto-covers new *.test.ts files, so per-file coverage
+// needs no proof.)
+const NON_PLAYWRIGHT_GATES = [
+  'pnpm --filter @pcbjam/standalone test',
+  'npm run ngspice:worker-batch',
+  'npm run findings-e:contract',
+  'npm run findings-e:parity',
+];
+
+function assertNonPlaywrightGates(): void {
+  const bodies: string[] = [];
+  for (const f of fs.readdirSync(WORKFLOWS_DIR)) {
+    if (!/\.ya?ml$/.test(f)) continue;
+    bodies.push(fs.readFileSync(path.join(WORKFLOWS_DIR, f), 'utf8'));
+  }
+  const all = bodies.join('\n');
+  const missing = NON_PLAYWRIGHT_GATES.filter((cmd) => !all.includes(cmd));
+  if (missing.length) {
+    throw new Error(
+      `non-playwright CI gate(s) missing from ${WORKFLOWS_DIR}: ` +
+        missing.map((m) => `"${m}"`).join(', ') +
+        ' — a gate nothing invokes protects nothing'
+    );
+  }
+}
+
 // ── 1. what CI invokes ────────────────────────────────────────────────────────
 function ciTestScripts(): string[] {
   const names = new Set<string>();
@@ -141,6 +173,8 @@ function specUniverse(dir = TESTS_ROOT, rel = ''): string[] {
 }
 
 // ── run ───────────────────────────────────────────────────────────────────────
+assertNonPlaywrightGates();
+
 const invocations = ciTestScripts().map(resolveScript);
 
 const covered = new Set<string>();

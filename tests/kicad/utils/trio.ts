@@ -39,8 +39,10 @@ export const BOOT_TIMEOUT = 150000;
  *  `(instances (project "trio" …))` entries must match this name. */
 export const TRIO_DOC = "trio";
 
+import { hasNativeFailure } from "./native-failure";
+
 export function hasAbort(l: { consoleLogs: string[]; errors: string[] }): boolean {
-  return [...l.consoleLogs, ...l.errors].some((s) => s.includes("Aborted("));
+  return hasNativeFailure(l);
 }
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
