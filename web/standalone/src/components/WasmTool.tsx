@@ -1324,6 +1324,9 @@ export function WasmTool({
             onNewPath: (p) => {
               if (p.endsWith(".kicad_sch")) void sheetManagerRef.current?.onboard(p);
             },
+            // A cold room replaced at rest (re-upload / resave install, 0004
+            // §2.5): a parked sheet doc must not carry the old epoch.
+            onRoomBackedChanged: (p) => sheetManagerRef.current?.invalidate(p),
             onTargetChanged: (c) => {
               const who = c.by ?? "a collaborator";
               setStatus(

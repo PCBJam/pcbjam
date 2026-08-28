@@ -252,6 +252,14 @@ export interface GatewayFacadeOpts {
   /** Passive = register interest only (parked warm-pool sheet): no SyncStep1,
    *  no BoardRoom wake; `touched` hints + awareness still flow. */
   passive?: boolean;
+  /**
+   * Passive PULL (load-path-rework 0004 §2.2): while passive, send SyncStep1
+   * on subscribe and on every `touched` — the gateway answers from the doc's
+   * at-rest state (R2, or the live room's RPC), never by dialing its
+   * BoardRoom. The doc then tracks the server without ever being a
+   * participant. Ignored for active/presence/hint channels.
+   */
+  passiveSync?: boolean;
 }
 
 /**
@@ -264,11 +272,16 @@ export class GatewayDocFacade implements YjsProvider {
   private readonly ch: number;
   private readonly isPresence: boolean;
   private mode: GatewaySubMode;
+  private readonly passiveSync: boolean;
   private dead: CollabSubRejectedError | null = null;
   private destroyed = false;
+  /** The doc holds server state (a Step2 arrived) — in EITHER mode. */
   private synced = false;
+  /** Sync state was reached as an ACTIVE participant (relay-backed). */
+  private activeSynced = false;
   private subEverSent = false;
   private readonly touchedCbs: Array<() => void> = [];
+  private readonly resetCbs: Array<() => void> = [];
   /** `files` hints (project-sync 0002) — only ever delivered on `~files`. */
   private readonly filesCbs: Array<(seq: number, changes: GatewayFileChange[]) => void> = [];
   /** The hint-only channel: no doc, no awareness — control frames only. */
@@ -291,6 +304,8 @@ export class GatewayDocFacade implements YjsProvider {
     this.docPath = opts.docPath;
     this.mode =
       (opts.passive && !this.isPresence) || this.isHintOnly ? "passive" : "active";
+    this.passiveSync =
+      this.mode === "passive" && !this.isHintOnly && opts.passiveSync === true;
     this.awareness = new Awareness(doc);
     this.conn = acquireConnection(
       opts.endpoint,
@@ -313,6 +328,13 @@ export class GatewayDocFacade implements YjsProvider {
   whenSynced(): Promise<void> {
     if (this.dead) return Promise.reject(this.dead);
     if (this.mode === "active" && !this.isPresence) return this.activate();
+    // Passive pull: "synced" = the first at-rest Step2 landed (0004 §2.2).
+    if (this.passiveSync && this.mode === "passive") {
+      if (this.synced) return Promise.resolve();
+      return new Promise((resolve, reject) => {
+        this.syncWaiters.push({ resolve, reject });
+      });
+    }
     // Passive/presence: "synced" = the subscription reached an open socket.
     if (this.subEverSent) return Promise.resolve();
     return new Promise((resolve, reject) => {
@@ -328,7 +350,10 @@ export class GatewayDocFacade implements YjsProvider {
   activate(): Promise<void> {
     if (this.dead) return Promise.reject(this.dead);
     if (this.isPresence || this.isHintOnly) return this.whenSynced();
-    if (this.synced) return Promise.resolve();
+    // A passive pull may already have filled the doc — that is NOT active
+    // sync: the gateway must still see `act` (relay demand) and a fresh
+    // Step1 as a participant before writes may flow.
+    if (this.activeSynced) return Promise.resolve();
     const wasPassive = this.mode === "passive";
     this.mode = "active";
     if (this.conn.isOpen()) {
@@ -364,6 +389,13 @@ export class GatewayDocFacade implements YjsProvider {
   /** `touched` hints (doc changed while passive) — sheet dirty flag. */
   onTouched(cb: () => void): void {
     this.touchedCbs.push(cb);
+  }
+
+  /** `reset` (0004 §2.3): this doc's history was replaced server-side and
+   *  our copy cannot be merged — the owner must drop doc + facade and
+   *  subscribe afresh. Never fires for active channels. */
+  onReset(cb: () => void): void {
+    this.resetCbs.push(cb);
   }
 
   /** `files` hints — project rows changed on the files route (0002 §1). */
@@ -405,6 +437,8 @@ export class GatewayDocFacade implements YjsProvider {
     this.sendQueryAwareness();
     if (this.awareness.getLocalState() !== null) this.publishLocalAwareness();
     if (this.mode === "active" && !this.isPresence) this.beginSync();
+    // Passive pull: fill (or refresh, after a reconnect) from the at-rest state.
+    else if (this.passiveSync && this.mode === "passive") this.sendSyncStep1();
   }
 
   handleSocketDown(): void {
@@ -417,6 +451,7 @@ export class GatewayDocFacade implements YjsProvider {
       removeAwarenessStates(this.awareness, remote, "connection closed");
     }
     this.synced = false;
+    this.activeSynced = false;
   }
 
   handleControl(msg: GatewayServerMsg): void {
@@ -454,7 +489,17 @@ export class GatewayDocFacade implements YjsProvider {
       }
       return;
     }
-    // touched
+    if (msg.t === "reset") {
+      // Only a passive puller can be ahead of a replaced epoch; an active
+      // channel never receives this (its Step1 goes to the BoardRoom).
+      for (const cb of this.resetCbs) cb();
+      return;
+    }
+    // touched: a passive puller re-pulls (diff against its own SV); every
+    // passive channel still gets the dirty-flag callback.
+    if (this.passiveSync && this.mode === "passive" && this.conn.isOpen()) {
+      this.sendSyncStep1();
+    }
     for (const cb of this.touchedCbs) cb();
   }
 
@@ -484,8 +529,9 @@ export class GatewayDocFacade implements YjsProvider {
       if (encoding.length(encoder) > 1) {
         this.send(encoding.toUint8Array(encoder));
       }
-      if (messageType === syncProtocol.messageYjsSyncStep2 && !this.synced) {
+      if (messageType === syncProtocol.messageYjsSyncStep2) {
         this.synced = true;
+        if (this.mode === "active") this.activeSynced = true;
         for (const w of this.syncWaiters.splice(0)) w.resolve();
       }
       return;

@@ -236,6 +236,118 @@ describe("gateway facade — passive warm pool (the laziness contract)", () => {
   });
 });
 
+describe("gateway facade — passive pull (load-path-rework 0004 §2.2)", () => {
+  const passiveSyncOpts = (docPath: string) => ({ ...facadeOpts(docPath, true), passiveSync: true });
+
+  it("sends Step1 on subscribe while staying passive; Step2 fills the doc, whenSynced resolves", async () => {
+    newProject();
+    const doc = new Y.Doc();
+    const facade = new GatewayDocFacade(doc, passiveSyncOpts("c.kicad_sch"));
+    track(facade, doc);
+    const ws = FakeWebSocket.instances.at(-1)!;
+    ws.open();
+    const [sub] = ws.controls();
+    expect(sub).toMatchObject({ t: "sub", mode: "passive" });
+    expect(ws.controls().some((m) => m.t === "act")).toBe(false);
+    const step1 = ws.frames().find((f) => f.type === 0);
+    expect(step1).toBeTruthy();
+
+    const serverDoc = new Y.Doc();
+    serverDoc.getMap("m").set("k", "at-rest");
+    cleanups.push(() => serverDoc.destroy());
+    ws.receiveFrame(sub!.ch, step2From(serverDoc, step1!.frame));
+    await facade.whenSynced();
+    expect(doc.getMap("m").get("k")).toBe("at-rest");
+    // Applying the Step2 must not have pushed anything back (no participant writes).
+    expect(ws.frames().filter((f) => f.type === 0).length).toBe(1);
+  });
+
+  it("re-pulls with its own state vector on every touched", async () => {
+    newProject();
+    const doc = new Y.Doc();
+    const facade = new GatewayDocFacade(doc, passiveSyncOpts("c.kicad_sch"));
+    track(facade, doc);
+    const ws = FakeWebSocket.instances.at(-1)!;
+    ws.open();
+    const ch = ws.controls()[0]!.ch;
+    const serverDoc = new Y.Doc();
+    serverDoc.getMap("m").set("k", 1);
+    cleanups.push(() => serverDoc.destroy());
+    ws.receiveFrame(ch, step2From(serverDoc, ws.frames().find((f) => f.type === 0)!.frame));
+    await facade.whenSynced();
+
+    let touched = 0;
+    facade.onTouched(() => touched++);
+    ws.sent = [];
+    ws.receiveText(JSON.stringify({ t: "touched", ch }));
+    expect(touched).toBe(1);
+    const step1 = ws.frames().find((f) => f.type === 0);
+    expect(step1).toBeTruthy();
+    // The pull carries a NON-empty SV: the server answers with only the delta.
+    const dec = decoding.createDecoder(step1!.frame.slice());
+    decoding.readVarUint(dec);
+    decoding.readVarUint(dec);
+    const sv = decoding.readVarUint8Array(dec);
+    expect(Y.decodeStateVector(sv).size).toBe(1);
+    serverDoc.getMap("m").set("k", 2);
+    ws.receiveFrame(ch, step2From(serverDoc, step1!.frame));
+    expect(doc.getMap("m").get("k")).toBe(2);
+  });
+
+  it("activate() after a passive fill still sends act + a participant Step1", async () => {
+    newProject();
+    const doc = new Y.Doc();
+    const facade = new GatewayDocFacade(doc, passiveSyncOpts("c.kicad_sch"));
+    track(facade, doc);
+    const ws = FakeWebSocket.instances.at(-1)!;
+    ws.open();
+    const ch = ws.controls()[0]!.ch;
+    const serverDoc = new Y.Doc();
+    serverDoc.getMap("m").set("k", 1);
+    cleanups.push(() => serverDoc.destroy());
+    ws.receiveFrame(ch, step2From(serverDoc, ws.frames().find((f) => f.type === 0)!.frame));
+    await facade.whenSynced();
+
+    ws.sent = [];
+    const syncing = facade.activate();
+    expect(ws.controls()).toEqual([{ t: "act", ch }]);
+    const step1 = ws.frames().find((f) => f.type === 0);
+    expect(step1).toBeTruthy();
+    ws.receiveFrame(ch, step2From(serverDoc, step1!.frame));
+    await syncing;
+    // Now a participant: a second activate is a no-op.
+    ws.sent = [];
+    await facade.activate();
+    expect(ws.controls()).toEqual([]);
+  });
+
+  it("reset fires the owner's callback (0004 §2.3)", () => {
+    newProject();
+    const doc = new Y.Doc();
+    const facade = new GatewayDocFacade(doc, passiveSyncOpts("c.kicad_sch"));
+    track(facade, doc);
+    const ws = FakeWebSocket.instances.at(-1)!;
+    ws.open();
+    const ch = ws.controls()[0]!.ch;
+    let resets = 0;
+    facade.onReset(() => resets++);
+    ws.receiveText(JSON.stringify({ t: "reset", ch }));
+    expect(resets).toBe(1);
+  });
+
+  it("a plain passive facade (no passiveSync) still never pulls", () => {
+    newProject();
+    const doc = new Y.Doc();
+    const facade = new GatewayDocFacade(doc, facadeOpts("b.kicad_sch", true));
+    track(facade, doc);
+    const ws = FakeWebSocket.instances.at(-1)!;
+    ws.open();
+    const ch = ws.controls()[0]!.ch;
+    ws.receiveText(JSON.stringify({ t: "touched", ch }));
+    expect(ws.frames().filter((f) => f.type === 0)).toEqual([]);
+  });
+});
+
 describe("gateway facade — suberr is terminal", () => {
   it("rejects pending and future syncs with CollabSubRejectedError", async () => {
     newProject();

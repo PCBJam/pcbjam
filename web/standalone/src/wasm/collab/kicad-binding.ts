@@ -308,7 +308,23 @@ export function bindKicadCollab(
       // differ — otherwise the first local edit would re-emit the full model.
       clog(`seed: editor matches doc (${items.size} item(s)) → baseline only, no apply`);
       try {
-        bridge.snapshotItems();
+        const snapshot = bridge.snapshotItems();
+        // A doc seeded server-side (load-path-rework 0004 §2.4: the runner
+        // installs the resaved upload as the ydoc) carries kicad-cli's
+        // serialization of each body, not this writer's. Same normalization
+        // as the file-seed branch below: re-upsert in the editor's form so
+        // drift-compare and upsertYItem's no-op skip see identical bodies.
+        // Identical bodies cost nothing; a viewer never writes.
+        if (!readOnly) {
+          const wire = parseItemsWireDelta(snapshot);
+          const local = itemsWireToDelta(wire, itemsView(), warnSkip);
+          if (!isEmptyKicadDelta(local)) {
+            clog(
+              `seed: normalizing ${local.updated.length} server-serialized body(ies) to the editor's form`,
+            );
+            applyDeltaToY(doc, local, ORIGIN);
+          }
+        }
       } catch (err) {
         cwarn("seed: snapshotItems baseline failed", err);
       }

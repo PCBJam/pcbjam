@@ -155,6 +155,22 @@ describe("sheet-manager warm pool", () => {
     expect(bindings.at(-1)!.lastSeedOpts).toEqual({ editorMatchesDoc: false });
   });
 
+  it("invalidate drops a PARKED room (reconnects fresh on the next switch) but never the bound one", async () => {
+    const m = makeManager();
+    await m.connectAll(["a.kicad_sch", "b.kicad_sch"]);
+    await m.switchTo("a.kicad_sch");
+    expect(sessions.length).toBe(2);
+    m.invalidate("a.kicad_sch"); // bound → untouched
+    expect(sessions[0]!.provider.destroy).not.toHaveBeenCalled();
+    m.invalidate("b.kicad_sch"); // parked → dropped
+    expect(sessions[1]!.provider.destroy).toHaveBeenCalled();
+    expect(sessions[1]!.doc.destroy).toHaveBeenCalled();
+    await m.switchTo("b.kicad_sch");
+    expect(sessions.length).toBe(3);
+    expect(sessions[2]!.room).toBe("S:P:b.kicad_sch");
+    m.invalidate("unknown.kicad_sch"); // no-op
+  });
+
   it("onboard connects a mid-session sheet exactly once", async () => {
     const m = makeManager();
     await m.onboard("new.kicad_sch");

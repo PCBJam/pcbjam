@@ -40,6 +40,12 @@ export interface YjsProvider {
    * subscription was passive (the sheet manager's parked-dirty flag).
    */
   onTouched?(cb: () => void): void;
+  /**
+   * Gateway transport only (load-path-rework 0004 §2.3): the doc's server-side
+   * history was replaced and this passive copy cannot be merged — the owner
+   * must destroy doc + provider and connect afresh.
+   */
+  onReset?(cb: () => void): void;
 }
 
 export type ProviderKind =
@@ -175,7 +181,7 @@ async function hocuspocusProvider(
 export async function connectProvider(
   doc: Y.Doc,
   config: ProviderConfig,
-  opts: { room: string; passive?: boolean },
+  opts: { room: string; passive?: boolean; passiveSync?: boolean },
 ): Promise<YjsProvider> {
   switch (config.kind) {
     case "broadcastchannel":
@@ -195,6 +201,7 @@ export async function connectProvider(
           docPath: parsed.docPath,
           token: config.params?.token,
           passive: opts.passive,
+          passiveSync: opts.passiveSync,
         });
       }
       return partyKitProvider(doc, requireEndpoint(config), opts.room, config.params);

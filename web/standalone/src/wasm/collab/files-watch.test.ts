@@ -65,12 +65,35 @@ describe("files hint router (project-sync 0002 §3)", () => {
     expect(restaged).toEqual(["x.kicad_pro"]);
   });
 
-  it("room-backed paths are never restaged from the row", async () => {
+  it("room-backed paths are never restaged from an EDITOR-origin row", async () => {
     const { router, restaged, events } = makeRouter();
     router.handle(1, [ch({ path: "root.kicad_sch", revision: 9, by: "peer" })]);
     await tick();
     expect(restaged).toEqual([]);
     expect(events).toEqual([]);
+  });
+
+  it("an upload/job over a room-backed path IS restaged and announced (0004 §2.5)", async () => {
+    const events: string[] = [];
+    const { router, restaged } = makeRouter({
+      onRoomBackedChanged: (p) => events.push(`replaced:${p}`),
+    });
+    router.handle(1, [ch({ path: "root.kicad_sch", revision: 9, origin: "upload", by: "peer" })]);
+    router.handle(2, [ch({ path: "root.kicad_sch", revision: 10, origin: "job" })]);
+    await tick();
+    expect(restaged).toEqual(["root.kicad_sch"]);
+    expect(events).toEqual(["replaced:root.kicad_sch", "replaced:root.kicad_sch"]);
+  });
+
+  it("an upload over the room-backed open target only notifies", async () => {
+    const { router, restaged, events } = makeRouter({
+      targetPath: "root.kicad_sch",
+      isRoomBacked: () => true,
+    });
+    router.handle(1, [ch({ path: "root.kicad_sch", revision: 9, origin: "upload", by: "peer" })]);
+    await tick();
+    expect(restaged).toEqual([]);
+    expect(events).toEqual(["target:root.kicad_sch@9"]);
   });
 
   it("Tier 2: the open target on the PUT channel only notifies", async () => {

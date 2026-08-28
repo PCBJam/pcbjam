@@ -160,6 +160,9 @@ export async function connectKicadDoc(opts: {
    *  resolves on subscription, and `provider.activate?.()` is the real sync
    *  barrier before any bind/read/write of the doc. */
   passive?: boolean;
+  /** Gateway only (0004 §2.2): pull at-rest state while passive — a
+   *  data-only mirror that never wakes the doc's BoardRoom. */
+  passiveSync?: boolean;
 }): Promise<KicadDocSession> {
   const timeoutMs = opts.timeoutMs ?? CONNECT_TIMEOUT_MS;
   // An already-aborted owner never gets a session — even one that could
@@ -192,6 +195,7 @@ export async function connectKicadDoc(opts: {
   const providerPromise = connectProvider(doc, opts.provider, {
     room: opts.room,
     passive: opts.passive,
+    passiveSync: opts.passiveSync,
   });
   providerPromise.catch(() => {}); // may lose the race and reject later
 

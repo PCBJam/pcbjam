@@ -24,6 +24,13 @@ import type { ProviderConfig } from "./provider";
  * Without a presence room (provider "none", connect failure) it falls back to
  * the eager mode: every in-scope sheet is watched for the whole session.
  *
+ * Transport (load-path-rework 0004 §2.2): the watch is a PASSIVE PULL — the
+ * gateway answers its SyncStep1 from the sheet's at-rest state and every
+ * `touched` re-pulls a diff. The sheet's BoardRoom is never woken by this
+ * mirror (an active subscription used to hold a relay for as long as the
+ * peer had the sheet open). A `reset` (the sheet's history was replaced
+ * server-side) drops the watch and re-dials with a fresh doc.
+ *
  * MEMFS-only: nothing is uploaded and no editor poke is needed — pcbnew reads
  * the schematic from MEMFS when the sync runs. Accepted v1 gaps: a sheet
  * created by a peer mid-session (path not in the boot file list), and a peer
@@ -124,10 +131,15 @@ export async function startSiblingRestage(opts: {
     );
   };
 
-  const openSession = async (sheetPath: string): Promise<KicadDocSession | null> => {
+  const openSession = async (
+    sheetPath: string,
+    onReset?: () => void,
+  ): Promise<KicadDocSession | null> => {
     const session = await connectKicadDoc({
       provider: opts.provider,
       room: collabRoomId(opts.scopeId, opts.projectId, sheetPath),
+      passive: true,
+      passiveSync: true,
     });
     if (destroyed) {
       session.provider.destroy();
@@ -138,6 +150,7 @@ export async function startSiblingRestage(opts: {
     // (mirrors the sheet-manager's read-only invisible-observer handling).
     session.provider.awareness?.setLocalState(null);
     session.doc.on("update", () => schedule(sheetPath, session.doc));
+    if (onReset) session.provider.onReset?.(onReset);
     log(`[sibling] watching ${sheetPath}`);
     restageFromDoc(sheetPath, session.doc);
     return session;
@@ -199,7 +212,19 @@ export async function startSiblingRestage(opts: {
   const dial = (sheetPath: string, watch: Watch): void => {
     watch.connecting = (async () => {
       try {
-        const session = await openSession(sheetPath);
+        const session = await openSession(sheetPath, () => {
+          // The sheet's history was replaced under us (0004 §2.3): this doc
+          // can't be merged. Drop it (no flush — its content is the OLD
+          // epoch) and re-dial while a peer still has the sheet open.
+          if (destroyed || watches.get(sheetPath) !== watch) return;
+          log(`[sibling] ${sheetPath} was replaced server-side — re-syncing`);
+          closeNow(sheetPath, watch, false);
+          if (wanted(sheetPath)) {
+            const fresh: Watch = {};
+            watches.set(sheetPath, fresh);
+            dial(sheetPath, fresh);
+          }
+        });
         if (session) {
           watch.session = session;
           watch.retryDelayMs = undefined; // success resets the backoff

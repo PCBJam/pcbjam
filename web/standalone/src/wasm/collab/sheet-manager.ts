@@ -49,6 +49,14 @@ export interface SheetCollabManager {
   /** Warm a sheet created mid-session (driven by the save hook on an unknown path). */
   onboard(sheetPath: string): Promise<void>;
   /**
+   * The sheet's content was replaced at rest (a re-upload / job resave —
+   * load-path-rework 0004 §2.5): a PARKED room's doc may hold the previous
+   * epoch, so drop it; the next switch reconnects and seeds from the
+   * (freshly restaged) file. The bound sheet is left alone — the host
+   * already shows a reload notice for the open target.
+   */
+  invalidate(sheetPath: string): void;
+  /**
    * Coarse non-item layout sync from a just-saved sheet file (miss 08B): title
    * block / paper / settings edits reconcile into the sheet's room doc, which
    * otherwise only carries them from seed time. No-op for unknown sheets.
@@ -359,6 +367,20 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
     return attempt;
   }
 
+  function invalidate(sheetPath: string): void {
+    const room = rooms.get(sheetPath);
+    if (!room || sheetPath === activePath || room.binding) return;
+    log(`[sheet] ${sheetPath} replaced at rest — dropping the parked room`);
+    try {
+      room.detachWatch?.();
+      room.session.provider.destroy();
+      room.doc.destroy();
+    } catch (err) {
+      cwarn(`[sheet] invalidate ${sheetPath} failed`, err);
+    }
+    rooms.delete(sheetPath);
+  }
+
   async function onboard(sheetPath: string): Promise<void> {
     if (rooms.has(sheetPath)) return;
     log(`[sheet] onboarding new sheet ${sheetPath}`);
@@ -447,7 +469,7 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
     opts.onActiveChange?.(null);
   }
 
-  return { connectAll, switchTo, onboard, syncLayoutFromSave, active, destroy };
+  return { connectAll, switchTo, onboard, invalidate, syncLayoutFromSave, active, destroy };
 }
 
 export interface SheetChangedWindow {

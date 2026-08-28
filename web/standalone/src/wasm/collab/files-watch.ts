@@ -17,8 +17,13 @@ import { connectProvider, type ProviderConfig, type YjsProvider } from "./provid
  *    no room): `onTargetChanged` — the host shows a reload/conflict notice;
  *    the CAS lane keeps guarding the next save.
  *
- * Room-backed paths (listing hasYdoc/isLive) are ignored: the room is the
- * truth there and already carries its own `touched`/frames.
+ * Room-backed paths (listing hasYdoc/isLive) are ignored for EDITOR-origin
+ * hints: the room is the truth there and already carries its own
+ * `touched`/frames. An `upload`/`job` hint on a room-backed path is an
+ * at-rest replacement of a cold doc (load-path-rework 0004 §2.5 — a
+ * re-upload, or the resave job installing its ydoc): it IS restaged, and
+ * `onRoomBackedChanged` lets the eeschema sheet pool drop a parked doc that
+ * would otherwise carry the old epoch into its next activation.
  */
 
 export const FILES_RESTAGE_DEBOUNCE_MS = 400;
@@ -53,6 +58,8 @@ export interface FilesWatchOptions {
   restage: (relPath: string, bytes: Uint8Array) => void;
   /** A path not in the boot listing appeared (a peer's "Add Sheet"). */
   onNewPath?: (relPath: string) => void;
+  /** A room-backed path was replaced at rest by an upload/job (0004 §2.5). */
+  onRoomBackedChanged?: (relPath: string) => void;
   onTargetChanged?: (change: GatewayFileChange) => void;
   onListingStale?: () => void;
   log: (m: string) => void;
@@ -107,7 +114,15 @@ export function createFilesHintRouter(opts: FilesWatchOptions) {
         continue;
       }
       opts.rememberObserved(change.path, change.revision);
-      if (opts.isRoomBacked(change.path)) continue; // the room owns it
+      if (opts.isRoomBacked(change.path)) {
+        // The room owns editor writes; an at-rest replacement is different.
+        if (change.origin === "editor" || change.deleted) continue;
+        if (change.path === opts.targetPath) {
+          opts.onTargetChanged?.(change);
+          continue;
+        }
+        opts.onRoomBackedChanged?.(change.path);
+      }
       if (change.path === opts.targetPath) {
         opts.onTargetChanged?.(change);
         continue;

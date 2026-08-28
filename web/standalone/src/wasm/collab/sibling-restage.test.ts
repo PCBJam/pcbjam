@@ -30,6 +30,9 @@ interface FakeSession {
   provider: {
     destroy: ReturnType<typeof vi.fn>;
     awareness: { setLocalState: ReturnType<typeof vi.fn> };
+    onReset: ReturnType<typeof vi.fn>;
+    /** Fire the gateway's `reset` (0004 §2.3). */
+    emitReset: () => void;
   };
 }
 
@@ -37,6 +40,7 @@ let sessions: FakeSession[];
 
 function makeSession(room: string): FakeSession {
   const handlers = new Set<() => void>();
+  const resets = new Set<() => void>();
   return {
     room,
     doc: {
@@ -49,6 +53,8 @@ function makeSession(room: string): FakeSession {
     provider: {
       destroy: vi.fn(),
       awareness: { setLocalState: vi.fn() },
+      onReset: vi.fn((cb: () => void) => resets.add(cb)),
+      emitReset: () => resets.forEach((h) => h()),
     },
   };
 }
@@ -109,6 +115,13 @@ describe("startSiblingRestage", () => {
     for (const s of sessions) {
       expect(s.provider.awareness.setLocalState).toHaveBeenCalledWith(null);
     }
+  });
+
+  it("watches as a PASSIVE PULL — never a participant, never a relay (0004 §2.2)", async () => {
+    await start(["main.kicad_sch"]);
+    expect(connectKicadDoc).toHaveBeenCalledWith(
+      expect.objectContaining({ passive: true, passiveSync: true }),
+    );
   });
 
   it("restages once on connect when the room already holds state", async () => {
@@ -225,6 +238,23 @@ describe("startSiblingRestage", () => {
       presence.announce([]); // peer leaves → linger releases the watch
       await vi.advanceTimersByTimeAsync(600_000);
       expect(connectKicadDoc).toHaveBeenCalledTimes(3); // no further dials
+    });
+
+    it("a reset drops the watch without flushing and re-dials while still wanted (0004 §2.3)", async () => {
+      const presence = fakePresence(["main.kicad_sch"]);
+      await start(["main.kicad_sch"], presence);
+      await vi.runAllTimersAsync();
+      expect(sessions.length).toBe(1);
+      restageFile.mockClear();
+      sessions[0]!.doc.emitRemote(); // a pending restage from the OLD epoch…
+      sessions[0]!.provider.emitReset();
+      await vi.runAllTimersAsync();
+      // …is discarded, the old session torn down, a fresh one dialed.
+      expect(sessions[0]!.provider.destroy).toHaveBeenCalled();
+      expect(sessions[0]!.doc.destroy).toHaveBeenCalled();
+      expect(sessions.length).toBe(2);
+      // Only the fresh session's connect-time restage ran.
+      expect(restageFile).toHaveBeenCalledTimes(1);
     });
 
     it("a rejoin during the linger keeps the existing session", async () => {
