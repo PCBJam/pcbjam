@@ -77,6 +77,18 @@ inline long long nowMs()
             .count();
 }
 
+/** Findings W-1/W-4: `json::value( key, default )` only defaults on a MISSING
+ *  key — a present `null` (what JSON.stringify makes of ±Infinity/NaN) throws
+ *  nlohmann type_error.302 across embind. Read numbers permissively. */
+inline double numOr( const nlohmann::json& aObj, const char* aKey, double aDefault )
+{
+    if( !aObj.is_object() )
+        return aDefault;
+
+    auto it = aObj.find( aKey );
+    return it != aObj.end() && it->is_number() ? it->get<double>() : aDefault;
+}
+
 inline KIGFX::COLOR4D parsePeerColor( const std::string& aHex )
 {
     if( aHex.size() == 7 && aHex[0] == '#' )
@@ -591,7 +603,7 @@ struct CORE
             if( p.contains( "cursor" ) && p["cursor"].is_object() )
             {
                 peer.hasCursor = true;
-                peer.cursor = VECTOR2D( p["cursor"].value( "x", 0.0 ), p["cursor"].value( "y", 0.0 ) );
+                peer.cursor = VECTOR2D( numOr( p["cursor"], "x", 0.0 ), numOr( p["cursor"], "y", 0.0 ) );
             }
 
             for( const json& u : p.value( "selection", json::array() ) )
@@ -678,7 +690,7 @@ struct CORE
                 if( c.contains( "cursor" ) && c["cursor"].is_object() )
                 {
                     peer.hasCursor = true;
-                    peer.cursor = VECTOR2D( c["cursor"].value( "x", 0.0 ), c["cursor"].value( "y", 0.0 ) );
+                    peer.cursor = VECTOR2D( numOr( c["cursor"], "x", 0.0 ), numOr( c["cursor"], "y", 0.0 ) );
                 }
                 else
                 {
@@ -710,7 +722,7 @@ struct CORE
             PIN pin;
             pin.id       = p.value( "id", "" );
             pin.name     = p.value( "name", "" );
-            pin.pos      = VECTOR2D( p.value( "x", 0.0 ), p.value( "y", 0.0 ) );
+            pin.pos      = VECTOR2D( numOr( p, "x", 0.0 ), numOr( p, "y", 0.0 ) );
             pin.color    = parsePeerColor( p.value( "color", "" ) );
             pin.resolved = p.value( "resolved", false );
             pin.unread   = p.value( "unread", false );

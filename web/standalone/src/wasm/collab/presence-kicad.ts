@@ -238,7 +238,7 @@ export function bindKicadPresence(opts: {
         id: p.user.id,
         name: p.user.name,
         color: p.user.color,
-        cursor: p.cursor,
+        cursor: finiteCursor(p.cursor),
         selection: p.selection,
       })),
     };
@@ -324,4 +324,10 @@ export function bindKicadPresence(opts: {
       }
     },
   };
+}
+
+/** Findings W-4: a non-finite peer cursor would serialize as JSON null and
+ *  throw inside kicadCollabSetRemote / SetRemoteCursors — treat it as absent. */
+function finiteCursor(c: { x: number; y: number } | null | undefined): { x: number; y: number } | null {
+  return c && Number.isFinite(c.x) && Number.isFinite(c.y) ? c : null;
 }

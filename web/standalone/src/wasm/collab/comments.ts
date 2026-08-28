@@ -163,7 +163,11 @@ export function createComments(opts: {
         pins: !visible
           ? []
           : cache
-              .filter((t) => !t.resolved)
+              // Findings W-1: never hand the wasm a non-finite coordinate
+              // (JSON null → nlohmann type_error across embind).
+              .filter(
+                (t) => !t.resolved && Number.isFinite(t.world.x) && Number.isFinite(t.world.y),
+              )
               .map((t) => ({
                 id: t.id,
                 // Author name rides along so the tuner's palette override can
