@@ -124,7 +124,22 @@ inline void drainApplies()
         slot.cor = new COROUTINE<int, int>( []( int ) -> int
         {
             ApplySlot& sl = activeApplySlot();
-            ( *sl.body )();
+
+            // P-1 hardening (findings group P): `done` is the ONLY completion signal, so a
+            // body that unwinds — a C++ exception, or a foreign (JS) exception thrown out of
+            // an EM_ASM wire callback inside flushDiff and surfacing here as `...` under
+            // wasm EH — would leave applyBusy() true for the page's life and silently
+            // queue every later job behind it: fit/pan from JS, remote applies AND the
+            // local-edit flushDiff (local edits stop syncing). Always mark the slot done.
+            try
+            {
+                ( *sl.body )();
+            }
+            catch( ... )
+            {
+                EM_ASM( { console.error( '[pcbjam collab] apply body threw — slot released' ); } );
+            }
+
             sl.done = true;
 
             // If we suspended, no drain is pending by the time the body
@@ -143,6 +158,14 @@ inline void drainApplies()
 
         reapApply();
     }
+}
+
+/** Test/diagnostic probe (P-1): is the apply slot busy and how many bodies wait behind it.
+ *  A `busy` that never clears while `queued` grows is the wedge signature. */
+inline std::string applyQueueStateJson()
+{
+    return "{\"busy\":" + std::string( applyBusy() ? "true" : "false" )
+           + ",\"queued\":" + std::to_string( applyQueue().size() ) + "}";
 }
 
 inline void runOnCoroutine( wxEvtHandler* aHandler, std::function<void()> aBody )

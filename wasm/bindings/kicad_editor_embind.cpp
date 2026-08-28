@@ -502,6 +502,20 @@ static void collabSetViewport( double aCx, double aCy )
 }
 
 // Follow-user (collab-presence 0008).
+// Test probe (findings P-4): which wx window holds keyboard focus — the wx-side
+// `FindFocus()`, not the DOM's activeElement. Keys are delivered there
+// (wx wasm app.cpp HandleKeyEvent), so a frame or NULL here means hotkeys are lost.
+static std::string kicadTestFocusWindow()
+{
+    wxWindow* w = wxWindow::FindFocus();
+
+    if( !w )
+        return "null";
+
+    return std::string( wxString( w->GetClassInfo()->GetClassName() ).utf8_str().data() )
+           + ":" + std::string( w->GetName().utf8_str().data() );
+}
+
 static void collabFitViewport( double aCx, double aCy, double aHalfW, double aHalfH )
 {
     pcbEditorActive() ? pcbCollabFitViewport( aCx, aCy, aHalfW, aHalfH )
@@ -614,6 +628,8 @@ EMSCRIPTEN_BINDINGS(kicad_editor) {
     // Programmatic file open (preferred over UI automation from the web app).
     function("kicadOpenFile", &kicadOpenFile PCBJAM_PARKER_POLICY);
     function("kicadOpenFileBusy", &kicadOpenFileBusy);
+    function("kicadCollabTestApplyQueueState", &pcbjam_collab::applyQueueStateJson);
+    function("kicadTestFocusWindow", &kicadTestFocusWindow);
     function("kicadTestSetOpenPark", &kicadTestSetOpenPark);
     function("kicadTestArmTimerPark", &kicadTestArmTimerPark);
     function("kicadTestTimerParkState", &kicadTestTimerParkState);

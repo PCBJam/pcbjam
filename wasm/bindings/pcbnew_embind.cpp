@@ -407,6 +407,15 @@ std::string wrapInBoardEnvelope( BOARD& aBoard, const std::string& aItemSexpr );
 
 std::string blobForItem( BOARD* aBoard, BOARD_ITEM* aItem )
 {
+    // P-5 (findings group P): the FILE writer cannot format a footprint FIELD standalone —
+    // PCB_IO_KICAD_SEXPR::Format has an explicit `case PCB_FIELD_T: break;` (fields are
+    // written by the footprint formatter), so a field reaching here produced a bare
+    // `(kicad_pcb … (layers …))` envelope with no uuid-bearing item, which the JS wire
+    // (unwrapWireItem) could not resolve. Fields only ever travel inside their footprint's
+    // blob; refuse to blob one on its own — callers skip an empty blob.
+    if( aItem->Type() == PCB_FIELD_T )
+        return "";
+
     if( aItem->Type() == PCB_FOOTPRINT_T )
     {
         const FOOTPRINT* src = static_cast<const FOOTPRINT*>( aItem );
@@ -866,7 +875,27 @@ void flushDiff()
         if( !wDone.insert( rootId ).second )
             return;
 
-        json w = json{ { "sexpr", blobForItem( board, live ) }, { "parent", nullptr } };
+        std::string sexpr = blobForItem( board, live );
+
+        // P-5: a root the writer cannot serialize standalone (a footprint FIELD whose parent
+        // is not a footprint, or a deleted item still resolvable through the id cache) must
+        // not reach the wire as a hollow envelope. Skip it and leave a breadcrumb — the
+        // trigger that lets a field arrive here unlifted is still unknown
+        // (memory: items-wire-batch-loss); this line is the hunt.
+        if( sexpr.empty() || ( live->GetFlags() & STRUCT_DELETED ) )
+        {
+            std::string why = sexpr.empty() ? "empty blob" : "STRUCT_DELETED";
+            std::string type = toUtf8( live->GetClass() );
+            int parentNull = live->GetParent() == nullptr ? 1 : 0;
+            EM_ASM( {
+                console.warn( '[pcbjam collab] P-5: skipped un-serializable dirty root',
+                              { uuid: UTF8ToString( $0 ), type: UTF8ToString( $1 ),
+                                why: UTF8ToString( $2 ), parentNull: !!$3 } );
+            }, rootId.c_str(), type.c_str(), why.c_str(), parentNull );
+            return;
+        }
+
+        json w = json{ { "sexpr", sexpr }, { "parent", nullptr } };
 
         // A lifted child means its (pre-existing) parent's CONTENT changed.
         ( lifted ? wChanged : aArr ).push_back( w );
@@ -897,7 +926,12 @@ void flushDiff()
             // wasted SaveSelection plus the envelope parse for those.
             if( live && !isTrackType( live->Type() ) && live->Type() != PCB_ZONE_T
                 && live->Type() != PCB_TEXT_T )
-                withBlob["sexpr"] = blobForItem( board, live );
+            {
+                std::string sexpr = blobForItem( board, live );
+
+                if( !sexpr.empty() )    // P-5: never attach a hollow envelope
+                    withBlob["sexpr"] = sexpr;
+            }
 
             added.push_back( withBlob );
         }
@@ -1520,7 +1554,10 @@ std::string pcbCollabSnapshotItems()
     {
         auto push = [&]( BOARD_ITEM* item )
         {
-            added.push_back( json{ { "sexpr", blobForItem( board, item ) }, { "parent", nullptr } } );
+            std::string sexpr = blobForItem( board, item );
+
+            if( !sexpr.empty() )    // P-5: never seed a hollow envelope
+                added.push_back( json{ { "sexpr", sexpr }, { "parent", nullptr } } );
         };
 
         for( FOOTPRINT* fp : board->Footprints() )  push( fp );
