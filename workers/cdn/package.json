@@ -1,0 +1,12 @@
+{
+  "name": "pcbjam-cdn-worker",
+  "private": true,
+  "type": "module",
+  "description": "Static CDN worker (R2-backed) — unit tests only; deployed via wrangler from CI.",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "vitest": "^3.0.0"
+  }
+}

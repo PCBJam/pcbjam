@@ -401,6 +401,14 @@ jobs:
           npm run corpus:lint
           npm run tools:contract
 
+      # CDN worker unit tests (findings R-3: range-less GET must be 200, never 206).
+      - name: cdn worker unit tests
+        if: inputs.run_tests
+        working-directory: workers/cdn
+        run: |
+          npm ci
+          npm test
+
       # Browser binaries keyed on the lockfile (which pins the playwright version).
       # On a hit `playwright install` skips the downloads; --with-deps still
       # apt-installs its small OS dep set either way.

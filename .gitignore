@@ -38,6 +38,7 @@ wxwidgets-clean/
 
 # Test artifacts
 /tests/node_modules/
+/workers/cdn/node_modules/
 /tests/playwright-report/
 /tests/test-results/
 # Baseline screenshots are a local cache fetched from R2 (tests/tools/screenshots/r2-sync.ts);

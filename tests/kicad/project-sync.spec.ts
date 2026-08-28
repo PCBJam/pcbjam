@@ -6,6 +6,7 @@ import {
     waitUntil,
     stableShot,
 } from '../e2e/utils/element-tracker';
+import { injectFromSubmodule } from './utils/fs-inject';
 
 /**
  * project-sync 0001 — "Update PCB from Schematic" in the merged WASM editor.
@@ -271,19 +272,31 @@ interface FS { mkdirTree(p: string): void; writeFile(p: string, d: string): void
 interface Mod { kicadOpenFile(p: string): unknown; }
 
 /** Stage board + schematic + minimal .kicad_pro into MEMFS, then open the board. */
-async function stageAndOpen(page: import('@playwright/test').Page, sch: string): Promise<void> {
+async function stageAndOpen(
+    page: import('@playwright/test').Page,
+    sch: string,
+    /** Runs after the project files are staged and BEFORE the board opens (e.g. lib tables). */
+    beforeOpen?: (page: import('@playwright/test').Page) => Promise<void>,
+): Promise<void> {
     await page.goto('/kicad/pcbnew.html');
     await waitForEditorReady(page);
     await page.evaluate(
         ({ dir, stem, pcb, sch, pro }) => {
-            const w = window as unknown as { FS: FS; Module: Mod };
+            const w = window as unknown as { FS: FS };
             try { w.FS.mkdirTree(dir); } catch { /* exists */ }
             w.FS.writeFile(`${dir}/${stem}.kicad_pcb`, pcb);
             w.FS.writeFile(`${dir}/${stem}.kicad_sch`, sch);
             w.FS.writeFile(`${dir}/${stem}.kicad_pro`, pro);
-            w.Module.kicadOpenFile(`${dir}/${stem}.kicad_pcb`);
         },
         { dir: DIR, stem: STEM, pcb: PCB, sch, pro: PRO },
+    );
+    if (beforeOpen) await beforeOpen(page);
+    await page.evaluate(
+        ({ dir, stem }) => {
+            const w = window as unknown as { Module: Mod };
+            w.Module.kicadOpenFile(`${dir}/${stem}.kicad_pcb`);
+        },
+        { dir: DIR, stem: STEM },
     );
     await waitUntil(
         page,
@@ -409,5 +422,140 @@ test.describe('project-sync: update PCB from schematic (merged bundle)', () => {
 
         expect(consoleLines.some((s) => s.includes('Aborted(')),
             'no wasm abort during the resync flow').toBe(false);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// R-9 (docs/features/findings/groups/R-fixed-during-demo-record.md): the sync
+// must APPLY. The tests above prove the dialog is reached; DIALOG_UPDATE_PCB's
+// report can still say "done" while nothing lands on the board (the O-1
+// failure class the demo ledger hit). This one presses Update PCB and asserts
+// the BOARD EFFECT — the schematic's footprint exists on the board with the
+// schematic's reference — through the collab snapshot embind, never the
+// dialog text. A self-contained footprint library (the ecc83 demo's
+// footprints.pretty, staged into MEMFS with an absolute-uri project
+// fp-lib-table) makes the placement resolvable offline.
+// ---------------------------------------------------------------------------
+
+const FP_LIB_NICK = 'SyncFixture';
+const FP_NAME = 'R_Axial_DIN0207_L6.3mm_D2.5mm_P7.62mm_Horizontal';
+const FP_LIB_DIR = `${DIR}/${FP_LIB_NICK}.pretty`;
+
+/** The schematic with the resistor pointed at the staged fixture library. */
+function resistorSchWithFixtureLib(ref: string): string {
+    return resistorSch(ref).replace('"Resistor_THT:', `"${FP_LIB_NICK}:`);
+}
+
+/** Stage the .pretty + a project fp-lib-table (absolute uri; no env expansion needed). */
+async function stageFootprintLib(page: import('@playwright/test').Page): Promise<void> {
+    await injectFromSubmodule(
+        page,
+        `kicad/demos/ecc83/footprints.pretty/${FP_NAME}.kicad_mod`,
+        `${FP_LIB_DIR}/${FP_NAME}.kicad_mod`,
+    );
+    await page.evaluate(
+        ({ dir, nick, libDir }) => {
+            const w = window as unknown as { FS: FS };
+            w.FS.writeFile(
+                `${dir}/fp-lib-table`,
+                `(fp_lib_table\n  (version 7)\n  (lib (name "${nick}")(type "KiCad")(uri "${libDir}")(options "")(descr ""))\n)\n`,
+            );
+        },
+        { dir: DIR, nick: FP_LIB_NICK, libDir: FP_LIB_DIR },
+    );
+}
+
+interface SnapMod {
+    kicadCollabSnapshot(): string;
+    kicadCollabTestItemBlob(uuid: string): string;
+}
+
+/** Click a visible wx button by label (registry coords, real mouse click — the
+ *  proven recipe from occ-export.spec.ts; a `&` mnemonic may prefix the label). */
+async function clickWxButton(page: import('@playwright/test').Page, label: string): Promise<void> {
+    const pos = await page.evaluate((wanted: string) => {
+        const el = (window.wxElementRegistry?.findAll({ visible: true }) ?? []).find(
+            (e) => (e.label === wanted || e.label === `&${wanted}`) && (e.typeName ?? '').includes('Button'),
+        );
+        return el ? { x: el.centerX, y: el.centerY } : null;
+    }, label);
+    expect(pos, `wx button "${label}" found`).not.toBeNull();
+    await page.mouse.click(pos!.x, pos!.y);
+}
+
+/** After an apply the dialog is in its "done" state (OK disabled, Close is the
+ *  default) and Escape no longer resolves it — press Close explicitly. */
+async function closeDialogByButton(page: import('@playwright/test').Page): Promise<void> {
+    await clickWxButton(page, 'Close');
+    await waitUntil(
+        page,
+        () => {
+            const r = window.wxElementRegistry;
+            return !!r && !!r.findAll && !r.findAll({ visible: true })
+                .some((e) => e.typeName === 'wxDialog');
+        },
+        'DIALOG_UPDATE_PCB closed via Close',
+        { timeout: 30000 },
+    );
+}
+
+/** References of every footprint currently on the board (from the item blobs). */
+async function boardFootprintRefs(page: import('@playwright/test').Page): Promise<string[]> {
+    return page.evaluate(() => {
+        const m = (window as unknown as { Module: SnapMod }).Module;
+        const snap = JSON.parse(m.kicadCollabSnapshot()) as { added: Array<{ id: string; type: string }> };
+        return snap.added
+            .filter((i) => i.type === 'FOOTPRINT')
+            .map((i) => /\(property "Reference" "([^"]*)"/.exec(m.kicadCollabTestItemBlob(i.id))?.[1] ?? '?');
+    });
+}
+
+/** Press Update PCB and wait until the board carries exactly the expected references. */
+async function updateAndExpectRefs(page: import('@playwright/test').Page, refs: string[]): Promise<void> {
+    await clickWxButton(page, 'Update PCB');
+    await expect
+        .poll(() => boardFootprintRefs(page), {
+            message: `board footprints after Update PCB should be ${JSON.stringify(refs)}`,
+            timeout: 60000,
+            intervals: [500],
+        })
+        .toEqual(refs);
+}
+
+test.describe('project-sync: Update PCB applies to the board (R-9)', () => {
+    test('the schematic footprint lands on the board, and a re-sync tracks a reference change', async ({ page }) => {
+        test.setTimeout(240000);
+        const consoleLines: string[] = [];
+        page.on('console', (m) => consoleLines.push(m.text()));
+        page.on('pageerror', (e) => consoleLines.push(`pageerror: ${e.message}`));
+
+        await stageAndOpen(page, resistorSchWithFixtureLib('R777'), stageFootprintLib);
+        await page.waitForFunction(
+            () => {
+                const m = (window as unknown as { Module?: Partial<SnapMod> }).Module;
+                return typeof m?.kicadCollabSnapshot === 'function'
+                    && typeof m?.kicadCollabTestItemBlob === 'function';
+            },
+            null,
+            { timeout: 30000 },
+        );
+        expect(await boardFootprintRefs(page), 'board starts empty').toEqual([]);
+
+        // First sync: the effect, not the report.
+        await openSyncDialog(page);
+        await updateAndExpectRefs(page, ['R777']);
+        await assertSchFrameHidden(page);
+        await closeDialogByButton(page);
+
+        // The schematic changes underneath (live sibling restage) — re-sync must
+        // apply the NEW reference, not a cached parse.
+        await rewriteSchematic(page, resistorSchWithFixtureLib('R888'));
+        await openSyncDialog(page);
+        await updateAndExpectRefs(page, ['R888']);
+        await assertSchFrameHidden(page);
+        await closeDialogByButton(page);
+
+        expect(consoleLines.some((s) => s.includes('Aborted(')),
+            'no wasm abort during the apply flow').toBe(false);
     });
 });
