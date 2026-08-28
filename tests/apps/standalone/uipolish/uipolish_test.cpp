@@ -39,6 +39,14 @@
 //                   the layers-panel rows tall and the eye icons blurry. Only
 //                   discriminating at DPR>=1.5 — the spec runs a
 //                   deviceScaleFactor:2 pass for that.
+//   rounded-neg-radius  DrawRoundedRectangle with a negative (fraction) or
+//                   oversize radius paints instead of throwing (findings O-1:
+//                   the status-bar badge used to reject the whole wx tick).
+//   enable-propagation  a DOM control born under a disabled frame is
+//                   re-enabled with the frame (findings O-3: infobar close
+//                   button was <button disabled> for life).
+//   dom-nav-keys    (spec-driven) Enter/ArrowDown on a DOM <input> reach
+//                   wxEVT_CHAR_HOOK; TEXT_ENTER still fires once (O-2).
 
 #include "wx/wxprec.h"
 
@@ -49,6 +57,8 @@
 #include "wx/dcmemory.h"
 #include "wx/bmpbndl.h"
 #include "wx/statbmp.h"
+#include "wx/button.h"
+#include "wx/textctrl.h"
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten/emscripten.h>
@@ -228,6 +238,45 @@ static void CheckScaledDims()
            wxString::Format("got %dx%d", img.GetWidth(), img.GetHeight()));
 }
 
+// findings O-1: a NEGATIVE DrawRoundedRectangle radius is the wx "fraction of
+// the shorter side" convention (gtk/dcclient.cpp; KiCad's BITMAP_BUTTON badge
+// passes -0.25). Pre-fix (wx f56511f965) the wasm DC forwarded it raw into
+// canvas arcTo(), which throws IndexSizeError — a JS exception that unwinds
+// the whole wx tick (evtloop.cpp "[wx] top-level tick rejected"). A raw
+// oversize radius (> half a side) is the same canvas error class. Both must
+// paint, and paint INSIDE the rect (the corner arcs must not swallow it).
+static void CheckRoundedNegRadius()
+{
+    wxBitmap bmp(40, 20, 24);
+    bool threw = false;
+    {
+        wxMemoryDC dc(bmp);
+        dc.SetBackground(*wxWHITE_BRUSH);
+        dc.Clear();
+        dc.SetBrush(*wxRED_BRUSH);
+        dc.SetPen(*wxTRANSPARENT_PEN);
+        try
+        {
+            dc.DrawRoundedRectangle(2, 2, 30, 14, -0.25);   // badge convention
+            dc.DrawRoundedRectangle(34, 2, 4, 14, 8.0);     // oversize radius
+        }
+        catch (...)
+        {
+            threw = true;
+        }
+        dc.SelectObject(wxNullBitmap);
+    }
+
+    wxImage img = bmp.ConvertToImage();
+    const bool centreRed = PixelIs(img, 17, 9, 255, 0, 0);
+    const bool sliverRed = PixelIs(img, 36, 9, 255, 0, 0);
+    const bool outsideWhite = PixelIs(img, 0, 0, 255, 255, 255);
+
+    Report("rounded-neg-radius", !threw && centreRed && sliverRed && outsideWhite,
+           wxString::Format("threw=%d centre %s sliver %s corner %s", threw ? 1 : 0,
+                            PixelStr(img, 17, 9), PixelStr(img, 36, 9), PixelStr(img, 0, 0)));
+}
+
 class UiPolishFrame : public wxFrame
 {
 public:
@@ -274,7 +323,61 @@ public:
                                 sbBest.x, sbBest.y, GetDPIScaleFactor()));
         sizer->Add(sb, 0, wxALL, 10);
 
+        // dom-nav-keys (findings O-2): a DOM-backed text ctrl whose
+        // wxEVT_CHAR_HOOK / wxEVT_TEXT_ENTER arrivals the spec observes after
+        // dispatching keydown events on the <input>. The hook Skip()s so a
+        // non-consuming handler still lets TEXT_ENTER through exactly once.
+        wxTextCtrl* nav = new wxTextCtrl(this, wxID_ANY, "", wxDefaultPosition,
+                                         wxSize(200, -1), wxTE_PROCESS_ENTER,
+                                         wxDefaultValidator, "navkeys");
+        nav->Bind(wxEVT_CHAR_HOOK, [](wxKeyEvent& e) {
+#ifdef __EMSCRIPTEN__
+            EM_ASM({ console.log('[UIPOLISH_TEST] charhook key=' + $0); }, e.GetKeyCode());
+#endif
+            e.Skip();
+        });
+        nav->Bind(wxEVT_TEXT_ENTER, [](wxCommandEvent&) {
+#ifdef __EMSCRIPTEN__
+            EM_ASM({ console.log('[UIPOLISH_TEST] textenter'); });
+#endif
+        });
+        sizer->Add(nav, 0, wxALL, 10);
+#ifdef __EMSCRIPTEN__
+        EM_ASM({ console.log('[UIPOLISH_TEST] navkeys domId=' + $0); }, nav->WasmGetDomId());
+#endif
+
         SetSizer(sizer);
+    }
+
+    // enable-propagation (findings O-3): a DOM control created while its
+    // frame is disabled (modal / progress-dialog wxWindowDisabler) must come
+    // back enabled when the frame is. Pre-fix wincmn.cpp treated the wasm
+    // port as having native enabled management, so the frame's Enable(true)
+    // never reached the children and the DOM node stayed <button disabled>.
+    void CheckEnablePropagation()
+    {
+        Enable(false);
+        wxButton* born = new wxButton(this, wxID_ANY, "born-disabled");
+        const int domId = born->WasmGetDomId();
+        bool disabledWhileFrameOff = false;
+        bool enabledAfter = false;
+#ifdef __EMSCRIPTEN__
+        disabledWhileFrameOff = EM_ASM_INT({
+            var el = document.querySelector('[data-wx-dom-id="' + $0 + '"]');
+            return el && el.disabled ? 1 : 0;
+        }, domId) != 0;
+#endif
+        Enable(true);
+#ifdef __EMSCRIPTEN__
+        enabledAfter = EM_ASM_INT({
+            var el = document.querySelector('[data-wx-dom-id="' + $0 + '"]');
+            return el && !el.disabled ? 1 : 0;
+        }, domId) != 0;
+#endif
+        Report("enable-propagation", disabledWhileFrameOff && enabledAfter && born->IsEnabled(),
+               wxString::Format("domId=%d disabledWhileFrameOff=%d enabledAfter=%d",
+                                domId, disabledWhileFrameOff ? 1 : 0, enabledAfter ? 1 : 0));
+        born->Destroy();
     }
 };
 
@@ -297,9 +400,11 @@ public:
         CheckBlitOrigin();
         CheckMaskAlpha();
         CheckScaledDims();
+        CheckRoundedNegRadius();
 
         UiPolishFrame* frame = new UiPolishFrame();
         frame->Show(true);
+        frame->CheckEnablePropagation();
 
 #ifdef __EMSCRIPTEN__
         EM_ASM({

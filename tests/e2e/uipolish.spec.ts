@@ -12,6 +12,8 @@
 //   scaled-dims   ConvertToImage returns physical size for scaled bitmaps
 //   checkbox-floor  wxCheckBox best-height floor (selection-filter density)
 //   statbmp-best  wxStaticBitmap best size is the bundle's LOGICAL size
+//   rounded-neg-radius  negative/oversize DrawRoundedRectangle radius paints,
+//     never throws (findings O-1 — the badge that killed the wx tick)
 //
 // statbmp-best only discriminates at devicePixelRatio >= 1.5 (pre-fix the
 // FromPhys path inflated 16 -> 32 there), so a second pass runs the app at
@@ -33,6 +35,8 @@ const CHECKS = [
   'scaled-dims',
   'checkbox-floor',
   'statbmp-best',
+  'rounded-neg-radius',
+  'enable-propagation',
 ];
 
 async function waitForDone(page: Page, logs: string[]) {
@@ -70,6 +74,31 @@ test.describe('UI Polish regression guards', () => {
     await stableShot(page, 'uipolish-01-default-dpr.png', { fullPage: true });
 
     assertChecks(logs);
+
+    // dom-nav-keys (findings O-2): keydown Enter / ArrowDown on the DOM
+    // <input> must surface as wxEVT_CHAR_HOOK (13 = WXK_RETURN, 317 =
+    // WXK_DOWN); the Skip()ing hook lets wxEVT_TEXT_ENTER fire exactly once.
+    const domIdLine = logs.find((l) => l.includes('navkeys domId='));
+    expect(domIdLine, 'navkeys text ctrl announced its DOM id').toBeDefined();
+    const domId = Number(domIdLine!.split('domId=')[1]);
+    const fired = await page.evaluate((id) => {
+      const el = document.querySelector(`[data-wx-dom-id="${id}"]`) as HTMLElement | null;
+      const input = (el?.tagName === 'INPUT' ? el : el?.querySelector('input')) as HTMLInputElement | null;
+      if (!input) return false;
+      input.focus();
+      for (const key of ['Enter', 'ArrowDown']) {
+        input.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+      }
+      return true;
+    }, domId);
+    expect(fired, 'navkeys <input> found').toBe(true);
+    await expect.poll(() => logs.some((l) => l.includes('charhook key=13')),
+      { message: 'Enter reached wxEVT_CHAR_HOOK' }).toBe(true);
+    await expect.poll(() => logs.some((l) => l.includes('charhook key=317')),
+      { message: 'ArrowDown reached wxEVT_CHAR_HOOK' }).toBe(true);
+    await expect.poll(() => logs.filter((l) => l.includes('[UIPOLISH_TEST] textenter')).length,
+      { message: 'TEXT_ENTER fired once' }).toBe(1);
+
   });
 });
 
