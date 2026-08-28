@@ -256,6 +256,17 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
 
   async function doSwitch(sheetPath: string): Promise<void> {
     if (activePath === sheetPath) return;
+    // The editor navigated AGAIN while this switch was awaiting (ysync bug 07,
+    // UP side): binding + adopting now would apply THIS room's doc onto the
+    // screen of the newer sheet — the 8/28 mega-demo corruption, where the
+    // root doc's items (its `(sheet …)` entries included) replaced a subsheet's
+    // and were then written into the subsheet's room. Bail; the queued switch
+    // for the newer path binds the right room. The room stays warm (parked).
+    const superseded = (): boolean => {
+      if (requestedPath === sheetPath) return false;
+      clog(`[sheet] switch to ${sheetPath} superseded by ${requestedPath} — not binding`);
+      return true;
+    };
 
     // Detach the OLD binding FIRST (before any await): the editor already navigated to
     // the new sheet, so the old binding's observer must stop applying remote edits onto
@@ -279,19 +290,19 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
     if (hadActive) opts.onActiveChange?.(null);
 
     const room = await ensureRoom(sheetPath);
-    if (destroyed) return;
+    if (destroyed || superseded()) return;
     // Gateway transport: a passively-warmed sheet holds no doc state yet —
     // activate() is the real sync barrier (no-op for other providers and on
     // revisits). Runs BEFORE the watch detaches so catch-up updates still
     // mark `dirty` for the adopt decision below.
     await room.session.provider.activate?.();
-    if (destroyed) return;
+    if (destroyed || superseded()) return;
 
     // Activating: stop tracking parked updates and bind the (warm) doc to the editor.
     room.detachWatch?.();
     room.detachWatch = undefined;
 
-    const binding = bindKicadCollab(room.doc, bridge, { readOnly: opts.readOnly });
+    const binding = bindKicadCollab(room.doc, bridge, { readOnly: opts.readOnly, sheetPath });
     room.binding = binding;
 
     if (!room.seeded) {

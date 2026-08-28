@@ -115,9 +115,19 @@ export function bindKicadCollab(
      * server-side; this keeps the client honest and quiet.
      */
     readOnly?: boolean;
+    /**
+     * Project-relative path of the sheet this binding serves. Stamped on
+     * every applyItems envelope so the C++ side can refuse to apply it onto
+     * a different (now-active) screen — ysync bug 07 UP side, the 8/28
+     * root-items-in-subsheet corruption.
+     */
+    sheetPath?: string;
   },
 ): KicadBinding {
   const readOnly = opts?.readOnly === true;
+  const sheetPath = opts?.sheetPath;
+  const tagged = (wire: ItemsWireDelta): ItemsWireDelta =>
+    sheetPath === undefined ? wire : { ...wire, sheet: sheetPath };
   // Version skew guard — callers bind AFTER the provider's initial sync, so the
   // doc's version is authoritative here (an empty room reads as v1 and is
   // stamped CURRENT by the first write). A read-only viewer never writes, but
@@ -218,7 +228,7 @@ export function bindKicadCollab(
       removed: wire.removed.length,
     });
     try {
-      bridge.applyItems(JSON.stringify(wire));
+      bridge.applyItems(JSON.stringify(tagged(wire)));
     } catch (err) {
       // Symmetric with the DOWN hook's backstop above (findings C-7): a throw
       // here would otherwise unwind through Yjs's transaction cleanup inside
@@ -461,7 +471,7 @@ export function bindKicadCollab(
       `+${adoptWire.added.length} ~${adoptWire.changed.length} -${adoptWire.removed.length}`,
     );
     if (isEmptyItemsWireDelta(adoptWire)) return; // editor already matches — baseline only
-    bridge.applyItems(JSON.stringify(adoptWire));
+    bridge.applyItems(JSON.stringify(tagged(adoptWire)));
   }
 
   return {

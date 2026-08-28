@@ -134,6 +134,33 @@ describe("bindKicadCollab — two editors over relayed Y.Docs", () => {
     }
   });
 
+  it("stamps every apply envelope (adopt + remote change) with the binding's sheetPath", () => {
+    const { a, b } = pair();
+    const edA = new FakeEditor();
+    const edB = new FakeEditor();
+    const bindA = bindKicadCollab(a, edA, { sheetPath: "Arduino Mega 2560/root.kicad_sch" });
+    const bindB = bindKicadCollab(b, edB, { sheetPath: "Arduino Mega 2560/root.kicad_sch" });
+    seedEditor(edA, FP);
+    bindA.seed();
+    bindB.seed(); // adopt apply
+    edA.localUpsert(`(segment (start 0 0) (end 1 1) (uuid "seg-1"))`, null, "added"); // remote apply
+    expect(edB.applied.length).toBeGreaterThanOrEqual(2);
+    for (const json of edB.applied) {
+      expect((JSON.parse(json) as { sheet?: string }).sheet).toBe("Arduino Mega 2560/root.kicad_sch");
+    }
+    // Untagged binding (single-file tools) leaves the envelope alone.
+    const { a: c, b: d } = pair();
+    const edC = new FakeEditor();
+    const edD = new FakeEditor();
+    bindKicadCollab(c, edC).seed();
+    seedEditor(edC, FP);
+    bindKicadCollab(d, edD).seed();
+    edC.localUpsert(`(segment (start 0 0) (end 1 1) (uuid "seg-2"))`, null, "added");
+    for (const json of edD.applied) {
+      expect("sheet" in (JSON.parse(json) as object)).toBe(false);
+    }
+  });
+
   it("a remote apply does not bounce back to the originator", () => {
     const { edA, edB, bindA, bindB } = setup();
     seedEditor(edA, FP);

@@ -997,8 +997,44 @@ void doApply( SCH_EDIT_FRAME* aFrame, const json& aDelta )
 // sheet (sch_editor_control.cpp Paste pattern) — then the loaded items are detached,
 // matched by uuid against the live model (replace), lib-relinked for symbols, and
 // committed. Runs inside the apply COROUTINE (see kicadCollabApplyItems).
+// ysync bug 07 (UP side): an apply is queued for the room of ONE sheet but runs
+// deferred on whatever screen is active when it runs. The JS binding stamps the
+// envelope with its sheet's project-relative path; if that is not the screen
+// shown now, adding the items here would put another sheet's items on this
+// screen (8/28: the root's `(sheet …)` entries landed in a subsheet, which then
+// referenced itself and failed to load). Drop it — the binding for the shown
+// sheet reconciles on its own bind.
+static bool applyTargetsShownSheet( SCH_EDIT_FRAME* aFrame, const json& aWire )
+{
+    auto it = aWire.find( "sheet" );
+
+    if( it == aWire.end() || !it->is_string() )
+        return true; // untagged (single-file tools, older clients): legacy behaviour
+
+    const std::string want = it->get<std::string>();
+    SCH_SCREEN*       cur = currentScreen( aFrame );
+    const std::string have = cur ? toUtf8( cur->GetFileName() ) : std::string();
+
+    if( have == want )
+        return true;
+
+    // `have` is absolute (MEMFS project dir + relative path); `want` is relative.
+    if( have.size() > want.size() && have[have.size() - want.size() - 1] == '/'
+        && have.compare( have.size() - want.size(), want.size(), want ) == 0 )
+        return true;
+
+    EM_ASM( { console.warn( "[collab] applyItems dropped: envelope sheet " + UTF8ToString( $0 )
+                            + " != shown sheet " + UTF8ToString( $1 ) ); },
+            want.c_str(), have.c_str() );
+    return false;
+}
+
+
 void doApplyItems( SCH_EDIT_FRAME* aFrame, const json& aWire )
 {
+    if( !applyTargetsShownSheet( aFrame, aWire ) )
+        return;
+
     SCHEMATIC& sch = aFrame->Schematic();
 
     s_applyingRemote = true;

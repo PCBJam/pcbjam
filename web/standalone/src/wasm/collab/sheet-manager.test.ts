@@ -109,6 +109,16 @@ describe("sheet-manager warm pool", () => {
     expect(connectKicadDoc).toHaveBeenCalledTimes(2);
   });
 
+  it("binds each room with its own sheetPath (apply envelope tag, bug 07 UP side)", async () => {
+    const m = makeManager();
+    await m.switchTo("a.kicad_sch");
+    await m.switchTo("sub/b.kicad_sch");
+    expect(bindKicadCollab.mock.calls.map((c) => (c[2] as { sheetPath?: string }).sheetPath)).toEqual([
+      "a.kicad_sch",
+      "sub/b.kicad_sch",
+    ]);
+  });
+
   it("first switch binds + seeds the active sheet", async () => {
     const m = makeManager();
     await m.switchTo("a.kicad_sch");
@@ -305,6 +315,42 @@ describe("sheet-manager lifecycle hardening (findings C-1/C-4/C-5)", () => {
     releaseB();
     await sw;
     expect(events).toEqual(["bind:a.kicad_sch", "clear", "bind:b.kicad_sch"]);
+  });
+
+  it("a switch superseded DURING its connect never binds/adopts onto the new screen (ysync bug 07 UP-side)", async () => {
+    // Real-world corruption (8/28, mega-demo-v2): the root's switch was still
+    // awaiting its room connect when the user entered a subsheet. The root
+    // switch then completed, bound the ROOT doc while the editor showed the
+    // SUBSHEET, and its adopt replaced the subsheet's items with the root's
+    // (incl. the `(sheet …)` pointing at the subsheet itself) — which the
+    // subsheet's own bind then wrote into the subsheet's room.
+    const m = makeManager();
+    let releaseRoot!: () => void;
+    connectKicadDoc.mockImplementationOnce(
+      ({ room }: { room: string }) =>
+        new Promise((res) => {
+          releaseRoot = () => {
+            const session = { room, doc: makeDoc(), provider: { destroy: vi.fn() } };
+            sessions.push(session);
+            res(session);
+          };
+        }),
+    );
+    const rootSwitch = m.switchTo("root.kicad_sch");
+    await new Promise((r) => setTimeout(r, 0)); // root switch parked on its connect
+    const subSwitch = m.switchTo("sub.kicad_sch"); // C++ already shows `sub`
+    releaseRoot();
+    await Promise.all([rootSwitch, subSwitch]);
+
+    // Nothing was ever bound/seeded while the editor showed a different sheet.
+    expect(bindings).toHaveLength(1);
+    expect(bindings[0]!.seed).toHaveBeenCalledTimes(1);
+    expect(m.active()?.sheetPath).toBe("sub.kicad_sch");
+    // The root room stays warm (parked) — the superseded switch is not a failure.
+    expect(sessions.map((s) => s.room).sort()).toEqual([
+      "S:P:root.kicad_sch",
+      "S:P:sub.kicad_sch",
+    ]);
   });
 
   it("switchTo rejects SexprVersionError terminally — no retry, queue stays usable (C-5)", async () => {
