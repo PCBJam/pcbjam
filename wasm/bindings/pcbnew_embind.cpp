@@ -1006,6 +1006,10 @@ void scheduleFlush()
 // (delete, paste) with no closing canvas event — piggyback a selection re-check
 // on the collab listener trigger. Defined in the presence section below.
 void schedulePresenceSelCheck();
+// Findings Y-1/Y-3: ANY document change (local commit or remote apply) repaints
+// the peers' overlay from the live board and re-checks the local selection —
+// runs BEFORE the applying-remote early return in trigger().
+void schedulePresenceDocChanged();
 
 // ChangeSource: the native BOARD_LISTENER is just a trigger — the actual change set comes from
 // the post-settle snapshot diff above. Skipped while applying a remote delta (no echo); doApply
@@ -1034,6 +1038,8 @@ private:
     // may be freed before the flush runs), then coalesce into one flush.
     void trigger( const std::vector<BOARD_ITEM*>& aItems )
     {
+        schedulePresenceDocChanged();
+
         if( s_applyingRemote )
             return;
 
@@ -1454,6 +1460,11 @@ void schedulePresenceSelCheck()
     presenceCore().scheduleSelCheck();
 }
 
+void schedulePresenceDocChanged()
+{
+    presenceCore().onDocChanged();
+}
+
 } // namespace
 
 
@@ -1685,6 +1696,8 @@ std::string pcbCollabGetPos( std::string aId )
 // run POST-event via CallAfter (the selection tool acts on the same event after us).
 void pcbCollabPresenceStart()
 {
+    // Presence needs the board listener too (findings Y-1/Y-3) — see eeschema.
+    ensureBridge();
     presenceCore().start();
 }
 
@@ -1694,6 +1707,12 @@ void pcbCollabPresenceStart()
 void pcbCollabSetRemote( std::string aJson )
 {
     presenceCore().setRemote( aJson );
+}
+
+// JS → C++: cursor-only update for the peers of the last snapshot (findings Y-4).
+void pcbCollabSetRemoteCursors( std::string aJson )
+{
+    presenceCore().setRemoteCursors( aJson );
 }
 
 // JS → C++ (collab-presence 0005): comment pin dots — `{pins:[{id,x,y,color,
@@ -2897,6 +2916,7 @@ EMSCRIPTEN_BINDINGS(pcbnew) {
     // with 0003 (the merged image dispatches pcb-only until then).
     function("kicadCollabPresenceStart", &pcbCollabPresenceStart);
     function("kicadCollabSetRemote", &pcbCollabSetRemote);
+    function("kicadCollabSetRemoteCursors", &pcbCollabSetRemoteCursors);
     function("kicadCollabSetPins", &pcbCollabSetPins);
     function("kicadCollabSetViewport", &pcbCollabSetViewport);
     // Follow-user (collab-presence 0008).

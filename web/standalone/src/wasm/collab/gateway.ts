@@ -441,6 +441,19 @@ export class GatewayDocFacade implements YjsProvider {
       for (const cb of this.filesCbs) cb(msg.seq, msg.changes);
       return;
     }
+    if (msg.t === "gone") {
+      // A peer connection died; the gateway names its awareness clients. The
+      // clock-ordered binary tombstone may have been rejected (stale clock
+      // after a hibernation wake) — this removal is authoritative. A live
+      // client with one of these ids simply re-appears on its next update.
+      const remote = msg.clients.filter(
+        (id) => id !== this.doc.clientID && this.awareness.getStates().has(id),
+      );
+      if (remote.length > 0) {
+        removeAwarenessStates(this.awareness, remote, "gateway-gone");
+      }
+      return;
+    }
     // touched
     for (const cb of this.touchedCbs) cb();
   }

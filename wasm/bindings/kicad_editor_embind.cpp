@@ -73,6 +73,7 @@ int         pcbCollabTestUndoDepth();
 // Presence (collab-presence 0002) + comment pins/panning (0005).
 void        pcbCollabPresenceStart();
 void        pcbCollabSetRemote( std::string aJson );
+void        pcbCollabSetRemoteCursors( std::string aJson );
 void        pcbCollabSetPins( std::string aJson );
 void        pcbCollabSetViewport( double aCx, double aCy );
 // Follow-user (collab-presence 0008).
@@ -120,6 +121,7 @@ int         schCollabTestUndoDepth();
 // Presence (collab-presence 0003 — eeschema counterparts) + pins (0005).
 void        schCollabPresenceStart();
 void        schCollabSetRemote( std::string aJson );
+void        schCollabSetRemoteCursors( std::string aJson );
 void        schCollabSetPins( std::string aJson );
 void        schCollabSetViewport( double aCx, double aCy );
 // Follow-user (collab-presence 0008).
@@ -491,6 +493,11 @@ static void collabSetRemote( std::string aJson )
     pcbEditorActive() ? pcbCollabSetRemote( aJson ) : schCollabSetRemote( aJson );
 }
 
+static void collabSetRemoteCursors( std::string aJson )
+{
+    pcbEditorActive() ? pcbCollabSetRemoteCursors( aJson ) : schCollabSetRemoteCursors( aJson );
+}
+
 static void collabSetPins( std::string aJson )
 {
     pcbEditorActive() ? pcbCollabSetPins( aJson ) : schCollabSetPins( aJson );
@@ -658,6 +665,7 @@ EMSCRIPTEN_BINDINGS(kicad_editor) {
     // Presence (collab-presence 0002/0003) + comment pins/panning (0005).
     function("kicadCollabPresenceStart", &collabPresenceStart);
     function("kicadCollabSetRemote", &collabSetRemote);
+    function("kicadCollabSetRemoteCursors", &collabSetRemoteCursors);
     function("kicadCollabSetPins", &collabSetPins);
     function("kicadCollabSetViewport", &collabSetViewport);
     // Live color-theme switch (comments-ux 0002 F4).

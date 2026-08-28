@@ -96,6 +96,7 @@
       "kicadCollabApply", "kicadCollabApplyItems",
       "kicadCollabSnapshot", "kicadCollabSnapshotItems",
       "kicadCollabPresenceStart", "kicadCollabSetRemote",
+      "kicadCollabSetRemoteCursors",
       "kicadCollabSetPins", "kicadCollabSetStyle",
       "kicadCollabSetViewport", "kicadCollabFitViewport",
       "kicadCollabReleaseSelection", "kicadSetColorTheme",

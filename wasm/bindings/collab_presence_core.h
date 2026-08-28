@@ -46,6 +46,7 @@ namespace pcbjam_presence {
 
 struct PEER
 {
+    std::string       id;                // awareness identity (cursor-only updates key on it)
     std::string       name;
     KIGFX::COLOR4D    color;
     bool              hasCursor = false;
@@ -135,9 +136,19 @@ struct CORE
     // chips — see the depth-layering note in collab_presence_style.h.
     std::shared_ptr<KIGFX::VIEW_OVERLAY> chipOverlay;
     std::shared_ptr<KIGFX::VIEW_OVERLAY> textOverlay;
+    // Cursors live on their own overlay trio (findings Y-4): a peer's 20 Hz
+    // cursor tick repaints these only; the selection/xsel/pin shapes above
+    // are repainted only when a selection, lock, pin or zoom changes.
+    std::shared_ptr<KIGFX::VIEW_OVERLAY> cursorOverlay;
+    std::shared_ptr<KIGFX::VIEW_OVERLAY> cursorChipOverlay;
+    std::shared_ptr<KIGFX::VIEW_OVERLAY> cursorTextOverlay;
 
     bool        started           = false;
     bool        redrawScheduled   = false;
+    bool        shapesDirty       = false;
+    bool        cursorsDirty      = false;
+    bool        docChangeScheduled = false;
+    std::string lastShapeSig;        // setRemote dedupe: shapes vs cursor-only change
     bool        selCheckScheduled = false;
     std::string lastSelectionJson;   // dedupe: emit only when the payload changed
     long long   lastCursorEmitMs = 0;
@@ -328,9 +339,11 @@ struct CORE
 
     // ── remote render ─────────────────────────────────────────────────────
 
-    // Repaint the remote-peers overlay. Runs in CallAfter + COROUTINE via the
+    // Repaint the remote-peers overlays. Runs in CallAfter + COROUTINE via the
     // apply queue — serialized with the applies, same constraint as every
-    // other view mutation from JS.
+    // other view mutation from JS. Two groups, each repainted only when
+    // dirty: SHAPES (selection boxes, cross-app ghosts, comment pins — the
+    // expensive part: per-item resolve + outline geometry) and CURSORS.
     void redrawOverlay()
     {
         redrawScheduled = false;
@@ -359,9 +372,20 @@ struct CORE
         if( !textOverlay )
             textOverlay = makePresenceTextOverlay( view );
 
-        overlay->Clear();
-        chipOverlay->Clear();
-        textOverlay->Clear();
+        if( !cursorOverlay )
+        {
+            cursorOverlay = view->MakeOverlay();
+            cursorOverlay->SetDepthOffset( PRESENCE_SHAPES_DEPTH_OFFSET );
+        }
+
+        if( !cursorChipOverlay )
+        {
+            cursorChipOverlay = view->MakeOverlay();
+            cursorChipOverlay->SetDepthOffset( PRESENCE_CHIPS_DEPTH_OFFSET );
+        }
+
+        if( !cursorTextOverlay )
+            cursorTextOverlay = makePresenceTextOverlay( view );
 
         // Screen-constant sizing: px → world units, so cursors/outline widths
         // don't scale with zoom. MUST go through the GAL matrix
@@ -369,36 +393,72 @@ struct CORE
         // px-per-IU, and under-sizes the drawing by ~7 orders of magnitude.
         double px = view->ToWorld( 1.0 );
 
-        for( const PEER& peer : peers )
+        bool shapes  = shapesDirty;
+        bool cursors = cursorsDirty;
+        shapesDirty  = false;
+        cursorsDirty = false;
+
+        if( shapes )
         {
-            KIGFX::COLOR4D color = peerColor( style, peer.name, peer.color );
+            overlay->Clear();
+            chipOverlay->Clear();
+            textOverlay->Clear();
 
-            // Selection boxes + cross-app ghosts: editor-specific resolution.
-            drawPeerShapes( *this, fr, peer, color, px );
+            for( const PEER& peer : peers )
+            {
+                KIGFX::COLOR4D color = peerColor( style, peer.name, peer.color );
 
-            if( peer.hasCursor )
-                drawCursor( overlay.get(), chipOverlay.get(), textOverlay.get(), peer.cursor,
-                            peer.name, color, px, style );
+                // Selection boxes + cross-app ghosts: editor-specific resolution.
+                drawPeerShapes( *this, fr, peer, color, px );
+            }
+
+            // Comment pin dots (0005) — on the CHIPS layer so selection fills
+            // can't reject their fragments (see drawPin).
+            for( const PIN& pin : pins )
+            {
+                KIGFX::COLOR4D color = peerColor( style, pin.name, pin.color );
+                drawPin( chipOverlay.get(), pin.pos, color, pin.resolved, pin.unread, px, style );
+            }
+
+            view->Update( overlay.get() );
+            view->Update( chipOverlay.get() );
+            view->Update( textOverlay.get() );
         }
 
-        // Comment pin dots (0005) — on the CHIPS layer so selection fills
-        // can't reject their fragments (see drawPin).
-        for( const PIN& pin : pins )
+        if( cursors )
         {
-            KIGFX::COLOR4D color = peerColor( style, pin.name, pin.color );
-            drawPin( chipOverlay.get(), pin.pos, color, pin.resolved, pin.unread, px, style );
+            cursorOverlay->Clear();
+            cursorChipOverlay->Clear();
+            cursorTextOverlay->Clear();
+
+            for( const PEER& peer : peers )
+            {
+                if( !peer.hasCursor )
+                    continue;
+
+                KIGFX::COLOR4D color = peerColor( style, peer.name, peer.color );
+                drawCursor( cursorOverlay.get(), cursorChipOverlay.get(), cursorTextOverlay.get(),
+                            peer.cursor, peer.name, color, px, style );
+            }
+
+            view->Update( cursorOverlay.get() );
+            view->Update( cursorChipOverlay.get() );
+            view->Update( cursorTextOverlay.get() );
         }
 
-        view->Update( overlay.get() );
-        view->Update( chipOverlay.get() );
-        view->Update( textOverlay.get() );
+        if( !shapes && !cursors )
+            return;
+
         // The canvas repaints on its own only with focus/input — force it,
         // exactly as the cross-probe flash does.
         fr->GetCanvas()->ForceRefresh();
     }
 
-    void scheduleRedraw()
+    void scheduleRedraw( bool aShapes = true, bool aCursors = true )
     {
+        shapesDirty  = shapesDirty || aShapes;
+        cursorsDirty = cursorsDirty || aCursors;
+
         if( redrawScheduled )
             return;
 
@@ -409,6 +469,39 @@ struct CORE
 
         redrawScheduled = true;
         pcbjam_collab::runOnCoroutine( fr, [this]() { redrawOverlay(); } );
+    }
+
+    /** The document changed (local commit OR remote apply — findings Y-1/Y-3):
+     *  peers' selection boxes may now sit on deleted/moved items, and the
+     *  local selection may have lost items with no closing canvas event.
+     *  Queued on the apply coroutine so it runs AFTER the commit/apply body
+     *  that raised it: repaint the shapes from the live document and re-check
+     *  the local selection. Coalesced per settle. */
+    void onDocChanged()
+    {
+        if( docChangeScheduled )
+            return;
+
+        EDA_DRAW_FRAME* fr = frame();
+
+        if( !fr )
+            return;
+
+        docChangeScheduled = true;
+
+        pcbjam_collab::runOnCoroutine( fr, [this]()
+        {
+            docChangeScheduled = false;
+
+            if( !peers.empty() || !pins.empty() )
+            {
+                shapesDirty  = true;
+                cursorsDirty = true;
+                redrawOverlay();
+            }
+
+            checkSelection();
+        } );
     }
 
     // ── JS entry-point bodies ─────────────────────────────────────────────
@@ -491,6 +584,7 @@ struct CORE
         for( const json& p : j.value( "peers", json::array() ) )
         {
             PEER peer;
+            peer.id    = p.value( "id", "" );
             peer.name  = p.value( "name", "" );
             peer.color = parsePeerColor( p.value( "color", "" ) );
 
@@ -528,10 +622,75 @@ struct CORE
                 parsedLocks[ KIID( wxString::FromUTF8( uuid.c_str() ) ) ] = l.value( "name", "" );
         }
 
+        // Shapes signature (everything but cursors): an unchanged one means
+        // this push is a cursor tick — repaint cursors only.
+        std::string sig;
+
+        for( const PEER& peer : parsed )
+        {
+            sig += peer.id + '\x1f' + peer.name + '\x1f' + peer.color.ToCSSString().ToStdString() + '\x1e';
+
+            for( const KIID& k : peer.selection )
+                sig += pcbjam_collab::toUtf8( k.AsString() ) + ',';
+
+            sig += '\x1e';
+
+            for( const KIID& k : peer.xsel )
+                sig += pcbjam_collab::toUtf8( k.AsString() ) + ',';
+
+            sig += '\x1d';
+        }
+
+        for( const auto& [id, name] : parsedLocks )
+            sig += pcbjam_collab::toUtf8( id.AsString() ) + '=' + name + ';';
+
+        bool shapesChanged = sig != lastShapeSig;
+        lastShapeSig = std::move( sig );
+
         peers = std::move( parsed );
         locks = std::move( parsedLocks );
         start();
-        scheduleRedraw();
+        scheduleRedraw( shapesChanged, true );
+    }
+
+    /** kicadCollabSetRemoteCursors (findings Y-4): `{cursors:[{id,cursor:{x,y}|null}]}`
+     *  for peers of the last full snapshot — updates their cursors and repaints
+     *  the cursor overlays only. Unknown ids are ignored (the next full
+     *  snapshot introduces them). */
+    void setRemoteCursors( const std::string& aJson )
+    {
+        json j = json::parse( aJson, nullptr, /*allow_exceptions*/ false );
+
+        if( j.is_discarded() )
+            return;
+
+        bool changed = false;
+
+        for( const json& c : j.value( "cursors", json::array() ) )
+        {
+            std::string id = c.is_object() ? c.value( "id", "" ) : "";
+
+            for( PEER& peer : peers )
+            {
+                if( peer.id != id )
+                    continue;
+
+                if( c.contains( "cursor" ) && c["cursor"].is_object() )
+                {
+                    peer.hasCursor = true;
+                    peer.cursor = VECTOR2D( c["cursor"].value( "x", 0.0 ), c["cursor"].value( "y", 0.0 ) );
+                }
+                else
+                {
+                    peer.hasCursor = false;
+                }
+
+                changed = true;
+            }
+        }
+
+        if( changed )
+            scheduleRedraw( false, true );
     }
 
     /** kicadCollabSetPins (0005): comment pins — `{pins:[{id,name,x,y,

@@ -36,6 +36,10 @@ export interface PresenceKicadModule {
   /** 0008: fit a leader's world rect (center + half-extents, IU) into this
    *  canvas — contain semantics. Absent on older wasm builds. */
   kicadCollabFitViewport?(cx: number, cy: number, halfW: number, halfH: number): void;
+  /** Findings Y-4: cursor-only update `{cursors:[{id, cursor}]}` for peers
+   *  already known from the last full snapshot — the wasm side repaints only
+   *  the cursor overlays, not every selection outline. Absent on older wasm. */
+  kicadCollabSetRemoteCursors?(json: string): void;
 }
 
 export interface PresenceKicadWindow {
@@ -212,6 +216,11 @@ export function bindKicadPresence(opts: {
   }
 
   // awareness → C++ ------------------------------------------------------------
+  // The last full snapshot's "shape" signature (everything except cursors):
+  // while it is unchanged, awareness changes are cursor ticks and go through
+  // the cheap cursor-only entry point (findings Y-4 — a select-all peer's
+  // 20 Hz cursor must not re-resolve + redraw 3000 outlines per tick).
+  let lastShapeSig = "";
   const pushRemote = () => {
     const peers = presence.peers();
     const snapshot: {
@@ -264,6 +273,17 @@ export function bindKicadPresence(opts: {
         xsel,
       });
     }
+    const shapeSig = JSON.stringify({
+      peers: snapshot.peers.map((p) => [p.id, p.name, p.color, p.selection, p.xsel ?? null]),
+      locks: snapshot.locks,
+    });
+    if (shapeSig === lastShapeSig && mod.kicadCollabSetRemoteCursors) {
+      mod.kicadCollabSetRemoteCursors(
+        JSON.stringify({ cursors: snapshot.peers.map((p) => ({ id: p.id, cursor: p.cursor })) }),
+      );
+      return;
+    }
+    lastShapeSig = shapeSig;
     mod.kicadCollabSetRemote(JSON.stringify(snapshot));
   };
 

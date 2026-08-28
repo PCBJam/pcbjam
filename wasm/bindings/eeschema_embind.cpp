@@ -650,6 +650,12 @@ void scheduleSheetSave( SCH_SHEET* aSheet )
 // too (delete, paste) with no closing canvas event — the trigger below also
 // piggybacks a selection re-check. Defined in the presence section further down.
 void schedulePresenceSelCheck();
+// Findings Y-1/Y-3: ANY document change (local commit or remote apply) repaints
+// the peers' overlay from the live document and re-checks the local selection,
+// post-settle on the apply coroutine. Runs BEFORE the applying-remote early
+// return below — the remote apply is exactly the case that left peers' boxes on
+// deleted items.
+void schedulePresenceDocChanged();
 
 class COLLAB_LISTENER : public SCHEMATIC_LISTENER
 {
@@ -684,6 +690,8 @@ private:
     // symbol — noteDirty), then coalesce into one post-settle flush.
     void trigger( const std::vector<SCH_ITEM*>& aItems )
     {
+        schedulePresenceDocChanged();
+
         if( s_applyingRemote )
             return;
 
@@ -827,6 +835,11 @@ pcbjam_presence::CORE& presenceCore()
 void schedulePresenceSelCheck()
 {
     presenceCore().scheduleSelCheck();
+}
+
+void schedulePresenceDocChanged()
+{
+    presenceCore().onDocChanged();
 }
 
 } // namespace
@@ -1839,6 +1852,11 @@ extern "C" void kicadCollabOnSave( const char* aPath )
 // sheet navigation, so one install serves the whole session.
 void schCollabPresenceStart()
 {
+    // Presence needs the document listener too (findings Y-1/Y-3: doc changes
+    // repaint peers' shapes + re-check the local selection) — collab normally
+    // registers it first via snapshot/apply, but presence must not depend on
+    // that ordering (test harnesses, presence-only sessions).
+    ensureBridge();
     presenceCore().start();
 }
 
@@ -1848,6 +1866,12 @@ void schCollabPresenceStart()
 void schCollabSetRemote( std::string aJson )
 {
     presenceCore().setRemote( aJson );
+}
+
+// JS → C++: cursor-only update for the peers of the last snapshot (findings Y-4).
+void schCollabSetRemoteCursors( std::string aJson )
+{
+    presenceCore().setRemoteCursors( aJson );
 }
 
 // JS → C++ (collab-presence 0005): comment pin dots (same wire as pcbnew).
@@ -2241,6 +2265,7 @@ EMSCRIPTEN_BINDINGS(eeschema) {
     // Presence (collab-presence 0003) — shared names with pcbnew's 0002 set.
     function("kicadCollabPresenceStart", &schCollabPresenceStart);
     function("kicadCollabSetRemote", &schCollabSetRemote);
+    function("kicadCollabSetRemoteCursors", &schCollabSetRemoteCursors);
     function("kicadCollabSetPins", &schCollabSetPins);
     function("kicadCollabSetViewport", &schCollabSetViewport);
     // Follow-user (collab-presence 0008).

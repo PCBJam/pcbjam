@@ -70,6 +70,16 @@ export interface PresenceHandle {
 // so one user keeps one color everywhere in a session; a second tab of the
 // same user ADOPTS the existing color instead of claiming a new one.
 
+/** Cursor/viewport publish budget: bytes of published selection per second
+ *  of high-frequency traffic. 128 KB/s ⇒ a 3000-item selection (~117 KB)
+ *  publishes cursors at ~1 Hz; anything under ~6 KB (150 items) is not
+ *  throttled at all (the wasm side already caps cursor emits at 20 Hz). */
+const HF_BUDGET_BYTES_PER_SEC = 128 * 1024;
+const HF_MAX_INTERVAL_MS = 2000;
+/** Below this the wasm emit cadence (50 ms) already bounds the rate — publish
+ *  synchronously, exactly as before. */
+const HF_MIN_INTERVAL_MS = 50;
+
 // Per-user claims in this JS context (one user per tab in production; the
 // map keeps multi-client unit tests deterministic).
 const g_claims = new Map<string, string>();
@@ -187,6 +197,36 @@ export function createPresence(opts: {
     awareness.setLocalState({ ...current, ...fields, updatedAt: Date.now() });
   };
 
+  // Select-all lag (findings Y-4): awareness ships the WHOLE state on every
+  // change, so with a large selection each 20 Hz cursor/viewport tick
+  // re-sends the selection (3000 items ≈ 117 KB per tick). Rate the
+  // high-frequency fields by payload size: the bigger the published
+  // selection, the longer the trailing interval between cursor/viewport
+  // publishes (a small selection is unthrottled; select-all ≈ 1 Hz).
+  let selectionBytes = 2;
+  let hfTimer: ReturnType<typeof setTimeout> | undefined;
+  let hfPending: Partial<PresenceState> = {};
+  let hfLastAt = 0;
+  const hfInterval = () => Math.min(HF_MAX_INTERVAL_MS, (selectionBytes / HF_BUDGET_BYTES_PER_SEC) * 1000);
+  const patchHighFrequency = (fields: Partial<PresenceState>) => {
+    hfPending = { ...hfPending, ...fields };
+    const wait = hfInterval();
+    if (wait < HF_MIN_INTERVAL_MS) {
+      hfPending = {};
+      patch(fields);
+      return;
+    }
+    if (hfTimer) return;
+    const due = Math.max(0, hfLastAt + wait - Date.now());
+    hfTimer = setTimeout(() => {
+      hfTimer = undefined;
+      hfLastAt = Date.now();
+      const p = hfPending;
+      hfPending = {};
+      patch(p);
+    }, due);
+  };
+
   patch({
     user,
     tool: opts.tool,
@@ -249,7 +289,12 @@ export function createPresence(opts: {
     }
   };
 
+  // Parsed-clients memo: peers()/clients() are both read on every awareness
+  // change by the bridge, and each zod parse of a big selection is costly.
+  // States only change through awareness events, so one parse per change.
+  let clientsMemo: PresencePeer[] | null = null;
   function clients(): PresencePeer[] {
+    if (clientsMemo) return clientsMemo;
     const out: PresencePeer[] = [];
     for (const [clientId, raw] of awareness.getStates()) {
       if (clientId === awareness.clientID) continue;
@@ -257,7 +302,8 @@ export function createPresence(opts: {
       if (!parsed.success) continue;
       out.push({ ...parsed.data, clientId });
     }
-    return out.sort((a, b) => a.clientId - b.clientId);
+    clientsMemo = out.sort((a, b) => a.clientId - b.clientId);
+    return clientsMemo;
   }
 
   function peers(): PresencePeer[] {
@@ -275,6 +321,7 @@ export function createPresence(opts: {
 
   const subscribers = new Set<(peers: PresencePeer[]) => void>();
   const onChange = () => {
+    clientsMemo = null;
     resolveCollision();
     if (!subscribers.size) return;
     const snapshot = peers();
@@ -302,13 +349,14 @@ export function createPresence(opts: {
       return () => subscribers.delete(cb);
     },
     setCursor(pos) {
-      patch({ cursor: pos });
+      patchHighFrequency({ cursor: pos });
     },
     setSelection(uuids) {
+      selectionBytes = JSON.stringify(uuids).length;
       patch({ selection: uuids });
     },
     setViewport(rect) {
-      patch({ viewport: rect });
+      patchHighFrequency({ viewport: rect });
     },
     colorOf(userId) {
       if (userId === user.id) return user.color;
@@ -331,6 +379,8 @@ export function createPresence(opts: {
       }
       awareness.off("change", onChange);
       subscribers.clear();
+      if (hfTimer) clearTimeout(hfTimer);
+      hfTimer = undefined;
       awareness.setLocalState(null);
     },
   };
