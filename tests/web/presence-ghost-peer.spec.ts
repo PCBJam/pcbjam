@@ -106,7 +106,7 @@ for (const mode of ['half-open', 'unclean-close'] as const) {
       const present = await bob.locator('[data-presence-user="alice"]').count();
       seen.push(`+${Math.round((Date.now() - t0) / 1000)}s:${present}`);
       if (present === 0) { ms = Date.now() - t0; break; }
-      await bob.waitForTimeout(5000);
+      await bob.waitForTimeout(5000); // eslint-disable-line -- documented sampling dwell: presence-eviction probe cadence inside an explicit bounded loop
     }
     const sockets = await alice.evaluate(() => (window as unknown as { __wsReport(): unknown }).__wsReport());
     // eslint-disable-next-line no-console

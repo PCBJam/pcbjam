@@ -88,7 +88,7 @@ for (const close of [true, false]) test(`diag: what bob receives after alice ${c
   const before = await bob.evaluate((since) => (window as any).__awLog.filter((e: any) => e.type === 1 && e.t < since).flatMap((e: any) => e.ents.map((x: any) => `${new Date(e.t).toISOString().slice(14, 19)} ch${e.ch} cid=${x.cid} clk=${x.clk} ${x.user}`)), tCut);
   console.log(`[diag] bob inbound awareness BEFORE cut (last 12):\n  ${before.slice(-12).join('\n  ')}`);
   for (let i = 1; i <= 4; i++) {
-    await bob.waitForTimeout(10000);
+    await bob.waitForTimeout(10000); // eslint-disable-line -- documented sampling dwell: diag probe cadence inside an explicit loop
     const present = await bob.locator('[data-presence-user="alice"]').count();
     const aliceWs = await alice.evaluate(() => (window as any).__wsList.map((w: any) => ({ url: w.url.slice(0, 60), state: w.ws.readyState, t: w.t })));
     const log = await bob.evaluate((since) => (window as any).__awLog.filter((e: any) => e.t >= since), tCut);

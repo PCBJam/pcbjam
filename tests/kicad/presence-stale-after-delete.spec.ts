@@ -166,14 +166,16 @@ for (const kind of ["selection", "xsel"] as const) {
     // WIRE1 is deleted through a real SCH_COMMIT — the same path a remote
     // apply (peer deleted it) or a local menu delete takes.
     expect(await removeItem(page, WIRE1)).toBe(true);
-    await page.waitForTimeout(1500);
+    // Documented interaction dwell: the overlay repaint has no observable signal
+    // — settledShot below compares stable frames, this only lets it queue.
+    await page.waitForTimeout(1500); // eslint-disable-line -- documented interaction dwell
     const afterDelete = await settledShot(canvas);
 
     // Ground truth for "what the overlay should look like now": force the
     // overlay to rebuild from the SAME peer snapshot — WIRE1 no longer
     // resolves, so nothing is drawn for it.
     await setRemote(page, { peers: [peer] });
-    await page.waitForTimeout(1500);
+    await page.waitForTimeout(1500); // eslint-disable-line -- documented interaction dwell (overlay rebuild, no observable)
     const afterRepush = await settledShot(canvas);
 
     expect(
@@ -223,7 +225,7 @@ test("local emit: keyboard Delete on the canvas does publish the empty selection
   // Give the wx canvas keyboard focus with a click on empty sheet space (this
   // clears any selection — the programmatic select comes after).
   await page.mouse.click(box!.x + box!.width * 0.5, box!.y + box!.height * 0.95);
-  await page.locator("#canvas").focus().catch(() => {});
+  await page.locator("#canvas").focus().catch(() => {}); // documented best-effort: wx canvas may reject DOM focus after the click already focused it
   const id = await page.evaluate(() =>
     (window as unknown as W).Module.kicadCollabTestSelectFirst(),
   );
