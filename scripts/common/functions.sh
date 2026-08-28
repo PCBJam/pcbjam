@@ -77,15 +77,41 @@ verify_submodules() {
 }
 
 # Download file with optional verification
+# sha256 of a file. Prefer coreutils (always in the builder image); fall back
+# to perl's shasum (macOS hosts; present in the image only because git pulls
+# in perl).
+file_sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | cut -d' ' -f1
+    else
+        shasum -a 256 "$1" | cut -d' ' -f1
+    fi
+}
+
+# download_file URL DEST SHA256
+# The pin is mandatory (X-1 / security-audit-v3 #15): a fetched-then-compiled
+# tarball with no content pin is the supply-chain hole. Set
+# PCBJAM_ALLOW_UNPINNED=1 only while bootstrapping a new dependency, to obtain
+# the value that then goes into scripts/common/versions.sh.
 download_file() {
     local url="$1"
     local dest="$2"
     local expected_sha256="${3:-}"
 
+    if [ -z "$expected_sha256" ] && [ "${PCBJAM_ALLOW_UNPINNED:-0}" != "1" ]; then
+        log_error "download_file: no SHA256 pin for $url"
+        log_error "  add <NAME>_SHA256 to scripts/common/versions.sh (PCBJAM_ALLOW_UNPINNED=1 to bootstrap)"
+        return 1
+    fi
+    if [ -n "$expected_sha256" ] && ! printf '%s' "$expected_sha256" | grep -Eq '^[0-9a-f]{64}$'; then
+        log_error "download_file: malformed SHA256 pin for $url: $expected_sha256"
+        return 1
+    fi
+
     if [ -f "$dest" ]; then
         if [ -n "$expected_sha256" ]; then
             local actual_sha256
-            actual_sha256=$(shasum -a 256 "$dest" 2>/dev/null | cut -d' ' -f1)
+            actual_sha256=$(file_sha256 "$dest" 2>/dev/null)
             if [ "$actual_sha256" = "$expected_sha256" ]; then
                 log_info "$(basename "$dest") already downloaded and verified"
                 return 0
@@ -133,7 +159,7 @@ download_file() {
 
     if [ -n "$expected_sha256" ]; then
         local actual_sha256
-        actual_sha256=$(shasum -a 256 "$dest" | cut -d' ' -f1)
+        actual_sha256=$(file_sha256 "$dest")
         if [ "$actual_sha256" != "$expected_sha256" ]; then
             log_error "SHA256 mismatch for $dest"
             log_error "  Expected: $expected_sha256"

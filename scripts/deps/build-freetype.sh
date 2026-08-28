@@ -42,7 +42,7 @@ if [ ! -d "${FREETYPE_DIR}" ]; then
     cd "${DEPS_ROOT}"
 
     FREETYPE_URL="https://download.savannah.gnu.org/releases/freetype/freetype-${FREETYPE_VERSION}.tar.xz"
-    download_file "${FREETYPE_URL}" "freetype-${FREETYPE_VERSION}.tar.xz"
+    download_file "${FREETYPE_URL}" "freetype-${FREETYPE_VERSION}.tar.xz" "${FREETYPE_SHA256}"
     tar -xJf "freetype-${FREETYPE_VERSION}.tar.xz"
     rm "freetype-${FREETYPE_VERSION}.tar.xz"
 fi

@@ -41,7 +41,7 @@ if [ ! -d "${GLM_DIR}" ]; then
     cd "${DEPS_ROOT}"
 
     GLM_URL="https://github.com/g-truc/glm/releases/download/${GLM_VERSION}/glm-${GLM_VERSION}.zip"
-    download_file "${GLM_URL}" "glm-${GLM_VERSION}.zip"
+    download_file "${GLM_URL}" "glm-${GLM_VERSION}.zip" "${GLM_SHA256}"
     unzip -q "glm-${GLM_VERSION}.zip"
     mv glm "glm-${GLM_VERSION}"
     rm "glm-${GLM_VERSION}.zip"

@@ -46,7 +46,7 @@ if [ ! -d "${CAIRO_DIR}" ]; then
     cd "${DEPS_ROOT}"
 
     CAIRO_URL="https://cairographics.org/releases/cairo-${CAIRO_VERSION}.tar.xz"
-    download_file "${CAIRO_URL}" "cairo-${CAIRO_VERSION}.tar.xz"
+    download_file "${CAIRO_URL}" "cairo-${CAIRO_VERSION}.tar.xz" "${CAIRO_SHA256}"
     tar -xJf "cairo-${CAIRO_VERSION}.tar.xz"
     rm "cairo-${CAIRO_VERSION}.tar.xz"
 fi

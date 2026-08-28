@@ -48,7 +48,7 @@ if [ ! -d "${BOOST_DIR}" ]; then
     BOOST_ARCHIVE="boost_${BOOST_VERSION_UNDERSCORE}.tar.gz"
 
     # Download and extract
-    download_file "${BOOST_URL}" "${BOOST_ARCHIVE}"
+    download_file "${BOOST_URL}" "${BOOST_ARCHIVE}" "${BOOST_SHA256}"
     tar -xzf "${BOOST_ARCHIVE}"
     rm "${BOOST_ARCHIVE}"
 fi

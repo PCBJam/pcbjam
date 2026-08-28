@@ -45,7 +45,7 @@ if [ ! -d "${HARFBUZZ_DIR}" ]; then
     cd "${DEPS_ROOT}"
 
     HARFBUZZ_URL="https://github.com/harfbuzz/harfbuzz/releases/download/${HARFBUZZ_VERSION}/harfbuzz-${HARFBUZZ_VERSION}.tar.xz"
-    download_file "${HARFBUZZ_URL}" "harfbuzz-${HARFBUZZ_VERSION}.tar.xz"
+    download_file "${HARFBUZZ_URL}" "harfbuzz-${HARFBUZZ_VERSION}.tar.xz" "${HARFBUZZ_SHA256}"
     tar -xJf "harfbuzz-${HARFBUZZ_VERSION}.tar.xz"
     rm "harfbuzz-${HARFBUZZ_VERSION}.tar.xz"
 fi

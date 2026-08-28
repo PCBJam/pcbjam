@@ -59,10 +59,31 @@ export RAPIDJSON_URL="https://github.com/Tencent/rapidjson/archive/${RAPIDJSON_C
 # 404s). old-releases is the durable home for a pinned version.
 export NGSPICE_URL="https://downloads.sourceforge.net/project/ngspice/ng-spice-rework/old-releases/${NGSPICE_VERSION}/ngspice-${NGSPICE_VERSION}.tar.gz"
 
-# SHA256 checksums (to be filled in after first successful download)
-# export ZSTD_SHA256=""
-# export HARFBUZZ_SHA256=""
-# export CAIRO_SHA256=""
-# export PIXMAN_SHA256=""
-# export OCC_SHA256=""
-# export NGSPICE_SHA256=""
+# Pinned versions for deps whose URL is composed in their build script.
+export BOOST_VERSION="1.84.0"
+export CURL_VERSION="8.5.0"
+export LIBGIT2_VERSION="1.7.1"
+
+# SHA256 pins for every download_file() fetch (X-1 / security-audit-v3 #15).
+# download_file refuses an empty pin unless PCBJAM_ALLOW_UNPINNED=1.
+# Values computed 2026-08-28 from the URLs above and cross-checked against an
+# independent publisher (Homebrew / Buildroot / nixpkgs / FreeBSD ports / vcpkg /
+# boost.org / curl PGP); the table with each corroboration lives in
+# docs/features/findings/groups/X-build-supply-chain-audit-tooling.md (private
+# superproject). glm's .zip is the one nobody else records (TOFU).
+# OCC / rapidjson / libgit2 are GitHub auto-generated tag archives: if one of
+# those pins ever fails on an unchanged tag, GitHub's archive bytes moved
+# (it happened 2023-01) — re-corroborate before re-pinning.
+export ZSTD_SHA256="9c4396cc829cfae319a6e2615202e82aad41372073482fce286fac78646d3ee4"
+export FREETYPE_SHA256="12991c4e55c506dd7f9b765933e62fd2be2e06d421505d7950a132e4f1bb484d"
+export HARFBUZZ_SHA256="109501eaeb8bde3eadb25fab4164e993fbace29c3d775bcaa1c1e58e2f15f847"
+export CAIRO_SHA256="243a0736b978a33dee29f9cca7521733b78a65b5418206fef7bd1c3d4cf10b64"
+export PIXMAN_SHA256="ea1480efada2fd948bc75366f7c349e1c96d3297d09a3fe62626e38e234a625e"
+export OCC_SHA256="096cd0f268fa9f6a50818e1d628ac92ecf87e10fd72187e2e8d6be57dfe12530"
+export RAPIDJSON_SHA256="2d2601a82d2d3b7e143a3c8d43ef616671391034bc46891a9816b79cf2d3e7a8"
+export NGSPICE_SHA256="a0d1699af1940b06649276dcd6ff5a566c8c0cad01b2f7b5e99dedbb4d64c19b"
+export GLM_SHA256="37e2a3d62ea3322e43593c34bae29f57e3e251ea89f4067506c94043769ade4c"
+export BOOST_SHA256="a5800f405508f5df8114558ca9855d2640a2de8f0445f051fa1c7c3383045724"
+export CURL_SHA256="05fc17ff25b793a437a0906e0484b82172a9f4de02be5ed447e0cab8c3475add"
+export LIBGIT2_SHA256="17d2b292f21be3892b704dddff29327b3564f96099a1c53b00edc23160c71327"
+export PROTOBUF_SHA256="4eab9b524aa5913c6fffb20b2a8abf5ef7f95a80bc0701f3a6dbb4c607f73460"

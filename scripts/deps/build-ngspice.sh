@@ -66,7 +66,7 @@ if [ ! -d "${NGSPICE_DIR}" ]; then
     mkdir -p "${DEPS_ROOT}"
     cd "${DEPS_ROOT}"
 
-    download_file "${NGSPICE_URL}" "ngspice-${NGSPICE_VERSION}.tar.gz"
+    download_file "${NGSPICE_URL}" "ngspice-${NGSPICE_VERSION}.tar.gz" "${NGSPICE_SHA256}"
     tar -xzf "ngspice-${NGSPICE_VERSION}.tar.gz"
     rm "ngspice-${NGSPICE_VERSION}.tar.gz"
 fi

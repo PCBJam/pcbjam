@@ -42,7 +42,7 @@ if [ ! -d "${PIXMAN_DIR}" ]; then
     cd "${DEPS_ROOT}"
 
     PIXMAN_URL="https://cairographics.org/releases/pixman-${PIXMAN_VERSION}.tar.gz"
-    download_file "${PIXMAN_URL}" "pixman-${PIXMAN_VERSION}.tar.gz"
+    download_file "${PIXMAN_URL}" "pixman-${PIXMAN_VERSION}.tar.gz" "${PIXMAN_SHA256}"
     tar -xzf "pixman-${PIXMAN_VERSION}.tar.gz"
     rm "pixman-${PIXMAN_VERSION}.tar.gz"
 fi

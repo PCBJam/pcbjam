@@ -140,6 +140,12 @@ jobs:
             !output/*.wasm.debug.wasm
           key: ${{ steps.keys.outputs.key }}
 
+      # X-1: every dep tarball fetch must carry a SHA256 pin and download_file
+      # must enforce it. Seconds, no docker, offline — runs even on cache hits
+      # so a regression is caught before it can poison the deps cache.
+      - name: Check dependency tarball pins
+        run: scripts/deps/check-pins.sh
+
       # deps (sysroot + stamps) are only needed when we must COMPILE (cache miss).
       - name: Restore deps cache
         id: deps-cache

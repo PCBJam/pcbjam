@@ -43,7 +43,7 @@ if [ ! -d "${LIBGIT2_DIR}" ]; then
     cd "${DEPS_ROOT}"
 
     LIBGIT2_URL="https://github.com/libgit2/libgit2/archive/refs/tags/v${LIBGIT2_VERSION}.tar.gz"
-    download_file "${LIBGIT2_URL}" "libgit2-${LIBGIT2_VERSION}.tar.gz"
+    download_file "${LIBGIT2_URL}" "libgit2-${LIBGIT2_VERSION}.tar.gz" "${LIBGIT2_SHA256}"
     tar -xzf "libgit2-${LIBGIT2_VERSION}.tar.gz"
     rm "libgit2-${LIBGIT2_VERSION}.tar.gz"
 fi

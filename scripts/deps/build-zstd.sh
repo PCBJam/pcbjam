@@ -42,7 +42,7 @@ if [ ! -d "${ZSTD_DIR}" ]; then
     cd "${DEPS_ROOT}"
 
     ZSTD_URL="https://github.com/facebook/zstd/releases/download/v${ZSTD_VERSION}/zstd-${ZSTD_VERSION}.tar.gz"
-    download_file "${ZSTD_URL}" "zstd-${ZSTD_VERSION}.tar.gz"
+    download_file "${ZSTD_URL}" "zstd-${ZSTD_VERSION}.tar.gz" "${ZSTD_SHA256}"
     tar -xzf "zstd-${ZSTD_VERSION}.tar.gz"
     rm "zstd-${ZSTD_VERSION}.tar.gz"
 fi

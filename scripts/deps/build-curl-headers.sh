@@ -45,7 +45,7 @@ if [ ! -d "${CURL_DIR}" ]; then
 
     # Download from curl official releases
     CURL_URL="https://curl.se/download/curl-${CURL_VERSION}.tar.gz"
-    download_file "${CURL_URL}" "curl-${CURL_VERSION}.tar.gz"
+    download_file "${CURL_URL}" "curl-${CURL_VERSION}.tar.gz" "${CURL_SHA256}"
     tar -xzf "curl-${CURL_VERSION}.tar.gz"
     rm "curl-${CURL_VERSION}.tar.gz"
 fi

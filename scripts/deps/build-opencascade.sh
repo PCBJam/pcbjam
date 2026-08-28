@@ -43,7 +43,7 @@ if [ ! -d "${OCC_DIR}" ]; then
 
     # OpenCASCADE releases are on GitHub
     OCC_URL="https://github.com/Open-Cascade-SAS/OCCT/archive/refs/tags/V${OCC_VERSION//./_}.tar.gz"
-    download_file "${OCC_URL}" "opencascade-${OCC_VERSION}.tar.gz"
+    download_file "${OCC_URL}" "opencascade-${OCC_VERSION}.tar.gz" "${OCC_SHA256}"
     tar -xzf "opencascade-${OCC_VERSION}.tar.gz"
     # Directory name in tarball is OCCT-7_8_0 (without V prefix)
     mv "OCCT-${OCC_VERSION//./_}" "opencascade-${OCC_VERSION}"
@@ -60,7 +60,7 @@ if [ ! -d "${RAPIDJSON_DIR}" ]; then
     log_info "Downloading RapidJSON ${RAPIDJSON_VERSION} (master snapshot ${RAPIDJSON_COMMIT:0:12})..."
     mkdir -p "${DEPS_ROOT}"
     cd "${DEPS_ROOT}"
-    download_file "${RAPIDJSON_URL}" "rapidjson-${RAPIDJSON_VERSION}.tar.gz"
+    download_file "${RAPIDJSON_URL}" "rapidjson-${RAPIDJSON_VERSION}.tar.gz" "${RAPIDJSON_SHA256}"
     tar -xzf "rapidjson-${RAPIDJSON_VERSION}.tar.gz"
     mv "rapidjson-${RAPIDJSON_COMMIT}" "rapidjson-${RAPIDJSON_VERSION}"
     rm "rapidjson-${RAPIDJSON_VERSION}.tar.gz"
