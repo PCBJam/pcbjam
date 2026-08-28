@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures';
-import { compareToReference, hideCursor, PCBNEW_REFERENCE, PCBNEW_HEADER_REGION } from './utils/screenshot-compare';
+import { compareToReference, hideCursor, pcbnewReferenceFor, PCBNEW_HEADER_REGION } from './utils/screenshot-compare';
 import { waitForEditorReady, shotPath } from '../e2e/utils/element-tracker';
 
 /**
@@ -27,7 +27,7 @@ test.use({
 });
 
 test.describe('PCBnew dark-mode browser', () => {
-    test('toolbar icons render the light theme under a dark-mode browser', async ({ page }) => {
+    test('toolbar icons render the light theme under a dark-mode browser', async ({ page, browserName }) => {
         await page.goto('/kicad/pcbnew.html');
 
         // Sanity-check the browser really reports dark mode to the app.
@@ -43,7 +43,7 @@ test.describe('PCBnew dark-mode browser', () => {
             scale: 'css'
         });
 
-        const reference = await compareToReference(page, cssScreenshot, PCBNEW_REFERENCE, PCBNEW_HEADER_REGION);
+        const reference = await compareToReference(page, cssScreenshot, pcbnewReferenceFor(browserName), PCBNEW_HEADER_REGION);
 
         expect(reference.actualWidth).toBe(reference.referenceWidth);
         expect(reference.actualHeight).toBe(reference.referenceHeight);

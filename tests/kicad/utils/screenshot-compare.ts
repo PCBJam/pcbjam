@@ -38,6 +38,18 @@ export type ReferenceComparison = {
  * spec with ENOENT once — see the baselines-to-R2 migration).
  */
 export const PCBNEW_REFERENCE = path.resolve(__dirname, '../../wizard-04-finish-headless.png');
+/**
+ * Firefox rasterizes the toolbar text/icon edges differently enough from
+ * Chromium that the Chromium reference reads ~0.23 header diff on the CI
+ * firefox leg (2026-08-28, pure AA — the firefox dark and light renders were
+ * pixel-identical), so each engine diffs against its own light-mode render.
+ * Both files are spec-owned and committed, like PCBNEW_REFERENCE.
+ */
+export const PCBNEW_REFERENCE_FIREFOX = path.resolve(__dirname, '../../wizard-04-finish-headless-firefox.png');
+
+export function pcbnewReferenceFor(browserName: string): string {
+    return browserName === 'firefox' ? PCBNEW_REFERENCE_FIREFOX : PCBNEW_REFERENCE;
+}
 export const PCBNEW_HEADER_REGION: ReferenceRegion = {
     // maxDiffRatio counts every pixel differing by >16 in any channel, so it is dominated
     // by sub-pixel/anti-aliasing differences along text and icon edges. Those vary with the
