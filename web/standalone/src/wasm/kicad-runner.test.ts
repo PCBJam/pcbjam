@@ -112,18 +112,18 @@ describe("MEMFS project staging", () => {
     expect(seen.at(-1)?.[1]).toBe(files.length);
   });
 
-  it("rejects when a fetch fails", async () => {
+  it("rejects when the TARGET's fetch fails (siblings: see kicad-runner.findings-q.test)", async () => {
     const { win } = fakeWin();
-    const files = ["ok1.kicad_sym", "bad.kicad_sym", "ok2.kicad_sym"];
+    const files = ["ok1.kicad_sym", "bad.kicad_pcb", "ok2.kicad_sym"];
 
     await expect(
-      driveProjectIntoTool(
-        win,
-        opts(files, async (p) => {
-          if (p === "bad.kicad_sym") throw new Error("fetch exploded");
+      driveProjectIntoTool(win, {
+        ...opts(files, async (p) => {
+          if (p === "bad.kicad_pcb") throw new Error("fetch exploded");
           return new Uint8Array([1]);
         }),
-      ),
+        targetPath: "bad.kicad_pcb",
+      }),
     ).rejects.toThrow("fetch exploded");
   });
 });

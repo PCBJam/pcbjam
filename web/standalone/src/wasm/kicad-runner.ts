@@ -191,20 +191,41 @@ async function syncProjectToMemfs(win: ToolWindow, opts: DriveOptions): Promise<
     : Promise.resolve(opts.files));
 
   const queue = [...perFile];
+  const skipped: string[] = [];
   const worker = async (): Promise<void> => {
     for (let file = queue.shift(); file; file = queue.shift()) {
-      const bytes = await opts.fetchBytes(file.path);
+      let bytes: Uint8Array;
+      try {
+        bytes = await opts.fetchBytes(file.path);
+      } catch (err) {
+        // Findings Q-2: only the TARGET is load-bearing — without its bytes
+        // there is nothing to open, so that failure still rejects below. A
+        // sibling that cannot be fetched (a schematic whose body is gone, a
+        // stale listing row, a transient 5xx) must NOT abort the open of an
+        // unrelated board: log it, count it, and let KiCad report the missing
+        // sheet through its own dialog if it ever needs it.
+        if (file.path === opts.targetPath) throw err;
+        skipped.push(file.path);
+        opts.log(`[stage] skipped ${file.path}: ${String(err)}`);
+        opts.onFileProgress?.(++staged, opts.files.length);
+        continue;
+      }
       stageOne(file.path, bytes);
     }
   };
-  // One rejection fails the stage (same as the serial loop did), but let the
-  // in-flight siblings settle first so a failure can't leave a fetch writing
-  // into MEMFS after the caller has moved on.
+  // A target rejection fails the stage, but let the in-flight siblings settle
+  // first so a failure can't leave a fetch writing into MEMFS after the caller
+  // has moved on.
   const results = await Promise.allSettled(
     Array.from({ length: Math.min(STAGE_CONCURRENCY, queue.length) }, worker),
   );
   const failed = results.find((r) => r.status === "rejected");
   if (failed) throw (failed as PromiseRejectedResult).reason;
+  if (skipped.length) {
+    opts.onStatus(
+      `${skipped.length} project file(s) could not be loaded: ${skipped.join(", ")}`,
+    );
+  }
 }
 
 /**
