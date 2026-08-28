@@ -13,15 +13,20 @@ import { test, expect, type Page } from '@playwright/test';
  * lost with it — silently: the throw lands in the C++ caller and surfaces only as
  * a bare pageerror.
  *
- * The unresolvable entry is real, and is not fabricated here. The emit side
- * serializes a non-footprint item as `Format(item)` wrapped in a
- * `(kicad_pcb … (layers …) <item>)` envelope, and KiCad's board writer emits
- * NOTHING for a footprint field — `case PCB_FIELD_T: break;`
- * (pcb_io_kicad_sexpr.cpp:411), correctly, because a field is written by its
- * footprint's own writer and is never standalone board content. The result is an
- * envelope with no item in it. This test reads that blob from the real serializer
- * through `kicadCollabTestItemBlob` — the same function `blobForItem` calls — and
- * asserts its shape before using it.
+ * The unresolvable entry was real. The emit side serializes a non-footprint
+ * item as `Format(item)` wrapped in a `(kicad_pcb … (layers …) <item>)`
+ * envelope, and KiCad's board writer emits NOTHING for a footprint field —
+ * `case PCB_FIELD_T: break;` (pcb_io_kicad_sexpr.cpp:411), correctly, because a
+ * field is written by its footprint's own writer and is never standalone board
+ * content. The result was an envelope with no item in it.
+ *
+ * Findings P-5 closed the emit side: `blobForItem` now refuses to blob a field
+ * on its own (returns "") and `liftBlob` skips empty blobs, so the editor no
+ * longer produces the hollow envelope. That contract is asserted below through
+ * `kicadCollabTestItemBlob` (the same function `blobForItem` backs). The
+ * receive-side guard is independent of it — any sender, any version, any
+ * transient — so the poisoned entry is now built here in the exact shape the
+ * writer used to emit: a board envelope with a layer table and no item.
  *
  * Seen in the field: "Update PCB from Schematic" produced a 67-entry `changed`
  * batch in which one entry was that empty envelope. All 67 were dropped, so two
@@ -135,7 +140,7 @@ test('a single un-unwrappable entry must not discard the rest of the batch', asy
   await bootBoard(bob, 'bob');
 
   // ── the payloads, all straight out of the editor ──────────────────────────
-  // Two footprints; the second one's field supplies the poisoned entry.
+  // Two footprints; the second one's field pins the P-5 emit contract.
   const picked = await alice.evaluate(() => {
     const M = (window as unknown as W).Module;
     const snap = JSON.parse(M.kicadCollabSnapshotItems()) as { added: WireItem[] };
@@ -150,17 +155,33 @@ test('a single un-unwrappable entry must not discard the rest of the batch', asy
     const fp1 = fps[0];
     const fp2 = fps.find((f, i) => i > 0 && !!f.field);
     if (!fp1 || !fp2) return null;
-    return { fp1, fp2, fieldBlob: M.kicadCollabTestItemBlob(fp2.field!) };
+    return {
+      fp1,
+      fp2,
+      fieldBlob: M.kicadCollabTestItemBlob(fp2.field!),
+      fpBlob: M.kicadCollabTestItemBlob(fp1.uuid),
+    };
   });
   expect(picked, 'demo board should have two footprints, the second with a field').toBeTruthy();
-  const { fp1, fp2, fieldBlob } = picked!;
+  const { fp1, fp2, fieldBlob, fpBlob } = picked!;
 
-  // The emit-side serializer, asked for a field on its own, yields an envelope
-  // with no item in it. This is the entry `unwrapWireItem` cannot resolve.
-  expect(fieldBlob, 'field blob is not empty text').toBeTruthy();
-  expect(fieldBlob, 'field blob is a board envelope').toContain('(kicad_pcb');
-  expect(fieldBlob, 'field blob carries the layer table').toContain('(layers');
-  expect(fieldBlob, 'field blob contains NO item — this is the defect').not.toContain('(uuid');
+  // P-5 contract (emit side): a field asked for on its own is NOT blobbed — the
+  // serializer yields empty text, never the hollow envelope. A footprint asked
+  // for the same way still serializes (bare, CTL_FOR_BOARD) with its uuid.
+  expect(fieldBlob, 'P-5: a standalone field blob is empty text').toBe('');
+  expect(fpBlob, 'footprint blob is the footprint form').toMatch(/^\s*\(footprint\b/);
+  expect(fpBlob, 'footprint blob carries the item').toContain(`(uuid "${fp1.uuid}")`);
+
+  // The poisoned entry, in the exact shape the writer used to emit for a field:
+  // a board envelope with a layer table and no uuid-bearing item in it. This is
+  // the entry `unwrapWireItem` cannot resolve (0 candidates).
+  const hollowBlob =
+    '(kicad_pcb (version 20240108) (generator "pcbnew") (generator_version "9.0")\n' +
+    '  (general (thickness 1.6) (legacy_teardrops no))\n' +
+    '  (paper "A4")\n' +
+    '  (layers (0 "F.Cu" signal) (31 "B.Cu" signal) (44 "Edge.Cuts" user))\n' +
+    ')';
+  expect(hollowBlob, 'hollow blob contains NO item — the defect shape').not.toContain('(uuid');
 
   const fp2Before = await positionOf(bob, fp2.uuid);
   expect(fp2Before, 'bob should already hold fp2').not.toBe('(absent)');
@@ -181,7 +202,7 @@ test('a single un-unwrappable entry must not discard the rest of the batch', asy
     .not.toBe(fp1Before);
   const fp1AfterControl = await positionOf(bob, fp1.uuid);
 
-  // ── 2. the defect: a good entry batched with the field entry ──────────────
+  // ── 2. the defect: a good entry batched with the hollow entry ─────────────
   // Deliberately NOT asserted on: today this returns the `unwrapWireItem: …
   // found 0` throw, and once the conversion skips an entry it cannot convert it
   // will return 'no throw'. Requiring either would pin the test to one side of
@@ -189,7 +210,7 @@ test('a single un-unwrappable entry must not discard the rest of the batch', asy
   // this batch must reach the peer — so the outcome is recorded, not enforced.
   const reproEmit = await emit(alice, [
     { sexpr: moveTo(fp2.sexpr, bumped(fp2.sexpr, 3.3, 4.4)), parent: null },
-    { sexpr: fieldBlob, parent: null },
+    { sexpr: hollowBlob, parent: null },
   ]);
   test.info().annotations.push({ type: 'repro emit', description: reproEmit });
 

@@ -381,7 +381,12 @@ void emitSheetChanged()
     std::string s = toUtf8( screen->GetFileName() );
     EM_ASM( {
         if( window.kicadCollab && window.kicadCollab.onSheetChanged )
-            window.kicadCollab.onSheetChanged( UTF8ToString( $0 ) );
+        {
+            // A throwing listener must never unwind the wasm frame that called it: under
+            // JSPI that rejects the running coroutine's entry (findings P-1).
+            try { window.kicadCollab.onSheetChanged( UTF8ToString( $0 ) ); }
+            catch( e ) { console.error( '[pcbjam collab] onSheetChanged listener threw', e ); }
+        }
     }, s.c_str() );
 }
 
@@ -637,7 +642,12 @@ void scheduleSheetSave( SCH_SHEET* aSheet )
 
         EM_ASM( {
             if( window.kicadCollab && window.kicadCollab.onSheetCreated )
-                window.kicadCollab.onSheetCreated( UTF8ToString( $0 ) );
+            {
+                // A throwing listener must never unwind the wasm frame that called it: under
+                // JSPI that rejects the running coroutine's entry (findings P-1).
+                try { window.kicadCollab.onSheetCreated( UTF8ToString( $0 ) ); }
+                catch( e ) { console.error( '[pcbjam collab] onSheetCreated listener threw', e ); }
+            }
         }, childAbs.c_str() );
     } );
 }
@@ -1876,7 +1886,12 @@ extern "C" void kicadCollabOnSave( const char* aPath )
 {
     EM_ASM( {
         if( window.kicadCollab && window.kicadCollab.onSave )
-            window.kicadCollab.onSave( UTF8ToString( $0 ) );
+        {
+            // A throwing listener must never unwind the wasm frame that called it: under
+            // JSPI that rejects the running coroutine's entry (findings P-1).
+            try { window.kicadCollab.onSave( UTF8ToString( $0 ) ); }
+            catch( e ) { console.error( '[pcbjam collab] onSave listener threw', e ); }
+        }
     }, aPath );
 }
 #endif // !KICAD_MERGED_EMBIND

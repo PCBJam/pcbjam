@@ -353,7 +353,12 @@ extern "C" void kicadCollabOnSave( const char* aPath )
 {
     EM_ASM( {
         if( window.kicadCollab && window.kicadCollab.onSave )
-            window.kicadCollab.onSave( UTF8ToString( $0 ) );
+        {
+            // A throwing listener must never unwind the wasm frame that called it: under
+            // JSPI that rejects the running coroutine's entry (findings P-1).
+            try { window.kicadCollab.onSave( UTF8ToString( $0 ) ); }
+            catch( e ) { console.error( '[pcbjam collab] onSave listener threw', e ); }
+        }
     }, aPath );
 }
 

@@ -79,16 +79,24 @@ test('P-1 standalone: fit lands after a keyboard rotate of a clicked footprint',
   await bootBoard(page, 'alice');
   const fp = await firstFootprint(page);
   expect(await fitLands(page, { cx: fp.x, cy: fp.y, hw: 15e6, hh: 10e6 }), 'fit before edit').toBe(true);
-  const box = await glBox(page);
-  const vp = await viewport(page);
-  const sx = box.x + (fp.x - vp.cx) * vp.scale + vp.w / 2;
-  const sy = box.y + (fp.y - vp.cy) * vp.scale + vp.h / 2;
-  await page.mouse.move(sx, sy);
-  await page.waitForTimeout(300); // eslint-disable-line -- pointer dwell
-  await page.mouse.down();
-  await page.mouse.up();
-  await page.waitForTimeout(400); // eslint-disable-line -- selection dwell
-  const sel = await page.evaluate(() => JSON.parse((window as unknown as W).Module.kicadCollabGetSelection()));
+  // Click-select, re-projected from the LIVE viewport each attempt: on CI the
+  // first click after the fit can land before the canvas has re-rendered at
+  // the new zoom (selection = []), so poll the real selection, not one click.
+  const selection = (): Promise<string[]> =>
+    page.evaluate(() => JSON.parse((window as unknown as W).Module.kicadCollabGetSelection()));
+  await expect.poll(async () => {
+    const box = await glBox(page);
+    const vp = await viewport(page);
+    const sx = box.x + (fp.x - vp.cx) * vp.scale + vp.w / 2;
+    const sy = box.y + (fp.y - vp.cy) * vp.scale + vp.h / 2;
+    await page.mouse.move(sx, sy);
+    await page.waitForTimeout(300); // eslint-disable-line -- documented interaction dwell (pointer hover before press)
+    await page.mouse.down();
+    await page.mouse.up();
+    await page.waitForTimeout(400); // eslint-disable-line -- documented interaction dwell (selection tool commit)
+    return (await selection()).includes(fp.id);
+  }, { timeout: 20000, intervals: [500], message: 'click-select of the first footprint' }).toBe(true);
+  const sel = await selection();
   const r0 = await rotation(page, fp.id);
   await page.keyboard.press('r');
   const rotated = await expect.poll(() => rotation(page, fp.id), { timeout: 10000 }).not.toBe(r0).then(() => true, () => false);

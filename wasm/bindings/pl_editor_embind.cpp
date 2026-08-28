@@ -227,7 +227,12 @@ void emit( const json& aDelta )
     std::string s = aDelta.dump();
     EM_ASM( {
         if( window.kicadCollab && window.kicadCollab.onDelta )
-            window.kicadCollab.onDelta( UTF8ToString( $0 ) );
+        {
+            // A throwing listener must never unwind the wasm frame that called it: under
+            // JSPI that rejects the running coroutine's entry (findings P-1).
+            try { window.kicadCollab.onDelta( UTF8ToString( $0 ) ); }
+            catch( e ) { console.error( '[pcbjam collab] onDelta listener threw', e ); }
+        }
     }, s.c_str() );
 }
 
@@ -239,7 +244,12 @@ void emitItems( const json& aWire )
     std::string s = aWire.dump();
     EM_ASM( {
         if( window.kicadCollab && window.kicadCollab.onItems )
-            window.kicadCollab.onItems( UTF8ToString( $0 ) );
+        {
+            // A throwing listener must never unwind the wasm frame that called it: under
+            // JSPI that rejects the running coroutine's entry (findings P-1).
+            try { window.kicadCollab.onItems( UTF8ToString( $0 ) ); }
+            catch( e ) { console.error( '[pcbjam collab] onItems listener threw', e ); }
+        }
     }, s.c_str() );
 }
 
@@ -455,7 +465,12 @@ extern "C" void kicadCollabOnSave( const char* aPath )
 {
     EM_ASM( {
         if( window.kicadCollab && window.kicadCollab.onSave )
-            window.kicadCollab.onSave( UTF8ToString( $0 ) );
+        {
+            // A throwing listener must never unwind the wasm frame that called it: under
+            // JSPI that rejects the running coroutine's entry (findings P-1).
+            try { window.kicadCollab.onSave( UTF8ToString( $0 ) ); }
+            catch( e ) { console.error( '[pcbjam collab] onSave listener threw', e ); }
+        }
     }, aPath );
 }
 

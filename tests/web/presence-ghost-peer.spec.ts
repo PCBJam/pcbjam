@@ -89,6 +89,13 @@ for (const mode of ['half-open', 'unclean-close'] as const) {
     const ctxA = await browser.newContext();
     const ctxB = await browser.newContext();
     const alice = await bootAs(ctxA, 'alice');
+    // Gate BEFORE the roster assertion: on the BroadcastChannel provider (CI's
+    // standalone preview has no apps/sync) two browser CONTEXTS never see each
+    // other, so bob would wait 30s for an alice that cannot arrive.
+    const liveWs = await alice.evaluate(
+      () => (window as unknown as { __wsList: Array<{ ws: WebSocket; url: string }> }).__wsList.filter((w) => w.ws.readyState === 1 && /\/parties\//.test(w.url)).length,
+    );
+    test.skip(liveWs === 0, 'no live websocket on alice — BC stack (no apps/sync), nothing to lose');
     const bob = await bootAs(ctxB, 'bob');
     await openOverlayMenu(bob);
     await expect(bob.locator('[data-presence-user="alice"]')).toBeVisible({ timeout: 30000 });

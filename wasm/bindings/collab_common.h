@@ -107,9 +107,18 @@ inline void drainApplies()
     if( applyBusy() )
     {
         if( !slot.done )
-            return;         // suspended body still in flight — its tail re-drains
+        {
+            if( slot.cor && slot.cor->CanResume() )
+                return;     // suspended body still in flight — its tail re-drains
 
-        reapApply();        // completed since the last drain
+            // P-1: the body's activation died without finishing (its promising entry
+            // REJECTED — a JS exception out of a wire callback, or a trap — and libcontext
+            // flagged the record dead). Its tail never runs, so nothing else would ever
+            // reap it: release the slot here and keep draining.
+            EM_ASM( { console.error( '[pcbjam collab] apply body died mid-flight — slot released' ); } );
+        }
+
+        reapApply();        // completed (or died) since the last drain
     }
 
     auto& q = applyQueue();
@@ -126,11 +135,13 @@ inline void drainApplies()
             ApplySlot& sl = activeApplySlot();
 
             // P-1 hardening (findings group P): `done` is the ONLY completion signal, so a
-            // body that unwinds — a C++ exception, or a foreign (JS) exception thrown out of
-            // an EM_ASM wire callback inside flushDiff and surfacing here as `...` under
-            // wasm EH — would leave applyBusy() true for the page's life and silently
-            // queue every later job behind it: fit/pan from JS, remote applies AND the
-            // local-edit flushDiff (local edits stop syncing). Always mark the slot done.
+            // body that unwinds on a C++ exception would leave applyBusy() true for the
+            // page's life and silently queue every later job behind it: fit/pan from JS,
+            // remote applies AND the local-edit flushDiff (local edits stop syncing).
+            // Always mark the slot done. NOTE: a JS exception thrown out of an EM_ASM wire
+            // callback does NOT surface here — under JSPI it rejects the promising entry
+            // and this frame is simply abandoned; that case is covered by the wire
+            // emitters' own try/catch plus the dead-body reap in drainApplies().
             try
             {
                 ( *sl.body )();
@@ -154,7 +165,12 @@ inline void drainApplies()
         slot.cor->Call( 0 );
 
         if( !slot.done )
-            return;         // suspended — cor/body stay pinned for the resume
+        {
+            if( slot.cor->CanResume() )
+                return;     // suspended — cor/body stay pinned for the resume
+
+            EM_ASM( { console.error( '[pcbjam collab] apply body died at entry — slot released' ); } );
+        }
 
         reapApply();
     }
@@ -183,7 +199,12 @@ inline void emitDelta( const nlohmann::json& aDelta )
     std::string s = aDelta.dump();
     EM_ASM( {
         if( window.kicadCollab && window.kicadCollab.onDelta )
-            window.kicadCollab.onDelta( UTF8ToString( $0 ) );
+        {
+            // A throwing listener must never unwind the wasm frame that called it: under
+            // JSPI that rejects the running coroutine's entry (findings P-1).
+            try { window.kicadCollab.onDelta( UTF8ToString( $0 ) ); }
+            catch( e ) { console.error( '[pcbjam collab] onDelta listener threw', e ); }
+        }
     }, s.c_str() );
 }
 
@@ -193,7 +214,12 @@ inline void emitItemsWire( const nlohmann::json& aWire )
     std::string s = aWire.dump();
     EM_ASM( {
         if( window.kicadCollab && window.kicadCollab.onItems )
-            window.kicadCollab.onItems( UTF8ToString( $0 ) );
+        {
+            // A throwing listener must never unwind the wasm frame that called it: under
+            // JSPI that rejects the running coroutine's entry (findings P-1).
+            try { window.kicadCollab.onItems( UTF8ToString( $0 ) ); }
+            catch( e ) { console.error( '[pcbjam collab] onItems listener threw', e ); }
+        }
     }, s.c_str() );
 }
 
@@ -202,7 +228,12 @@ inline void emitCursor( double aX, double aY, bool aActive )
 {
     EM_ASM( {
         if( window.kicadCollab && window.kicadCollab.onCursor )
-            window.kicadCollab.onCursor( $0, $1, $2 );
+        {
+            // A throwing listener must never unwind the wasm frame that called it: under
+            // JSPI that rejects the running coroutine's entry (findings P-1).
+            try { window.kicadCollab.onCursor( $0, $1, $2 ); }
+            catch( e ) { console.error( '[pcbjam collab] onCursor listener threw', e ); }
+        }
     }, aX, aY, aActive ? 1 : 0 );
 }
 
@@ -211,7 +242,12 @@ inline void emitSelection( const std::string& aJson )
 {
     EM_ASM( {
         if( window.kicadCollab && window.kicadCollab.onSelection )
-            window.kicadCollab.onSelection( UTF8ToString( $0 ) );
+        {
+            // A throwing listener must never unwind the wasm frame that called it: under
+            // JSPI that rejects the running coroutine's entry (findings P-1).
+            try { window.kicadCollab.onSelection( UTF8ToString( $0 ) ); }
+            catch( e ) { console.error( '[pcbjam collab] onSelection listener threw', e ); }
+        }
     }, aJson.c_str() );
 }
 
@@ -220,7 +256,12 @@ inline void emitViewport( double aCx, double aCy, double aPxPerIu, int aW, int a
 {
     EM_ASM( {
         if( window.kicadCollab && window.kicadCollab.onViewport )
-            window.kicadCollab.onViewport( $0, $1, $2, $3, $4 );
+        {
+            // A throwing listener must never unwind the wasm frame that called it: under
+            // JSPI that rejects the running coroutine's entry (findings P-1).
+            try { window.kicadCollab.onViewport( $0, $1, $2, $3, $4 ); }
+            catch( e ) { console.error( '[pcbjam collab] onViewport listener threw', e ); }
+        }
     }, aCx, aCy, aPxPerIu, aW, aH );
 }
 
