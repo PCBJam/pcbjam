@@ -997,6 +997,10 @@ export function WasmTool({
           // frame token tells its single_top launcher which editor frame to open.
           frame: TOOL_FRAME[tool],
           mobile: mobileUi,
+          // Viewers can't write: skip the boot-time default-lib create (a
+          // session-gated POST that 401s anonymously and used to blank the
+          // lib tables — anonymous public-schematic open on staging).
+          readOnly,
         });
         // Identity must be settled before the doc session / presence binds
         // below — effectively instant, it raced the multi-second wasm boot.

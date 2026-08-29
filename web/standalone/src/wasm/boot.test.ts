@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  ensureWritableLib,
   hasWritableLib,
   installPthreadWorkerRedirect,
   pthreadWorkerScript,
@@ -25,6 +26,57 @@ describe("hasWritableLib", () => {
   it("false on empty lists", () => {
     expect(hasWritableLib([[], []])).toBe(false);
     expect(hasWritableLib([])).toBe(false);
+  });
+});
+
+/**
+ * Boot-time default-lib create. Regression: an anonymous viewer of a public
+ * project has no writable lib, so boot POSTed createLib, the session gate
+ * 401'd, and the throw escaped the caller's try — seeding EMPTY lib tables.
+ */
+describe("ensureWritableLib", () => {
+  const log = () => {};
+
+  it("skips the create entirely for read-only sessions", async () => {
+    const createLib = vi.fn(async () => lib("org"));
+    const lists = [[lib("origin")]];
+    expect(await ensureWritableLib({ createLib }, lists, { readOnly: true, log })).toBeNull();
+    expect(createLib).not.toHaveBeenCalled();
+    expect(lists[0]).toHaveLength(1);
+  });
+
+  it("creates once and joins every per-kind list when nothing writable is listed", async () => {
+    const created = lib("org");
+    const createLib = vi.fn(async () => created);
+    const sym = [lib("origin")];
+    const fp = [lib("mirror")];
+    expect(await ensureWritableLib({ createLib }, [sym, fp], { log })).toBe(created);
+    expect(createLib).toHaveBeenCalledWith("My Symbols");
+    expect(sym).toContain(created);
+    expect(fp).toContain(created);
+  });
+
+  it("does nothing when a writable lib already exists", async () => {
+    const createLib = vi.fn(async () => lib("org"));
+    await ensureWritableLib({ createLib }, [[lib("user")]], { log });
+    expect(createLib).not.toHaveBeenCalled();
+  });
+
+  it("swallows a rejected create (401) and leaves the listed libs intact", async () => {
+    const createLib = vi.fn(async () => {
+      throw new Error("401");
+    });
+    const logs: string[] = [];
+    const sym = [lib("origin"), lib("mirror")];
+    await expect(
+      ensureWritableLib({ createLib }, [sym], { log: (m) => logs.push(m) }),
+    ).resolves.toBeNull();
+    expect(sym).toHaveLength(2);
+    expect(logs.some((m) => /non-fatal/.test(m))).toBe(true);
+  });
+
+  it("is a no-op for sources without createLib", async () => {
+    expect(await ensureWritableLib({}, [[lib("origin")]], { log })).toBeNull();
   });
 });
 

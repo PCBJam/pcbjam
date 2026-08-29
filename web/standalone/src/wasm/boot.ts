@@ -42,6 +42,38 @@ export function hasWritableLib(lists: Iterable<LibInfo[]>): boolean {
 }
 
 /**
+ * Ensure the owner has at least one writable lib to save items into, creating
+ * the default one when none is listed. A writable lib holds either kind, so a
+ * created lib joins every per-kind list (mutated in place).
+ *
+ * Skipped outright for read-only sessions (anonymous viewer of a public
+ * project, read-only-viewer): they cannot write, so there is nothing to save
+ * into — and the create is a session-gated POST that 401s for them. Best-effort
+ * either way: a failed create (401/403, backend without the route, a network
+ * blip) is logged and swallowed, NEVER propagated — an exception here used to
+ * escape the caller's listLibs try/catch and seed EMPTY lib tables for the
+ * whole session (observed on staging: anonymous open of a public schematic).
+ */
+export async function ensureWritableLib(
+  source: Pick<LibsSource, "createLib">,
+  listsByKind: Iterable<LibInfo[]>,
+  opts: { readOnly?: boolean; log: (msg: string) => void; name?: string },
+): Promise<LibInfo | null> {
+  const lists = [...listsByKind];
+  if (opts.readOnly || !source.createLib || hasWritableLib(lists)) return null;
+  try {
+    const created = await source.createLib(opts.name ?? DEFAULT_USER_LIB_NAME);
+    if (!created) return null;
+    for (const libs of lists) libs.push(created);
+    opts.log(`[libs] created default user lib "${created.name}"`);
+    return created;
+  } catch (e) {
+    opts.log(`[libs] default user lib create failed (non-fatal): ${String(e)}`);
+    return null;
+  }
+}
+
+/**
  * Boot a KiCad tool directly in the main React document — no iframe.
  *
  * This is a faithful port of the proven harness HTML (tests/apps/kicad/<tool>.html):
@@ -116,6 +148,9 @@ export interface BootOptions {
    *  only — chrome visibility is owned by the shell's chrome-visibility store
    *  (WasmTool applies it via kicadSetChrome). */
   mobile?: boolean;
+  /** Read-only session (anonymous/public viewer): never attempt writes at
+   *  boot — in particular no default-user-lib create (see ensureWritableLib). */
+  readOnly?: boolean;
 }
 
 let booted: { tool: Tool; promise: Promise<void> } | null = null;
@@ -363,6 +398,7 @@ async function doBoot(opts: BootOptions): Promise<void> {
     libsSource,
     modelsSource,
     enumerateGate,
+    readOnly,
   } = opts;
   // Truthful fetch label: a warm start (download-completion marker present)
   // reads from the HTTP cache, so "Downloading" would be a lie — and vice versa.
@@ -436,15 +472,9 @@ async function doBoot(opts: BootOptions): Promise<void> {
       // kind-agnostic containers and appear in every list).
       const listsByKind = new Map<"symbol" | "footprint", LibInfo[]>();
       for (const k of libKinds) listsByKind.set(k, await libsSource.listLibs(k));
-      // Ensure the owner has at least one writable lib to save items into.
-      // A writable lib holds either kind, so the created lib joins every table.
-      if (libsSource.createLib && !hasWritableLib(listsByKind.values())) {
-        const created = await libsSource.createLib(DEFAULT_USER_LIB_NAME);
-        if (created) {
-          for (const libs of listsByKind.values()) libs.push(created);
-          log(`[libs] created default user lib "${created.name}"`);
-        }
-      }
+      // Ensure the owner has at least one writable lib to save items into
+      // (skipped read-only; never throws — a failure must not empty the tables).
+      await ensureWritableLib(libsSource, listsByKind.values(), { readOnly, log });
       const symList = listsByKind.get("symbol");
       const fpList = listsByKind.get("footprint");
       if (symList) {
