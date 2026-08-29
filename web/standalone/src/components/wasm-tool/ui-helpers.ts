@@ -32,6 +32,7 @@ export function show3DOpener(win: Window): (() => boolean) | null {
 // Viewer panels (viewer-panels): floating layer selector + selection
 // inspector open-state persistence, mirroring the comments panel's keys.
 export const LAYERS_OPEN_KEY = "pcbjam:layers-panel-open";
+export const SHEETS_OPEN_KEY = "pcbjam:sheet-panel-open";
 export const INSPECTOR_OPEN_KEY = "pcbjam:inspector-panel-open";
 
 // Tooltip only — the matcher accepts both chords on any platform.

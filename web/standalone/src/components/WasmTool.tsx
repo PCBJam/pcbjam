@@ -83,6 +83,7 @@ import { CommentLayer } from "@/components/CommentLayer";
 import { hasTunerBridge, PresenceTuner, type TunerModule } from "@/components/PresenceTuner";
 import { hasLayersBridge, LayerPanel, type LayersModule } from "@/components/LayerPanel";
 import { SelectionInspector } from "@/components/SelectionInspector";
+import { hasSheetsBridge, SheetPanel, type SheetsModule } from "@/components/SheetPanel";
 import { bindLocalSelectionFeed } from "@/wasm/collab/local-selection";
 import {
   type SheetCollabManager,
@@ -127,6 +128,7 @@ import {
   INSPECTOR_OPEN_KEY,
   LAYERS_OPEN_KEY,
   LIB_KIND_FOR_TOOL,
+  SHEETS_OPEN_KEY,
 } from "@/components/wasm-tool/ui-helpers";
 
 /**
@@ -378,6 +380,27 @@ export function WasmTool({
     setInspectorOpenState(v);
     try {
       localStorage.setItem(INSPECTOR_OPEN_KEY, v ? "1" : "0");
+    } catch {
+      /* private mode */
+    }
+  }, []);
+  // Sheet navigator (sheet-panel): eeschema's stand-in for the wx hierarchy
+  // pane. Open by default like the other viewer panels, but only ever RENDERS
+  // when the hierarchy has sub-sheets (see sheetsMod) — a flat schematic
+  // shouldn't pay for an empty panel.
+  const [sheetsOpen, setSheetsOpenState] = React.useState<boolean>(() => {
+    try {
+      const stored = localStorage.getItem(SHEETS_OPEN_KEY);
+      if (stored !== null) return stored === "1";
+    } catch {
+      /* private mode */
+    }
+    return true;
+  });
+  const setSheetsOpen = React.useCallback((v: boolean) => {
+    setSheetsOpenState(v);
+    try {
+      localStorage.setItem(SHEETS_OPEN_KEY, v ? "1" : "0");
     } catch {
       /* private mode */
     }
@@ -1510,6 +1533,22 @@ export function WasmTool({
     return hasLayersBridge(mod) ? mod : null;
   }, [ready, tool]);
 
+  // Sheet bridge (sheet-panel), eeschema sessions only. Re-evaluated on every
+  // sheet switch (activeSheetPath) so a hierarchy that only gains sub-sheets
+  // later ("Add Sheet") surfaces the panel; hidden for a flat schematic.
+  const sheetsMod = React.useMemo<SheetsModule | null>(() => {
+    if (!ready || tool !== "eeschema") return null;
+    const mod = (window as { Module?: unknown }).Module;
+    if (!hasSheetsBridge(mod)) return null;
+    try {
+      const raw = mod.kicadSheetsGetTree() || "null";
+      const parsed = JSON.parse(raw) as { sheets?: unknown[] } | null;
+      return (parsed?.sheets?.length ?? 0) > 1 ? mod : null;
+    } catch {
+      return null;
+    }
+  }, [ready, tool, activeSheetPath]);
+
   // Apply the chrome-visibility state to the wasm frame. A LAYOUT effect with
   // a synchronous first attempt: `ready` unmounts the opaque boot overlay in
   // this same commit, and a passive effect would let one frame of full chrome
@@ -1629,6 +1668,9 @@ export function WasmTool({
           hasLayers={layersMod !== null}
           layersOpen={layersOpen}
           setLayersOpen={setLayersOpen}
+          hasSheets={sheetsMod !== null}
+          sheetsOpen={sheetsOpen}
+          setSheetsOpen={setSheetsOpen}
           inspectorOpen={inspectorOpen}
           setInspectorOpen={setInspectorOpen}
           canToggleChrome={setChromeFn !== null}
@@ -1663,6 +1705,13 @@ export function WasmTool({
           mod={layersMod}
           defaultCollapsed={readOnly}
           onClose={() => setLayersOpen(false)}
+        />
+      )}
+      {ready && effectiveChromeHidden && sheetsOpen && sheetsMod && (
+        <SheetPanel
+          mod={sheetsMod}
+          defaultCollapsed={readOnly}
+          onClose={() => setSheetsOpen(false)}
         />
       )}
       {ready &&

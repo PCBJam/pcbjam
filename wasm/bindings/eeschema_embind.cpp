@@ -57,6 +57,7 @@
 #include <sch_sheet_path.h>
 #include <schematic_settings.h>
 #include <tool/actions.h>
+#include <tools/sch_actions.h>
 #include <tool/coroutine.h>
 #include <pcbjam_remote_lock.h>
 #include "collab_common.h"
@@ -390,6 +391,68 @@ void emitSheetChanged()
     }, s.c_str() );
 }
 
+// ───────────────────────── sheet navigator bridge (sheet-panel) ─────────────────────────
+//
+// The React stand-in for the docked wx HIERARCHY_PANE that kicadSetChrome(false)
+// hides: kicadSheetsGetTree() returns the loaded hierarchy (every SCH_SHEET_PATH
+// instance — a sheet file placed twice is two rows, like the wx pane) plus the
+// current path; kicadSheetsEnter(path) navigates. Same shape as pcbnew's layer
+// bridge: validate synchronously, apply on the frame's coroutine, then push the
+// fresh state to window.kicadCollab.onSheetsState so the panel is event-driven.
+// Rows are page-number ordered (the wx pane's order); `parent` is the KIID path
+// of the enclosing instance ("" for the root) so JS can rebuild the tree.
+json sheetsStateJson( SCH_EDIT_FRAME* aFrame )
+{
+    SCH_SHEET_LIST list = aFrame->Schematic().Hierarchy();
+    list.SortByPageNumbers( /* aUpdateVirtualPageNums */ false );
+
+    json sheets = json::array();
+
+    for( const SCH_SHEET_PATH& path : list )
+    {
+        SCH_SHEET_PATH parent = path;
+
+        if( parent.size() > 1 )
+            parent.pop_back();
+
+        SCH_SCREEN* screen = path.LastScreen();
+        SCH_SHEET*  sheet = path.Last();
+        wxString    name = sheet ? sheet->GetName() : wxString();
+
+        // The root sheet carries no Sheetname — show its file like the wx pane does.
+        if( name.IsEmpty() && screen )
+            name = wxFileName( screen->GetFileName() ).GetName();
+
+        sheets.push_back( {
+                { "path", toUtf8( path.PathAsString() ) },
+                { "parent", path.size() > 1 ? toUtf8( parent.PathAsString() ) : std::string() },
+                { "name", toUtf8( name ) },
+                { "file", screen ? toUtf8( screen->GetFileName() ) : std::string() },
+                { "page", toUtf8( path.GetPageNumber() ) },
+                { "depth", static_cast<int>( path.size() ) - 1 },
+        } );
+    }
+
+    return { { "current", toUtf8( aFrame->GetCurrentSheet().PathAsString() ) },
+             { "sheets", sheets } };
+}
+
+void emitSheetsState( SCH_EDIT_FRAME* aFrame )
+{
+    if( !aFrame )
+        return;
+
+    std::string s = sheetsStateJson( aFrame ).dump();
+    EM_ASM( {
+        if( window.kicadCollab && window.kicadCollab.onSheetsState )
+        {
+            // Never let a throwing listener unwind the wasm frame (findings P-1).
+            try { window.kicadCollab.onSheetsState( UTF8ToString( $0 ) ); }
+            catch( e ) { console.error( '[pcbjam sheets] onSheetsState listener threw', e ); }
+        }
+    }, s.c_str() );
+}
+
 // Serialize one live schematic item to its native s-expr via a one-item
 // SCH_SELECTION through SCH_IO_KICAD_SEXPR::Format. For a symbol the output also
 // carries its (lib_symbols …) definition (that prelude is emitted for any symbol
@@ -693,6 +756,9 @@ public:
     {
         rebaseline();
         emitSheetChanged();
+        // The floating sheet panel follows wx-driven navigation too (double-
+        // clicking a sheet symbol, Alt+Backspace, the toolbar arrows).
+        emitSheetsState( schFrame() );
     }
 
 private:
@@ -2270,6 +2336,64 @@ void kicadSaveSchematic( std::string path )
 }
 
 
+// Sheet navigator bridge (sheet-panel) — see sheetsStateJson. ensureBridge()
+// so the OnSchSheetChanged push is wired even for sessions that never bind
+// presence (read-only viewers).
+std::string schSheetsGetTree()
+{
+    SCH_EDIT_FRAME* fr = schFrame();
+
+    if( !fr )
+        return "";
+
+    ensureBridge();
+    return sheetsStateJson( fr ).dump();
+}
+
+// Navigate to the sheet instance whose KIID path is aPath (as reported by
+// kicadSheetsGetTree). Validated synchronously against the live hierarchy; the
+// switch itself runs on the coroutine through the navigate tool's changeSheet
+// action — the same route the wx hierarchy pane takes, so back/forward history
+// stays consistent. DisplayCurrentSheet fires OnSchSheetChanged → the collab
+// sheet-manager rebinds its room and the panel gets its onSheetsState push.
+// The action is on the read-only allowlist (view-only), so viewers can navigate.
+bool schSheetsEnter( const std::string& aPath )
+{
+    SCH_EDIT_FRAME* fr = schFrame();
+
+    if( !fr )
+        return false;
+
+    wxString       wanted = wxString::FromUTF8( aPath.c_str() );
+    SCH_SHEET_LIST list = fr->Schematic().Hierarchy();
+    auto           it = std::find_if( list.begin(), list.end(),
+                                      [&]( const SCH_SHEET_PATH& p )
+                                      {
+                                          return p.PathAsString() == wanted;
+                                      } );
+
+    if( it == list.end() )
+        return false;
+
+    if( *it == fr->GetCurrentSheet() )
+    {
+        emitSheetsState( fr );
+        return true;
+    }
+
+    SCH_SHEET_PATH target = *it;
+
+    pcbjam_collab::runOnCoroutine( fr, [fr, target]() {
+        SCH_SHEET_PATH path = target;
+        fr->GetToolManager()->RunAction<SCH_SHEET_PATH*>( SCH_ACTIONS::changeSheet, &path );
+        // changeSheet already pushed via OnSchSheetChanged; a no-op path
+        // (already there / rejected) still leaves the panel consistent.
+        emitSheetsState( fr );
+    } );
+
+    return true;
+}
+
 static bool kicadCollabBusyProbe()
 {
     return pcbjam_collab::applyBusy() || !pcbjam_collab::applyQueue().empty();
@@ -2289,6 +2413,9 @@ EMSCRIPTEN_BINDINGS(eeschema) {
     function("kicadCollabTestMoveSchItem", &schCollabTestMoveSchItem);
     function("kicadCollabTestMirrorSchItem", &schCollabTestMirrorSchItem);
     function("kicadCollabTestDuplicateSchItem", &schCollabTestDuplicateSchItem);
+    // Sheet navigator bridge (sheet-panel): hierarchy tree + navigate.
+    function("kicadSheetsGetTree", &schSheetsGetTree);
+    function("kicadSheetsEnter", &schSheetsEnter);
 
 #ifndef KICAD_MERGED_EMBIND
     // JS names ALSO registered by pcbnew_embind.cpp — in the merged image these are

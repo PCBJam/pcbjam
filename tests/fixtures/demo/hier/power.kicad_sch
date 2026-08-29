@@ -1,0 +1,16 @@
+(kicad_sch
+	(version 20250114)
+	(generator "eeschema")
+	(generator_version "9.0")
+	(uuid "b0000000-0000-4000-8000-000000000002")
+	(paper "A4")
+	(title_block
+		(title "Hierarchy demo — power")
+	)
+	(lib_symbols)
+	(wire
+		(pts (xy 50.8 101.6) (xy 101.6 101.6))
+		(stroke (width 0) (type default))
+		(uuid "c0000000-0000-4000-8000-000000000012")
+	)
+)

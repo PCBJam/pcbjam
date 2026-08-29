@@ -6,6 +6,7 @@ import {
   Crosshair,
   EyeOff,
   Layers,
+  ListTree,
   Moon,
   PanelsTopLeft,
   RefreshCw,
@@ -151,6 +152,9 @@ export function SessionMenu({
   hasLayers,
   layersOpen,
   setLayersOpen,
+  hasSheets,
+  sheetsOpen,
+  setSheetsOpen,
   inspectorOpen,
   setInspectorOpen,
   canToggleChrome,
@@ -180,6 +184,10 @@ export function SessionMenu({
   hasLayers: boolean;
   layersOpen: boolean;
   setLayersOpen: (v: boolean) => void;
+  /** The sheet bridge is available AND the schematic has sub-sheets. */
+  hasSheets: boolean;
+  sheetsOpen: boolean;
+  setSheetsOpen: (v: boolean) => void;
   inspectorOpen: boolean;
   setInspectorOpen: (v: boolean) => void;
   /** The loaded bundle exports kicadSetChrome. */
@@ -270,6 +278,18 @@ export function SessionMenu({
           >
             <Layers size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
             <span>{layersOpen ? "Hide layers" : "Layers"}</span>
+          </button>
+        )}
+        {effectiveChromeHidden && hasSheets && (
+          <button
+            data-testid="sheet-panel-toggle"
+            aria-pressed={sheetsOpen}
+            className={overlayRowClass}
+            title="Schematic sheets — navigate the hierarchy"
+            onClick={() => setSheetsOpen(!sheetsOpen)}
+          >
+            <ListTree size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
+            <span>{sheetsOpen ? "Hide sheets" : "Sheets"}</span>
           </button>
         )}
         {effectiveChromeHidden && (tool === "pcbnew" || tool === "eeschema") && (
