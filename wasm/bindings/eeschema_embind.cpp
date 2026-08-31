@@ -507,7 +507,16 @@ std::map<std::string, json> snapshotByUuid( SCH_EDIT_FRAME* aFrame )
     if( SCH_SCREEN* screen = currentScreen( aFrame ) )
     {
         for( SCH_ITEM* item : screen->Items() )
+        {
+            // ERC markers are screen items but not document content: the file
+            // writer never saves them and the selection writer cannot format
+            // one (empty blob → the JS side skips the entry with a warning).
+            // Keep them out of the collab model entirely.
+            if( item->Type() == SCH_MARKER_T )
+                continue;
+
             m[toUtf8( item->m_Uuid.AsString() )] = itemToJson( item );
+        }
     }
 
     return m;
@@ -595,13 +604,48 @@ void flushDiff()
 
     auto blobFor = [&]( const std::string& id, json& aArr )
     {
-        if( !wDone.insert( id ).second )
-            return;
-
         KIID kid( wxString::FromUTF8( id.c_str() ) );
 
-        if( SCH_ITEM* item = fr->Schematic().ResolveItem( kid, nullptr, /*allowNull*/ true ) )
-            aArr.push_back( json{ { "sexpr", itemBlob( fr, item ) }, { "parent", nullptr } } );
+        SCH_ITEM* item = fr->Schematic().ResolveItem( kid, nullptr, /*allowNull*/ true );
+
+        if( !item )
+            return;
+
+        // A child that reached the dirty set unlifted (field/pin/sheet-pin —
+        // ResolveItem walks direct children too) serializes to an EMPTY blob:
+        // the selection writer has no case for it, so the entry used to reach
+        // JS as envelope furniture and be skipped, silently losing the edit.
+        // Lift to the screen item the differ tracks (same promotion as
+        // noteDirty) so the parent's re-blob carries the child's content.
+        while( EDA_ITEM* p = item->GetParent() )
+        {
+            if( !p->IsType( { SCH_SYMBOL_T, SCH_TABLE_T, SCH_SHEET_T, SCH_LABEL_LOCATE_ANY_T } ) )
+                break;
+
+            item = static_cast<SCH_ITEM*>( p );
+        }
+
+        std::string rootId = toUtf8( item->m_Uuid.AsString() );
+
+        if( !wDone.insert( rootId ).second )
+            return;
+
+        std::string sexpr = itemBlob( fr, item );
+
+        // Still empty after lifting (a marker that slipped in, an unformattable
+        // type): never put a hollow envelope on the wire — mirror pcbnew's P-5
+        // guard and leave a breadcrumb instead.
+        if( sexpr.empty() )
+        {
+            std::string type = toUtf8( item->GetClass() );
+            EM_ASM( {
+                console.warn( '[pcbjam collab] eeschema: skipped un-serializable dirty root',
+                              { uuid: UTF8ToString( $0 ), type: UTF8ToString( $1 ) } );
+            }, rootId.c_str(), type.c_str() );
+            return;
+        }
+
+        aArr.push_back( json{ { "sexpr", sexpr }, { "parent", nullptr } } );
     };
 
     for( const auto& [id, j] : cur )
@@ -1357,7 +1401,20 @@ std::string schCollabSnapshotItems()
         if( SCH_SCREEN* screen = currentScreen( fr ) )
         {
             for( SCH_ITEM* item : screen->Items() )
-                added.push_back( json{ { "sexpr", itemBlob( fr, item ) }, { "parent", nullptr } } );
+            {
+                // Same exclusions as snapshotByUuid/blobFor: markers are not
+                // document content, and an empty blob (unformattable type)
+                // must never seed a hollow envelope.
+                if( item->Type() == SCH_MARKER_T )
+                    continue;
+
+                std::string sexpr = itemBlob( fr, item );
+
+                if( sexpr.empty() )
+                    continue;
+
+                added.push_back( json{ { "sexpr", sexpr }, { "parent", nullptr } } );
+            }
         }
 
         rebaseline();

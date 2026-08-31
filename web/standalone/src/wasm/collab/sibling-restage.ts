@@ -112,9 +112,23 @@ export async function startSiblingRestage(opts: {
       // A hollow doc (layout only, never seeded) would restage a title-block-only
       // file over the real one — the staged copy is the freshest there is.
       if (ydocIsHollow(doc)) return;
-      const text = docToFile(yToDoc(doc));
+      // Render tolerantly: a doc carrying a dangling item ref (pre-fix
+      // paste-collision corruption, 2026-08-31) must still restage — a strict
+      // throw here silently froze the MEMFS copy at its last good state, so
+      // "update PCB from schematic" kept seeing deleted symbols forever.
+      const missing: string[] = [];
+      const text = docToFile(yToDoc(doc), { onMissingItem: (u) => missing.push(u) });
+      if (missing.length) {
+        console.warn(
+          `[sibling] ${sheetPath}: dropped ${missing.length} dangling item ref(s): ` +
+            missing.slice(0, 5).join(", "),
+        );
+      }
       restageFile(win, slug, sheetPath, new TextEncoder().encode(text), log);
     } catch (err) {
+      // Loud on purpose: a swallowed failure here leaves the sibling mirror
+      // permanently stale with no visible symptom.
+      console.warn(`[sibling] restage failed for ${sheetPath}:`, err);
       log(`[sibling] restage failed for ${sheetPath}: ${String(err)}`);
     }
   };

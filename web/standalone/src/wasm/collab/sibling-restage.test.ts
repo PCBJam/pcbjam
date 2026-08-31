@@ -2,10 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Exercise ONLY the subscribe/debounce/restage orchestration: the room connect,
 // the ydoc materialization, and the MEMFS write are all collaborators.
-const { connectKicadDoc, restageFile, ydocHasState } = vi.hoisted(() => ({
+const { connectKicadDoc, restageFile, ydocHasState, docToFile } = vi.hoisted(() => ({
   connectKicadDoc: vi.fn(),
   restageFile: vi.fn(),
   ydocHasState: vi.fn(),
+  docToFile: vi.fn(
+    (_doc: unknown, _opts?: { onMissingItem?: (u: string) => void }) =>
+      "(kicad_sch materialized)",
+  ),
 }));
 
 vi.mock("./index", () => ({ connectKicadDoc }));
@@ -15,7 +19,7 @@ vi.mock("@pcbjam/shared", () => ({
   ydocHasState,
   ydocIsHollow: () => false,
   yToDoc: (doc: unknown) => doc,
-  docToFile: () => "(kicad_sch materialized)",
+  docToFile,
 }));
 
 import { startSiblingRestage, type SiblingPresence } from "./sibling-restage";
@@ -99,6 +103,7 @@ beforeEach(() => {
   });
   restageFile.mockReset();
   ydocHasState.mockReset().mockReturnValue(true);
+  docToFile.mockReset().mockReturnValue("(kicad_sch materialized)");
 });
 
 afterEach(() => {
@@ -128,6 +133,34 @@ describe("startSiblingRestage", () => {
     await start(["main.kicad_sch"]);
     expect(restageFile).toHaveBeenCalledTimes(1);
     expect(restageFile.mock.calls[0]![2]).toBe("main.kicad_sch");
+  });
+
+  it("restages leniently past dangling item refs, and warns (2026-08-31 corruption)", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    docToFile.mockImplementation(
+      (_doc: unknown, opts?: { onMissingItem?: (u: string) => void }) => {
+        opts?.onMissingItem?.("ghost-1");
+        return "(kicad_sch healed)";
+      },
+    );
+    await start(["main.kicad_sch"]);
+    expect(restageFile).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("dangling item ref"));
+    warn.mockRestore();
+  });
+
+  it("a restage failure is loud, not just debug-logged", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    docToFile.mockImplementation(() => {
+      throw new Error("renderItem: cycle through item x");
+    });
+    await start(["main.kicad_sch"]);
+    expect(restageFile).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("restage failed"),
+      expect.any(Error),
+    );
+    warn.mockRestore();
   });
 
   it("leaves the boot snapshot alone when the room is empty", async () => {

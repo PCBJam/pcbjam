@@ -854,6 +854,13 @@ void flushDiff()
     json                  wAdded = json::array(), wChanged = json::array();
     std::set<std::string> wDone;
 
+    // Roots that reached the dirty set already STRUCT_DELETED. The baseline
+    // diff can miss such a deletion (observed 2026-08-31: 8 footprints deleted
+    // by a netlist-update/undo churn were P-5-skipped with removed:0 and
+    // survived in the board room forever) — collect them here and emit the
+    // removals explicitly below instead of dropping the event.
+    std::set<std::string> deletedDirtyRoots;
+
     auto liftBlob = [&]( const std::string& id, json& aArr )
     {
         BOARD_ITEM* live =
@@ -892,6 +899,12 @@ void flushDiff()
                               { uuid: UTF8ToString( $0 ), type: UTF8ToString( $1 ),
                                 why: UTF8ToString( $2 ), parentNull: !!$3 } );
             }, rootId.c_str(), type.c_str(), why.c_str(), parentNull );
+
+            // A DELETED root must still leave the shared doc: skipping it here
+            // while the baseline diff misses it strands the item in the room.
+            if( live->GetFlags() & STRUCT_DELETED )
+                deletedDirtyRoots.insert( rootId );
+
             return;
         }
 
@@ -972,6 +985,23 @@ void flushDiff()
         liftBlob( id, wChanged );
 
     g_dirty.clear();
+
+    // Deleted dirty roots the baseline diff did not catch (the id cache still
+    // resolves them, and an apply/boot rebaseline can race the commit): emit
+    // their removal on both wires, and keep them out of the next baseline so
+    // a redo re-emits them as adds. Duplicate removals are no-ops downstream.
+    for( const std::string& id : deletedDirtyRoots )
+    {
+        bool alreadyDiffed = g_baseline.count( id ) && !cur.count( id );
+
+        cur.erase( id );
+
+        if( alreadyDiffed )
+            continue;
+
+        removed.push_back( id );
+        wRemoved.push_back( id );
+    }
 
     g_baseline = std::move( cur );
 
