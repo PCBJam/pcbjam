@@ -41,8 +41,25 @@ if [ ! -d "${FREETYPE_DIR}" ]; then
     mkdir -p "${DEPS_ROOT}"
     cd "${DEPS_ROOT}"
 
-    FREETYPE_URL="https://download.savannah.gnu.org/releases/freetype/freetype-${FREETYPE_VERSION}.tar.xz"
-    download_file "${FREETYPE_URL}" "freetype-${FREETYPE_VERSION}.tar.xz" "${FREETYPE_SHA256}"
+    # savannah 502s regularly (took out the 2026-08-31 staging CI run); every
+    # mirror must serve the byte-identical tarball — FREETYPE_SHA256 gates it.
+    FREETYPE_URLS=(
+        "https://download.savannah.gnu.org/releases/freetype/freetype-${FREETYPE_VERSION}.tar.xz"
+        "https://download-mirror.savannah.gnu.org/releases/freetype/freetype-${FREETYPE_VERSION}.tar.xz"
+        "https://downloads.sourceforge.net/freetype/freetype-${FREETYPE_VERSION}.tar.xz"
+    )
+    downloaded=0
+    for FREETYPE_URL in "${FREETYPE_URLS[@]}"; do
+        if download_file "${FREETYPE_URL}" "freetype-${FREETYPE_VERSION}.tar.xz" "${FREETYPE_SHA256}"; then
+            downloaded=1
+            break
+        fi
+        log_warn "FreeType download failed from ${FREETYPE_URL} — trying next mirror"
+    done
+    if [ "${downloaded}" != "1" ]; then
+        log_error "All FreeType mirrors failed"
+        exit 1
+    fi
     tar -xJf "freetype-${FREETYPE_VERSION}.tar.xz"
     rm "freetype-${FREETYPE_VERSION}.tar.xz"
 fi
