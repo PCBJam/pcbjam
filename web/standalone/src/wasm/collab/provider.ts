@@ -46,6 +46,16 @@ export interface YjsProvider {
    * must destroy doc + provider and connect afresh.
    */
   onReset?(cb: () => void): void;
+  /**
+   * Gateway transport only: ask the server for a fresh diff NOW (SyncStep1).
+   * A passive subscription normally re-pulls on `touched` control frames, but
+   * the gateway debounces those 2s leading-edge with no trailing emit — a
+   * dropped frame leaves the replica stale until an unrelated later edit.
+   * Callers invoke this at moments freshness matters (the pcbnew tab
+   * regaining focus before an update-from-schematic). No-op when absent or
+   * the socket is down.
+   */
+  repull?(): void;
 }
 
 export type ProviderKind =

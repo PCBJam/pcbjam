@@ -35,6 +35,7 @@ interface FakeSession {
     destroy: ReturnType<typeof vi.fn>;
     awareness: { setLocalState: ReturnType<typeof vi.fn> };
     onReset: ReturnType<typeof vi.fn>;
+    repull: ReturnType<typeof vi.fn>;
     /** Fire the gateway's `reset` (0004 §2.3). */
     emitReset: () => void;
   };
@@ -58,6 +59,7 @@ function makeSession(room: string): FakeSession {
       destroy: vi.fn(),
       awareness: { setLocalState: vi.fn() },
       onReset: vi.fn((cb: () => void) => resets.add(cb)),
+      repull: vi.fn(),
       emitReset: () => resets.forEach((h) => h()),
     },
   };
@@ -167,6 +169,42 @@ describe("startSiblingRestage", () => {
     ydocHasState.mockReturnValue(false);
     await start(["main.kicad_sch"]);
     expect(restageFile).not.toHaveBeenCalled();
+  });
+
+  it("window focus re-pulls every live watch, rate-limited (touched-drop recovery)", async () => {
+    const listeners = new Map<string, () => void>();
+    const winFake = {
+      addEventListener: (ev: string, cb: () => void) => listeners.set(ev, cb),
+      removeEventListener: vi.fn(),
+      document: {
+        visibilityState: "visible",
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      },
+    };
+    const handle = await startSiblingRestage({
+      win: winFake as never,
+      slug: "proj",
+      scopeId: "S",
+      projectId: "P",
+      files: [{ path: "main.kicad_sch" }, { path: "sub.kicad_sch" }],
+      provider: { kind: "none" } as never,
+      log: () => {},
+    });
+    const focus = listeners.get("focus")!;
+    expect(focus).toBeDefined();
+    focus();
+    for (const s of sessions) expect(s.provider.repull).toHaveBeenCalledTimes(1);
+    // immediate re-focus inside the rate window is a no-op
+    focus();
+    for (const s of sessions) expect(s.provider.repull).toHaveBeenCalledTimes(1);
+    // past the window it pulls again
+    vi.advanceTimersByTime(3_000);
+    focus();
+    for (const s of sessions) expect(s.provider.repull).toHaveBeenCalledTimes(2);
+    // destroy detaches the listeners
+    handle.destroy();
+    expect(winFake.removeEventListener).toHaveBeenCalled();
   });
 
   it("debounces remote updates into one restage", async () => {

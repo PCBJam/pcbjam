@@ -170,6 +170,41 @@ export async function startSiblingRestage(opts: {
     return session;
   };
 
+  /* ------------------- focus-triggered freshness (repull) ----------------- */
+
+  // A passive watch re-pulls only on `touched` control frames, and the
+  // gateway debounces those 2s leading-edge with NO trailing emit — a dropped
+  // frame leaves this mirror stale until an unrelated later edit, which reads
+  // as "delete + sync doesn't delete until I reload the tab". The sync
+  // gesture always brings the pcbnew tab to the front first, so ask every
+  // live watch for a fresh diff whenever this window regains focus; any news
+  // arrives as doc updates and restages through the normal debounce.
+  const REPULL_MIN_MS = 2_000;
+  let lastRepullAt = Number.NEGATIVE_INFINITY;
+  const attachFocusRepull = (
+    live: () => Iterable<KicadDocSession | undefined>,
+  ): (() => void) => {
+    const target = win as unknown as {
+      document?: { visibilityState?: string; addEventListener?: Window["addEventListener"]; removeEventListener?: Window["removeEventListener"] };
+      addEventListener?: Window["addEventListener"];
+      removeEventListener?: Window["removeEventListener"];
+    };
+    const repullAll = () => {
+      if (destroyed) return;
+      if (target.document?.visibilityState === "hidden") return;
+      const now = Date.now();
+      if (now - lastRepullAt < REPULL_MIN_MS) return;
+      lastRepullAt = now;
+      for (const s of live()) s?.provider.repull?.();
+    };
+    target.addEventListener?.("focus", repullAll);
+    target.document?.addEventListener?.("visibilitychange", repullAll);
+    return () => {
+      target.removeEventListener?.("focus", repullAll);
+      target.document?.removeEventListener?.("visibilitychange", repullAll);
+    };
+  };
+
   /* ------------------------- eager fallback (no presence room) ------------ */
 
   if (!opts.presence) {
@@ -184,9 +219,11 @@ export async function startSiblingRestage(opts: {
         }
       }),
     );
+    const detachFocus = attachFocusRepull(() => sessions);
     return {
       destroy() {
         destroyed = true;
+        detachFocus();
         for (const t of timers.values()) clearTimeout(t);
         timers.clear();
         for (const s of sessions) {
@@ -295,6 +332,9 @@ export async function startSiblingRestage(opts: {
 
   const unsubscribe = presence.subscribe(reconcile);
   reconcile();
+  const detachFocus = attachFocusRepull(
+    () => [...watches.values()].map((w) => w.session),
+  );
   log(
     `[sibling] presence-scoped watch over ${sheetPaths.length} sheet(s) — ` +
       `connecting only while a peer has one open`,
@@ -303,6 +343,7 @@ export async function startSiblingRestage(opts: {
   return {
     destroy() {
       destroyed = true;
+      detachFocus();
       unsubscribe();
       for (const t of timers.values()) clearTimeout(t);
       timers.clear();

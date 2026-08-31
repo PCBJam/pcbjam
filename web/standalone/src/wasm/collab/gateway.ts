@@ -398,6 +398,17 @@ export class GatewayDocFacade implements YjsProvider {
     this.resetCbs.push(cb);
   }
 
+  /**
+   * See {@link YjsProvider.repull} — a manual SyncStep1 so a passive replica
+   * can refresh without waiting for a `touched` frame (which the gateway
+   * debounces leading-edge and may drop entirely).
+   */
+  repull(): void {
+    if (this.destroyed || this.dead || this.isPresence || this.isHintOnly) return;
+    if (!this.conn.isOpen()) return;
+    this.sendSyncStep1();
+  }
+
   /** `files` hints — project rows changed on the files route (0002 §1). */
   onFiles(cb: (seq: number, changes: GatewayFileChange[]) => void): void {
     this.filesCbs.push(cb);
