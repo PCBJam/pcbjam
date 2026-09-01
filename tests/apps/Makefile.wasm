@@ -736,6 +736,31 @@ pthread-ondemand: $(OD)/pthread_ondemand_test.html
 
 all: $(OD)/pthread_ondemand_test.html
 
+# Nanosleep POSIX-semantics harness (finding F-2; the F-1 zero-duration guard
+# rides along). Single-threaded ON PURPOSE — the J-6 false-green was worker
+# threads satisfying a process-wide counter; here only the main thread can move
+# the shim's counters. The shim object is compiled with
+# -DPCBJAM_NANOSLEEP_TEST_HOOK to expose the chunk helper + zero-duration
+# counters (production builds compile them out).
+NS = $(S)/nanosleep-semantics
+
+$(NS)/nanosleep_semantics_test.o: $(NS)/nanosleep_semantics_test.cpp
+	$(CXX) -c $(CXXFLAGS) $< -o $@
+
+# Compiled as C (no -std=c++): em++ keys language off the .c extension.
+# -pthread only for the atomics/bulk-memory target features (the wx libs are
+# shared-memory builds); the harness itself never spawns a thread.
+$(NS)/nanosleep_yield.o: $(SHIMS)/nanosleep_yield.c
+	$(CXX) -c -pthread -DPCBJAM_NANOSLEEP_TEST_HOOK $< -o $@
+
+$(NS)/nanosleep_semantics_test.html: $(NS)/nanosleep_semantics_test.o $(NS)/nanosleep_yield.o $(WX_CORE_LIB) $(JS_FILES)
+	$(CXX) $(filter %.o %.a,$^) $(LDFLAGS_NOGL) --pre-js $(JS) --shell-file $(HTML) -o $@
+
+nanosleep-semantics: $(NS)/nanosleep_semantics_test.html
+.PHONY: nanosleep-semantics
+
+all: $(NS)/nanosleep_semantics_test.html
+
 # Library-preload native-EH repro (1b). Standalone std::async worker that parses+throws (mode-c)
 # and proxies a fetch to main (emscripten_proxy_*) — mirrors the KiCad-10 PCBJAM preload shape.
 # No KiCad source. Uses the system proxying queue (built into the pthread runtime).
