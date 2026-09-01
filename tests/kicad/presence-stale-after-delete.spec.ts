@@ -168,14 +168,14 @@ for (const kind of ["selection", "xsel"] as const) {
     expect(await removeItem(page, WIRE1)).toBe(true);
     // Documented interaction dwell: the overlay repaint has no observable signal
     // — settledShot below compares stable frames, this only lets it queue.
-    await page.waitForTimeout(1500); // eslint-disable-line -- documented interaction dwell
+    await page.waitForTimeout(1500); // eslint-disable-line -- documented interaction dwell: the overlay repaint after delete has no observable; settledShot below only compares stable frames
     const afterDelete = await settledShot(canvas);
 
     // Ground truth for "what the overlay should look like now": force the
     // overlay to rebuild from the SAME peer snapshot — WIRE1 no longer
     // resolves, so nothing is drawn for it.
     await setRemote(page, { peers: [peer] });
-    await page.waitForTimeout(1500); // eslint-disable-line -- documented interaction dwell (overlay rebuild, no observable)
+    await page.waitForTimeout(1500); // eslint-disable-line -- documented interaction dwell: the overlay rebuild from the pushed peer snapshot has no observable
     const afterRepush = await settledShot(canvas);
 
     expect(

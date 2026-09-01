@@ -348,18 +348,18 @@ async function getPos(page: Page, id: string) {
 
 async function moveWithM(page: Page, at: { x: number; y: number }, nudges: number) {
   await page.mouse.move(at.x, at.y);
-  await page.waitForTimeout(350); // eslint-disable-line -- documented interaction dwell
+  await page.waitForTimeout(350); // eslint-disable-line -- documented interaction dwell: pointer hover must settle so the tool picks the item under the cursor
   await page.mouse.down();
   await page.mouse.up();
-  await page.waitForTimeout(350); // eslint-disable-line -- documented interaction dwell
+  await page.waitForTimeout(350); // eslint-disable-line -- documented interaction dwell: click-select commit has no DOM observable
   await page.keyboard.press("m");
-  await page.waitForTimeout(400); // eslint-disable-line -- documented interaction dwell
+  await page.waitForTimeout(400); // eslint-disable-line -- documented interaction dwell: move-tool activation has no DOM observable
   for (let i = 0; i < nudges; i++) {
     await page.keyboard.press("ArrowRight");
-    await page.waitForTimeout(150); // eslint-disable-line -- documented interaction dwell
+    await page.waitForTimeout(150); // eslint-disable-line -- documented interaction dwell: each nudge repaint must land before the next key
   }
   await page.keyboard.press("Enter");
-  await page.waitForTimeout(500); // eslint-disable-line -- documented interaction dwell
+  await page.waitForTimeout(500); // eslint-disable-line -- documented interaction dwell: move commit repaint has no DOM observable
 }
 
 test.describe("P-3 `m` move twice per page", () => {
@@ -386,12 +386,12 @@ test.describe("P-3 `m` move twice per page", () => {
     const mid = { x: Math.round((p0.x + p1.x) / 2), y: p0.y };
     for (const p of [p0, p1]) {
       await page.mouse.move(p.x, p.y);
-      await page.waitForTimeout(350); // eslint-disable-line -- documented interaction dwell
+      await page.waitForTimeout(350); // eslint-disable-line -- documented interaction dwell: pointer hover must settle so the tool picks the item under the cursor
       await page.mouse.down();
       await page.mouse.up();
-      await page.waitForTimeout(350); // eslint-disable-line -- documented interaction dwell
+      await page.waitForTimeout(350); // eslint-disable-line -- documented interaction dwell: click-select commit has no DOM observable
     }
-    await page.waitForTimeout(300); // eslint-disable-line -- documented interaction dwell
+    await page.waitForTimeout(300); // eslint-disable-line -- documented interaction dwell: the second selection must commit before Escape clears the tool
     await page.keyboard.press("Escape");
     await page.keyboard.press("Escape");
     await expect.poll(async () => (await snapshotItems(page)).filter((i) => !idsBefore.has(i.id)).length,

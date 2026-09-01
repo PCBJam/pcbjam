@@ -109,9 +109,9 @@ async function loadEcc83(page: Page, testLogger: { consoleLogs: string[]; errors
     });
     if (!input) throw new Error('filename input not found');
     await page.mouse.click(input.x, input.y);
-    await page.waitForTimeout(200); // eslint-disable-line -- documented interaction dwell
+    await page.waitForTimeout(200); // eslint-disable-line -- documented interaction dwell: focus caret must land in the wx text ctrl before typing
     await page.keyboard.type(`${STEM}.kicad_pcb`);
-    await page.waitForTimeout(300); // eslint-disable-line -- documented interaction dwell
+    await page.waitForTimeout(300); // eslint-disable-line -- documented interaction dwell: typed filename must flush to the wx text ctrl before Enter confirms
     await page.keyboard.press('Enter');
     const result = await waitForBoardLoaded(page, testLogger, 60000);
     console.log(`[TEST] ecc83 board-ready result: ${result}`);

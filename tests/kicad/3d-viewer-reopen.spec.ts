@@ -126,7 +126,7 @@ test.describe('3D viewer close and reopen', () => {
         // ...then let the wx-side op (wx_window_move → wxWindow::Move) fully land before
         // close saves the frame position from the wx side (documented interaction dwell —
         // the DOM moves before the wx op completes; see 3d-viewer.spec.ts titlebar test).
-        await page.waitForTimeout(500); // eslint-disable-line -- documented interaction dwell
+        await page.waitForTimeout(500); // eslint-disable-line -- documented interaction dwell: the DOM observable fires before wx_window_move lands wx-side; close must save the settled wx position
 
         const posBefore = await windowPos(page, winId);
         expect(posBefore, 'the 3D viewer window should have a position').not.toBeNull();

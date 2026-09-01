@@ -90,10 +90,10 @@ test('P-1 standalone: fit lands after a keyboard rotate of a clicked footprint',
     const sx = box.x + (fp.x - vp.cx) * vp.scale + vp.w / 2;
     const sy = box.y + (fp.y - vp.cy) * vp.scale + vp.h / 2;
     await page.mouse.move(sx, sy);
-    await page.waitForTimeout(300); // eslint-disable-line -- documented interaction dwell (pointer hover before press)
+    await page.waitForTimeout(300); // eslint-disable-line -- documented interaction dwell: pointer hover must settle before press so the tool picks the item under the cursor
     await page.mouse.down();
     await page.mouse.up();
-    await page.waitForTimeout(400); // eslint-disable-line -- documented interaction dwell (selection tool commit)
+    await page.waitForTimeout(400); // eslint-disable-line -- documented interaction dwell: selection-tool commit has no DOM observable
     return (await selection()).includes(fp.id);
   }, { timeout: 15000, intervals: [500], message: 'click-select of the first footprint' }).toBe(true)
     .then(() => true, () => false);
