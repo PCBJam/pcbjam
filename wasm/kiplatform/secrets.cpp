@@ -53,6 +53,9 @@ bool GetSecret( const wxString& aService, const wxString& aKey, wxString& aSecre
             }
             var len = lengthBytesUTF8(secret) + 1;
             var buf = _malloc(len);
+            if (!buf) {
+                return 0; // F-3: never write through a failed alloc; 0 = "no secret"
+            }
             stringToUTF8(secret, buf, len);
             return buf;
         } catch(e) {

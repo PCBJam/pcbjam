@@ -75,6 +75,8 @@ EM_JS( void, js_occExportStart,
             const s = JSON.stringify( res || { ok: false, report: 'occ_service: no response' } );
             const n = lengthBytesUTF8( s ) + 1;
             const p = _malloc( n );
+            if( !p )
+                return 0; // F-3: the native side already parses a null response as "{}" — never write through 0
             stringToUTF8( s, p, n );
             return p;
         } );

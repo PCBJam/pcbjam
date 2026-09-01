@@ -17,6 +17,7 @@
     "corpus:lint": "tsx tools/corpus-lint.ts",
     "lint:determinism": "tsx tools/lint-determinism.ts",
     "lint:ci-coverage": "tsx tools/lint-ci-coverage.ts",
+    "allocator-zero:contract": "tsx tools/allocator-zero-contract.ts",
     "screenshots:check": "tsx tools/screenshots/compare.ts",
     "screenshots:noise": "tsx tools/screenshots/noise.ts",
     "screenshots:report": "tsx tools/screenshots/post-discord.ts",

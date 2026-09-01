@@ -76,6 +76,8 @@ EM_JS( void, js_occLoadModelStart, ( int aToken, const char* aModelPath ),
             const cachePath = writeCache();
             const n = lengthBytesUTF8( cachePath ) + 1;
             const p = _malloc( n );
+            if( !p )
+                return 0; // F-3: the native side already treats a null path as "no model" — never write through 0
             stringToUTF8( cachePath, p, n );
             return p;
         } );

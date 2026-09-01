@@ -33,6 +33,9 @@ public:
                         var renderer = gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL);
                         var len = lengthBytesUTF8(renderer) + 1;
                         var buf = _malloc(len);
+                        if (!buf) {
+                            return 0; // F-3: never write through a failed alloc; 0 = fallback name
+                        }
                         stringToUTF8(renderer, buf, len);
                         return buf;
                     }

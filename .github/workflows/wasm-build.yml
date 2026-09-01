@@ -385,6 +385,7 @@ jobs:
         run: |
           npm run lint:determinism
           npm run lint:ci-coverage
+          npm run allocator-zero:contract
 
       - name: Install web workspace deps (collab bundle)
         if: inputs.run_tests

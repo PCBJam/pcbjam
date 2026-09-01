@@ -68,6 +68,8 @@ EM_JS( void, js_ngspice_request_start, ( int aToken, const char* aReqJson ), {
             const s = JSON.stringify( res ?? {} );
             const n = lengthBytesUTF8( s ) + 1;
             const p = _malloc( n );
+            if( !p )
+                return 0; // F-3: rpc() already reads a null pointer as "{}" — never write through 0
             stringToUTF8( s, p, n );
             return p;
         } );
@@ -118,8 +120,6 @@ EM_JS( void, js_ngspice_get_vec_start,
                 return 1;
             if( !res.found )
                 return 0;
-            HEAP32[( aMeta >> 2 ) + 1] = res.vtype | 0;
-            HEAP32[( aMeta >> 2 ) + 2] = res.flags | 0;
             // E-11: v_length must describe what was actually TRANSFERRED,
             // never the worker's self-reported count — a corrupted worker
             // answering a huge length with small arrays otherwise drives the
@@ -132,22 +132,55 @@ EM_JS( void, js_ngspice_get_vec_start,
             if( nReal ) length = Math.min( length, nReal );
             if( nComp ) length = Math.min( length, nComp >> 1 );
             if( !nReal && !nComp ) length = 0;
-            HEAP32[( aMeta >> 2 ) + 3] = length;
+            // F-3: allocate the COMPLETE result before copying or publishing
+            // any part of it — address 0 is writable, so a failed _malloc must
+            // never become a write, and a mid-sequence failure must not leak
+            // the earlier buffers or leave outputs half-written. Allocation
+            // failure is an ordinary transport error (status 1): release
+            // private scratch, leave every output null.
+            let real = 0;
+            let comp = 0;
+            let vname = 0;
+            const release = () => {
+                if( real )
+                    _free( real );
+                if( comp )
+                    _free( comp );
+                if( vname )
+                    _free( vname );
+            };
             if( nReal ) {
-                const p = _malloc( nReal * 8 );
-                HEAPF64.set( res.real, p >> 3 );
-                HEAPU32[aReal >> 2] = p;
+                real = _malloc( nReal * 8 );
+                if( !real ) {
+                    release();
+                    return 1;
+                }
             }
             if( nComp ) {
-                const p = _malloc( nComp * 8 );
-                HEAPF64.set( res.comp, p >> 3 );
-                HEAPU32[aComp >> 2] = p;
+                comp = _malloc( nComp * 8 );
+                if( !comp ) {
+                    release();
+                    return 1;
+                }
             }
             const s = res.vname || '';
             const n = lengthBytesUTF8( s ) + 1;
-            const vp = _malloc( n );
-            stringToUTF8( s, vp, n );
-            HEAPU32[aVName >> 2] = vp;
+            vname = _malloc( n );
+            if( !vname ) {
+                release();
+                return 1;
+            }
+            if( real )
+                HEAPF64.set( res.real, real >> 3 );
+            if( comp )
+                HEAPF64.set( res.comp, comp >> 3 );
+            stringToUTF8( s, vname, n );
+            HEAP32[( aMeta >> 2 ) + 1] = res.vtype | 0;
+            HEAP32[( aMeta >> 2 ) + 2] = res.flags | 0;
+            HEAP32[( aMeta >> 2 ) + 3] = length;
+            HEAPU32[aReal >> 2] = real;
+            HEAPU32[aComp >> 2] = comp;
+            HEAPU32[aVName >> 2] = vname;
             HEAP32[aMeta >> 2] = 1;
             return 0;
         }, /* inertResult = */ 1 );
@@ -206,6 +239,14 @@ EM_JS( void, js_ngspice_install_events, (), {
                 // this build). The identity guarantee is the handler capture
                 // plus the __ngspiceOnEvent self-disarm above.
                 p = _malloc( n );
+                if( !p ) {
+                    // F-3: an unallocatable line is dropped LOUDLY before any
+                    // write or native entry — never a call carrying a write
+                    // through address 0.
+                    console.warn( '[sharedspice_client] dropping ngspice event '
+                                  + 'line: line-buffer allocation failed' );
+                    return;
+                }
                 stringToUTF8( text, p, n );
             }
             pendingText = p;
