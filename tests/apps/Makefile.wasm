@@ -336,6 +336,31 @@ $(S)/textdataobj/textdataobj_test.o: $(WX_TESTS_WASM_DIR)/textdataobj_test.cpp
 $(S)/textdataobj/textdataobj_test.html: $(S)/textdataobj/textdataobj_test.o $(WX_CORE_LIB) $(JS_FILES)
 	$(CXX) $< $(LDFLAGS_NOGL) --pre-js $(JS) --shell-file $(HTML) -o $@
 
+# DropFiles delivery harness (finding G-14) — wx-owned test case
+# (wxwidgets/tests/wasm), same pattern as textdataobj: the bug lives in the wx
+# wasm port, so the test travels with it. Links the nanosleep shim exactly like
+# the production editor (NANOSLEEP_YIELD_LINK in build-kicad-target.sh), so the
+# harness handler's wxMilliSleep really SUSPENDS — pinning that drop delivery
+# arrives on a suspension-legal (queued/promising) path, not synchronously from
+# the plain OnFileDropped export.
+$(S)/dropfiles/dropfiles_test.o: $(WX_TESTS_WASM_DIR)/dropfiles_test.cpp
+	@mkdir -p $(@D)
+	$(CXX) -c $(CXXFLAGS) $< -o $@
+
+# -pthread only for the atomics/bulk-memory target features (wx libs are
+# shared-memory builds); compiled without the test-hook define — production shape.
+$(S)/dropfiles/nanosleep_yield.o: ../../wasm/shims/nanosleep_yield.c
+	@mkdir -p $(@D)
+	$(CXX) -c -pthread $< -o $@
+
+$(S)/dropfiles/dropfiles_test.html: $(S)/dropfiles/dropfiles_test.o $(S)/dropfiles/nanosleep_yield.o $(WX_CORE_LIB) $(JS_FILES)
+	$(CXX) $(filter %.o %.a,$^) $(LDFLAGS_NOGL) --pre-js $(JS) --shell-file $(HTML) -o $@
+
+dropfiles: $(S)/dropfiles/dropfiles_test.html
+.PHONY: dropfiles
+
+all: $(S)/dropfiles/dropfiles_test.html
+
 # FileDialog test (no GL)
 $(S)/filedialog/filedialog_test.o: $(S)/filedialog/filedialog_test.cpp
 	$(CXX) -c $(CXXFLAGS) $< -o $@

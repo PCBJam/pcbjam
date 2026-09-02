@@ -135,6 +135,21 @@ test.describe('wxDragDrop Tests', () => {
       { message: 'Drop event should be logged' }
     ).toBe(true);
 
+    // repro for G-14: the JS receipt above is only the positive control — the
+    // wx event must actually ARRIVE at the frame that called
+    // DragAcceptFiles(true). Pre-fix, delivery died at the leaf under the
+    // pointer (wxDropFilesEvent does not propagate) and this line never came.
+    await expect.poll(
+      () => testLogger.consoleLogs.some(l =>
+        l.includes('[DND_EVENT] === wxDropFilesEvent received!')),
+      { message: 'wxDropFilesEvent should reach the DragAcceptFiles frame' }
+    ).toBe(true);
+    await expect.poll(
+      () => testLogger.consoleLogs.some(l =>
+        l.includes('[DND_EVENT] Number of files: 1')),
+      { message: 'the wx handler should see the dropped file' }
+    ).toBe(true);
+
     await stableShot(page, 'dnd-05-drop.png', { fullPage: true });
   });
 
@@ -250,6 +265,15 @@ test.describe('wxDragDrop Tests', () => {
       () => testLogger.consoleLogs.some(l => l.includes('[DND] drop: 3 files')),
       { message: 'Multiple files should be detected' }
     ).toBe(true);
+
+    // repro for G-14: the wx side must receive every file. wx.js notifies C++
+    // once per file, so three single-file wxDropFilesEvents must reach the
+    // DragAcceptFiles frame (pre-fix: zero arrived — leaf delivery).
+    await expect.poll(
+      () => testLogger.consoleLogs.filter(l =>
+        l.includes('[DND_EVENT] === wxDropFilesEvent received!')).length,
+      { message: 'all three files should reach the wx handler' }
+    ).toBe(3);
 
     await stableShot(page, 'dnd-08-multiple-files.png', { fullPage: true });
   });
