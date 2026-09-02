@@ -5,6 +5,12 @@
 # Emscripten SDK version (single source of truth for Docker and local builds)
 # 6.0.6: JSPI-capable toolchain for the experiment/jspi branch (was 4.0.2).
 export EMSCRIPTEN_VERSION="6.0.6"
+# sha256 of the emsdk repo tarball at the tag == EMSCRIPTEN_VERSION
+# (https://github.com/emscripten-core/emsdk/archive/refs/tags/<ver>.tar.gz). docker/Dockerfile
+# downloads that archive instead of `git clone`: the CI runners intermittently get GitHub's
+# anonymous git-over-HTTPS refusal ("could not read Username", 2026-09-01/02), while plain
+# HTTPS archive downloads are unaffected. TOFU like GLM_SHA256; bump together with the version.
+export EMSDK_TARBALL_SHA256="ce6a639f150493bb827a809ff20bcf727dffba2cfb28b019e14d59a6b7ead26e"
 
 # KiCad submodule version
 export KICAD_COMMIT="4bfed3f1746e8cc0a7d942767770f56fa28b393c"

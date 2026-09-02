@@ -30,8 +30,21 @@ RUN apt-get update && apt-get install -y \
 # compose build.args). Do NOT hardcode it here — fail fast if the arg is missing so a stale image can
 # never silently use the wrong toolchain.
 ARG EMSCRIPTEN_VERSION
+ARG EMSDK_TARBALL_SHA256
+# Release tarball, not `git clone`: the CI runners intermittently get GitHub's refusal of
+# ANONYMOUS git-over-HTTPS ("fatal: could not read Username for 'https://github.com'", seen
+# 2026-09-01/02 on the shared Ubicloud egress), which killed every image build. Plain HTTPS
+# archive downloads (the same class as every scripts/deps tarball) are not affected, and the
+# sha256 pin makes the toolchain fetch content-addressable. The emsdk tag equals the
+# emscripten version; `./emsdk install` itself only talks to storage.googleapis.com.
 RUN test -n "${EMSCRIPTEN_VERSION}" || { echo "EMSCRIPTEN_VERSION build-arg required (scripts/common/versions.sh)"; exit 1; }; \
-    git clone https://github.com/emscripten-core/emsdk.git /emsdk \
+    test -n "${EMSDK_TARBALL_SHA256}" || { echo "EMSDK_TARBALL_SHA256 build-arg required (scripts/common/versions.sh)"; exit 1; }; \
+    curl -fsSL --retry 5 --retry-all-errors -o /tmp/emsdk.tar.gz \
+        "https://github.com/emscripten-core/emsdk/archive/refs/tags/${EMSCRIPTEN_VERSION}.tar.gz" \
+    && echo "${EMSDK_TARBALL_SHA256}  /tmp/emsdk.tar.gz" | sha256sum -c - \
+    && mkdir -p /emsdk \
+    && tar xzf /tmp/emsdk.tar.gz -C /emsdk --strip-components=1 \
+    && rm -f /tmp/emsdk.tar.gz \
     && cd /emsdk \
     && ./emsdk install ${EMSCRIPTEN_VERSION} \
     && ./emsdk activate ${EMSCRIPTEN_VERSION}

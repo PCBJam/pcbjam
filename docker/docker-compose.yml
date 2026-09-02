@@ -8,6 +8,7 @@ services:
         # that drive compose (docker/build.sh, docker/shell.sh). No default -> the Dockerfile fails
         # fast if it's unset, so the image can't be built against the wrong toolchain.
         EMSCRIPTEN_VERSION: ${EMSCRIPTEN_VERSION:?source scripts/common/versions.sh before docker compose}
+        EMSDK_TARBALL_SHA256: ${EMSDK_TARBALL_SHA256:?source scripts/common/versions.sh before docker compose}
     # Container name is auto-generated with project prefix (set in build.sh)
 
     # Resource limits. Defaults are sized for a dev Mac (Docker Desktop VM).
