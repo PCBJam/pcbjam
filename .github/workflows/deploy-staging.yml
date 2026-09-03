@@ -59,7 +59,16 @@ jobs:
           test "$CLOUDFLARE_ACCOUNT_ID" = "5be62ba000cabfaad4d11a6ef28f8395" || { echo "refusing to deploy outside the staging Cloudflare account"; exit 1; }
 
       - name: Init pcbjam-shared submodule
-        run: git submodule update --init --depth 1 web/pcbjam-shared
+        # Token-HTTPS, not anonymous: GitHub intermittently refuses unauthenticated
+        # git-over-HTTPS from the shared runner egress ("could not read Username",
+        # 2026-09-01/02). pcbjam-shared is public, so the auto GITHUB_TOKEN suffices;
+        # SUBMODULE_TOKEN is the fallback if it ever goes private (same rewrite the
+        # root repo's workflows use).
+        env:
+          GH_TOKEN: ${{ secrets.SUBMODULE_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          git config --global --add url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
+          git submodule update --init --depth 1 web/pcbjam-shared
 
       - uses: pnpm/action-setup@v4
         with:
