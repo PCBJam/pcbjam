@@ -44,16 +44,22 @@ jobs:
         with:
           submodules: false
       - name: Init pcbjam-shared submodule
-        # Token-HTTPS, not anonymous: GitHub intermittently refuses unauthenticated
-        # git-over-HTTPS from the shared runner egress ("could not read Username",
-        # 2026-09-01/02). pcbjam-shared is public, so the auto GITHUB_TOKEN suffices;
-        # SUBMODULE_TOKEN is the fallback if it ever goes private (same rewrite the
-        # root repo's workflows use).
+        # Not `git submodule update`: GitHub throttles that clone from the shared runner
+        # egress as UNAUTHENTICATED ("GitHub is temporarily limiting some unauthenticated
+        # downloads", 2026-09-01..03) even with the auto GITHUB_TOKEN rewritten into the
+        # URL. The REST tarball endpoint honors the token, and nothing downstream needs
+        # the submodule's .git (it is a plain pnpm workspace member). The commit is the
+        # gitlink pinned in this checkout, so the tree is exactly what a submodule init
+        # would produce. SUBMODULE_TOKEN is the fallback if the repo ever goes private.
         env:
           GH_TOKEN: ${{ secrets.SUBMODULE_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
-          git config --global --add url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
-          git submodule update --init --depth 1 web/pcbjam-shared
+          sha=$(git rev-parse HEAD:web/pcbjam-shared)
+          mkdir -p web/pcbjam-shared
+          curl -fsSL --retry 5 --retry-all-errors -H "Authorization: Bearer ${GH_TOKEN}" \
+            "https://api.github.com/repos/PCBJam/pcbjam-shared/tarball/${sha}" \
+            | tar xz --strip-components=1 -C web/pcbjam-shared
+          test -f web/pcbjam-shared/package.json
       - uses: actions/setup-node@v4
         with:
           node-version: 20
