@@ -3,6 +3,7 @@ import * as Y from "yjs";
 import { Awareness } from "y-protocols/awareness";
 import { colorForUser, PRESENCE_COLORS, type PresenceUser } from "@pcbjam/shared";
 import { connectAwarenessBroadcast } from "./awareness-bc";
+import type { IdleMonitor, IdlePhase } from "./idle-policy";
 import {
   createPresence,
   publishSkeleton,
@@ -364,5 +365,68 @@ describe("comment-author color seeds (0009 C)", () => {
     });
     await settle();
     expect(b.presence.colorOf("alice")).toBe(PRESENCE_COLORS[0]);
+  });
+});
+
+// --- hidden-tab `away` (do-observability 0001 §B) ---------------------------
+
+function fakeIdle(): IdleMonitor & { emit(p: IdlePhase): void } {
+  let phase: IdlePhase = "active";
+  const subs = new Set<(p: IdlePhase) => void>();
+  return {
+    phase: () => phase,
+    subscribe(cb) {
+      subs.add(cb);
+      cb(phase);
+      return () => subs.delete(cb);
+    },
+    destroy() {
+      subs.clear();
+    },
+    emit(p) {
+      phase = p;
+      for (const cb of subs) cb(p);
+    },
+  };
+}
+
+describe("presence away flag", () => {
+  afterEach(() => {
+    for (const c of clients.splice(0)) c.destroy();
+    resetPresenceColorClaims();
+  });
+
+  it("publishes away:true past the hidden grace, clears it on return, and peers see it", async () => {
+    const idle = fakeIdle();
+    const a = client("away-room");
+    const b = client("away-room");
+    a.presence = createPresence({ awareness: a.awareness, user: user("A"), tool: "eeschema", idle });
+    b.presence = createPresence({ awareness: b.awareness, user: user("B"), tool: "eeschema" });
+    await settle();
+    expect(a.awareness.getLocalState()).not.toHaveProperty("away");
+
+    idle.emit("away");
+    expect(a.awareness.getLocalState()).toMatchObject({ away: true });
+    await settle();
+    expect(b.presence.peers().find((p) => p.user.id === "A")?.away).toBe(true);
+
+    // Suspended is still "not looking" — no extra frame, flag unchanged.
+    const clockBefore = a.awareness.meta.get(a.awareness.clientID)!.clock;
+    idle.emit("suspended");
+    expect(a.awareness.meta.get(a.awareness.clientID)!.clock).toBe(clockBefore);
+
+    idle.emit("active");
+    expect(a.awareness.getLocalState()).not.toHaveProperty("away");
+    await settle();
+    expect(b.presence.peers().find((p) => p.user.id === "A")?.away).toBeUndefined();
+  });
+
+  it("destroy() unsubscribes from the monitor", () => {
+    const idle = fakeIdle();
+    const a = client("away-room-2");
+    const handle = createPresence({ awareness: a.awareness, user: user("A"), tool: "eeschema", idle });
+    handle.destroy();
+    expect(() => idle.emit("away")).not.toThrow();
+    expect(a.awareness.getLocalState()).toBeNull();
   });
 });

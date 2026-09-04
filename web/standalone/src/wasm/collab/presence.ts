@@ -8,6 +8,7 @@ import {
   type PresenceViewport,
 } from "@pcbjam/shared";
 import { clog } from "./debug";
+import { idleMonitor, type IdleMonitor } from "./idle-policy";
 
 /**
  * Room presence over Yjs awareness (collab-presence 0001): publish this
@@ -160,6 +161,8 @@ export function createPresence(opts: {
    *  claimed around, adopted for our own past comments, and the offline-
    *  author fallback in colorOf. Undefined ⇒ pre-0009 behavior. */
   seedColors?: () => ReadonlyMap<string, string>;
+  /** Hidden-tab monitor (tests inject one; default: the page singleton). */
+  idle?: IdleMonitor;
 }): PresenceHandle {
   const { awareness } = opts;
   const seeds = () => opts.seedColors?.();
@@ -337,6 +340,23 @@ export function createPresence(opts: {
     window.addEventListener("pagehide", onPageHide);
   }
 
+  // Hidden-tab policy (do-observability 0001 §B): one `away` frame when the
+  // tab has been hidden past the grace, one clear when it is back. While
+  // suspended the socket is down, so the flag only travels on resume.
+  const setAway = (away: boolean) => {
+    const current = (awareness.getLocalState() ?? {}) as Partial<PresenceState>;
+    if (!!current.away === away) return;
+    const { away: _drop, ...rest } = current;
+    awareness.setLocalState({
+      ...rest,
+      ...(away ? { away: true } : {}),
+      updatedAt: Date.now(),
+    });
+  };
+  const unsubscribeIdle = (opts.idle ?? idleMonitor()).subscribe((phase) =>
+    setAway(phase !== "active"),
+  );
+
   let destroyed = false;
   return {
     peers,
@@ -377,6 +397,7 @@ export function createPresence(opts: {
       if (typeof window !== "undefined") {
         window.removeEventListener("pagehide", onPageHide);
       }
+      unsubscribeIdle();
       awareness.off("change", onChange);
       subscribers.clear();
       if (hfTimer) clearTimeout(hfTimer);

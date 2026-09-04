@@ -10,6 +10,7 @@ import {
   type GatewayClientMsg,
 } from "@pcbjam/shared";
 import { CollabSubRejectedError, GatewayDocFacade } from "./gateway";
+import { resetIdleMonitorForTests } from "./idle-policy";
 
 /**
  * The gateway facade is a mini y-websocket client over one shared multiplexed
@@ -445,5 +446,102 @@ describe("gateway connection — mux + reconnect", () => {
     facade.destroy();
     doc.destroy();
     expect(ws.readyState).toBe(FakeWebSocket.CLOSED);
+  });
+});
+
+// --- hidden-tab policy (do-observability 0001 §B) ----------------------------
+
+/** A scriptable `document` for the idle monitor singleton. */
+class FakeDocument {
+  visibilityState: "visible" | "hidden" = "visible";
+  private listeners = new Set<() => void>();
+  addEventListener(_t: string, cb: () => void): void {
+    this.listeners.add(cb);
+  }
+  removeEventListener(_t: string, cb: () => void): void {
+    this.listeners.delete(cb);
+  }
+  set(state: "visible" | "hidden"): void {
+    this.visibilityState = state;
+    for (const cb of this.listeners) cb();
+  }
+}
+
+describe("gateway connection — hidden-tab suspend/resume", () => {
+  it("suspends the socket without a reconnect ladder, resumes with re-sub + re-sync", async () => {
+    vi.useFakeTimers();
+    const fakeDoc = new FakeDocument();
+    resetIdleMonitorForTests();
+    vi.stubGlobal("document", fakeDoc);
+    vi.stubGlobal("window", { PCBJAM_IDLE_POLICY: { awayAfterMs: 1_000, suspendAfterMs: 5_000 } });
+    cleanups.push(() => {
+      vi.unstubAllGlobals();
+      vi.stubGlobal("WebSocket", FakeWebSocket);
+      resetIdleMonitorForTests();
+      vi.useRealTimers();
+    });
+
+    newProject();
+    const doc = new Y.Doc();
+    const facade = new GatewayDocFacade(doc, facadeOpts("a.kicad_sch"));
+    track(facade, doc);
+    const ws1 = FakeWebSocket.instances.at(-1)!;
+    ws1.open();
+    const ch = ws1.controls()[0]!.ch;
+    const syncing = facade.activate();
+    const step1 = ws1.frames().find((f) => f.type === 0)!;
+    const serverDoc = new Y.Doc();
+    cleanups.push(() => serverDoc.destroy());
+    ws1.receiveFrame(ch, step2From(serverDoc, step1.frame));
+    await syncing;
+    const socketsBefore = FakeWebSocket.instances.length;
+
+    // Hidden past the grace: nothing happens to the socket yet.
+    fakeDoc.set("hidden");
+    vi.advanceTimersByTime(1_000);
+    expect(ws1.readyState).toBe(FakeWebSocket.OPEN);
+
+    // Past the suspend threshold: the socket closes and stays closed.
+    vi.advanceTimersByTime(4_000);
+    expect(ws1.readyState).toBe(FakeWebSocket.CLOSED);
+    vi.advanceTimersByTime(60_000); // any reconnect ladder would have fired
+    expect(FakeWebSocket.instances.length).toBe(socketsBefore);
+
+    // Visible again: one fresh dial; onopen re-subscribes ACTIVE + Step1.
+    fakeDoc.set("visible");
+    const ws2 = FakeWebSocket.instances.at(-1)!;
+    expect(ws2).not.toBe(ws1);
+    ws2.open();
+    expect(ws2.controls()[0]).toMatchObject({ t: "sub", ch, mode: "active" });
+    expect(ws2.frames().some((f) => f.ch === ch && f.type === 0)).toBe(true);
+  });
+
+  it("a facade created while suspended does not dial until resume", () => {
+    vi.useFakeTimers();
+    const fakeDoc = new FakeDocument();
+    fakeDoc.visibilityState = "hidden";
+    resetIdleMonitorForTests();
+    vi.stubGlobal("document", fakeDoc);
+    vi.stubGlobal("window", { PCBJAM_IDLE_POLICY: { awayAfterMs: 100, suspendAfterMs: 200 } });
+    cleanups.push(() => {
+      vi.unstubAllGlobals();
+      vi.stubGlobal("WebSocket", FakeWebSocket);
+      resetIdleMonitorForTests();
+      vi.useRealTimers();
+    });
+    vi.advanceTimersByTime(200); // the singleton is built lazily below — pre-hidden
+    newProject();
+    const doc = new Y.Doc();
+    const facade = new GatewayDocFacade(doc, facadeOpts("a.kicad_sch", true));
+    track(facade, doc);
+    // Monitor was created on this dial attempt with the document hidden:
+    // active → away → suspended as the clock runs, closing the socket.
+    const sockets = FakeWebSocket.instances.length;
+    vi.advanceTimersByTime(200);
+    expect(FakeWebSocket.instances.at(-1)!.readyState).toBe(FakeWebSocket.CLOSED);
+    vi.advanceTimersByTime(10_000);
+    expect(FakeWebSocket.instances.length).toBe(sockets);
+    fakeDoc.set("visible");
+    expect(FakeWebSocket.instances.length).toBe(sockets + 1);
   });
 });

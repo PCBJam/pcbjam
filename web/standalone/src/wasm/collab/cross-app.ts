@@ -8,6 +8,7 @@ import {
 import { connectProvider, type ProviderConfig, type YjsProvider } from "./provider";
 import { claimedPresenceColor } from "./presence";
 import { clog } from "./debug";
+import { idleMonitor, type IdleMonitor } from "./idle-policy";
 
 /**
  * Project-wide presence room (collab-presence 0006): one awareness-only room
@@ -58,6 +59,8 @@ export async function startCrossAppPresence(opts: {
   tool: string;
   /** Initial doc this tab edits (see CrossAppHandle.setDocPath). */
   docPath?: string;
+  /** Hidden-tab monitor (tests inject one; default: the page singleton). */
+  idle?: IdleMonitor;
 }): Promise<CrossAppHandle | undefined> {
   if (opts.provider.kind === "none") return undefined;
 
@@ -82,6 +85,7 @@ export async function startCrossAppPresence(opts: {
   let selection: string[] = [];
   let selectionPaths: string[] | undefined;
   let docPath = opts.docPath;
+  let away = false;
 
   const publish = () => {
     const state: PresenceState = {
@@ -95,12 +99,20 @@ export async function startCrossAppPresence(opts: {
       // The actively-edited document, so peers can scope work (e.g. sibling
       // restage sockets) to sheets that are ACTUALLY open somewhere.
       ...(docPath ? { sheetPath: docPath } : {}),
+      ...(away ? { away: true } : {}),
       updatedAt: Date.now(),
     };
     awareness.setLocalState(state);
   };
 
   publish();
+  // Hidden-tab policy (do-observability 0001 §B), same as presence.ts.
+  const unsubscribeIdle = (opts.idle ?? idleMonitor()).subscribe((phase) => {
+    const next = phase !== "active";
+    if (next === away) return;
+    away = next;
+    publish();
+  });
   clog("cross-app: joined project presence room", room, "as", opts.tool);
 
   const subscribers = new Set<() => void>();
@@ -150,6 +162,7 @@ export async function startCrossAppPresence(opts: {
       if (typeof window !== "undefined") {
         window.removeEventListener("pagehide", onPageHide);
       }
+      unsubscribeIdle();
       awareness.off("change", onChange);
       subscribers.clear();
       awareness.setLocalState(null);

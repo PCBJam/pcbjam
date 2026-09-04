@@ -54,7 +54,7 @@ export function PresenceRoster({
   );
   const shown = ordered.slice(0, MAX_ROWS);
 
-  const followable = (p: PresencePeer) => !!onFollow && sameSheet(p);
+  const followable = (p: PresencePeer) => !!onFollow && sameSheet(p) && !p.away;
   const isFollowed = (p: PresencePeer) => following?.clientId === p.clientId;
 
   const toggleFollow = (p: PresencePeer) => {
@@ -69,9 +69,11 @@ export function PresenceRoster({
   return (
     <div data-testid="presence-roster" className="flex w-full flex-col">
       {shown.map((p) => {
-        const here = sameSheet(p);
+        // An away peer (hidden tab) reads like one on another sheet: dimmed,
+        // not followable, labelled.
+        const here = sameSheet(p) && !p.away;
         const followed = isFollowed(p);
-        const elsewhere = sheetLabel(p.sheetPath) || "another sheet";
+        const elsewhere = p.away ? "away" : sheetLabel(p.sheetPath) || "another sheet";
         return (
           <button
             key={p.user.id}
@@ -88,7 +90,9 @@ export function PresenceRoster({
                     ? `${p.user.name} — click to stop following`
                     : `${p.user.name} — click to follow their view`
                   : p.user.name
-                : `${p.user.name} — on ${elsewhere}`
+                : p.away
+                  ? `${p.user.name} — away`
+                  : `${p.user.name} — on ${elsewhere}`
             }
             className={`${overlayRowClass} ${
               followed ? "bg-black/10 dark:bg-white/10" : ""
@@ -102,7 +106,7 @@ export function PresenceRoster({
             <span className="truncate">{p.user.name}</span>
             {!here && (
               <span className="ml-auto shrink-0 truncate text-[10px] text-neutral-400 dark:text-white/40">
-                on {elsewhere}
+                {p.away ? "away" : `on ${elsewhere}`}
               </span>
             )}
             {here && followed && (

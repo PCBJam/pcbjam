@@ -17,7 +17,7 @@ import * as decoding from "lib0/decoding";
 import * as encoding from "lib0/encoding";
 import {
   applyAwarenessUpdate,
-  Awareness,
+  type Awareness,
   encodeAwarenessUpdate,
   removeAwarenessStates,
 } from "y-protocols/awareness";
@@ -36,6 +36,8 @@ import {
   untagGatewayFrame,
 } from "@pcbjam/shared";
 import { cwarn } from "./debug";
+import { createGatewayAwareness } from "./gateway-awareness";
+import { idleMonitor } from "./idle-policy";
 import type { YjsProvider } from "./provider";
 
 const MESSAGE_SYNC = 0;
@@ -83,10 +85,14 @@ class GatewayConnection {
   private ws: WebSocket | null = null;
   private open = false;
   private closed = false;
+  /** Hidden-tab suspend (do-observability 0001 §B): socket closed on
+   *  purpose, facades kept, no reconnect ladder until resume(). */
+  private suspended = false;
   private attempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private chSeq = 0;
   private readonly facades = new Map<number, GatewayDocFacade>();
+  private readonly unsubscribeIdle: () => void;
   refs = 0;
 
   constructor(
@@ -95,11 +101,59 @@ class GatewayConnection {
     private readonly token: string | undefined,
     private readonly onGone: () => void,
   ) {
+    // Fires synchronously with the current phase: a connection created
+    // while the tab is already suspended starts suspended (no dial).
+    this.unsubscribeIdle = idleMonitor().subscribe((phase) => {
+      if (phase === "suspended") this.suspend();
+      else this.resume();
+    });
     this.dial();
   }
 
+  /** Hidden-tab policy: drop the socket; subscriptions stay registered. */
+  suspend(): void {
+    if (this.suspended || this.closed) return;
+    this.suspended = true;
+    if (this.reconnectTimer !== undefined) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = undefined;
+    }
+    // Detach FIRST: the close handshake needs the server's ack, and a slow
+    // (or hibernating) peer must not leave us half-open — from here on the
+    // socket is gone for every facade, whatever the wire does.
+    const ws = this.ws;
+    const wasOpen = this.open;
+    this.ws = null;
+    this.open = false;
+    console.info(`[gateway] suspended (hidden tab): ${this.room}`);
+    if (ws) {
+      ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
+      try {
+        ws.close();
+      } catch {
+        /* already dead */
+      }
+    }
+    if (wasOpen) {
+      for (const facade of this.facades.values()) facade.handleSocketDown();
+    }
+  }
+
+  /** Visible again: re-dial; onopen re-subscribes and re-syncs every facade. */
+  resume(): void {
+    if (!this.suspended || this.closed) return;
+    this.suspended = false;
+    this.attempts = 0;
+    console.info(`[gateway] resumed (visible again): ${this.room}`);
+    if (!this.ws) this.dial();
+  }
+
+  isSuspended(): boolean {
+    return this.suspended;
+  }
+
   private dial(): void {
-    if (this.closed) return;
+    if (this.closed || this.suspended) return;
     let ws: WebSocket;
     try {
       ws = new WebSocket(gatewayWsUrl(this.endpoint, this.room, this.token));
@@ -149,7 +203,7 @@ class GatewayConnection {
   }
 
   private scheduleReconnect(): void {
-    if (this.closed || this.reconnectTimer !== undefined) return;
+    if (this.closed || this.suspended || this.reconnectTimer !== undefined) return;
     // Same ladder the per-room provider used (100ms · 2^n, capped) — but ONE
     // ladder for the whole project instead of one per room.
     const delay = Math.min(100 * 2 ** this.attempts, MAX_BACKOFF_MS);
@@ -199,6 +253,7 @@ class GatewayConnection {
 
   private shutdown(): void {
     this.closed = true;
+    this.unsubscribeIdle();
     if (this.reconnectTimer !== undefined) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = undefined;
@@ -306,7 +361,9 @@ export class GatewayDocFacade implements YjsProvider {
       (opts.passive && !this.isPresence) || this.isHintOnly ? "passive" : "active";
     this.passiveSync =
       this.mode === "passive" && !this.isHintOnly && opts.passiveSync === true;
-    this.awareness = new Awareness(doc);
+    // No liveness clock on the gateway (0001 §A): the ProjectRoom's
+    // tombstones handle departures; renewals would only wake DOs.
+    this.awareness = createGatewayAwareness(doc);
     this.conn = acquireConnection(
       opts.endpoint,
       opts.scopeId,
