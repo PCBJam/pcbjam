@@ -310,9 +310,14 @@ test.describe("grid cell editors are typeable (Symbol Properties)", () => {
     // The bug: the inner text ctrl stayed at its 10px creation width.
     expect(combo!.box.w, "combo editor text ctrl spans the cell").toBeGreaterThan(100);
     expect(combo!.focused, "combo editor text ctrl took focus").toBe(true);
-    // Per-key delay: Firefox reorders characters typed at full speed into a
-    // wx-dom <input> whose wx side echoes its value back (combo text ctrl) —
-    // a separate wx-dom echo/ordering issue, not what this spec gates.
+    // Per-key pacing (not a Firefox quirk): WX_GRID's auto-size pass, run from
+    // the first UPDATE_UI idle after the Value commit above, may commit and
+    // hide this editor under the typist; the next key then reopens it through
+    // wxGrid::OnChar → StartingKey → WriteText, which inserts at the live DOM
+    // caret (gated by grid-combo-editor-caret.spec.ts). Two keys inside that
+    // hidden window would lose the second one (OnChar skips it once the editor
+    // is enabled and the <input> never saw its keydown), so keep one key per
+    // ~40 ms. See docs/features/wx-parity-bugs/grid-combo-editor-caret.md.
     await page.keyboard.type("Resistor_SMD:R_0805", { delay: 40 });
     await expect
       .poll(async () => (await visibleTextInputs(page)).find((i) => i.focused)?.value ?? "", {
