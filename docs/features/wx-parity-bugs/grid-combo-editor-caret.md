@@ -177,15 +177,25 @@ is a separate, upstream-facing decision.
    regression on both engines: footprint-chooser-confirm, infobar-dismiss,
    findings-p, import-settings-modal-stack, pl_editor, load-pcb,
    eeschema-rotate (see the landing commit for the result).
-4. NOT done (optional, still open): a standalone wx app
+4. Follow-up the same day: the staging CI run for the landing (33851491275)
+   failed `grid-editors-typing.spec.ts` on BOTH engines at the "combo editor
+   opened" poll — the §2 auto-size pass trailing the Value commit by ~270 ms
+   on the loaded runner and hiding the editor the double-click had just
+   opened (the poll had flaked on Firefox before the fix too). Fixed
+   deterministically: the port exports `wxWasmIdlePassCount()` (completed
+   `ProcessIdle()` passes, a plain wx-free read) and the spec waits for one
+   idle pass after the commit before opening the next editor
+   (`waitForIdlePass`). Other specs that commit a grid cell and then open
+   another editor should do the same.
+5. NOT done (optional, still open): a standalone wx app
    `tests/apps/standalone/textentry-caret/` (pattern of `textctrl-reentry`,
    `Makefile.wasm` rule + a case in `tests/e2e/dom-port-bugs.spec.ts`): a
    `wxTextCtrl`, type `R` natively, a button calls `WriteText("e")` and logs
    `[REPRO] caret: value=<v> pos=<GetInsertionPoint()>`; expect `Re` / 2.
    Also covers `SetSelection` + `SetFocus` ordering (select-all-on-open) and
    `GetSelection` after a native mouse selection.
-5. The auto-size race itself is not testable deterministically (timer-paced
-   idle); it is documented here and covered indirectly by (2).
+6. The auto-size race itself is not testable deterministically (timer-paced
+   idle); it is documented here and neutralised in (4).
 
 ### Step 4 — landing
 
@@ -201,10 +211,12 @@ header change recompiled KiCad; in CI expect the ~50 min container step).
 ### Not part of this fix (noted)
 
 - Idle cadence: `ProcessIdle` every third tick delays every `UPDATE_UI`
-  handler by up to ~50 ms; fine for humans, but it is why automation can type
-  into an editor the grid is about to hide. Running idle after each dispatched
-  DOM job would close the window; separate change if the typing spec ever
-  flakes again after Step 1.
+  handler by up to ~50 ms (much more on a loaded CI runner, where each tick
+  is one animation frame); fine for humans, but it is why automation can type
+  into, or double-click open, an editor the grid is about to hide. Specs now
+  have `wxWasmIdlePassCount()` to wait it out (Step 3.4); running idle after
+  each dispatched DOM job would close the window for users too — still a
+  separate change.
 - `KeyCallback` routing while an editable is mid-blur is correct: once the
   input is hidden the key MUST go to wx (that is what reopens the editor).
 - Residual after Step 1, race only: two keys arriving while the editor is

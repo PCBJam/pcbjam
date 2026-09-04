@@ -248,6 +248,20 @@ async function savedProperty(page: Page, name: string): Promise<string | null> {
   return last;
 }
 
+/** Completed wx idle passes (wxWasmIdlePassCount, a plain wasm export). */
+const idlePasses = (page: Page) =>
+  page.evaluate(
+    () => (window.Module as unknown as { _wxWasmIdlePassCount(): number })._wxWasmIdlePassCount(),
+  );
+
+/** Resolve once at least one full ProcessIdle() pass has run from now on. */
+async function waitForIdlePass(page: Page): Promise<void> {
+  const before = await idlePasses(page);
+  await expect
+    .poll(() => idlePasses(page), { timeout: 20000, intervals: [50] })
+    .toBeGreaterThan(before);
+}
+
 test.describe("grid cell editors are typeable (Symbol Properties)", () => {
   test("STC editor (Value) receives typed characters; combo editor (Footprint) is full-width", async ({
     page,
@@ -293,6 +307,15 @@ test.describe("grid cell editors are typeable (Symbol Properties)", () => {
         { timeout: 20000, intervals: [250] },
       )
       .toBe(0);
+
+    // The Value commit made WX_GRID's column widths dirty; the auto-size pass
+    // that consumes that flag runs from wxEVT_UPDATE_UI on the port's idle
+    // (every third event-loop tick) and starts with AcceptCellEditControlIfShown,
+    // which would commit+hide the Footprint editor opened below if it ran after
+    // the double-click. Wait for one idle pass after the commit so the pass has
+    // run before the next editor opens (deterministic; see
+    // docs/features/wx-parity-bugs/grid-combo-editor-caret.md §2).
+    await waitForIdlePass(page);
 
     // --- Footprint: wxComboCtrl-based editor --------------------------------
     await page.mouse.dblclick(cx, footprintRowY);
