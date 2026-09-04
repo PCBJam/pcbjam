@@ -1,42 +1,72 @@
 ---
 import BaseLayout from '../layouts/BaseLayout.astro';
 import Hero from '../sections/Hero.astro';
-import TrustBar from '../sections/TrustBar.astro';
-import Pillars from '../sections/Pillars.astro';
-import HowItWorks from '../sections/HowItWorks.astro';
-import CapabilityProof from '../sections/CapabilityProof.astro';
-import OpenYours from '../sections/OpenYours.astro';
-import MigrationStrip from '../sections/MigrationStrip.astro';
-import PositioningMap from '../sections/PositioningMap.astro';
-import BuiltByEmergence from '../sections/BuiltByEmergence.astro';
-import MakeMoney from '../sections/MakeMoney.astro';
-import AiNote from '../sections/AiNote.astro';
-import FinalCta from '../sections/FinalCta.astro';
+import FullKicad from '../sections/FullKicad.astro';
+import OwnYourData from '../sections/OwnYourData.astro';
+import SharePublish from '../sections/SharePublish.astro';
+import Pricing from '../sections/Pricing.astro';
+import Roadmap from '../sections/Roadmap.astro';
+import Faq from '../sections/Faq.astro';
+import Contact from '../sections/Contact.astro';
 
+// Title and description carry the two search phrases people actually use
+// ("KiCad online", "in your browser") plus the differentiator; the H1 in the
+// hero keeps the plain product line. See docs: SEO brief, 2026-09-03.
+const title = 'PCBJam — KiCad online, in your browser, with your team';
 const description =
-  'Real KiCad in your browser — schematic capture, PCB layout, DRC, 3D, Gerber export. No install, open format, free. Multiplayer collaboration coming. Try the live demo.';
+  "Run KiCad online: the full editor in your browser, with your team in the same project. KiCad's own file format, no install, no lock-in. Join the waitlist.";
 
-const jsonLd = {
-  '@context': 'https://schema.org',
+const site = Astro.site ?? new URL('https://www.pcbjam.com');
+
+const softwareLd = {
   '@type': 'SoftwareApplication',
   name: 'PCBJam',
+  url: site.href,
   applicationCategory: 'DesignApplication',
   operatingSystem: 'Web browser',
   description,
-  offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
+  screenshot: new URL('/landing/hero-poster.jpg', site).href,
+  featureList: [
+    'Schematic capture',
+    'PCB layout',
+    'DRC and ERC',
+    '3D viewer',
+    'Gerber and drill export',
+    'Real-time collaboration',
+    'KiCad file format import and export',
+    'Team component libraries',
+    'Public project publishing and invite links',
+    'Viewer mode on Android phones and tablets',
+  ],
+  // Keep in sync with src/pages/pricing.astro.
+  offers: [
+    { '@type': 'Offer', name: 'Free', price: '0', priceCurrency: 'USD' },
+    { '@type': 'Offer', name: 'Pro', price: '10', priceCurrency: 'USD' },
+  ],
   creator: {
     '@type': 'Organization',
     name: 'Emergence Engineering',
     url: 'https://www.emergence-engineering.com',
   },
 };
+
+// The hero's YouTube demo. Dates/duration from the video's own metadata.
+const videoLd = {
+  '@type': 'VideoObject',
+  name: 'PCBJam: KiCad on the web demo video',
+  description:
+    'A seven-minute walk through PCBJam: the KiCad schematic and PCB editors running in a browser, working on one project together, and exporting.',
+  thumbnailUrl: ['https://i.ytimg.com/vi/6tXAyWIOZ_o/hqdefault.jpg'],
+  uploadDate: '2026-09-03T06:05:17-07:00',
+  duration: 'PT7M7S',
+  embedUrl: 'https://www.youtube-nocookie.com/embed/6tXAyWIOZ_o',
+  url: 'https://www.youtube.com/watch?v=6tXAyWIOZ_o',
+};
+
+const jsonLd = { '@context': 'https://schema.org', '@graph': [softwareLd, videoLd] };
 ---
 
-<BaseLayout
-  title="PCBJam — real KiCad in your browser, no install"
-  description={description}
-  wide
->
+<BaseLayout title={title} description={description} wide>
   <script
     slot="head"
     type="application/ld+json"
@@ -45,15 +75,11 @@ const jsonLd = {
   />
 
   <Hero />
-  <TrustBar />
-  <Pillars />
-  <HowItWorks />
-  <CapabilityProof />
-  <OpenYours />
-  <MigrationStrip />
-  <PositioningMap />
-  <BuiltByEmergence />
-  <MakeMoney />
-  <AiNote />
-  <FinalCta />
+  <FullKicad />
+  <OwnYourData />
+  <SharePublish />
+  <Pricing />
+  <Roadmap />
+  <Faq />
+  <Contact />
 </BaseLayout>

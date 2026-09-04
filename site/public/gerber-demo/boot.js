@@ -361,13 +361,37 @@
         return loadScript(base + "/wx-dom.js");
       })
       .then(function () {
-        return loadScript(base + "/gerbview.js");
+        return loadScriptSameOrigin(base + "/gerbview.js");
       })
       .then(function () {
         console.log("[KICAD] injected wx.js + wx-dom.js + gerbview.js (base=" + base + ")");
       })
       .catch(function (err) {
         showError(err.message);
+      });
+  }
+
+  // gerbview.js goes through a SAME-ORIGIN blob: URL. Emscripten 6 dropped
+  // Module.mainScriptUrlOrBlob and spawns its pthread workers from the URL the
+  // glue itself was loaded from (document.currentScript.src); with the glue
+  // injected straight from the CDN that URL is cross-origin and every
+  // `new Worker(...)` throws a SecurityError ("Failed to construct 'Worker'").
+  // Fetching the glue text over CORS (the CDN sends ACAO + CORP) and executing
+  // it from a blob makes that URL same-origin, so the workers spawn from the
+  // blob and re-execute the same glue in pthread-child mode. The .wasm and the
+  // other assets still resolve through locateFile → the CDN folder. wx.js and
+  // wx-dom.js are main-thread only and stay plain <script src> tags.
+  function loadScriptSameOrigin(src) {
+    var abs = new URL(src, location.href);
+    if (abs.origin === location.origin) return loadScript(src);
+    return fetch(abs.href, { mode: "cors" })
+      .then(function (r) {
+        if (!r.ok) throw new Error("failed to load " + src + " (" + r.status + ")");
+        return r.text();
+      })
+      .then(function (text) {
+        var url = URL.createObjectURL(new Blob([text], { type: "text/javascript" }));
+        return loadScript(url);
       });
   }
 

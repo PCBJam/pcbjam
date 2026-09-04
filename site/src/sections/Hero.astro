@@ -1,140 +1,85 @@
 ---
 import WaitlistForm from '../components/WaitlistForm.astro';
-import DemoLaunchCard from '../components/DemoLaunchCard.astro';
-import pcbnew from '../assets/screens/pcbnew.png';
+
+const DISCORD_URL = 'https://discord.gg/ybhqJxjR3E';
+const DEMO_URL = 'https://demo.pcbjam.com';
 ---
 
-<section class="hero bp-grid">
-  <div class="container hero-grid">
-    <div class="hero-copy">
-      <span class="eyebrow">PCBJam · built on KiCad</span>
-      <h1>Real KiCad. In your browser. No install.</h1>
-      <p class="lead">
-        The full KiCad suite, compiled to WebAssembly and running in a tab. Open your own
-        board, route, run DRC, spin it in 3D, export Gerbers — the real engine, not a
-        re-implementation. Multiplayer co-editing is coming: join the waitlist for early
-        access.
-      </p>
+<section class="readme hero">
+  <h1>Collaborative KiCad in the browser.</h1>
+  <p class="lead">
+    Run KiCad online: schematic capture, PCB layout, DRC, 3D and Gerber export, in a tab.
+    Work on the same project with your team at the same time. Your files stay in KiCad's own
+    format.
+  </p>
 
-      <p class="hero-cta">
-        <a
-          class="btn btn-primary btn-demo"
-          href="https://demo.pcbjam.com"
-          target="_blank"
-          rel="noopener"
-        >
-          ▶&nbsp; Open the live demo
-        </a>
-        <span class="hero-cta-sub">Free · no install, no account</span>
-      </p>
+  <WaitlistForm source="hero" id="waitlist" class="hero-form">
+    <Fragment slot="micro">
+      or <a href={DISCORD_URL} rel="noopener" target="_blank">join the Discord</a> ·
+      <a href={DEMO_URL} rel="noopener" target="_blank">open the demo</a> (no account) ·
+      <a href="/privacy">privacy</a>
+    </Fragment>
+  </WaitlistForm>
 
-      <p class="hero-wl-lead">Want early access to multiplayer?</p>
-      <WaitlistForm
-        source="hero"
-        id="waitlist"
-        class="hero-form"
-        microcopy="Collab rolls out in waves — get your invite."
-      />
-
-      <ul class="hero-trust">
-        <li>Open source</li>
-        <li>Your files stay in KiCad format</li>
-        <li>Runs on Mac, Linux, Chromebook, iPad</li>
-      </ul>
+  {/* Demo video (YouTube, privacy-enhanced host: no cookies until play). The
+      landing page is deliberately NOT cross-origin isolated (see public/_headers)
+      so this iframe can load. */}
+  <figure class="loop">
+    <div class="frame video">
+      <iframe
+        src="https://www.youtube-nocookie.com/embed/6tXAyWIOZ_o?rel=0"
+        title="PCBJam: KiCad on the web, demo video"
+        loading="lazy"
+        allow="accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+        referrerpolicy="strict-origin-when-cross-origin"
+        allowfullscreen
+      ></iframe>
     </div>
-
-    <div class="hero-visual">
-      {/* TODO(assets): swap the poster for a hero board still w/ presence cursors
-          (§4b.3) or the multiplayer demo loop (§4b.2) once produced. */}
-      <DemoLaunchCard
-        href="https://demo.pcbjam.com"
-        image={pcbnew}
-        alt="KiCad Pcbnew editing the pic_programmer demo board in a browser tab — open the live demo"
-        sub="Real KiCad in your browser · opens in a new tab"
-      />
-    </div>
-  </div>
+    <figcaption class="mono small muted">
+      7 minute demo · <a href="https://www.youtube.com/watch?v=6tXAyWIOZ_o" rel="noopener" target="_blank">watch on YouTube</a>
+    </figcaption>
+  </figure>
 </section>
 
 <style>
   .hero {
-    padding-block: clamp(2.5rem, 6vw, 4.5rem);
-  }
-  .hero-grid {
-    display: grid;
-    grid-template-columns: 1.1fr 1fr;
-    gap: 2.5rem;
-    align-items: center;
-  }
-  .hero-copy h1 {
-    font-size: clamp(2rem, 5vw, 3.25rem);
-    margin-bottom: 0.75rem;
-  }
-  .hero-cta {
-    margin: 1.5rem 0 0;
+    padding-block: 2.5rem 1.75rem;
     display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 0.5rem 1rem;
+    flex-direction: column;
+    gap: 1.25rem;
   }
-  .btn-demo {
-    padding: 0.85rem 1.6rem;
-    font-size: 1.05rem;
-  }
-  .hero-cta-sub {
-    font-size: 0.85rem;
-    color: var(--fg-muted);
-  }
-  .hero-wl-lead {
-    margin: 1.75rem 0 0.5rem;
+  h1 {
+    font-size: clamp(1.9rem, 5vw, 2.6rem);
     font-weight: 600;
-    font-size: 0.95rem;
+    letter-spacing: -0.015em;
+    line-height: 1.12;
+    margin: 0;
+    text-wrap: balance;
+  }
+  .lead {
+    margin: 0;
+    font-size: 1.1rem;
+    color: var(--fg-muted);
+    max-width: 40rem;
+    text-wrap: pretty;
   }
   .hero-form {
-    max-width: 30rem;
+    max-width: 32rem;
   }
-  /* One primary action per hero: the demo button. Demote the waitlist submit
-     to ghost weight (it stays full-primary in the final CTA and footer).
-     .hero-copy anchors the scope — .hero-form itself sits on the WaitlistForm
-     root, which doesn't carry this component's scope attribute. */
-  .hero-copy :global(.hero-form .btn-primary) {
-    background: transparent;
-    border-color: var(--border);
-    color: var(--fg);
-  }
-  .hero-copy :global(.hero-form .btn-primary:hover) {
-    border-color: var(--accent);
-    color: var(--accent);
-    filter: none;
-  }
-  .hero-trust {
-    list-style: none;
+  .loop {
+    margin: 0.5rem 0 0;
     display: flex;
-    flex-wrap: wrap;
-    gap: 0.5rem 1.25rem;
-    padding: 0;
-    margin: 1.5rem 0 0;
-    font-size: 0.85rem;
-    color: var(--fg-muted);
+    flex-direction: column;
+    gap: 0.5rem;
   }
-  .hero-trust li {
-    position: relative;
-    padding-left: 1rem;
+  .video {
+    aspect-ratio: 16 / 9;
+    background: #000;
   }
-  .hero-trust li::before {
-    content: '●';
-    position: absolute;
-    left: 0;
-    color: var(--signal-400);
-    font-size: 0.6rem;
-    top: 0.25rem;
-  }
-  @media (max-width: 880px) {
-    .hero-grid {
-      grid-template-columns: 1fr;
-    }
-    .hero-visual {
-      order: -1;
-    }
+  .video iframe {
+    display: block;
+    width: 100%;
+    height: 100%;
+    border: 0;
   }
 </style>

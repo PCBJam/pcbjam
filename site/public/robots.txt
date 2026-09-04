@@ -1,2 +1,3 @@
 User-agent: *
 Allow: /
+Sitemap: https://www.pcbjam.com/sitemap-index.xml

@@ -1,11 +1,9 @@
 ---
 import { execSync } from 'node:child_process';
-import Icon from './Icon.astro';
-import EECredit from './EECredit.astro';
 
 const year = new Date().getFullYear();
-// TODO(links): add Roadmap (/roadmap) and dedicated How-it-works/Open pages when they ship.
 const GITHUB_URL = 'https://github.com/PCBJam';
+const DISCORD_URL = 'https://discord.gg/ybhqJxjR3E';
 
 // Build provenance: the pcbjam commit this site was built from — it pins the
 // KiCad + wxWidgets submodule revisions implicitly and is our GPLv3
@@ -26,153 +24,82 @@ function resolveBuildSha(): string {
 }
 const BUILD_SHA = resolveBuildSha();
 const BUILD_COMMIT_URL = `https://github.com/PCBJam/pcbjam/commit/${BUILD_SHA}`;
+
+const links = [
+  { href: '/blog', label: 'blog' },
+  { href: '/pricing', label: 'pricing' },
+  { href: GITHUB_URL, label: 'github', external: true },
+  { href: DISCORD_URL, label: 'discord', external: true },
+  { href: 'mailto:hello@pcbjam.com', label: 'hello@pcbjam.com' },
+  { href: '/terms', label: 'terms' },
+  { href: '/privacy', label: 'privacy' },
+  { href: '/cookies', label: 'cookies' },
+  { href: '/licenses', label: 'licenses' },
+];
 ---
 
 <footer class="site-footer">
-  <div class="container cols">
-    <div class="col col-brand">
-      <a class="brand" href="/">
-        <img src="/favicon.svg" alt="" width="18" height="25" />
-        <span>PCBJam</span>
-      </a>
-      <p class="tagline muted">Real KiCad, in your browser. No install.</p>
-      <nav class="links" aria-label="PCBJam">
-        <a href={GITHUB_URL} rel="noopener" target="_blank">
-          <Icon name="icons/github.svg" size="0.9rem" alt="" /> GitHub
-        </a>
-        <a href="/blog">Blog</a>
+  <div class="container rows">
+    <div class="row">
+      <span
+        >&copy; {year} PCBJam &middot; built by <a
+          href="https://emergence-engineering.com"
+          rel="noopener"
+          target="_blank">Emergence Engineering</a
+        ></span
+      >
+      <nav class="links" aria-label="Footer">
+        {
+          links.map((l) => (
+            <a href={l.href} rel={l.external ? 'noopener' : undefined} target={l.external ? '_blank' : undefined}>
+              {l.label}
+            </a>
+          ))
+        }
+        <a class="build" href={BUILD_COMMIT_URL} rel="noopener" target="_blank">build {BUILD_SHA}</a>
       </nav>
     </div>
-
-    <div class="col">
-      <h2 class="col-title">Product</h2>
-      <nav class="links stack" aria-label="Product">
-        <a href="/#how-it-works">How it works</a>
-        <a href="/#open">Open &amp; yours</a>
-        <a href="/pricing">Pricing</a>
-        <a href="https://demo.pcbjam.com" target="_blank" rel="noopener">Live demo</a>
-        <a href="/#waitlist">Join the waitlist</a>
-      </nav>
-    </div>
-
-    <div class="col">
-      <h2 class="col-title">Built by</h2>
-      <EECredit variant="footer" />
-    </div>
-
-    <div class="col">
-      <h2 class="col-title">Legal</h2>
-      <nav class="links stack" aria-label="Legal">
-        <a href="/privacy">Privacy Policy</a>
-        <a href="/terms">Terms of Service</a>
-        <a href="/cookies">Cookie Policy</a>
-        <a href="/licenses">Open-Source Licenses</a>
-      </nav>
-    </div>
-  </div>
-
-  <div class="container bottom">
-    <span
-      >&copy; {year} Emergence Engineering &middot; <a
-        class="build"
-        href={BUILD_COMMIT_URL}
-        rel="noopener"
-        target="_blank">build {BUILD_SHA}</a
-      ></span
-    >
-    <span class="attrib muted">
-      Built on the open-source <a href="https://www.kicad.org" rel="noopener" target="_blank"
-        >KiCad</a
-      > EDA suite. Not affiliated with or endorsed by the KiCad project.
-    </span>
+    <p class="attrib">
+      Built on the open-source <a href="https://www.kicad.org" rel="noopener" target="_blank">KiCad</a>
+      EDA suite. Not affiliated with or endorsed by the KiCad project.
+    </p>
   </div>
 </footer>
 
 <style>
   .site-footer {
     border-top: 1px solid var(--border);
-    background: var(--bg-soft);
     color: var(--fg-muted);
-    font-size: 0.9rem;
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
   }
-  .cols {
-    display: grid;
-    grid-template-columns: 1.4fr 1fr 1.4fr 1fr;
-    gap: 2rem;
-    padding-block: 2.5rem 1.5rem;
-  }
-  .col-title {
-    font-size: 0.8rem;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--fg);
-    margin: 0 0 0.75rem;
-  }
-  .brand {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.5rem;
-    font-weight: 700;
-    color: var(--fg);
-  }
-  .brand img {
-    height: 1.6rem;
-    width: auto;
-  }
-  .tagline {
-    margin: 0.6rem 0 0.9rem;
-  }
-  .links {
+  .rows {
     display: flex;
-    flex-wrap: wrap;
-    gap: 0.75rem 1rem;
-  }
-  .links.stack {
     flex-direction: column;
-    gap: 0.5rem;
+    gap: 0.6rem;
+    padding-block: 1.25rem 1.5rem;
   }
-  .links a {
-    color: var(--fg-muted);
-    display: inline-flex;
-    align-items: center;
-    gap: 0.35rem;
-  }
-  .links a:hover {
-    color: var(--fg);
-    text-decoration: none;
-  }
-  .bottom {
+  .row {
     display: flex;
     flex-wrap: wrap;
     gap: 0.5rem 1.5rem;
     align-items: center;
     justify-content: space-between;
-    padding-block: 1.25rem;
-    border-top: 1px solid var(--border);
   }
-  .attrib {
-    font-size: 0.82rem;
-    max-width: 42rem;
+  .links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem 1rem;
   }
-  .build {
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 0.82rem;
+  .site-footer a {
     color: var(--fg-muted);
   }
-  .build:hover {
-    color: var(--fg);
+  .site-footer a:hover {
+    color: var(--red);
     text-decoration: none;
   }
-
-  @media (max-width: 820px) {
-    .cols {
-      grid-template-columns: 1fr 1fr;
-      gap: 1.75rem;
-    }
-  }
-  @media (max-width: 520px) {
-    .cols {
-      grid-template-columns: 1fr;
-    }
+  .attrib {
+    margin: 0;
+    max-width: 48rem;
   }
 </style>

@@ -9,16 +9,19 @@
 
   /* ── Ink neutrals (authoritative; existing names kept — the *roles* stayed,
      the values flipped to the light theme) ────────────────────────────── */
-  --bg: #ffffff; /* page */
-  --bg-soft: #f4f7fc; /* surface / soft band */
-  --fg: #101729; /* ink-950 text */
-  --fg-muted: #5b6784; /* muted text */
-  --border: #d9e1f0; /* hairlines / bp-grid dots */
+  --bg: #fdfdfb; /* page (near-white, slightly warm) */
+  --bg-soft: #f3f4f0; /* surface / soft band */
+  --fg: #12161f; /* ink text */
+  --fg-muted: #5c6470; /* muted text */
+  --fg-2: #3a414d; /* body copy on the landing page */
+  --border: #dde0e4; /* hairlines */
 
-  /* ── Primary (Circuit Blue) ─────────────────────────────────────────── */
-  --accent: #2f57f5; /* links/accents (darker than the dark-theme 4f7cff for contrast on white) */
-  --brand-600: #2f57f5; /* primary button */
-  --brand-700: #1d4ed8; /* favicon / deep */
+  /* ── Copper layers: red = F.Cu, blue = B.Cu (KiCad's own layer colours) ── */
+  --red: #c83434; /* F.Cu: primary button, `##` heading marks */
+  --blue: #4d7fc4; /* B.Cu: marks, icons */
+  --accent: #2b5ba6; /* links (B.Cu darkened for contrast on white) */
+  --brand-600: var(--red); /* primary button */
+  --brand-700: #a12a2a; /* primary button hover / deep */
 
   /* ── Signal (green / "live" presence) ───────────────────────────────── */
   --signal-400: #0a9b62; /* online text/icons (dark-theme value 32d583 is illegible on white) */
@@ -36,9 +39,9 @@
 
   /* ── Geometry ───────────────────────────────────────────────────────── */
   --max-width: 64rem;
-  --radius-sm: 6px;
-  --radius: 10px; /* radius-md (existing) */
-  --radius-lg: 16px;
+  --radius-sm: 4px;
+  --radius: 6px; /* radius-md (existing) */
+  --radius-lg: 10px;
 
   /* ── Motion ─────────────────────────────────────────────────────────── */
   --dur-fast: 120ms;
@@ -47,11 +50,11 @@
   --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
 
   /* ── Type ───────────────────────────────────────────────────────────── */
-  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
-    "Liberation Mono", monospace;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo,
+    Consolas, "Liberation Mono", monospace;
 
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial,
-    sans-serif;
+  font-family: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto,
+    Helvetica, Arial, sans-serif;
 }
 
 /* Map the :root tokens into Tailwind's namespaces with `inline` so utilities
@@ -65,6 +68,8 @@
   --color-border: var(--border);
 
   --color-accent: var(--accent);
+  --color-red: var(--red);
+  --color-blue: var(--blue);
   --color-brand-600: var(--brand-600);
   --color-brand-700: var(--brand-700);
 
@@ -300,14 +305,15 @@ main.wide {
 
 /* Buttons */
 .btn {
+  font-family: var(--font-mono);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 0.5rem;
-  padding: 0.7rem 1.25rem;
-  border-radius: var(--radius);
+  padding: 0.7rem 1.1rem;
+  border-radius: var(--radius-sm);
   font-weight: 600;
-  font-size: 1rem;
+  font-size: 0.9rem;
   line-height: 1;
   border: 1px solid transparent;
   cursor: pointer;
@@ -325,7 +331,7 @@ main.wide {
   color: #fff;
 }
 .btn-primary:hover {
-  filter: brightness(1.08);
+  background: var(--brand-700);
 }
 .btn-ghost {
   background: transparent;
@@ -418,4 +424,38 @@ main.wide {
   .btn {
     transition: none;
   }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Landing page (README layout): one 45rem column, mono `##` headings.
+   ───────────────────────────────────────────────────────────────────────── */
+.readme {
+  width: 100%;
+  max-width: 45rem;
+  margin-inline: auto;
+  padding-inline: 1.25rem;
+}
+.readme-section {
+  padding-block: 1.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.readme-section p {
+  margin: 0;
+  color: var(--fg-2);
+  text-wrap: pretty;
+}
+.mono {
+  font-family: var(--font-mono);
+}
+.small {
+  font-size: 0.85rem;
+}
+/* Bordered frame around screenshots, loops and product-UI figures. */
+.frame {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--bg);
 }

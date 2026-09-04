@@ -39,7 +39,8 @@ cd site
 npm install
 npm run dev        # http://localhost:4321
 npm run build      # outputs to dist/ (static only — no adapter)
-npm run preview    # serve the production build locally
+npm run preview    # serve the production build locally (no COOP/COEP on any route)
+npm run pages:dev  # serve dist/ through wrangler with public/_headers applied
 ```
 
 ## Dynamic routes

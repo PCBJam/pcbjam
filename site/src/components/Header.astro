@@ -1,33 +1,23 @@
 ---
-// TODO(assets): replace favicon "K" + text wordmark with the real PCBJam logo (§4b.1).
-// TODO(links): add "Roadmap" → /roadmap and repoint How-it-works/Open to their own
-//   pages once the supporting pages ship; for now they anchor to landing sections.
+// README-style header: jar mark + mono wordmark, four mono links. The primary
+// call to action lives in the hero (#waitlist), not up here.
 const links = [
-  { href: '/#how-it-works', label: 'How it works' },
-  { href: '/#open', label: 'Open & yours' },
-  { href: '/pricing', label: 'Pricing' },
-  { href: '/blog', label: 'Blog' },
-  {
-    href: 'https://emergence-engineering.com',
-    label: 'Built by Emergence Engineering',
-    external: true,
-  },
-  // Highlighted (accent) link to the public editor demo. A compact text link, not
-  // a button — the header container caps at 1024px and a second button overflows it.
-  { href: 'https://demo.pcbjam.com', label: 'Live demo', external: true, highlight: true },
+  { href: 'https://demo.pcbjam.com', label: 'demo', external: true },
+  { href: '/blog', label: 'blog' },
+  { href: '/pricing', label: 'pricing' },
+  { href: 'https://discord.gg/ybhqJxjR3E', label: 'discord', external: true },
 ];
 
 const path = Astro.url.pathname;
 const isActive = (href: string, external?: boolean) =>
-  external || href.startsWith('/#') ? false : href === '/' ? path === '/' : path.startsWith(href);
+  external ? false : href === '/' ? path === '/' : path.startsWith(href);
 ---
 
 <header class="site-header" transition:persist>
   <div class="container bar">
     <a class="brand" href="/">
       <img src="/favicon.svg" alt="" width="20" height="28" />
-      <span class="brand-name">PCBJam</span>
-      <span class="brand-chip">built on KiCad</span>
+      <span class="brand-name">pcbjam</span>
     </a>
 
     <input type="checkbox" id="nav-toggle" class="nav-toggle sr-only" />
@@ -40,7 +30,6 @@ const isActive = (href: string, external?: boolean) =>
         links.map((l) => (
           <a
             href={l.href}
-            class:list={[{ 'nav-cta': l.highlight }]}
             aria-current={isActive(l.href, l.external) ? 'page' : undefined}
             rel={l.external ? 'noopener' : undefined}
             target={l.external ? '_blank' : undefined}
@@ -49,7 +38,6 @@ const isActive = (href: string, external?: boolean) =>
           </a>
         ))
       }
-      <a class="btn btn-primary cta-join" href="/#waitlist">Join the waitlist</a>
     </nav>
   </div>
 </header>
@@ -60,7 +48,7 @@ const isActive = (href: string, external?: boolean) =>
     top: 0;
     z-index: 50;
     border-bottom: 1px solid var(--border);
-    background: color-mix(in srgb, var(--bg-soft) 92%, transparent);
+    background: color-mix(in srgb, var(--bg) 92%, transparent);
     backdrop-filter: blur(8px);
   }
   .bar {
@@ -68,63 +56,41 @@ const isActive = (href: string, external?: boolean) =>
     align-items: center;
     justify-content: space-between;
     gap: 1rem;
-    padding-block: 0.75rem;
+    padding-block: 0.7rem;
   }
   .brand {
-    font-weight: 700;
-    color: var(--fg);
     display: inline-flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: 0.6rem;
+    color: var(--fg);
+    font-family: var(--font-mono);
+    font-weight: 600;
+    font-size: 0.95rem;
+  }
+  .brand:hover {
+    text-decoration: none;
   }
   .brand img {
-    height: 1.85rem;
+    height: 1.75rem;
     width: auto;
-  }
-  .brand-chip {
-    font-family: var(--font-mono);
-    font-size: 0.7rem;
-    color: var(--fg-muted);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    padding: 0.1rem 0.4rem;
-    white-space: nowrap;
   }
   .nav {
     display: flex;
     align-items: center;
-    gap: 1rem;
+    gap: 1.4rem;
+    font-family: var(--font-mono);
+    font-size: 0.9rem;
   }
   .nav > a {
     color: var(--fg-muted);
-    font-size: 0.95rem;
     white-space: nowrap;
   }
   .nav > a:hover {
-    color: var(--fg);
+    color: var(--red);
     text-decoration: none;
   }
   .nav > a[aria-current='page'] {
     color: var(--fg);
-  }
-  /* Highlighted demo link — accent-colored so it stands out among the neutral
-     nav links without needing a second button (which would overflow the bar). */
-  .nav > a.nav-cta {
-    color: var(--accent);
-    font-weight: 600;
-  }
-  .nav > a.nav-cta:hover {
-    filter: brightness(1.1);
-  }
-  .cta-join {
-    padding-block: 0.5rem;
-    font-size: 0.95rem;
-  }
-  /* `.nav > a` (higher specificity than .btn-primary) sets the muted link color;
-     re-assert the button's white text — dark-on-blue otherwise. */
-  .nav > a.cta-join,
-  .nav > a.cta-join:hover {
-    color: #fff;
   }
 
   /* Mobile menu (CSS-only via checkbox toggle). */
@@ -141,14 +107,7 @@ const isActive = (href: string, external?: boolean) =>
     background: var(--fg);
     border-radius: 2px;
   }
-
-  /* Collapse to the hamburger menu once the full one-line nav no longer fits the
-     1024px-capped bar (the demo link, then the Pricing link, pushed the crowded
-     desktop nav past the point where it stays on a single row). */
-  @media (max-width: 1120px) {
-    .brand-chip {
-      display: none;
-    }
+  @media (max-width: 560px) {
     .hamburger {
       display: flex;
     }
@@ -160,32 +119,28 @@ const isActive = (href: string, external?: boolean) =>
       flex-direction: column;
       align-items: stretch;
       gap: 0;
-      background: var(--bg-soft);
+      background: var(--bg);
       border-bottom: 1px solid var(--border);
-      padding: 0.5rem 1.25rem 1rem;
+      padding: 0.25rem 1.25rem 0.75rem;
       display: none;
     }
     .nav-toggle:checked ~ .nav {
       display: flex;
     }
     .nav > a {
-      padding-block: 0.6rem;
+      padding-block: 0.7rem;
       border-bottom: 1px solid var(--border);
     }
-    .cta-join {
-      margin-top: 0.75rem;
-      text-align: center;
+    .nav > a:last-child {
+      border-bottom: 0;
     }
   }
 </style>
 
 <script>
-  // ClientRouter persists the header (transition:persist). Two jobs:
-  //  1. Reset the mobile menu toggle after every navigation (was already here).
-  //  2. Close the menu when ANY nav link is tapped — including same-page anchor
-  //     links (How it works / Open & yours / Join the waitlist) that scroll but
-  //     don't navigate, so astro:page-load never fires for them and the CSS-only
-  //     checkbox would otherwise stay checked (menu stuck open).
+  // ClientRouter persists the header (transition:persist). Reset the mobile
+  // menu after every navigation, and close it when any nav link is tapped
+  // (same-page anchors scroll without firing astro:page-load).
   function initMobileNav() {
     const toggle = document.getElementById('nav-toggle') as HTMLInputElement | null;
     if (!toggle) return;

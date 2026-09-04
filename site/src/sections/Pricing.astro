@@ -1,0 +1,56 @@
+---
+import SectionTitle from '../components/SectionTitle.astro';
+
+// Keep in sync with src/pages/pricing.astro (the source of truth for plans).
+const rows = [
+  { plan: 'free', price: '$0', note: 'public projects, and small private work' },
+  { plan: 'pro', price: '$10 / month', note: 'unlimited private projects, more storage' },
+];
+---
+
+<section class="readme readme-section" id="pricing">
+  <SectionTitle>Pricing</SectionTitle>
+  <dl class="plans mono">
+    {
+      rows.map((r) => (
+        <div class="row">
+          <dt>{r.plan}</dt>
+          <dd class="price">{r.price}</dd>
+          <dd class="muted">{r.note}</dd>
+        </div>
+      ))
+    }
+  </dl>
+  <p class="mono small">
+    Teams and self-hosting are on the <a href="/pricing">pricing page</a>.
+  </p>
+</section>
+
+<style>
+  .plans {
+    margin: 0;
+    border-top: 1px solid var(--border);
+    font-size: 0.9rem;
+  }
+  .row {
+    display: grid;
+    grid-template-columns: 6rem 8rem minmax(0, 1fr);
+    gap: 0 1rem;
+    padding: 0.6rem 0;
+    border-bottom: 1px solid var(--border);
+  }
+  dt {
+    font-weight: 600;
+  }
+  dd {
+    margin: 0;
+  }
+  @media (max-width: 560px) {
+    .row {
+      grid-template-columns: 5rem minmax(0, 1fr);
+    }
+    .row dd.muted {
+      grid-column: 2;
+    }
+  }
+</style>

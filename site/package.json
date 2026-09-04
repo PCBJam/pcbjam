@@ -17,6 +17,9 @@
   },
   "dependencies": {
     "@astrojs/mdx": "^6.0.3",
+    "@astrojs/sitemap": "^3.7.4",
+    "@fontsource/ibm-plex-mono": "^5.3.0",
+    "@fontsource/ibm-plex-sans": "^5.3.0",
     "@fontsource/oswald": "^5.2.8",
     "astro": "^6.4.4",
     "resend": "^6.12.4"

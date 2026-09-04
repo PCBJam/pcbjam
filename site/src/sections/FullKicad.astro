@@ -1,0 +1,75 @@
+---
+import { Image } from 'astro:assets';
+import SectionTitle from '../components/SectionTitle.astro';
+import eeschema from '../assets/screens/eeschema.png';
+import pcbnew from '../assets/screens/pcbnew.png';
+import gerbview from '../assets/screens/gerbview.png';
+
+const DEMO_URL = 'https://demo.pcbjam.com';
+
+const shots = [
+  { img: eeschema, label: 'schematic', alt: 'KiCad schematic editor running in a browser tab' },
+  { img: pcbnew, label: 'pcb', alt: 'KiCad PCB editor running in a browser tab, routing a board' },
+  { img: gerbview, label: 'gerber', alt: 'KiCad Gerber viewer running in a browser tab' },
+];
+---
+
+<section class="readme readme-section" id="editor">
+  <SectionTitle>The full KiCad experience</SectionTitle>
+  <p>
+    The same KiCad you already use, online. Schematic capture, PCB layout, DRC, 3D view, Gerber
+    and drill export. Nothing stripped down, no rewrite. New to KiCad? It is the
+    <a href="https://www.kicad.org" rel="noopener" target="_blank">open-source suite</a> for
+    designing circuit boards.
+  </p>
+  <ul class="shots">
+    {
+      shots.map((s) => (
+        <li>
+          <a class="frame" href={DEMO_URL} rel="noopener" target="_blank">
+            <Image
+              src={s.img}
+              alt={s.alt}
+              widths={[360, 720]}
+              sizes="(max-width: 560px) 100vw, 230px"
+              loading="lazy"
+            />
+          </a>
+          <span class="mono small muted">{s.label}</span>
+        </li>
+      ))
+    }
+  </ul>
+</section>
+
+<style>
+  .shots {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.75rem;
+  }
+  .shots li {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+  .shots a {
+    display: block;
+  }
+  .shots img {
+    display: block;
+    width: 100%;
+    height: auto;
+    aspect-ratio: 16 / 10;
+    object-fit: cover;
+    object-position: left top;
+  }
+  @media (max-width: 560px) {
+    .shots {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>

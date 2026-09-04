@@ -1,0 +1,57 @@
+---
+import SectionTitle from '../components/SectionTitle.astro';
+---
+
+<section class="readme readme-section" id="open">
+  <SectionTitle>You own your data. No vendor lock-in.</SectionTitle>
+  <p>
+    PCBJam reads and writes KiCad's own file format. Import a project, export it back, switch
+    between desktop KiCad and PCBJam any time. We will never lock you into our ecosystem.
+  </p>
+  {/* Illustration of the project download, not a live control. */}
+  <figure class="filebox frame mono small" aria-label="A PCBJam project download: the KiCad project with its schematic, board, libraries and Gerbers as a zip">
+    <span class="files">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path></svg>
+      <span class="name">amp-v3/</span>
+      <span class="muted">.kicad_pro · .kicad_sch · .kicad_pcb · lib/ · gerbers/</span>
+    </span>
+    <span class="dl">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"></path><path d="m7 10 5 5 5-5"></path><path d="M4 19h16"></path></svg>
+      download .zip
+    </span>
+  </figure>
+</section>
+
+<style>
+  .filebox {
+    margin: 0;
+    padding: 0.7rem 0.9rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    color: var(--fg);
+  }
+  .files {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    min-width: 0;
+    flex-wrap: wrap;
+  }
+  .files svg {
+    color: var(--blue);
+    flex-shrink: 0;
+  }
+  .name {
+    white-space: nowrap;
+  }
+  .dl {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    color: var(--accent);
+    font-weight: 600;
+    white-space: nowrap;
+  }
+</style>

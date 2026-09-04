@@ -1,0 +1,61 @@
+---
+import SectionTitle from '../components/SectionTitle.astro';
+
+const items = [
+  'git integration',
+  'comment-only mode',
+  'custom extensions',
+  'even better performance',
+  'organization support',
+  'per-project invites',
+  'component library sharing / publishing',
+  'module marketplace',
+  'mobile editing',
+  'MCP / opt-in PCB AI',
+  'online stock / pricing info',
+  'history / who changed what',
+  'self-hosting',
+  'native build',
+];
+---
+
+<section class="readme readme-section" id="roadmap">
+  <SectionTitle>Roadmap</SectionTitle>
+  <ul class="todo mono">
+    {
+      items.map((it) => (
+        <li>
+          <span class="box" aria-hidden="true">[ ]</span>
+          {it}
+        </li>
+      ))
+    }
+  </ul>
+  <p class="mono small muted">… and many more. Tell us what you need on <a href="https://discord.gg/ybhqJxjR3E" rel="noopener" target="_blank">Discord</a>.</p>
+</section>
+
+<style>
+  .todo {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.35rem 1.5rem;
+    font-size: 0.9rem;
+    color: var(--fg-2);
+  }
+  .todo li {
+    display: flex;
+    gap: 0.5rem;
+  }
+  .box {
+    color: var(--blue);
+    flex-shrink: 0;
+  }
+  @media (max-width: 560px) {
+    .todo {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>

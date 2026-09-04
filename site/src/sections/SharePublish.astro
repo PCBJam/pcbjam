@@ -1,0 +1,115 @@
+---
+import SectionTitle from '../components/SectionTitle.astro';
+---
+
+<section class="readme readme-section" id="share">
+  <SectionTitle>Share and publish components and designs</SectionTitle>
+  <p>
+    Component libraries are shared inside your team. Projects can be published to the public, so
+    a review is one link away.
+  </p>
+
+  {/* The project's invite-links panel, redrawn as a static figure. */}
+  <figure class="invite frame">
+    <div class="invite-head">
+      <strong>Invite links</strong>
+      <span class="muted">Anyone with an active link can join after signing in.</span>
+    </div>
+    <div class="invite-row">
+      <label class="field"><span class="muted small">Expires (days)</span><span class="input">7</span></label>
+      <label class="field"><span class="muted small">Max uses</span><span class="input">1</span></label>
+      <span class="create">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="4"></circle><path d="M2 21c0-3.9 3.1-7 7-7"></path><path d="M19 8v6"></path><path d="M16 11h6"></path></svg>
+        Create invite link
+      </span>
+    </div>
+    <div class="invite-item muted small">
+      <span class="pill">active</span>
+      <span>0 / 1 used · expires 28/08/2026</span>
+    </div>
+    <figcaption class="sr-only">Invite links panel of a PCBJam project: expiry in days, maximum uses, and the list of active links.</figcaption>
+  </figure>
+
+  <p class="mobile">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="7" y="2" width="10" height="20" rx="2"></rect><path d="M11 18h2"></path></svg>
+    <span>Viewer mode also works on Android phones and tablets. Open a board on your phone to check a footprint or review a change. iPhone and iPad follow with Apple’s September Safari release.</span>
+  </p>
+</section>
+
+<style>
+  .invite {
+    margin: 0;
+    padding: 1rem 1.1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    font-size: 0.9rem;
+  }
+  .invite-head {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+  }
+  .invite-head strong {
+    font-size: 1.05rem;
+  }
+  .invite-row {
+    display: flex;
+    align-items: flex-end;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+  }
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    width: 7.5rem;
+  }
+  .input {
+    height: 2.35rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    display: flex;
+    align-items: center;
+    padding: 0 0.6rem;
+    background: var(--bg);
+  }
+  .create {
+    height: 2.35rem;
+    padding: 0 0.85rem;
+    border-radius: var(--radius-sm);
+    background: var(--fg);
+    color: var(--bg);
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .invite-item {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 0.45rem 0.7rem;
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+  }
+  .pill {
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 0 0.6rem;
+    font-size: 0.78rem;
+  }
+  .mobile {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.6rem;
+    color: var(--fg-2);
+  }
+  .mobile svg {
+    color: var(--blue);
+    flex-shrink: 0;
+    margin-top: 0.2rem;
+  }
+</style>

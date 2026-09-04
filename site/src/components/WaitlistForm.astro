@@ -3,7 +3,8 @@
  * WaitlistForm — email capture with progressive enhancement.
  *  - Works with NO JS: native POST to /api/waitlist → 303 back to /?waitlist=ok.
  *  - With JS: fetch + inline success state, no navigation.
- * Reused in the hero, final CTA, and footer via the `source` prop (attribution).
+ * Reused in the hero and the contact section via the `source` prop (attribution).
+ * Pass a `micro` slot to replace the default line under the form.
  * The script is bound on astro:page-load so it survives ClientRouter SPA swaps.
  */
 interface Props {
@@ -64,10 +65,16 @@ const hpId = `wl-hp-${source}`;
   </div>
 
   {
-    microcopy && (
+    Astro.slots.has('micro') ? (
       <p class="wl-micro muted">
-        {microcopy} · <a href="/privacy">Privacy policy</a>
+        <slot name="micro" />
       </p>
+    ) : (
+      microcopy && (
+        <p class="wl-micro muted">
+          {microcopy} · <a href="/privacy">Privacy policy</a>
+        </p>
+      )
     )
   }
 </div>
@@ -93,7 +100,9 @@ const hpId = `wl-hp-${source}`;
     flex: 1 1 16rem;
     min-width: 0;
     padding: 0.7rem 0.9rem;
-    border-radius: var(--radius);
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+    font-size: 0.9rem;
     border: 1px solid var(--border);
     background: var(--bg);
     color: var(--fg);

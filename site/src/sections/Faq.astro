@@ -1,0 +1,65 @@
+---
+import SectionTitle from '../components/SectionTitle.astro';
+
+// Written to answer the question-shaped searches people type ("is there a web
+// version of KiCad", "share a KiCad project without KiCad", "KiCad on iPad").
+// Browser support: the JSPI switch (devblog weeks 32-35) dropped Safari/iOS until
+// Apple ships JSPI; keep this answer in step with that post.
+// Plain text, no FAQ markup: rich results for FAQs are gone for sites like this.
+const faqs = [
+  {
+    q: 'Is there a web version of KiCad?',
+    a: 'PCBJam is the real KiCad, compiled to WebAssembly and running in your browser. Not a viewer, not a rewrite: the schematic editor, the PCB editor, DRC, the 3D viewer and Gerber export.',
+  },
+  {
+    q: 'Can I share a KiCad project with someone who does not have KiCad?',
+    a: 'Yes. Publish the project or send an invite link. They open it in a browser, on a desktop or on a phone in viewer mode.',
+  },
+  {
+    q: 'Does it work on a Chromebook, an iPad or a phone?',
+    a: 'Chrome, Edge and Firefox work today, on desktops and Chromebooks, and viewer mode works on Android phones and tablets. Safari, iPhone and iPad wait on a WebAssembly feature (JSPI) that Apple has scheduled for its September 2026 Safari release. Mobile editing is on the roadmap.',
+  },
+  {
+    q: 'Am I locked in?',
+    a: "No. PCBJam reads and writes KiCad's own file format. Export any time and keep working in desktop KiCad.",
+  },
+];
+---
+
+<section class="readme readme-section" id="faq">
+  <SectionTitle>FAQ</SectionTitle>
+  <dl class="faq">
+    {
+      faqs.map((f) => (
+        <div class="qa">
+          <dt>{f.q}</dt>
+          <dd>{f.a}</dd>
+        </div>
+      ))
+    }
+  </dl>
+</section>
+
+<style>
+  .faq {
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+  .qa {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+  dt {
+    font-weight: 600;
+    color: var(--fg);
+  }
+  dd {
+    margin: 0;
+    color: var(--fg-2);
+    font-size: 0.95rem;
+    text-wrap: pretty;
+  }
+</style>
