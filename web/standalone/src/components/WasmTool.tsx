@@ -20,6 +20,7 @@ import {
   yjsProviderConfig,
   type DocSource,
 } from "@/lib/config";
+import type { CommentAccess } from "@/lib/read-only-mode";
 import { redirectTargetFor } from "@/lib/redirect";
 import { loadSessionIdentity, seedSessionIdentity } from "@/lib/session-identity";
 import { useThemeValue } from "@/lib/theme";
@@ -77,6 +78,7 @@ import {
   hasCommentsBridge,
   type CommentsController,
   type ViewportState,
+  type CommentsMode,
 } from "@/wasm/collab/comments";
 import { PresenceRoster } from "@/components/PresenceRoster";
 import { CommentLayer } from "@/components/CommentLayer";
@@ -138,6 +140,8 @@ import {
  * project tree into MEMFS and drives File→Open. See src/wasm/boot.ts for why the
  * runtime is single-instance per page load.
  */
+const READER_COMMENTS_KEY = "pcbjam-reader-comments";
+
 export function WasmTool({
   tool,
   slug,
@@ -156,6 +160,7 @@ export function WasmTool({
   libsSource,
   sourceDescriptor,
   readOnly = false,
+  commentAccess,
   boot = null,
 }: {
   tool: Tool;
@@ -233,8 +238,27 @@ export function WasmTool({
    * bundle lacks the export. Pair with an omitted `saveBytes`.
    */
   readOnly?: boolean;
+  /**
+   * Comment capability (comments-ux 0003; lib/read-only-mode
+   * resolveCommentAccess): "write" (default for editors), "comment" (a
+   * read-only session that writes comments over the REST comment-op route),
+   * "none" (a reader — comments render only behind the reader opt-in).
+   */
+  commentAccess?: CommentAccess;
 }) {
   const containerRef = React.useRef<HTMLDivElement>(null);
+  // Reader opt-in (comments-ux 0003 decision 6): plain read-only sessions
+  // show comments only when asked, remembered per browser.
+  const [readerComments, setReaderComments] = React.useState<boolean>(() => {
+    try {
+      return localStorage.getItem(READER_COMMENTS_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const readerCommentsRef = React.useRef(readerComments);
+  readerCommentsRef.current = readerComments;
+  const lastCommentsDocRef = React.useRef<{ doc: import("yjs").Doc | undefined; docPath: string } | null>(null);
   const startedRef = React.useRef(false);
   // Mobile device (features/mobile): boot installs the touch-gesture shim.
   // Chrome/overlay visibility is the separate runtime toggle below.
@@ -340,6 +364,23 @@ export function WasmTool({
   const [commentsSlot, setCommentsSlot] = React.useState<HTMLDivElement | null>(null);
   const [viewportState, setViewportState] = React.useState<ViewportState | null>(null);
   const commentsRef = React.useRef<CommentsController | null>(null);
+  const startCommentsRef = React.useRef<
+    ((doc: import("yjs").Doc | undefined, docPath: string) => void) | null
+  >(null);
+  const toggleReaderComments = React.useCallback(() => {
+    setReaderComments((v) => {
+      const next = !v;
+      readerCommentsRef.current = next;
+      try {
+        localStorage.setItem(READER_COMMENTS_KEY, next ? "1" : "0");
+      } catch {
+        /* storage unavailable — session-only */
+      }
+      const last = lastCommentsDocRef.current;
+      if (last) startCommentsRef.current?.(last.doc, last.docPath);
+      return next;
+    });
+  }, []);
   // Viewer panels (viewer-panels): the SelectionInspector's data doc — the
   // bound collab doc (pcbnew: the board room; eeschema: the ACTIVE sheet's
   // room, re-pointed on navigation). Null without a doc room (?collab=0).
@@ -742,13 +783,17 @@ export function WasmTool({
     // (Re)bind the comments controller to the collab doc (collab-presence 0005):
     // GAL pin dots + the DOM layer's thread data. Follows the same lifecycle as
     // presence — eeschema rebinds per active sheet.
-    const startComments = (doc: import("yjs").Doc | undefined) => {
-      // Comments are hidden entirely for read-only viewers (read-only-viewer):
-      // no pins, no panel, no thread reads — commentsCtl stays null.
-      if (readOnly) return;
+    const startComments = (doc: import("yjs").Doc | undefined, docPath: string) => {
+      lastCommentsDocRef.current = { doc, docPath };
       commentsRef.current?.destroy();
       commentsRef.current = null;
       setCommentsCtl(null);
+      // Comment capability (comments-ux 0003 §4.5): editors write into the
+      // ydoc; commenters (read-only frame) through the REST comment-op route;
+      // plain readers only behind the "Show comments" opt-in.
+      const access: CommentAccess = commentAccess ?? (readOnly ? "none" : "write");
+      const cmode: CommentsMode = !readOnly ? "write" : access === "comment" ? "comment" : "read";
+      if (cmode === "read" && !readerCommentsRef.current) return;
       if (!doc || (tool !== "pcbnew" && tool !== "eeschema") || !hasCommentsBridge(win.Module)) {
         return;
       }
@@ -760,6 +805,8 @@ export function WasmTool({
         // Author colors follow the live nth-in-room assignment when the
         // author is present; offline authors fall back to the name hash.
         colorFor: (id) => presenceRef.current?.colorOf(id),
+        mode: cmode,
+        rest: { apiBase: API_BASE_URL, scope: currentScope(), project: slug, docPath },
       });
       commentsRef.current = ctl;
       setCommentsCtl(ctl);
@@ -777,6 +824,8 @@ export function WasmTool({
         /* frame not up yet — the first input push seeds it */
       }
     };
+
+    startCommentsRef.current = startComments;
 
     // Cmd/Ctrl+S belongs to the editor: preventDefault suppresses ONLY the
     // browser's "save page" dialog (observed in Firefox) — the keydown still
@@ -1213,7 +1262,7 @@ export function WasmTool({
                 // sheets someone actually has open).
                 crossAppRef.current?.setDocPath(activeRoom?.sheetPath);
                 startPresence(activeRoom?.provider, activeRoom?.sheetPath, activeRoom?.doc);
-                startComments(activeRoom?.doc);
+                startComments(activeRoom?.doc, activeRoom?.sheetPath ?? targetPath ?? "");
                 setPanelDoc(activeRoom?.doc ?? null);
                 if (activeRoom && !readOnly) {
                   driftRef.current = startDriftDetection({
@@ -1267,7 +1316,7 @@ export function WasmTool({
           collabHandleRef.current = collabHandle ?? null;
           collabDocRef.current = collabHandle?.doc ?? null;
           startPresence(collabHandle?.provider, undefined, collabHandle?.doc);
-          startComments(collabHandle?.doc);
+          startComments(collabHandle?.doc, targetPath ?? "");
           setPanelDoc(collabHandle?.doc ?? null);
           // Live sibling mirror (project-sync 0001 bug 3): keep the schematic
           // files a PCB session syncs from fresh in MEMFS, instead of the
@@ -1663,6 +1712,9 @@ export function WasmTool({
           onDismissStale={() => notices.clearStale()}
           commentsUnread={commentsUnread}
           hasComments={commentsCtl !== null}
+          commentAccess={commentAccess ?? (readOnly ? "none" : "write")}
+          readerComments={readerComments}
+          onToggleReaderComments={readOnly ? toggleReaderComments : undefined}
           setCommentsSlot={setCommentsSlot}
           effectiveChromeHidden={effectiveChromeHidden}
           hasLayers={layersMod !== null}
@@ -1688,6 +1740,7 @@ export function WasmTool({
           controller={commentsCtl}
           viewport={viewportState}
           currentUser={presenceUser().id}
+          mentionProject={slug}
           menuSlot={commentsSlot}
           onUnreadChange={onCommentsUnread}
           mentionPeers={peers.map((p) => ({

@@ -19,7 +19,9 @@ import {
   threadUnreadCount,
   toggleReaction,
   yToItemUnchecked,
+  commentOpsUrl,
   type CommentAnchor,
+  type CommentOp,
   type CommentThread,
 } from "@pcbjam/shared";
 import { clog } from "./debug";
@@ -88,7 +90,25 @@ export interface ResolvedThread extends CommentThread {
   detached: boolean;
 }
 
+/**
+ * How this session writes comments (comments-ux 0003 §4.5):
+ *   - "write"   — editors: straight into the ydoc (also `@local`/demo);
+ *   - "comment" — commenters: one REST comment op per action, the server
+ *                 stamps the author and the room applies it; the write
+ *                 comes back over the read-only socket as a normal update;
+ *   - "read"    — readers: pins + panel render, every mutator is a no-op.
+ */
+export type CommentsMode = "write" | "comment" | "read";
+
 export interface CommentsController {
+  /** The session's comment capability — the UI gates its affordances on it. */
+  mode(): CommentsMode;
+  /** May the current user edit/delete this message? (own, and not a reader) */
+  canEditMessage(thread: CommentThread, messageId: string): boolean;
+  /** May the current user resolve / re-anchor / delete this thread? */
+  canManageThread(thread: CommentThread): boolean;
+  /** Errors from the REST path (rejected / throttled ops). */
+  subscribeErrors(cb: (message: string, status: number) => void): () => void;
   threads(): ResolvedThread[];
   subscribe(cb: (threads: ResolvedThread[]) => void): () => void;
   /** Build an anchor for a world-pos click: nearest positioned item within
@@ -132,8 +152,54 @@ export function createComments(opts: {
   tool: string;
   /** Presence color resolver (nth-in-room); undefined falls back to the hash. */
   colorFor?: (userId: string) => string | undefined;
+  /** Comment capability (default "write"). */
+  mode?: CommentsMode;
+  /** REST target for "comment" mode: the backend origin + the doc's address. */
+  rest?: { apiBase: string; scope: string; project: string; docPath: string };
 }): CommentsController {
   const { doc, mod, user } = opts;
+  const mode: CommentsMode = opts.mode ?? "write";
+  const errorSubscribers = new Set<(message: string, status: number) => void>();
+  const fail = (message: string, status: number) => {
+    for (const cb of errorSubscribers) cb(message, status);
+  };
+  const genId = () =>
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `c-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  // "comment" mode: post the op; the echo (or a rejection) follows. Errors are
+  // surfaced through subscribeErrors — the UI shows them, never the console.
+  const post = (op: CommentOp): void => {
+    const r = opts.rest;
+    if (!r) {
+      fail("comments unavailable (no backend)", 0);
+      return;
+    }
+    void fetch(`${r.apiBase}${commentOpsUrl(r.scope, r.project, r.docPath)}`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ op }),
+    })
+      .then(async (res) => {
+        if (res.ok) return;
+        const body = (await res.json().catch(() => null)) as { message?: string } | null;
+        fail(body?.message ?? `comment failed (${res.status})`, res.status);
+      })
+      .catch((e: unknown) => fail(e instanceof Error ? e.message : String(e), 0));
+  };
+  const threadOf = (threadId: string): CommentThread | undefined =>
+    listThreads(doc).find((t) => t.id === threadId);
+  const canEditMessage = (thread: CommentThread, messageId: string): boolean => {
+    if (mode === "read") return false;
+    if (mode === "write") return true;
+    return thread.messages.find((m) => m.id === messageId)?.author === user.id;
+  };
+  const canManageThread = (thread: CommentThread): boolean => {
+    if (mode === "read") return false;
+    if (mode === "write") return true;
+    return thread.createdBy === user.id;
+  };
   const iuPerMm = IU_PER_MM[opts.tool] ?? 1e6;
   // Fallback chain: live presence (nth-in-room) → the doc's comment-author
   // slot (0009 C — presence-less binds still color deterministically) → hash.
@@ -205,6 +271,13 @@ export function createComments(opts: {
   clog("comments: controller bound,", cache.length, "thread(s)");
 
   return {
+    mode: () => mode,
+    canEditMessage,
+    canManageThread,
+    subscribeErrors(cb) {
+      errorSubscribers.add(cb);
+      return () => errorSubscribers.delete(cb);
+    },
     threads: () => cache,
     subscribe(cb) {
       subscribers.add(cb);
@@ -240,6 +313,13 @@ export function createComments(opts: {
       return { pos: { x: world.x, y: world.y } };
     },
     create(anchor, body, mentions) {
+      if (mode === "read") return "";
+      if (mode === "comment") {
+        // Pre-chosen id so the popover can open on the echo.
+        const id = genId();
+        post({ type: "createThread", anchor, body, mentions, id });
+        return id;
+      }
       return createThread(doc, {
         anchor,
         author: user.id,
@@ -250,6 +330,11 @@ export function createComments(opts: {
       });
     },
     reply(threadId, body, mentions) {
+      if (mode === "read") return;
+      if (mode === "comment") {
+        post({ type: "addMessage", threadId, body, mentions });
+        return;
+      }
       addMessage(doc, threadId, {
         author: user.id,
         authorName: user.name,
@@ -259,24 +344,77 @@ export function createComments(opts: {
       });
     },
     markSeen(threadId) {
+      if (mode === "read") return;
+      if (mode === "comment") {
+        post({ type: "markSeen", threadId });
+        return;
+      }
       markThreadSeen(doc, threadId, user.id);
     },
     toggleReaction(threadId, messageId, emoji) {
+      if (mode === "read") return;
+      if (mode === "comment") {
+        post({ type: "toggleReaction", threadId, messageId, emoji });
+        return;
+      }
       toggleReaction(doc, threadId, messageId, user.id, emoji);
     },
     edit(threadId, messageId, body) {
+      const thread = threadOf(threadId);
+      if (!thread || !canEditMessage(thread, messageId)) return false;
+      if (mode === "comment") {
+        post({ type: "editMessage", threadId, messageId, body });
+        return true;
+      }
       return editMessage(doc, threadId, messageId, body);
     },
     remove(threadId, messageId) {
+      const thread = threadOf(threadId);
+      if (!thread || !canEditMessage(thread, messageId)) return false;
+      if (mode === "comment") {
+        // Mirror the doc rule: a commenter's root only goes when every other
+        // message is theirs too (the server answers 409 otherwise).
+        const isRoot = thread.rootId === messageId;
+        if (isRoot && thread.messages.some((m) => m.author !== user.id)) {
+          fail("you can't delete a comment others have replied to", 409);
+          return false;
+        }
+        post({ type: "removeMessage", threadId, messageId });
+        return isRoot || thread.messages.length <= 1 ? "thread-deleted" : "removed";
+      }
       return removeMessage(doc, threadId, messageId);
     },
     setResolved(threadId, resolved) {
+      const thread = threadOf(threadId);
+      if (!thread || !canManageThread(thread)) return;
+      if (mode === "comment") {
+        post({ type: "setResolved", threadId, resolved });
+        return;
+      }
       setThreadResolved(doc, threadId, resolved);
     },
     deleteThread(threadId) {
+      const thread = threadOf(threadId);
+      if (!thread || !canManageThread(thread)) return;
+      if (mode === "comment") {
+        // No delete-thread op for commenters: removing the root deletes the
+        // thread (only when every message is theirs — the server enforces).
+        if (thread.messages.some((m) => m.author !== user.id)) {
+          fail("you can't delete a thread others have replied to", 409);
+          return;
+        }
+        post({ type: "removeMessage", threadId, messageId: thread.rootId });
+        return;
+      }
       deleteThread(doc, threadId);
     },
     moveThread(threadId, anchor) {
+      const thread = threadOf(threadId);
+      if (!thread || !canManageThread(thread)) return;
+      if (mode === "comment") {
+        post({ type: "setAnchor", threadId, anchor });
+        return;
+      }
       setThreadAnchor(doc, threadId, anchor);
     },
     setPinsVisible(v) {

@@ -113,10 +113,14 @@ export function CommentLayer({
   menuSlot,
   onUnreadChange,
   mentionPeers,
+  mentionProject,
 }: {
   controller: CommentsController;
   viewport: ViewportState | null;
   currentUser: string;
+  /** Project slug for the project-scoped mention roster (comments-ux 0003):
+   *  members ∪ the project's commenters — the variant a commenter may call. */
+  mentionProject?: string;
   /** The overlay menu's comments section (0010): the bar + list panel portal
    *  into it while the menu is open; null (menu closed) renders neither.
    *  Pins, popovers, composer and the click catcher stay canvas-anchored. */
@@ -193,13 +197,32 @@ export function CommentLayer({
   const mentionPeersRef = React.useRef(mentionPeers);
   mentionPeersRef.current = mentionPeers;
   const getMentionCandidates = React.useCallback(async (): Promise<Collaborator[]> => {
-    const server = (await collaborators()) ?? [];
+    const server = (await collaborators(mentionProject)) ?? [];
     const peers = mentionPeersRef.current ?? [];
     const authors: Collaborator[] = threadsRef.current.flatMap((t) =>
       t.messages.map((m) => ({ slug: m.author, name: m.authorName || m.author })),
     );
     return mergeCandidates(server, peers, authors).filter((c) => c.slug !== currentUser);
-  }, [currentUser]);
+  }, [currentUser, mentionProject]);
+
+  // Comment capability (comments-ux 0003 §4.5): readers see pins and threads
+  // but no composer; commenters get their own-only affordances (the
+  // controller decides per thread/message); writers everything.
+  const cmode = controller.mode();
+  // REST-path errors (rejected / throttled ops) surface here, briefly.
+  const [opError, setOpError] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const off = controller.subscribeErrors((message) => {
+      setOpError(message);
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => setOpError(null), 5000);
+    });
+    return () => {
+      off();
+      if (timer) clearTimeout(timer);
+    };
+  }, [controller]);
 
   React.useEffect(() => {
     onUnreadChange?.(unreadThreads, mentioned);
@@ -337,6 +360,20 @@ export function CommentLayer({
               inside a collapsible. And every action is a LABELLED row: the old
               bar was four bare icons whose meanings you had to hover to learn. */}
           <div className="flex w-full flex-col">
+            {cmode === "read" && (
+              <div
+                data-testid="comment-readonly-note"
+                className={`${overlayRowClass} cursor-default text-neutral-400 dark:text-white/50`}
+              >
+                <MessageSquarePlus size={14} className="shrink-0" />
+                <span>
+                  {currentUser === "local-user"
+                    ? "Sign in to comment"
+                    : "Ask the owner for a comment link to comment"}
+                </span>
+              </div>
+            )}
+            {cmode !== "read" && (
             <button
               data-testid="comment-mode-toggle"
               aria-pressed={mode}
@@ -354,6 +391,7 @@ export function CommentLayer({
                 {mode ? "Esc" : ""}
               </span>
             </button>
+            )}
 
             <button
               data-testid="comment-panel-toggle"
@@ -496,8 +534,18 @@ export function CommentLayer({
         );
       })}
 
+      {/* REST-path rejection / throttle notice (comments-ux 0003 §4.5). */}
+      {opError && (
+        <div
+          data-testid="comment-error"
+          className="pointer-events-none absolute left-1/2 top-3 z-[70] -translate-x-1/2 rounded-md bg-red-600/90 px-3 py-1.5 text-xs text-white shadow"
+        >
+          {opError}
+        </div>
+      )}
+
       {/* New-comment composer at the clicked point. */}
-      {draft && (
+      {draft && cmode !== "read" && (
         <Composer
           css={draft.css}
           getCandidates={getMentionCandidates}
@@ -1014,6 +1062,7 @@ function ThreadPopover({
           {thread.resolved ? "resolved" : "open"}
         </span>
         <div className="flex items-center gap-2">
+          {controller.canManageThread(thread) && (
           <button
             data-testid="comment-resolve"
             onClick={() => controller.setResolved(thread.id, !thread.resolved)}
@@ -1021,7 +1070,8 @@ function ThreadPopover({
           >
             {thread.resolved ? "Reopen" : "Resolve"}
           </button>
-          {thread.createdBy === currentUser && (
+          )}
+          {thread.createdBy === currentUser && controller.canManageThread(thread) && (
             <button
               data-testid="comment-delete-thread"
               title="Delete thread"
@@ -1054,7 +1104,7 @@ function ThreadPopover({
               <span className="text-[10px] text-neutral-400 dark:text-white/40">
                 {timeAgo(m.createdAt)} ago{m.editedAt ? " · edited" : ""}
               </span>
-              {m.author === currentUser && (
+              {controller.canEditMessage(thread, m.id) && (
                 <span className="ml-auto hidden gap-1 group-hover:flex">
                   <button
                     data-testid="comment-edit"
@@ -1098,6 +1148,7 @@ function ThreadPopover({
               reactions={thread.reactions?.[m.id]}
               currentUser={currentUser}
               onToggle={(emoji) => {
+                if (controller.mode() === "read") return;
                 controller.toggleReaction(thread.id, m.id, emoji);
                 noteEmojiUsed(emoji);
               }}
@@ -1107,6 +1158,16 @@ function ThreadPopover({
       </div>
 
       <div className="border-t border-black/10 p-2 dark:border-white/10">
+        {controller.mode() === "read" ? (
+          <p
+            data-testid="comment-reply-readonly"
+            className="px-1 text-[11px] text-neutral-400 dark:text-white/40"
+          >
+            {currentUser === "local-user"
+              ? "Sign in to reply."
+              : "Ask the owner for a comment link to reply."}
+          </p>
+        ) : (
         <MentionInput
           testId="comment-reply"
           value={reply}
@@ -1117,6 +1178,7 @@ function ThreadPopover({
           placeholder="Reply… (@ to mention)"
           className="w-full rounded bg-black/5 px-2 py-1.5 text-xs text-neutral-900 placeholder-neutral-400 outline-none dark:bg-white/10 dark:text-white dark:placeholder-white/40"
         />
+        )}
       </div>
     </div>
   );

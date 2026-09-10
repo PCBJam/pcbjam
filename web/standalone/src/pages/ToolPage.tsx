@@ -14,7 +14,7 @@ import {
 } from "@/lib/api";
 import { docSourceConfig } from "@/lib/config";
 import { decodeRoutePath } from "@/lib/route-path";
-import { resolveReadOnly } from "@/lib/read-only-mode";
+import { resolveCommentAccess, resolveReadOnly } from "@/lib/read-only-mode";
 import { WasmTool } from "@/components/WasmTool";
 import { PreflightGate } from "@/preflight/PreflightGate";
 
@@ -86,6 +86,9 @@ export function ToolPage() {
   // upload (absent saveBytes ⇒ MEMFS-only saves), and WasmTool disables
   // every other outbound writer + locks the wasm frame.
   const readOnly = resolveReadOnly(data.access);
+  // Comment capability (comments-ux 0003): writers comment into the ydoc,
+  // commenters through the REST comment-op route, readers only look.
+  const commentAccess = resolveCommentAccess(data.access, readOnly);
 
   // PreflightGate runs the device-capability check; on a fatal mismatch it blocks
   // here (before WasmTool mounts) so the expensive WASM asset fetch is skipped.
@@ -124,6 +127,7 @@ export function ToolPage() {
         docSource={docSource}
         sourceDescriptor={sourceDescriptor}
         readOnly={readOnly}
+        commentAccess={commentAccess}
         boot={bootData?.boot ?? null}
       />
     </PreflightGate>

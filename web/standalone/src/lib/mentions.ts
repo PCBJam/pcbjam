@@ -11,16 +11,30 @@ import { currentScope } from "./config";
  */
 
 let inflight: Promise<Collaborator[] | null> | null = null;
+let inflightKey: string | null = null;
 let resolved: Collaborator[] | null = null;
 
-export function collaborators(): Promise<Collaborator[] | null> {
-  inflight ??= client
-    .listCollaborators({ params: { scope: currentScope() } })
-    .then((r) => {
-      resolved = r.status === 200 ? r.body : null;
-      return resolved;
-    })
-    .catch(() => null);
+/**
+ * `project` (comments-ux 0003): scope the roster to one project — the
+ * team's members plus that project's commenters, each with a role — which is
+ * also the variant a commenter (non-member) may call. Without it the route
+ * is members-only.
+ */
+export function collaborators(project?: string): Promise<Collaborator[] | null> {
+  const key = project ?? "";
+  if (!inflight || inflightKey !== key) {
+    inflightKey = key;
+    inflight = client
+      .listCollaborators({
+        params: { scope: currentScope() },
+        query: project ? { project } : {},
+      })
+      .then((r) => {
+        resolved = r.status === 200 ? r.body : null;
+        return resolved;
+      })
+      .catch(() => null);
+  }
   return inflight;
 }
 
@@ -33,6 +47,7 @@ export function cachedCollaborators(): Collaborator[] | null {
 /** Test hook: forget the session cache. */
 export function resetCollaboratorsCache(): void {
   inflight = null;
+  inflightKey = null;
   resolved = null;
 }
 

@@ -10,8 +10,7 @@ import {
   Moon,
   PanelsTopLeft,
   RefreshCw,
-  Sun,
-} from "lucide-react";
+  Sun, MessageSquare } from "lucide-react";
 import type { Tool } from "@pcbjam/shared";
 import { setTheme } from "@/lib/theme";
 import type { SourceDescriptor } from "@/lib/project-source-shared";
@@ -147,6 +146,9 @@ export function SessionMenu({
   onDismissStale,
   commentsUnread,
   hasComments,
+  commentAccess,
+  readerComments,
+  onToggleReaderComments,
   setCommentsSlot,
   effectiveChromeHidden,
   hasLayers,
@@ -177,6 +179,12 @@ export function SessionMenu({
   commentsUnread: { threads: number; mentioned: boolean };
   /** A comments controller is bound — the Comments section renders its slot. */
   hasComments: boolean;
+  /** Comment capability (comments-ux 0003): flavours the view-only pill. */
+  commentAccess?: "none" | "comment" | "write";
+  /** Reader opt-in (comments-ux 0003 decision 6): show comments in a plain
+   *  read-only session. Off by default, remembered per browser. */
+  readerComments?: boolean;
+  onToggleReaderComments?: () => void;
   /** Ref-callback slot the CommentLayer portals its bar/panel into. */
   setCommentsSlot: (el: HTMLDivElement | null) => void;
   effectiveChromeHidden: boolean;
@@ -245,11 +253,23 @@ export function SessionMenu({
               className={`${overlayRowClass} cursor-default`}
             >
               <EyeOff size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
-              <span>View only</span>
+              <span>{commentAccess === "comment" ? "View only · can comment" : "View only"}</span>
               <span className="ml-auto text-[10px] text-neutral-400 dark:text-white/40">
-                read-only
+                {commentAccess === "comment" ? "commenter" : "read-only"}
               </span>
             </div>
+          )}
+          {readOnly && commentAccess !== "comment" && onToggleReaderComments && (
+            <button
+              data-testid="reader-comments-toggle"
+              aria-pressed={!!readerComments}
+              title="Show other people's comments on this document"
+              onClick={onToggleReaderComments}
+              className={`${overlayRowClass} ${readerComments ? "bg-black/10 dark:bg-white/10" : ""}`}
+            >
+              <MessageSquare size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
+              <span>{readerComments ? "Hide comments" : "Show comments"}</span>
+            </button>
           )}
         </OverlayMenuSection>
       )}
