@@ -1,6 +1,7 @@
 import type {
   DriftReportBody,
   Project,
+  ProjectAccess,
   ProjectFile,
   ProjectWithFiles,
 } from "@pcbjam/shared";
@@ -97,7 +98,7 @@ export function useProjectBoot(slug: string) {
   return useQuery({
     queryKey: ["project-boot", slug],
     queryFn: async (): Promise<{
-      data: ProjectWithFiles & { access?: "read" | "write" };
+      data: ProjectWithFiles & { access?: ProjectAccess };
       boot: BootPayload | null;
     }> => {
       if (PROJECT_SOURCE_KIND !== "static") {

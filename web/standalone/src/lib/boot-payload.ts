@@ -3,6 +3,7 @@ import {
   type ProjectWithFiles,
   type SyncManifest,
   type SyncStackDescriptor,
+  type ProjectAccess,
 } from "@pcbjam/shared";
 import { API_BASE_URL, userSlug } from "./config";
 import { fileCacheValidator, pruneProjectFileCache } from "./project-file-cache";
@@ -30,7 +31,7 @@ export interface BootLibDto {
 
 export interface BootPayload extends ProjectWithFiles {
   me: unknown;
-  access?: "read" | "write";
+  access?: ProjectAccess;
   libs: BootLibDto[];
   stacks: Record<string, SyncStackDescriptor | null>;
   projectSync: { manifest: SyncManifest; digest: string };
