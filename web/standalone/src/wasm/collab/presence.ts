@@ -138,6 +138,7 @@ export function publishSkeleton(
   user: PresenceUser,
   tool: string,
   sheetPath: string,
+  role?: "commenter",
 ): void {
   const state: PresenceState = {
     // Skeletons reuse the claimed color so one user is one color on every
@@ -147,6 +148,7 @@ export function publishSkeleton(
     sheetPath,
     cursor: null,
     selection: [],
+    ...(role ? { role } : {}),
     updatedAt: Date.now(),
   };
   awareness.setLocalState(state);
@@ -163,6 +165,12 @@ export function createPresence(opts: {
   seedColors?: () => ReadonlyMap<string, string>;
   /** Hidden-tab monitor (tests inject one; default: the page singleton). */
   idle?: IdleMonitor;
+  /**
+   * Commenter presence (comments-ux 0003 §5.2): published on every state so
+   * the sync worker's role pin passes and peers skip us in their soft-lock
+   * derivation. Undefined = editor.
+   */
+  role?: "commenter";
 }): PresenceHandle {
   const { awareness } = opts;
   const seeds = () => opts.seedColors?.();
@@ -197,7 +205,12 @@ export function createPresence(opts: {
 
   const patch = (fields: Partial<PresenceState>) => {
     const current = (awareness.getLocalState() ?? {}) as Partial<PresenceState>;
-    awareness.setLocalState({ ...current, ...fields, updatedAt: Date.now() });
+    awareness.setLocalState({
+      ...current,
+      ...fields,
+      ...(opts.role ? { role: opts.role } : {}),
+      updatedAt: Date.now(),
+    });
   };
 
   // Select-all lag (findings Y-4): awareness ships the WHOLE state on every

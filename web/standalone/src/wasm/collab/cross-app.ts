@@ -61,6 +61,8 @@ export async function startCrossAppPresence(opts: {
   docPath?: string;
   /** Hidden-tab monitor (tests inject one; default: the page singleton). */
   idle?: IdleMonitor;
+  /** Commenter presence (comments-ux 0003 §5.2): role pin, see presence.ts. */
+  role?: "commenter";
 }): Promise<CrossAppHandle | undefined> {
   if (opts.provider.kind === "none") return undefined;
 
@@ -100,6 +102,7 @@ export async function startCrossAppPresence(opts: {
       // restage sockets) to sheets that are ACTUALLY open somewhere.
       ...(docPath ? { sheetPath: docPath } : {}),
       ...(away ? { away: true } : {}),
+      ...(opts.role ? { role: opts.role } : {}),
       updatedAt: Date.now(),
     };
     awareness.setLocalState(state);

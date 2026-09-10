@@ -104,6 +104,15 @@ export function PresenceRoster({
               style={{ backgroundColor: p.user.color }}
             />
             <span className="truncate">{p.user.name}</span>
+            {p.role === "commenter" && (
+              <span
+                data-testid="presence-reviewer"
+                title="Reviewer (commenter): sees the board, comments, never locks items"
+                className="shrink-0 rounded-full border border-current px-1 text-[9px] uppercase tracking-wide text-neutral-400 dark:text-white/40"
+              >
+                reviewer
+              </span>
+            )}
             {!here && (
               <span className="ml-auto shrink-0 truncate text-[10px] text-neutral-400 dark:text-white/40">
                 {p.away ? "away" : `on ${elsewhere}`}

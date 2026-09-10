@@ -3,7 +3,7 @@ import { clog } from "./debug";
 import { publishLocalSelection } from "./local-selection";
 import type { PresenceHandle, PresencePeer } from "./presence";
 import type { CrossAppHandle } from "./cross-app";
-import { contestedReleases, remoteLocks, type LockClient } from "./lock-tiebreak";
+import { contestedReleases, remoteLocks, type LockClient, isLockingPeer } from "./lock-tiebreak";
 
 /**
  * Wire the C++ presence bridge (collab-presence 0002) to the awareness layer:
@@ -138,6 +138,19 @@ export function xselFromPeerState(state: {
 
 const TOOL_TAG: Record<string, string> = { pcbnew: "pcb", eeschema: "sch" };
 
+/**
+ * "Show reviewer selections" (comments-ux 0003 §5.2 rule 5): editors may hide
+ * commenters' selection outlines; cursors and roster entries stay. Persisted
+ * by the shell; default on.
+ */
+let g_reviewerSelections = true;
+export function setReviewerSelectionsVisible(visible: boolean): void {
+  g_reviewerSelections = visible;
+}
+export function reviewerSelectionsVisible(): boolean {
+  return g_reviewerSelections;
+}
+
 export function bindKicadPresence(opts: {
   mod: PresenceKicadModule;
   win: PresenceKicadWindow;
@@ -145,7 +158,7 @@ export function bindKicadPresence(opts: {
   /** 0006: the project presence room — cross-app selection in/out. */
   crossApp?: CrossAppHandle;
   onViewport?: (vp: ViewportState) => void;
-}): { destroy(): void } {
+}): { destroy(): void; refresh(): void } {
   const { mod, win, presence, crossApp } = opts;
 
   // The local selection as last emitted by C++ — the tiebreak (0007) compares
@@ -231,22 +244,27 @@ export function bindKicadPresence(opts: {
         cursor: { x: number; y: number } | null;
         selection: string[];
         xsel?: string[];
+        /** Commenter (comments-ux 0003 §5.2): drawn as a reviewer highlight. */
+        reviewer?: boolean;
       }>;
       locks?: Array<{ uuid: string; name: string }>;
     } = {
       peers: peers.map((p: PresencePeer) => ({
         id: p.user.id,
         name: p.user.name,
+        ...(p.role === "commenter" ? { reviewer: true } : {}),
         color: p.user.color,
         cursor: finiteCursor(p.cursor),
-        selection: p.selection,
+        // Reviewer selections are highlights the editor may hide (rule 5).
+        selection: p.role === "commenter" && !g_reviewerSelections ? [] : p.selection,
       })),
     };
     // Soft-locks (0007): every OTHER client's held uuids (own user's other
     // tabs included — presence.clients(), not the user-deduped peers()),
     // minus what we hold and win. Losing overlaps trigger a release.
     const self = { ...presence.self(), selection: ownSelection };
-    const lockClients: LockClient[] = presence.clients().map((c) => ({
+    // Reviewers never lock (rule 3): their role is server-verified.
+    const lockClients: LockClient[] = presence.clients().filter(isLockingPeer).map((c) => ({
       userId: c.user.id,
       clientId: c.clientId,
       name: c.user.name,
@@ -304,6 +322,11 @@ export function bindKicadPresence(opts: {
   clog("presence-kicad: bridge bound (cursor/selection emit + remote overlay)");
 
   return {
+    /** Re-push the remote snapshot (e.g. after the reviewer-selection toggle). */
+    refresh() {
+      lastShapeSig = "";
+      pushRemote();
+    },
     destroy() {
       unsubscribe();
       unsubscribeCross?.();

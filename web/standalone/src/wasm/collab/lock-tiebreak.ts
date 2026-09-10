@@ -87,3 +87,14 @@ export function contestedReleases(
 
   return uuids.length && strongest ? { uuids, holder: strongest.name } : null;
 }
+
+/**
+ * Commenter presence (comments-ux 0003 §5.2): a reviewer's selection is a
+ * highlight, never a soft-lock — peers with `role: "commenter"` are left out
+ * of the lock derivation. The role is server-verified (the sync worker drops
+ * mismatching frames), so this is safe to trust.
+ */
+export function isLockingPeer(peer: { role?: string }): boolean {
+  return peer.role !== "commenter";
+}
+

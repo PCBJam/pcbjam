@@ -10,7 +10,7 @@ import {
   Moon,
   PanelsTopLeft,
   RefreshCw,
-  Sun, MessageSquare } from "lucide-react";
+  Sun, MessageSquare, Eye } from "lucide-react";
 import type { Tool } from "@pcbjam/shared";
 import { setTheme } from "@/lib/theme";
 import type { SourceDescriptor } from "@/lib/project-source-shared";
@@ -149,6 +149,8 @@ export function SessionMenu({
   commentAccess,
   readerComments,
   onToggleReaderComments,
+  reviewerSelections,
+  onToggleReviewerSelections,
   setCommentsSlot,
   effectiveChromeHidden,
   hasLayers,
@@ -185,6 +187,10 @@ export function SessionMenu({
    *  read-only session. Off by default, remembered per browser. */
   readerComments?: boolean;
   onToggleReaderComments?: () => void;
+  /** Editors: show/hide reviewers' (commenters') selection outlines
+   *  (comments-ux 0003 §5.2 rule 5). Default on, remembered per browser. */
+  reviewerSelections?: boolean;
+  onToggleReviewerSelections?: () => void;
   /** Ref-callback slot the CommentLayer portals its bar/panel into. */
   setCommentsSlot: (el: HTMLDivElement | null) => void;
   effectiveChromeHidden: boolean;
@@ -285,6 +291,18 @@ export function SessionMenu({
       )}
 
       <OverlayMenuSection label="View">
+        {onToggleReviewerSelections && (
+          <button
+            data-testid="reviewer-selections-toggle"
+            aria-pressed={reviewerSelections !== false}
+            title="Show or hide reviewers' selection outlines (their cursors stay)"
+            onClick={onToggleReviewerSelections}
+            className={`${overlayRowClass} ${reviewerSelections !== false ? "bg-black/10 dark:bg-white/10" : ""}`}
+          >
+            <Eye size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
+            <span>{reviewerSelections !== false ? "Hide reviewer selections" : "Show reviewer selections"}</span>
+          </button>
+        )}
         {/* Viewer panels (viewer-panels): canvas-only stand-ins for the
             chrome-hidden wx panes — available to viewers and to editors
             in hide-UI mode alike. */}

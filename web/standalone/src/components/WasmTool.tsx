@@ -62,6 +62,7 @@ import {
   hasPresenceBridge,
   type PresenceKicadModule,
   type PresenceKicadWindow,
+  setReviewerSelectionsVisible,
 } from "@/wasm/collab/presence-kicad";
 import {
   createFollow,
@@ -141,6 +142,7 @@ import {
  * runtime is single-instance per page load.
  */
 const READER_COMMENTS_KEY = "pcbjam-reader-comments";
+const REVIEWER_SELECTIONS_KEY = "pcbjam-reviewer-selections";
 
 export function WasmTool({
   tool,
@@ -258,6 +260,32 @@ export function WasmTool({
   });
   const readerCommentsRef = React.useRef(readerComments);
   readerCommentsRef.current = readerComments;
+  // Reviewer selections (comments-ux 0003 §5.2 rule 5): editors may hide
+  // commenters' selection outlines; default on, remembered per browser.
+  const [reviewerSelections, setReviewerSelections] = React.useState<boolean>(() => {
+    try {
+      return localStorage.getItem(REVIEWER_SELECTIONS_KEY) !== "0";
+    } catch {
+      return true;
+    }
+  });
+  const toggleReviewerSelections = React.useCallback(() => {
+    setReviewerSelections((v) => {
+      const next = !v;
+      try {
+        localStorage.setItem(REVIEWER_SELECTIONS_KEY, next ? "1" : "0");
+      } catch {
+        /* session-only */
+      }
+      setReviewerSelectionsVisible(next);
+      presenceBridgeRef.current?.refresh?.();
+      return next;
+    });
+  }, []);
+  React.useEffect(() => {
+    setReviewerSelectionsVisible(reviewerSelections);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- initial sync only
+  }, []);
   const lastCommentsDocRef = React.useRef<{ doc: import("yjs").Doc | undefined; docPath: string } | null>(null);
   const startedRef = React.useRef(false);
   // Mobile device (features/mobile): boot installs the touch-gesture shim.
@@ -273,7 +301,7 @@ export function WasmTool({
   const effectiveChromeHidden = readOnly || chromeHidden;
   const driftRef = React.useRef<{ stop(): void } | null>(null);
   const presenceRef = React.useRef<PresenceHandle | null>(null);
-  const presenceBridgeRef = React.useRef<{ destroy(): void } | null>(null);
+  const presenceBridgeRef = React.useRef<{ destroy(): void; refresh?: () => void } | null>(null);
   // Follow-user (0008): mirror a peer's viewport until local input breaks it.
   const followRef = React.useRef<FollowHandle | null>(null);
   // Project-wide presence room (0006): joined once per session, survives
@@ -723,7 +751,10 @@ export function WasmTool({
     ) => {
       // Invisible observer (read-only-viewer): never bind presence — no roster,
       // no cursor/selection emit, no awareness state (peers stays empty).
-      if (readOnly) return;
+      // Commenters (comments-ux 0003 §5.2) are the exception: they publish
+      // a role-pinned state — cursor + selection, never a lock.
+      const commenter = readOnly && commentAccess === "comment";
+      if (readOnly && !commenter) return;
       followRef.current?.destroy();
       followRef.current = null;
       setFollowingTarget(null);
@@ -741,11 +772,14 @@ export function WasmTool({
         user: presenceUser(),
         tool,
         sheetPath,
+        ...(commenter ? { role: "commenter" as const } : {}),
         // Round-robin colors seeded by the doc's comment authors (0009 C):
         // claims avoid their slots, an author rejoining adopts their own.
         ...(doc ? { seedColors: () => commentAuthorColors(doc) } : {}),
       });
       presenceRef.current = presence;
+      // Test/debug handle (mirrors __pcbjamComments): peers as this tab sees them.
+      (win as { __pcbjamPresence?: typeof presence }).__pcbjamPresence = presence;
       presence.subscribe(setPeers);
       setPeers(presence.peers());
       setActiveSheetPath(sheetPath);
@@ -1012,7 +1046,9 @@ export function WasmTool({
         // Read-only viewers skip the room entirely — the server rejects their
         // connection anyway (presence requires write).
         const crossAppReady: Promise<CrossAppHandle | undefined> =
-          (tool === "pcbnew" || tool === "eeschema") && !collabOptOut && !readOnly
+          (tool === "pcbnew" || tool === "eeschema") &&
+          !collabOptOut &&
+          (!readOnly || commentAccess === "comment")
             ? (async () => {
                 try {
                   await identityReady;
@@ -1022,6 +1058,7 @@ export function WasmTool({
                     provider: yjsProviderConfig(),
                     user: presenceUser(),
                     tool,
+                    ...(readOnly ? { role: "commenter" as const } : {}),
                     // Announce the open document (the active sheet for
                     // eeschema, re-published on navigation below) — peers'
                     // sibling-restage scopes its sockets to announced files.
@@ -1715,6 +1752,8 @@ export function WasmTool({
           commentAccess={commentAccess ?? (readOnly ? "none" : "write")}
           readerComments={readerComments}
           onToggleReaderComments={readOnly ? toggleReaderComments : undefined}
+          reviewerSelections={reviewerSelections}
+          onToggleReviewerSelections={readOnly ? undefined : toggleReviewerSelections}
           setCommentsSlot={setCommentsSlot}
           effectiveChromeHidden={effectiveChromeHidden}
           hasLayers={layersMod !== null}
