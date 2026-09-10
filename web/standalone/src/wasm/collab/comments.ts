@@ -20,7 +20,9 @@ import {
   toggleReaction,
   yToItemUnchecked,
   commentOpsUrl,
+  commentReportUrl,
   type CommentAnchor,
+  type CommentReportReason,
   type CommentOp,
   type CommentThread,
 } from "@pcbjam/shared";
@@ -109,6 +111,8 @@ export interface CommentsController {
   canManageThread(thread: CommentThread): boolean;
   /** Errors from the REST path (rejected / throttled ops). */
   subscribeErrors(cb: (message: string, status: number) => void): () => void;
+  /** Report a comment to the admins (comments-ux 0003 §6.1); any session with a backend. */
+  report(threadId: string, messageId: string, reason: CommentReportReason, note?: string): Promise<boolean>;
   threads(): ResolvedThread[];
   subscribe(cb: (threads: ResolvedThread[]) => void): () => void;
   /** Build an anchor for a world-pos click: nearest positioned item within
@@ -192,8 +196,11 @@ export function createComments(opts: {
     listThreads(doc).find((t) => t.id === threadId);
   const canEditMessage = (thread: CommentThread, messageId: string): boolean => {
     if (mode === "read") return false;
+    const msg = thread.messages.find((m) => m.id === messageId);
+    // Tombstones (moderation) are inert for everyone in the editor.
+    if (msg?.moderation) return false;
     if (mode === "write") return true;
-    return thread.messages.find((m) => m.id === messageId)?.author === user.id;
+    return msg?.author === user.id;
   };
   const canManageThread = (thread: CommentThread): boolean => {
     if (mode === "read") return false;
@@ -277,6 +284,30 @@ export function createComments(opts: {
     subscribeErrors(cb) {
       errorSubscribers.add(cb);
       return () => errorSubscribers.delete(cb);
+    },
+    async report(threadId, messageId, reason, note) {
+      const r = opts.rest;
+      if (!r || mode === "read") {
+        fail("reporting needs a signed-in session on a backend", 0);
+        return false;
+      }
+      try {
+        const res = await fetch(`${r.apiBase}${commentReportUrl(r.scope, r.project, r.docPath)}`, {
+          method: "POST",
+          credentials: "include",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ threadId, messageId, reason, ...(note ? { note } : {}) }),
+        });
+        if (!res.ok) {
+          const body = (await res.json().catch(() => null)) as { message?: string } | null;
+          fail(body?.message ?? `report failed (${res.status})`, res.status);
+          return false;
+        }
+        return true;
+      } catch (e) {
+        fail(e instanceof Error ? e.message : String(e), 0);
+        return false;
+      }
     },
     threads: () => cache,
     subscribe(cb) {

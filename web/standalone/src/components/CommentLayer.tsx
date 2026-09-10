@@ -1032,6 +1032,7 @@ function ThreadPopover({
 }) {
   const [reply, setReply] = React.useState("");
   const [editing, setEditing] = React.useState<{ id: string; body: string } | null>(null);
+  const [reported, setReported] = React.useState<Record<string, "sending" | "sent" | "failed">>({});
   const replyMentionsRef = React.useRef<Set<string>>(new Set());
 
   const sendReply = () => {
@@ -1104,6 +1105,26 @@ function ThreadPopover({
               <span className="text-[10px] text-neutral-400 dark:text-white/40">
                 {timeAgo(m.createdAt)} ago{m.editedAt ? " · edited" : ""}
               </span>
+              {!controller.canEditMessage(thread, m.id) &&
+                controller.mode() !== "read" &&
+                !m.moderation &&
+                m.author !== currentUser && (
+                  <span className="ml-auto hidden gap-1 group-hover:flex">
+                    <button
+                      data-testid="comment-report"
+                      title="Report this comment to the PCBJam admins"
+                      onClick={() => {
+                        setReported((r) => ({ ...r, [m.id]: "sending" }));
+                        void controller.report(thread.id, m.id, "spam").then((ok) =>
+                          setReported((r) => ({ ...r, [m.id]: ok ? "sent" : "failed" })),
+                        );
+                      }}
+                      className="text-[10px] text-neutral-500 hover:text-neutral-900 dark:text-white/60 dark:hover:text-white"
+                    >
+                      {reported[m.id] === "sent" ? "reported" : reported[m.id] === "sending" ? "reporting…" : "report"}
+                    </button>
+                  </span>
+                )}
               {controller.canEditMessage(thread, m.id) && (
                 <span className="ml-auto hidden gap-1 group-hover:flex">
                   <button
@@ -1141,6 +1162,13 @@ function ThreadPopover({
                   className="h-12 w-full resize-none rounded bg-black/5 p-1.5 text-xs text-neutral-900 outline-none dark:bg-white/10 dark:text-white"
                 />
               </div>
+            ) : m.moderation ? (
+              <p
+                data-testid="comment-tombstone"
+                className="italic text-neutral-400 dark:text-white/40"
+              >
+                {m.body}
+              </p>
             ) : (
               <MentionBody body={m.body} mentions={m.mentions} currentUser={currentUser} />
             )}
