@@ -82,6 +82,8 @@ import { PresenceRoster } from "@/components/PresenceRoster";
 import { CommentLayer } from "@/components/CommentLayer";
 import { hasTunerBridge, PresenceTuner, type TunerModule } from "@/components/PresenceTuner";
 import { hasLayersBridge, LayerPanel, type LayersModule } from "@/components/LayerPanel";
+import { ImportItemPanel } from "@/components/ImportItemPanel";
+import { hasImportBridge, type ImportModule } from "@/wasm/import-item";
 import { SelectionInspector } from "@/components/SelectionInspector";
 import { hasSheetsBridge, SheetPanel, type SheetsModule } from "@/components/SheetPanel";
 import { bindLocalSelectionFeed } from "@/wasm/collab/local-selection";
@@ -367,6 +369,8 @@ export function WasmTool({
       /* private mode */
     }
   }, []);
+  // POC import-from-file panel (import-item): session-only, not persisted.
+  const [importOpen, setImportOpen] = React.useState<boolean>(false);
   const [inspectorOpen, setInspectorOpenState] = React.useState<boolean>(() => {
     try {
       const stored = localStorage.getItem(INSPECTOR_OPEN_KEY);
@@ -1533,6 +1537,13 @@ export function WasmTool({
     return hasLayersBridge(mod) ? mod : null;
   }, [ready, tool]);
 
+  // Items-apply bridge for the POC import panel (import-item): pcbnew + eeschema.
+  const importMod = React.useMemo<ImportModule | null>(() => {
+    if (!ready || (tool !== "pcbnew" && tool !== "eeschema")) return null;
+    const mod = (window as { Module?: unknown }).Module;
+    return hasImportBridge(mod) ? mod : null;
+  }, [ready, tool]);
+
   // Sheet bridge (sheet-panel), eeschema sessions only. Re-evaluated on every
   // sheet switch (activeSheetPath) so a hierarchy that only gains sub-sheets
   // later ("Add Sheet") surfaces the panel; hidden for a flat schematic.
@@ -1673,6 +1684,9 @@ export function WasmTool({
           setSheetsOpen={setSheetsOpen}
           inspectorOpen={inspectorOpen}
           setInspectorOpen={setInspectorOpen}
+          hasImport={importMod !== null}
+          importOpen={importOpen}
+          setImportOpen={setImportOpen}
           canToggleChrome={setChromeFn !== null}
           chromeHidden={chromeHidden}
           onToggleChrome={() => toggleChromeHidden()}
@@ -1724,6 +1738,11 @@ export function WasmTool({
             onClose={() => setInspectorOpen(false)}
           />
         )}
+
+      {/* POC (import-item): add a local .kicad_sym / .kicad_mod to the canvas. */}
+      {ready && importOpen && importMod && (
+        <ImportItemPanel mod={importMod} tool={tool} onClose={() => setImportOpen(false)} />
+      )}
 
       {/* DEV: presence style tuner (VITE_PRESENCE_TUNER=1). */}
       {ready && tunerMod && <PresenceTuner mod={tunerMod} tool={tool} />}
