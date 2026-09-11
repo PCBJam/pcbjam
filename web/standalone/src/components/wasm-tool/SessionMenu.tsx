@@ -5,6 +5,7 @@ import {
   Box,
   Crosshair,
   EyeOff,
+  FilePlus,
   Layers,
   ListTree,
   Moon,
@@ -162,6 +163,9 @@ export function SessionMenu({
   setSheetsOpen,
   inspectorOpen,
   setInspectorOpen,
+  hasImport,
+  importOpen,
+  setImportOpen,
   canToggleChrome,
   chromeHidden,
   onToggleChrome,
@@ -209,6 +213,10 @@ export function SessionMenu({
   setSheetsOpen: (v: boolean) => void;
   inspectorOpen: boolean;
   setInspectorOpen: (v: boolean) => void;
+  /** The items-apply bridge is available (POC import-from-file panel). */
+  hasImport: boolean;
+  importOpen: boolean;
+  setImportOpen: (v: boolean) => void;
   /** The loaded bundle exports kicadSetChrome. */
   canToggleChrome: boolean;
   chromeHidden: boolean;
@@ -375,6 +383,18 @@ export function SessionMenu({
           >
             <Crosshair size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
             <span>{inspectorOpen ? "Hide inspector" : "Inspector"}</span>
+          </button>
+        )}
+        {hasImport && !readOnly && (
+          <button
+            data-testid="import-panel-toggle"
+            aria-pressed={importOpen}
+            className={overlayRowClass}
+            title="POC: add a symbol / footprint from a local file to the canvas"
+            onClick={() => setImportOpen(!importOpen)}
+          >
+            <FilePlus size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
+            <span>{importOpen ? "Hide import" : "Import from file"}</span>
           </button>
         )}
         {tool === "pcbnew" && onShow3D && (
