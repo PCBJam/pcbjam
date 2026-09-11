@@ -10,6 +10,7 @@ import {
   kicadLibSymbolsMap,
   parseItemsWireDelta,
   repairLayoutY,
+  sameKicadItem,
   seedDocToY,
   SEXPR_VERSION_SUPPORTED,
   upsertLibSymbolsToY,
@@ -80,8 +81,16 @@ export interface KicadBinding {
    * `editorMatchesDoc`: the editor's open file WAS materialized from this doc
    * (docToFile — the Y.Doc-load path), so the adopt re-apply would be a no-op
    * full-document blob apply; skip it and just baseline the wasm differ.
+   *
+   * `loadedView`: the doc's items AS MATERIALIZED (the snapshot the editor
+   * actually opened). The provider keeps receiving updates during the
+   * asynchronous native open, so "matches" is only true relative to THAT
+   * snapshot: with it, seed normalizes only roots untouched since load and
+   * catches the editor up on everything that changed (ysync 0012 #1).
+   * Without it the caller guarantees the doc did not change since the editor
+   * last saw it (the sheet pool's parked-dirty tracking).
    */
-  seed(seedDoc?: KicadDoc, opts?: { editorMatchesDoc?: boolean }): void;
+  seed(seedDoc?: KicadDoc, opts?: SeedOptions): void;
   destroy(): void;
   /** The underlying kdoc items map (exposed for tests/inspection). */
   readonly items: KicadYItems;
@@ -101,6 +110,43 @@ export class SexprVersionError extends Error {
     );
     this.name = "SexprVersionError";
   }
+}
+
+export interface SeedOptions {
+  editorMatchesDoc?: boolean;
+  loadedView?: Record<string, KicadItem>;
+}
+
+/** Root ancestor of `uuid` within `view` (cycle-guarded; dangling chains stop). */
+function liftRoot(view: Record<string, KicadItem>, uuid: string): string {
+  let cur = uuid;
+  const seen = new Set<string>();
+  while (view[cur]?.parent != null && !seen.has(cur)) {
+    seen.add(cur);
+    cur = view[cur]!.parent!;
+  }
+  return cur;
+}
+
+/**
+ * Roots touched between two item views (ysync 0012 #1): every uuid added,
+ * removed or changed between `before` and `after`, lifted to its root in
+ * whichever view knows it. A pure content diff — it sees deletion-only
+ * transactions that a state-vector comparison would miss.
+ */
+function changedRootsBetween(
+  before: Record<string, KicadItem>,
+  after: Record<string, KicadItem>,
+): Set<string> {
+  const roots = new Set<string>();
+  for (const uuid of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    const a = before[uuid];
+    const b = after[uuid];
+    if (a && b && sameKicadItem(a, b)) continue;
+    if (a) roots.add(liftRoot(before, uuid));
+    if (b) roots.add(liftRoot(after, uuid));
+  }
+  return roots;
 }
 
 export function bindKicadCollab(
@@ -293,7 +339,7 @@ export function bindKicadCollab(
   };
   revMeta.observe(onRevertMeta);
 
-  function seed(seedDoc?: KicadDoc, opts?: { editorMatchesDoc?: boolean }): void {
+  function seed(seedDoc?: KicadDoc, opts?: SeedOptions): void {
     try {
       seedInner(seedDoc, opts);
     } finally {
@@ -301,7 +347,66 @@ export function bindKicadCollab(
     }
   }
 
-  function seedInner(seedDoc?: KicadDoc, opts?: { editorMatchesDoc?: boolean }): void {
+  /**
+   * Y.Doc-load seed with the materialized snapshot in hand (ysync 0012 #1).
+   * The editor holds exactly `loaded`'s content (modulo its own serialization),
+   * while the doc may have moved on during the native open. Two steps:
+   *  1. normalize (F5) ONLY roots untouched since load — the editor-vs-loaded
+   *     delta is pure writer form, so writing it back for those roots is the
+   *     documented no-op-or-formatting write; touched roots are skipped (they
+   *     re-normalize on their next local edit) so a peer's edit is never
+   *     overwritten and a deleted root is never resurrected;
+   *  2. catch the editor up with DOC AUTHORITY on every root that changed:
+   *     doc-only roots added, changed roots re-applied whole, removed roots
+   *     removed — the adopt branch's rules with `loaded` standing in for the
+   *     editor, which is exact rather than lossy.
+   */
+  function seedFromLoadedView(snapshot: string, loaded: Record<string, KicadItem>): void {
+    const view = itemsView();
+    const changed = changedRootsBetween(loaded, view);
+
+    if (!readOnly) {
+      const wire = parseItemsWireDelta(snapshot);
+      const norm = itemsWireToDelta(wire, loaded, warnSkip);
+      const untouched = (uuid: string, parent: string | null): boolean =>
+        !changed.has(liftRoot(loaded, parent ?? uuid)) &&
+        !changed.has(liftRoot(view, parent ?? uuid));
+      const local = {
+        added: norm.added.filter((it) => untouched(it.uuid, it.parent)),
+        updated: norm.updated.filter((it) => untouched(it.uuid, it.parent)),
+        removed: norm.removed.filter((uuid) => untouched(uuid, loaded[uuid]?.parent ?? null)),
+      };
+      if (!isEmptyKicadDelta(local)) {
+        clog(
+          `seed: normalizing ${local.updated.length} body(ies) to the editor's form ` +
+            `(${changed.size} root(s) changed since load skipped)`,
+        );
+        applyDeltaToY(doc, local, ORIGIN);
+      }
+    }
+
+    if (changed.size === 0) return;
+    const added: Array<{ uuid: string } & KicadItem> = [];
+    const updated: Array<{ uuid: string } & KicadItem> = [];
+    const removed: string[] = [];
+    for (const root of changed) {
+      const now = view[root];
+      if (now && now.parent === null) {
+        (root in loaded ? updated : added).push({ uuid: root, ...now });
+      } else if (!now && loaded[root]?.parent === null) {
+        removed.push(root);
+      }
+      // A root that became a child is covered by its new parent's re-apply.
+    }
+    const catchUp = deltaToItemsWire({ added, updated, removed }, view, libDefs);
+    clog(
+      `seed: doc changed during load → catching up:`,
+      `+${catchUp.added.length} ~${catchUp.changed.length} -${catchUp.removed.length}`,
+    );
+    if (!isEmptyItemsWireDelta(catchUp)) bridge.applyItems(JSON.stringify(tagged(catchUp)));
+  }
+
+  function seedInner(seedDoc?: KicadDoc, opts?: SeedOptions): void {
     seeded = true; // open the UP gate; everything below runs synchronously
     // `ydocHasState` (meta + layout + items), NOT `items.size`: a populated
     // drawing sheet (pl_editor .kicad_wks) has zero uuid items, so an items-only
@@ -320,12 +425,18 @@ export function bindKicadCollab(
       clog(`seed: editor matches doc (${items.size} item(s)) → baseline only, no apply`);
       try {
         const snapshot = bridge.snapshotItems();
+        if (opts.loadedView) {
+          seedFromLoadedView(snapshot, opts.loadedView);
+          return;
+        }
         // A doc seeded server-side (load-path-rework 0004 §2.4: the runner
         // installs the resaved upload as the ydoc) carries kicad-cli's
         // serialization of each body, not this writer's. Same normalization
         // as the file-seed branch below: re-upsert in the editor's form so
         // drift-compare and upsertYItem's no-op skip see identical bodies.
-        // Identical bodies cost nothing; a viewer never writes.
+        // Identical bodies cost nothing; a viewer never writes. Without a
+        // loaded snapshot the caller vouches that the doc has not changed
+        // since the editor last saw it (sheet pool: parked-dirty tracking).
         if (!readOnly) {
           const wire = parseItemsWireDelta(snapshot);
           const local = itemsWireToDelta(wire, itemsView(), warnSkip);

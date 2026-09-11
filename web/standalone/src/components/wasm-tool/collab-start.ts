@@ -93,7 +93,11 @@ export async function maybeConnectDocSession(
     return { session };
   }
   try {
-    const text = docToFile(yToDoc(session.doc));
+    const kdoc = yToDoc(session.doc);
+    const text = docToFile(kdoc);
+    // Keep the items AS MATERIALIZED: the doc keeps syncing while the native
+    // open runs, and the first seed reconciles against this snapshot (0012 #1).
+    session.loadedView = kdoc.items;
     opts.log(`[ydoc] materialized ${opts.targetPath} from room ${room} (${text.length} chars)`);
     return { session, targetBytes: new TextEncoder().encode(text) };
   } catch (err) {

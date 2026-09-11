@@ -307,7 +307,14 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
 
     if (!room.seeded) {
       // First activation: file-seed an empty room, else adopt peer/server state.
-      binding.seed(seedDocForPath(sheetPath), { editorMatchesDoc: room.editorMatchesDoc });
+      // The ydoc-entry sheet reconciles against the snapshot it materialized
+      // (one-shot; the doc kept syncing during the native open — 0012 #1).
+      const loadedView = room.session.loadedView;
+      room.session.loadedView = undefined;
+      binding.seed(seedDocForPath(sheetPath), {
+        editorMatchesDoc: room.editorMatchesDoc,
+        loadedView,
+      });
       room.seeded = true;
       clog(`[sheet] seeded ${sheetPath} (editorMatchesDoc=${room.editorMatchesDoc})`);
     } else if (room.dirty) {

@@ -8,6 +8,7 @@ import {
   kicadLibSymbolsMap,
   parseItemsWireDelta,
   renderItem,
+  seedDocToY,
   SEXPR_VERSION_CURRENT,
   sexprToItems,
   syncLayoutToY,
@@ -331,6 +332,89 @@ describe("bindKicadCollab — two editors over relayed Y.Docs", () => {
     expect(edA.store["pad-1"]!.body).toEqual(
       sexprToItems(`(pad "1" smd (at 6 6) (uuid "pad-1"))`, "fp-1").items["pad-1"]!.body,
     );
+  });
+
+  describe("ydoc-load seed with the materialized snapshot (ysync 0012 #1)", () => {
+    // The Y.Doc-load path: B materialized the doc at t0, the native open ran
+    // asynchronously while the provider kept syncing, and seed() runs at t2.
+    // "editor matches doc" is only true relative to the t0 snapshot.
+    const SEG = `(segment (start 0 0) (end 1 1) (width 0.2) (uuid "seg-1"))`;
+
+    /** A file-seeded room (meta + layout + items, so B can materialize it). */
+    function fileSeeded(a: Y.Doc, edA: FakeEditor, bindA: ReturnType<typeof bindKicadCollab>): void {
+      seedDocToY(fileToDoc(`(kicad_pcb (version 20250114) (generator "pcbnew") ${FP})`), a, "seed", "1:n");
+      seedEditor(edA, FP);
+      bindA.seed(undefined, { editorMatchesDoc: true });
+    }
+
+    function openFromDoc(b: Y.Doc, edB: FakeEditor): Record<string, KicadItem> {
+      const loaded = yToDoc(b).items; // what docToFile handed the editor
+      Object.assign(edB.store, structuredClone(loaded));
+      return loaded;
+    }
+
+    it("keeps a peer edit received while the editor opened, and catches the editor up", () => {
+      const { a, b, edA, edB, bindA, bindB } = setup();
+      fileSeeded(a, edA, bindA);
+      const loaded = openFromDoc(b, edB); // t0
+      const moved = FP.replace("(at 10 10)", "(at 42 42)");
+      edA.localUpsert(moved); // t1: peer edit during B's native open
+      let updates = 0;
+      b.on("update", () => updates++);
+      bindB.seed(undefined, { editorMatchesDoc: true, loadedView: loaded }); // t2
+      expect(updates).toBe(0); // nothing normalized over the peer's root
+      expect(docToFile(yToDoc(b))).toContain("(at 42 42)");
+      expect(edB.applied).toHaveLength(1); // the catch-up apply
+      expect(renderItem({ items: edB.store }, "fp-1")).toBe(renderItem(yToDoc(b), "fp-1"));
+    });
+
+    it("does not resurrect a root deleted during open; a root added during open reaches the editor", () => {
+      const { a, b, edA, edB, bindA, bindB } = setup();
+      fileSeeded(a, edA, bindA);
+      const loaded = openFromDoc(b, edB);
+      edA.localRemove("fp-1");
+      edA.localUpsert(SEG, null, "added");
+      bindB.seed(undefined, { editorMatchesDoc: true, loadedView: loaded });
+      expect(yToDoc(b).items["fp-1"]).toBeUndefined();
+      expect(edB.store["fp-1"]).toBeUndefined();
+      expect(edB.store["pad-1"]).toBeUndefined();
+      expect(edB.store["seg-1"]).toBeDefined();
+      expect(docToFile(yToDoc(b))).not.toContain("fp-1");
+    });
+
+    it("still normalizes UNTOUCHED roots to the writer's form (F5) while skipping touched ones", () => {
+      const { a, b, edA, edB, bindA, bindB } = setup();
+      // Server-seeded doc in kicad-cli's serialization (verbose numerics).
+      const cli = `(kicad_pcb (version 20250114) (generator "pcbnew")
+        ${FP.replace("(at 10 10)", "(at 10.000000 10.000000)")} ${SEG.replace("(width 0.2)", "(width 0.200000)")})`;
+      seedDocToY(fileToDoc(cli), a, "seed", "1:n");
+      seedEditor(edA, FP);
+      seedEditor(edA, SEG);
+      bindA.seed(undefined, { editorMatchesDoc: true }); // A: legacy matching seed (no snapshot)
+      // B opens from the doc — its writer renders the terse form.
+      const loaded = yToDoc(b).items;
+      seedEditor(edB, FP);
+      seedEditor(edB, SEG);
+      const seg = SEG.replace("(end 1 1)", "(end 5 5)");
+      edA.localUpsert(seg); // peer touches the segment during B's open
+      bindB.seed(undefined, { editorMatchesDoc: true, loadedView: loaded });
+      const text = docToFile(yToDoc(b));
+      expect(text).toContain("(end 5 5)"); // the peer's edit survived
+      expect(text).toContain("(at 10 10)"); // fp-1 normalized to the writer's form
+      expect(edB.applied).toHaveLength(1); // only the touched segment was re-applied
+      expect(JSON.parse(edB.applied[0]!).changed).toHaveLength(1);
+    });
+
+    it("a doc unchanged since load writes nothing and applies nothing (control)", () => {
+      const { a, b, edA, edB, bindA, bindB } = setup();
+      fileSeeded(a, edA, bindA);
+      const loaded = openFromDoc(b, edB);
+      let updates = 0;
+      b.on("update", () => updates++);
+      bindB.seed(undefined, { editorMatchesDoc: true, loadedView: loaded });
+      expect(updates).toBe(0);
+      expect(edB.applied).toHaveLength(0);
+    });
   });
 
   it("destroy() detaches the editor from further remote changes", () => {

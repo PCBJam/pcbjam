@@ -1,5 +1,5 @@
 import * as Y from "yjs";
-import type { KicadDoc } from "@pcbjam/shared";
+import type { KicadDoc, KicadItem } from "@pcbjam/shared";
 import { clog } from "./debug";
 import {
   connectProvider,
@@ -123,6 +123,12 @@ export interface KicadCollabHandle {
 export interface KicadDocSession {
   doc: Y.Doc;
   provider: YjsProvider;
+  /**
+   * The doc's items as MATERIALIZED for the editor to open (ydoc load path).
+   * Consumed by the first seed: the doc keeps syncing during the native open,
+   * so the seed reconciles against this snapshot, not "now" (ysync 0012 #1).
+   */
+  loadedView?: Record<string, KicadItem>;
 }
 
 /** The connect path exceeded its deadline (import + construct + initial sync). */
@@ -242,7 +248,9 @@ export function attachKicadCollab(
     readOnly: opts?.readOnly,
   });
   try {
-    binding.seed(opts?.seedDoc, { editorMatchesDoc: opts?.editorMatchesDoc });
+    const loadedView = session.loadedView;
+    session.loadedView = undefined; // one-shot: consumed by this seed
+    binding.seed(opts?.seedDoc, { editorMatchesDoc: opts?.editorMatchesDoc, loadedView });
   } catch (err) {
     // A partially-attached binding must not survive a seed throw (findings
     // C-2): it already owns the global DOWN hook + doc observers, and the
