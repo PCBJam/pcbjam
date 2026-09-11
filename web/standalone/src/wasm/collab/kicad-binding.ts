@@ -19,6 +19,7 @@ import {
   Y_KDOC_META,
   Y_KDOC_REVERT_AT,
   Y_KDOC_REVERT_NONCE,
+  Y_KDOC_INITIALIZED,
   Y_KDOC_REVERT_REASON,
   Y_KDOC_SEED_NONCE,
   ydocHasState,
@@ -413,12 +414,11 @@ export function bindKicadCollab(
       doc.transact(() => {
         applyDeltaToY(doc, local, ORIGIN);
         upsertLibSymbolsToY(doc, wireLibSymbols(wire), ORIGIN);
-        // Stamp the seed marker like the file path does: a seeded-then-emptied
+        // Stamp the seed markers like the file path does: a seeded-then-emptied
         // sheet must stay distinguishable from a hollow one (ydocIsHollow).
-        doc.getMap(Y_KDOC_META).set(
-          Y_KDOC_SEED_NONCE,
-          `${doc.clientID}:${Math.random().toString(36).slice(2)}`,
-        );
+        const meta = doc.getMap(Y_KDOC_META);
+        meta.set(Y_KDOC_SEED_NONCE, `${doc.clientID}:${Math.random().toString(36).slice(2)}`);
+        meta.set(Y_KDOC_INITIALIZED, true);
       }, ORIGIN);
       return;
     }
