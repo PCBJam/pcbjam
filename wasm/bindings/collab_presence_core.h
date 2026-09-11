@@ -56,6 +56,9 @@ struct PEER
     // as SYMBOL uuids (pcbnew footprint paths are stripped to their tail by
     // the TS side). Ghost-rendered by the per-editor drawPeerShapes hook.
     std::vector<KIID> xsel;
+    // Reviewer = commenter (comments-ux 0003 §5.2): the role is server-
+    // verified on the TS side; drawn with reviewerStyle(), never a lock.
+    bool              reviewer = false;
 };
 
 // Comment pin dot (collab-presence 0005): the GAL half of the hybrid pin —
@@ -449,8 +452,10 @@ struct CORE
                     continue;
 
                 KIGFX::COLOR4D color = peerColor( style, peer.name, peer.color );
+                const STYLE&   s = peer.reviewer ? reviewerStyle( style ) : style;
                 drawCursor( cursorOverlay.get(), cursorChipOverlay.get(), cursorTextOverlay.get(),
-                            peer.cursor, peer.name, color, px, style );
+                            peer.cursor, peerLabel( style, peer.name, peer.reviewer ), color, px,
+                            s );
             }
 
             view->Update( cursorOverlay.get() );
@@ -581,8 +586,8 @@ struct CORE
     }
 
     /** kicadCollabSetRemote: full remote-peers snapshot — `{peers:[{id,name,
-     *  color,cursor:{x,y}|null,selection:[uuid],xsel:[uuid]}],locks:[{uuid,
-     *  name}]}`, trivially derived from awareness.getStates() and idempotent
+     *  color,cursor:{x,y}|null,selection:[uuid],xsel:[uuid],reviewer?}],
+     *  locks:[{uuid,name}]}`, trivially derived from awareness.getStates() and idempotent
      *  (the overlay is cleared + fully redrawn). Empty peers clears it. */
     void setRemote( const std::string& aJson )
     {
@@ -599,6 +604,8 @@ struct CORE
             peer.id    = p.value( "id", "" );
             peer.name  = p.value( "name", "" );
             peer.color = parsePeerColor( p.value( "color", "" ) );
+            peer.reviewer = p.contains( "reviewer" ) && p["reviewer"].is_boolean()
+                            && p["reviewer"].get<bool>();
 
             if( p.contains( "cursor" ) && p["cursor"].is_object() )
             {
@@ -640,7 +647,8 @@ struct CORE
 
         for( const PEER& peer : parsed )
         {
-            sig += peer.id + '\x1f' + peer.name + '\x1f' + peer.color.ToCSSString().ToStdString() + '\x1e';
+            sig += peer.id + '\x1f' + peer.name + '\x1f' + peer.color.ToCSSString().ToStdString()
+                   + ( peer.reviewer ? "\x1fr" : "" ) + '\x1e';
 
             for( const KIID& k : peer.selection )
                 sig += pcbjam_collab::toUtf8( k.AsString() ) + ',';

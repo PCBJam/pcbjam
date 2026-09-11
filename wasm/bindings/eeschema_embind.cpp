@@ -917,6 +917,14 @@ pcbjam_presence::CORE& presenceCore()
         {
             SCH_EDIT_FRAME* fr = static_cast<SCH_EDIT_FRAME*>( aFrame );
 
+            // Reviewer (commenter) peers draw with the dashed/softer reviewer
+            // style and a suffixed label (comments-ux 0003 §5.2).
+            const pcbjam_presence::STYLE& base = peer.reviewer
+                                                 ? pcbjam_presence::reviewerStyle( aCore.style )
+                                                 : aCore.style;
+            const std::string label = pcbjam_presence::peerLabel( aCore.style, peer.name,
+                                                                  peer.reviewer );
+
             for( const KIID& id : peer.selection )
             {
                 SCH_SHEET_PATH path;
@@ -927,20 +935,19 @@ pcbjam_presence::CORE& presenceCore()
 
                 pcbjam_presence::drawSelectionBox( aCore.overlay.get(), aCore.chipOverlay.get(),
                                                    aCore.textOverlay.get(),
-                                                   item->ViewBBox(), peer.name, color, px,
-                                                   aCore.style );
+                                                   item->ViewBBox(), label, color, px, base );
             }
 
             // Cross-app ghosts (0006) — see resolveXsel for the sheet gating.
             if( !peer.xsel.empty() )
             {
-                pcbjam_presence::STYLE ghost = pcbjam_presence::ghostStyle( aCore.style );
+                pcbjam_presence::STYLE ghost = pcbjam_presence::ghostStyle( base );
 
                 for( SCH_ITEM* item : resolveXsel( fr, peer ) )
                 {
                     pcbjam_presence::drawSelectionBox( aCore.overlay.get(), aCore.chipOverlay.get(),
-                                                   aCore.textOverlay.get(),
-                                                       item->ViewBBox(), peer.name, color, px,
+                                                       aCore.textOverlay.get(),
+                                                       item->ViewBBox(), label, color, px,
                                                        ghost );
                 }
             }

@@ -65,6 +65,16 @@ const DEFAULT_STYLE = {
   pinFillAlpha: 0.9,
   pinResolvedAlpha: 0.3,
   pinUnreadRingColor: "#ffb020",
+  // Dashed outline + reviewer (commenter) peers — comments-ux 0003 §5.2.
+  selDashed: false,
+  selDashPx: 6,
+  selGapPx: 4,
+  reviewerDashed: true,
+  reviewerStrokeScale: 1,
+  reviewerWidthScale: 0.6,
+  reviewerFillScale: 0.35,
+  reviewerCursorShape: 3,
+  reviewerLabelSuffix: " (reviewer)",
 };
 
 type Style = typeof DEFAULT_STYLE;
@@ -100,7 +110,8 @@ const SEL_SHAPES = [
   "filled only",
   "exact outline (pcb)",
 ];
-const CURSOR_SHAPES = ["cross", "pointer", "circle + dot"];
+const CURSOR_SHAPES = ["cross", "pointer", "circle + dot", "hollow bubble", "ring"];
+const REVIEWER_CURSOR_SHAPES = ["same as editors", ...CURSOR_SHAPES];
 const PIN_SHAPES = ["circle dot", "bubble (sharp corner)"];
 const VPOS = ["top", "bottom"];
 const HPOS = ["start", "end", "center"];
@@ -184,6 +195,16 @@ export function PresenceTuner({ mod, tool }: { mod: TunerModule; tool: string })
             color: PRESENCE_COLORS[4],
             cursor: { x: vp.cx + spanX * 0.15, y: vp.cy + spanY * 0.16 },
             selection: carolSel,
+          },
+          // A reviewer (commenter) peer highlighting bob's items: the two
+          // must read apart on the same geometry.
+          {
+            id: "demo-eve",
+            name: "eve",
+            color: PRESENCE_COLORS[1],
+            cursor: { x: vp.cx - spanX * 0.22, y: vp.cy + spanY * 0.1 },
+            selection: bobSel,
+            reviewer: true,
           },
         ];
         const pins = [
@@ -301,6 +322,29 @@ export function PresenceTuner({ mod, tool }: { mod: TunerModule; tool: string })
           <Check label="name label" v={style.cursorLabel} onChange={(v) => set("cursorLabel", v)} />
           <Range label="label px" v={style.cursorLabelSizePx} min={5} max={20} step={0.5} onChange={(v) => set("cursorLabelSizePx", v)} />
           <Check label="label chip" v={style.cursorLabelChip} onChange={(v) => set("cursorLabelChip", v)} />
+        </Section>
+
+        <Section title="Reviewer peers">
+          <p className="mb-1 text-[10px] leading-snug text-white/45">
+            Commenters' highlights (demo peer "eve"): the base selection style
+            transformed by these knobs.
+          </p>
+          <Check label="dashed" v={style.reviewerDashed} onChange={(v) => set("reviewerDashed", v)} />
+          <Range label="dash px" v={style.selDashPx} min={2} max={20} step={1} onChange={(v) => set("selDashPx", v)} />
+          <Range label="gap px" v={style.selGapPx} min={1} max={16} step={1} onChange={(v) => set("selGapPx", v)} />
+          <Range label="border px ×" v={style.reviewerWidthScale} min={0.2} max={1.5} step={0.05} onChange={(v) => set("reviewerWidthScale", v)} />
+          <Range label="border α ×" v={style.reviewerStrokeScale} min={0.2} max={1.5} step={0.05} onChange={(v) => set("reviewerStrokeScale", v)} />
+          <Range label="infill α ×" v={style.reviewerFillScale} min={0} max={1} step={0.05} onChange={(v) => set("reviewerFillScale", v)} />
+          <Select label="cursor" value={style.reviewerCursorShape + 1} options={REVIEWER_CURSOR_SHAPES} onChange={(v) => set("reviewerCursorShape", v - 1)} />
+          <label className="flex items-center gap-2">
+            <span className="w-24 shrink-0 text-white/60">label suffix</span>
+            <input
+              value={style.reviewerLabelSuffix}
+              onChange={(e) => set("reviewerLabelSuffix", e.target.value)}
+              className="min-w-0 flex-1 rounded bg-white/10 px-1 py-0.5 font-mono text-[10px] text-white outline-none"
+            />
+          </label>
+          <Check label="editors dashed too" v={style.selDashed} onChange={(v) => set("selDashed", v)} />
         </Section>
 
         <ColorsSection style={style} set={set} />

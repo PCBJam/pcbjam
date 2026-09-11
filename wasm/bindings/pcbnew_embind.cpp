@@ -1411,6 +1411,14 @@ pcbjam_presence::CORE& presenceCore()
                                                    style, &outline );
             };
 
+            // Reviewer (commenter) peers draw with the dashed/softer reviewer
+            // style and a suffixed label (comments-ux 0003 §5.2).
+            const pcbjam_presence::STYLE& base = peer.reviewer
+                                                 ? pcbjam_presence::reviewerStyle( aCore.style )
+                                                 : aCore.style;
+            const std::string label = pcbjam_presence::peerLabel( aCore.style, peer.name,
+                                                                  peer.reviewer );
+
             for( const KIID& id : peer.selection )
             {
                 BOARD_ITEM* item = board->ResolveItem( id, /*aAllowNullptrReturn*/ true );
@@ -1418,16 +1426,16 @@ pcbjam_presence::CORE& presenceCore()
                 if( !item )
                     continue;   // not on this board (yet) — skip silently
 
-                drawItem( item, peer.name, color, aCore.style );
+                drawItem( item, label, color, base );
             }
 
             // Cross-app ghosts (0006) — see resolveXsel for the path-tail matching.
             if( !peer.xsel.empty() )
             {
-                pcbjam_presence::STYLE ghost = pcbjam_presence::ghostStyle( aCore.style );
+                pcbjam_presence::STYLE ghost = pcbjam_presence::ghostStyle( base );
 
                 for( FOOTPRINT* fp : resolveXsel( fr, peer ) )
-                    drawItem( fp, peer.name, color, ghost );
+                    drawItem( fp, label, color, ghost );
             }
         };
 

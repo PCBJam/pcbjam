@@ -17,6 +17,7 @@
 #include <gal/color4d.h>
 #include <gal/graphics_abstraction_layer.h>
 #include <geometry/eda_angle.h>
+#include <geometry/shape_line_chain.h>
 #include <geometry/shape_poly_set.h>
 #include <math/util.h>
 #include <math/box2.h>
@@ -60,7 +61,8 @@ struct STYLE
     double chipBgAlpha   = 0.7;
 
     // ── remote cursor ─────────────────────────────────────────────────────
-    // 0 cross · 1 pointer triangle · 2 circle + dot
+    // 0 cross · 1 pointer triangle · 2 circle + dot · 3 hollow comment bubble
+    // · 4 ring
     int    cursorShape        = 0;
     double cursorSizePx       = 8.0;
     double cursorWidthPx      = 3.0;
@@ -97,6 +99,27 @@ struct STYLE
     // alphas scaled down, so a cross-probe highlight reads distinctly softer
     // than a direct same-document selection.
     double xselAlphaScale = 0.55;
+
+    // ── dashed outline stroke ─────────────────────────────────────────────
+    // The GAL has no dash pattern; the stroke is segmented here (the way
+    // KiCad's own STROKE_PARAMS does it), in screen px so it never scales
+    // with zoom. Off for editors by default — reviewer peers turn it on.
+    bool   selDashed = false;
+    double selDashPx = 6.0;
+    double selGapPx  = 4.0;
+
+    // ── reviewer (commenter) peers — comments-ux 0003 §5.2 ────────────────
+    // A commenter's selection is a HIGHLIGHT, not an edit intent: it never
+    // soft-locks, so it must read distinctly from an editor's. Reviewer
+    // peers draw with the base style transformed by these knobs (see
+    // reviewerStyle()): dashed stroke, scaled alphas, their own cursor glyph
+    // and a label suffix. Defaults picked with the PresenceTuner 2026-09-11.
+    bool        reviewerDashed       = true;
+    double      reviewerStrokeScale  = 1.0;   // × selStrokeAlpha
+    double      reviewerWidthScale   = 0.6;   // × selStrokeWidth (thinner = annotation, not a grab)
+    double      reviewerFillScale    = 0.35;  // × selFillAlpha
+    int         reviewerCursorShape  = 3;     // -1 = as editors · see cursorShape (3 bubble · 4 ring)
+    std::string reviewerLabelSuffix  = " (reviewer)";
 
 };
 
@@ -177,6 +200,17 @@ inline void patchStyle( STYLE& aStyle, const json& j )
     aStyle.pinUnreadRingColor = j.value( "pinUnreadRingColor", aStyle.pinUnreadRingColor );
 
     aStyle.xselAlphaScale = j.value( "xselAlphaScale", aStyle.xselAlphaScale );
+
+    aStyle.selDashed = j.value( "selDashed", aStyle.selDashed );
+    aStyle.selDashPx = j.value( "selDashPx", aStyle.selDashPx );
+    aStyle.selGapPx  = j.value( "selGapPx", aStyle.selGapPx );
+
+    aStyle.reviewerDashed      = j.value( "reviewerDashed", aStyle.reviewerDashed );
+    aStyle.reviewerStrokeScale = j.value( "reviewerStrokeScale", aStyle.reviewerStrokeScale );
+    aStyle.reviewerWidthScale  = j.value( "reviewerWidthScale", aStyle.reviewerWidthScale );
+    aStyle.reviewerFillScale   = j.value( "reviewerFillScale", aStyle.reviewerFillScale );
+    aStyle.reviewerCursorShape = j.value( "reviewerCursorShape", aStyle.reviewerCursorShape );
+    aStyle.reviewerLabelSuffix = j.value( "reviewerLabelSuffix", aStyle.reviewerLabelSuffix );
 }
 
 /** The style a cross-app (0006) ghost selection draws with: the given style
@@ -187,6 +221,29 @@ inline STYLE ghostStyle( const STYLE& aStyle )
     g.selStrokeAlpha *= aStyle.xselAlphaScale;
     g.selFillAlpha   *= aStyle.xselAlphaScale;
     return g;
+}
+
+/** The style a reviewer (commenter) peer draws with: the given style with
+ *  the dashed stroke, alpha scales and cursor glyph from the reviewer knobs.
+ *  A cross-app ghost of a reviewer composes: ghostStyle( reviewerStyle( s ) ). */
+inline STYLE reviewerStyle( const STYLE& aStyle )
+{
+    STYLE r = aStyle;
+    r.selDashed       = aStyle.reviewerDashed;
+    r.selStrokeAlpha *= aStyle.reviewerStrokeScale;
+    r.selStrokeWidth *= aStyle.reviewerWidthScale;
+    r.selFillAlpha   *= aStyle.reviewerFillScale;
+
+    if( aStyle.reviewerCursorShape >= 0 )
+        r.cursorShape = aStyle.reviewerCursorShape;
+
+    return r;
+}
+
+/** The name a peer's tags carry: reviewers get the configured suffix. */
+inline std::string peerLabel( const STYLE& aStyle, const std::string& aName, bool aReviewer )
+{
+    return aReviewer && !aName.empty() ? aName + aStyle.reviewerLabelSuffix : aName;
 }
 
 /** The color a peer renders with under this style (fixed > palette-by-name-hash
@@ -277,6 +334,106 @@ inline std::shared_ptr<PRESENCE_TEXT_OVERLAY> makePresenceTextOverlay( KIGFX::VI
     return overlay;
 }
 
+/** Stroke a point chain as dashes. Arc-length parametrised: dash k covers
+ *  [k·period, k·period + dash) along the whole chain, so the phase carries
+ *  across corners and the pattern reads continuous around a closed outline.
+ *  Integer dash indices — never a float-accumulating walk, which can stall
+ *  on a sub-ulp remainder and emit lines forever. Degenerates to a solid
+ *  polyline when the gap is 0 or the chain would need absurdly many dashes
+ *  (a zoomed-in zone outline) — the overlay command list is not free. */
+inline void strokeDashed( KIGFX::VIEW_OVERLAY* aOv, const std::vector<VECTOR2D>& aPts,
+                          bool aClosed, double aDash, double aGap )
+{
+    const size_t n = aPts.size();
+
+    if( n < 2 )
+        return;
+
+    const size_t segs = aClosed ? n : n - 1;
+
+    double perimeter = 0;
+
+    for( size_t i = 0; i < segs; i++ )
+        perimeter += ( aPts[( i + 1 ) % n] - aPts[i] ).EuclideanNorm();
+
+    const double     period = aDash + aGap;
+    constexpr double MAX_DASHES = 4000;
+
+    if( !( aDash > 0 ) || !( aGap > 0 ) || !( period > 0 ) || !( perimeter / period < MAX_DASHES ) )
+    {
+        for( size_t i = 0; i < segs; i++ )
+            aOv->Line( aPts[i], aPts[( i + 1 ) % n] );
+
+        return;
+    }
+
+    double start = 0; // chain distance at the current segment's start
+
+    for( size_t i = 0; i < segs; i++ )
+    {
+        const VECTOR2D a   = aPts[i];
+        const VECTOR2D d   = aPts[( i + 1 ) % n] - a;
+        const double   len = d.EuclideanNorm();
+
+        if( !( len > 0 ) )
+            continue;
+
+        const VECTOR2D u   = d / len;
+        const double   end = start + len;
+        const long     k0  = (long) std::floor( start / period );
+        const long     k1  = (long) std::floor( end / period );
+
+        for( long k = k0; k <= k1; k++ )
+        {
+            double d0 = std::max( k * period, start );
+            double d1 = std::min( k * period + aDash, end );
+
+            if( d1 > d0 )
+                aOv->Line( a + u * ( d0 - start ), a + u * ( d1 - start ) );
+        }
+
+        start = end;
+    }
+}
+
+/** A SHAPE_LINE_CHAIN's vertices (arcs are stored pre-sampled). */
+inline std::vector<VECTOR2D> chainPoints( const SHAPE_LINE_CHAIN& aChain )
+{
+    std::vector<VECTOR2D> pts;
+    pts.reserve( aChain.PointCount() );
+
+    for( int i = 0; i < aChain.PointCount(); i++ )
+        pts.emplace_back( aChain.CPoint( i ) );
+
+    return pts;
+}
+
+/** Comment-bubble silhouette (shared by the pin and the reviewer cursor): a
+ *  round body whose bottom-left corner is squared off; `aPos` is that SHARP
+ *  CORNER (the anchored point), the body center sits at aPos + (r, -r)
+ *  (screen up-right; KiCad IU y grows downward). Returns a closed outline
+ *  (first point repeated) — the overlay strokes point lists as polylines. */
+inline std::vector<VECTOR2D> bubbleOutline( const VECTOR2D& aPos, double aR )
+{
+    constexpr int SEGS = 24; // sampling of the 270° round part
+    std::vector<VECTOR2D> pts;
+    pts.reserve( SEGS + 3 );
+
+    VECTOR2D c = aPos + VECTOR2D( aR, -aR );
+
+    pts.push_back( aPos ); // the sharp corner
+
+    for( int i = 0; i <= SEGS; i++ )
+    {
+        // South (90° in y-down coords) → east → north → west: the round part.
+        double th = ( 90.0 - 270.0 * i / SEGS ) * M_PI / 180.0;
+        pts.push_back( c + VECTOR2D( cos( th ) * aR, sin( th ) * aR ) );
+    }
+
+    pts.push_back( aPos );
+    return pts;
+}
+
 /** Name tag next to (or inside) a box, per the label placement knobs. `px` is
  *  world-units-per-screen-pixel. The chip rect goes to the CHIPS overlay
  *  (above selection fills, below text), the text to the TEXT overlay (nearest
@@ -339,12 +496,35 @@ inline void drawSelectionBox( KIGFX::VIEW_OVERLAY* aOv, KIGFX::VIEW_OVERLAY* aCh
 {
     if( aS.selShape == 5 && aOutline && aOutline->OutlineCount() > 0 )
     {
-        aOv->SetIsStroke( true );
+        aOv->SetIsStroke( !aS.selDashed );
         aOv->SetIsFill( aS.selFillAlpha > 0.001 );
         aOv->SetStrokeColor( aColor.WithAlpha( aS.selStrokeAlpha ) );
         aOv->SetFillColor( aColor.WithAlpha( aS.selFillAlpha ) );
         aOv->SetLineWidth( aS.selStrokeWidth * aPx );
-        aOv->Polygon( *aOutline );
+
+        // Solid: stroke + fill in one polygon. Dashed: the fill only (the
+        // contour is traced in dashes below).
+        if( !aS.selDashed || aS.selFillAlpha > 0.001 )
+            aOv->Polygon( *aOutline );
+
+        if( aS.selDashed )
+        {
+            // Dashes trace every contour (holes included) over the fill.
+            aOv->SetIsStroke( true );
+            aOv->SetIsFill( false );
+
+            for( int o = 0; o < aOutline->OutlineCount(); o++ )
+            {
+                strokeDashed( aOv, chainPoints( aOutline->COutline( o ) ), true,
+                              aS.selDashPx * aPx, aS.selGapPx * aPx );
+
+                for( int h = 0; h < aOutline->HoleCount( o ); h++ )
+                {
+                    strokeDashed( aOv, chainPoints( aOutline->CHole( o, h ) ), true,
+                                  aS.selDashPx * aPx, aS.selGapPx * aPx );
+                }
+            }
+        }
 
         BOX2I labelBox = aOutline->BBox();
         labelBox.Inflate( KiROUND( aS.selPaddingPx * aPx ) );
@@ -367,6 +547,28 @@ inline void drawSelectionBox( KIGFX::VIEW_OVERLAY* aOv, KIGFX::VIEW_OVERLAY* aCh
     aOv->SetStrokeColor( aColor.WithAlpha( aS.selStrokeAlpha ) );
     aOv->SetFillColor( aColor.WithAlpha( fillAlpha ) );
     aOv->SetLineWidth( aS.selStrokeWidth * aPx );
+
+    // Dashed variant of the box shapes (rect / rounded / underline / the
+    // shape-5 fallback): fill first, then the dashed contour. Brackets and
+    // filled-only are already "broken" outlines and keep their look.
+    if( aS.selDashed && aS.selShape != 1 && aS.selShape != 4 )
+    {
+        if( fill )
+        {
+            aOv->SetIsStroke( false );
+            aOv->Rectangle( tl, br );
+            aOv->SetIsStroke( true );
+            aOv->SetIsFill( false );
+        }
+
+        if( aS.selShape == 2 )
+            strokeDashed( aOv, { bl, br }, false, aS.selDashPx * aPx, aS.selGapPx * aPx );
+        else
+            strokeDashed( aOv, { tl, tr, br, bl }, true, aS.selDashPx * aPx, aS.selGapPx * aPx );
+
+        drawLabel( aChipOv, aTextOv, aBox, aName, aColor, aPx, aS );
+        return;
+    }
 
     switch( aS.selShape )
     {
@@ -471,6 +673,18 @@ inline void drawCursor( KIGFX::VIEW_OVERLAY* aOv, KIGFX::VIEW_OVERLAY* aChipOv,
         aOv->Circle( aPos, 1.5 * aPx );
         aOv->SetIsFill( false );
         break;
+
+    case 3: // hollow comment bubble — the pin silhouette, stroke only, sharp
+            // corner ON the pointer position (reviewer peers: "will comment")
+    {
+        std::vector<VECTOR2D> pts = bubbleOutline( aPos, s );
+        aOv->Polygon( pts.data(), (int) pts.size() );
+        break;
+    }
+
+    case 4: // ring (hollow circle)
+        aOv->Circle( aPos, s );
+        break;
     }
 
     if( aS.cursorLabel && !aName.empty() )
@@ -537,28 +751,11 @@ inline void drawPin( KIGFX::VIEW_OVERLAY* aOv, const VECTOR2D& aPos, const KIGFX
         return;
     }
 
-    double   r = aS.pinRadiusPx * aPx;
-    VECTOR2D c = aPos + VECTOR2D( r, -r );
-
-    constexpr int SEGS = 24; // sampling of the 270° round part
-    VECTOR2D      pts[SEGS + 3];
-    int           n = 0;
-
-    pts[n++] = aPos; // the sharp corner
-
-    for( int i = 0; i <= SEGS; i++ )
-    {
-        // South (90° in y-down coords) → east → north → west: the round part.
-        double th = ( 90.0 - 270.0 * i / SEGS ) * M_PI / 180.0;
-        pts[n++] = c + VECTOR2D( cos( th ) * r, sin( th ) * r );
-    }
-
-    // Close the outline explicitly: the overlay strokes the point list as a
-    // polyline, so without repeating the first point the west → sharp-corner
-    // edge would have fill but no ring.
-    pts[n++] = aPos;
-
-    aOv->Polygon( pts, n );
+    // One closed polygon (bubbleOutline repeats the sharp corner: the overlay
+    // strokes point lists as a polyline, so without it the west → corner edge
+    // would have fill but no ring).
+    std::vector<VECTOR2D> pts = bubbleOutline( aPos, aS.pinRadiusPx * aPx );
+    aOv->Polygon( pts.data(), (int) pts.size() );
 }
 
 } // namespace pcbjam_presence

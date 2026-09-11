@@ -37,6 +37,7 @@ type Mod = {
   kicadOpenFile(p: string): unknown;
   kicadCollabPresenceStart(): void;
   kicadCollabSetRemote(j: string): void;
+  kicadCollabSetStyle(j: string): void;
   kicadCollabGetViewport(): string;
   kicadCollabGetSelection(): string;
   kicadCollabTestGetCrossMapped(): string;
@@ -323,6 +324,96 @@ test("remote render paints the overlay without touching local selection", async 
       },
       { timeout: 15000, intervals: [500] },
     )
+    .toBe(true);
+
+  expect(hasAbort(testLogger)).toBe(false);
+});
+
+test("reviewer peer renders distinctly from an editor peer (comments-ux 0003 F)", async ({
+  page,
+  testLogger,
+}) => {
+  await bootAndOpen(page);
+
+  const canvas = await galPanel(page);
+  const before = await settledShot(canvas);
+
+  // The same peer, same color, same selection — once as an editor, once
+  // flagged `reviewer` (a commenter: server-verified role on the TS side).
+  const push = (reviewer: boolean) =>
+    page.evaluate(
+      ({ sel, reviewer }) => {
+        const w = window as unknown as PresenceWindow;
+        w.Module.kicadCollabSetRemote(
+          JSON.stringify({
+            peers: [
+              {
+                id: "eve",
+                name: "eve",
+                color: "#ef4444",
+                cursor: { x: 90e4, y: 90e4 },
+                selection: [sel],
+                ...(reviewer ? { reviewer: true } : {}),
+              },
+            ],
+          }),
+        );
+      },
+      { sel: WIRE1, reviewer },
+    );
+  const differsFrom = (ref: Buffer) =>
+    expect
+      .poll(async () => !(await canvas.screenshot()).equals(ref), {
+        timeout: 15000,
+        intervals: [500],
+      })
+      .toBe(true);
+
+  await push(false);
+  await differsFrom(before);
+  const editorLook = await settledShot(canvas);
+
+  await push(true);
+  await differsFrom(editorLook);
+  const reviewerLook = await settledShot(canvas);
+  expect(reviewerLook.equals(before)).toBe(false);
+
+  // Neutralizing every reviewer knob changes the reviewer render again (the
+  // distinct look comes from the reviewer style alone). Not asserted as
+  // pixel-EQUAL to the editor look: re-rendering an unchanged overlay is not
+  // pixel-deterministic in pcbnew (a no-op kicadCollabSetStyle("{}") already
+  // shifts the bitmap-text label chips by a subpixel) — pre-existing, and
+  // why the existing 0002 tests only ever compare against the empty state.
+  await page.evaluate(() =>
+    (window as unknown as PresenceWindow).Module.kicadCollabSetStyle(
+      JSON.stringify({
+        reviewerDashed: false,
+        reviewerStrokeScale: 1,
+        reviewerWidthScale: 1,
+        reviewerFillScale: 1,
+        reviewerCursorShape: -1,
+        reviewerLabelSuffix: "",
+      }),
+    ),
+  );
+  await differsFrom(reviewerLook);
+
+  // No state leak: the reviewer render never enters the local selection.
+  const localSel = await page.evaluate(() =>
+    JSON.parse((window as unknown as PresenceWindow).Module.kicadCollabGetSelection()),
+  );
+  expect(localSel).toEqual([]);
+
+  await page.evaluate(() =>
+    (window as unknown as PresenceWindow).Module.kicadCollabSetRemote(
+      JSON.stringify({ peers: [] }),
+    ),
+  );
+  await expect
+    .poll(async () => (await canvas.screenshot()).equals(before), {
+      timeout: 15000,
+      intervals: [500],
+    })
     .toBe(true);
 
   expect(hasAbort(testLogger)).toBe(false);

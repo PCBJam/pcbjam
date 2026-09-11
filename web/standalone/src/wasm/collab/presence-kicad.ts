@@ -292,7 +292,14 @@ export function bindKicadPresence(opts: {
       });
     }
     const shapeSig = JSON.stringify({
-      peers: snapshot.peers.map((p) => [p.id, p.name, p.color, p.selection, p.xsel ?? null]),
+      peers: snapshot.peers.map((p) => [
+        p.id,
+        p.name,
+        p.color,
+        p.selection,
+        p.xsel ?? null,
+        p.reviewer ?? false,
+      ]),
       locks: snapshot.locks,
     });
     if (shapeSig === lastShapeSig && mod.kicadCollabSetRemoteCursors) {
