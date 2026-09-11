@@ -1463,7 +1463,10 @@ export function WasmTool({
         // store is fed by a minimal onSelection handler + the C++ canvas
         // input hooks. Edit sessions get the same store fed from
         // bindKicadPresence's handler instead.
-        if (readOnly && (tool === "pcbnew" || tool === "eeschema")) {
+        // Commenters (comments-ux 0003 F) DO bind presence, whose handler
+        // feeds the same store — binding the feed too would replace the
+        // presence hook and the reviewer's selection would never publish.
+        if (readOnly && commentAccess !== "comment" && (tool === "pcbnew" || tool === "eeschema")) {
           localSelectionRef.current = bindLocalSelectionFeed({
             mod: win.Module,
             win: win as unknown as PresenceKicadWindow,
