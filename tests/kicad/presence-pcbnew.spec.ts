@@ -486,6 +486,8 @@ test("reviewer peer renders distinctly from an editor peer (comments-ux 0003 F)"
         reviewerWidthScale: 1,
         reviewerFillScale: 1,
         reviewerCursorShape: -1,
+        reviewerLabelIcon: false,
+        reviewerLabelPrefix: "",
         reviewerLabelSuffix: "",
       }),
     ),

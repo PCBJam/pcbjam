@@ -67,14 +67,16 @@ const DEFAULT_STYLE = {
   pinUnreadRingColor: "#ffb020",
   // Dashed outline + reviewer (commenter) peers — comments-ux 0003 §5.2.
   selDashed: false,
-  selDashPx: 6,
-  selGapPx: 4,
+  selDashPx: 8,
+  selGapPx: 10,
   reviewerDashed: true,
   reviewerStrokeScale: 1,
-  reviewerWidthScale: 0.6,
-  reviewerFillScale: 0.35,
+  reviewerWidthScale: 1,
+  reviewerFillScale: 0.3,
   reviewerCursorShape: 3,
-  reviewerLabelSuffix: " (reviewer)",
+  reviewerLabelIcon: true,
+  reviewerLabelPrefix: "",
+  reviewerLabelSuffix: "",
 };
 
 type Style = typeof DEFAULT_STYLE;
@@ -163,23 +165,26 @@ export function PresenceTuner({ mod, tool }: { mod: TunerModule; tool: string })
         // the demo-set helper; older wasm falls back to "first N items".
         let bobSel: string[] = [];
         let carolSel: string[] = [];
+        let eveSel: string[] = [];
         try {
           const groups = (
             JSON.parse(mod.kicadCollabTestDemoSet?.() ?? '{"groups":[]}') as {
               groups: Array<{ label: string; ids: string[] }>;
             }
           ).groups;
-          // bob: small fp + net A · carol: large fp + net B (whatever exists).
+          // bob: small fp + net A · carol: large fp · eve (reviewer): net B —
+          // the reviewer highlight stands alone on its own items.
           for (const [i, g] of groups.entries()) {
-            (i % 2 === 0 ? bobSel : carolSel).push(...g.ids);
+            (i === 3 ? eveSel : i % 2 === 0 ? bobSel : carolSel).push(...g.ids);
           }
         } catch {
           /* fall through to the flat list */
         }
         if (!bobSel.length && !carolSel.length) {
-          const items = JSON.parse(mod.kicadCollabTestListItems(3)) as string[];
+          const items = JSON.parse(mod.kicadCollabTestListItems(4)) as string[];
           bobSel = items.slice(0, 1);
           carolSel = items.slice(1, 3);
+          eveSel = items.slice(3, 4);
         }
         const peers = [
           {
@@ -196,14 +201,13 @@ export function PresenceTuner({ mod, tool }: { mod: TunerModule; tool: string })
             cursor: { x: vp.cx + spanX * 0.15, y: vp.cy + spanY * 0.16 },
             selection: carolSel,
           },
-          // A reviewer (commenter) peer highlighting bob's items: the two
-          // must read apart on the same geometry.
+          // A reviewer (commenter) peer on items of her own.
           {
             id: "demo-eve",
             name: "eve",
             color: PRESENCE_COLORS[1],
             cursor: { x: vp.cx - spanX * 0.22, y: vp.cy + spanY * 0.1 },
-            selection: bobSel,
+            selection: eveSel,
             reviewer: true,
           },
         ];
@@ -336,14 +340,9 @@ export function PresenceTuner({ mod, tool }: { mod: TunerModule; tool: string })
           <Range label="border α ×" v={style.reviewerStrokeScale} min={0.2} max={1.5} step={0.05} onChange={(v) => set("reviewerStrokeScale", v)} />
           <Range label="infill α ×" v={style.reviewerFillScale} min={0} max={1} step={0.05} onChange={(v) => set("reviewerFillScale", v)} />
           <Select label="cursor" value={style.reviewerCursorShape + 1} options={REVIEWER_CURSOR_SHAPES} onChange={(v) => set("reviewerCursorShape", v - 1)} />
-          <label className="flex items-center gap-2">
-            <span className="w-24 shrink-0 text-white/60">label suffix</span>
-            <input
-              value={style.reviewerLabelSuffix}
-              onChange={(e) => set("reviewerLabelSuffix", e.target.value)}
-              className="min-w-0 flex-1 rounded bg-white/10 px-1 py-0.5 font-mono text-[10px] text-white outline-none"
-            />
-          </label>
+          <Check label="bubble icon" v={style.reviewerLabelIcon} onChange={(v) => set("reviewerLabelIcon", v)} />
+          <TextField label="label prefix" v={style.reviewerLabelPrefix} onChange={(v) => set("reviewerLabelPrefix", v)} />
+          <TextField label="label suffix" v={style.reviewerLabelSuffix} onChange={(v) => set("reviewerLabelSuffix", v)} />
           <Check label="editors dashed too" v={style.selDashed} onChange={(v) => set("selDashed", v)} />
         </Section>
 
@@ -520,6 +519,19 @@ function Range({
         className="min-w-0 flex-1"
       />
       <span className="w-9 text-right text-white/80">{v}</span>
+    </label>
+  );
+}
+
+function TextField({ label, v, onChange }: { label: string; v: string; onChange: (v: string) => void }) {
+  return (
+    <label className="flex items-center gap-2">
+      <span className="w-24 shrink-0 text-white/60">{label}</span>
+      <input
+        value={v}
+        onChange={(e) => onChange(e.target.value)}
+        className="min-w-0 flex-1 rounded bg-white/10 px-1 py-0.5 font-mono text-[10px] text-white outline-none"
+      />
     </label>
   );
 }

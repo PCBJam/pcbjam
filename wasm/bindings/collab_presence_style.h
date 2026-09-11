@@ -105,22 +105,33 @@ struct STYLE
     // KiCad's own STROKE_PARAMS does it), in screen px so it never scales
     // with zoom. Off for editors by default — reviewer peers turn it on.
     bool   selDashed = false;
-    double selDashPx = 6.0;
-    double selGapPx  = 4.0;
+    double selDashPx = 8.0;
+    double selGapPx  = 10.0;
 
     // ── reviewer (commenter) peers — comments-ux 0003 §5.2 ────────────────
     // A commenter's selection is a HIGHLIGHT, not an edit intent: it never
     // soft-locks, so it must read distinctly from an editor's. Reviewer
     // peers draw with the base style transformed by these knobs (see
     // reviewerStyle()): dashed stroke, scaled alphas, their own cursor glyph
-    // and a label suffix. Defaults picked with the PresenceTuner 2026-09-11.
+    // and a bubble glyph on the nameplate. Shipped look picked with the
+    // PresenceTuner 2026-09-11: dashed 8/10 px at the editor's own stroke
+    // width and alpha, 0.3× fill, hollow bubble cursor, bubble icon, no
+    // prefix/suffix text.
     bool        reviewerDashed       = true;
     double      reviewerStrokeScale  = 1.0;   // × selStrokeAlpha
-    double      reviewerWidthScale   = 0.6;   // × selStrokeWidth (thinner = annotation, not a grab)
-    double      reviewerFillScale    = 0.35;  // × selFillAlpha
+    double      reviewerWidthScale   = 1.0;   // × selStrokeWidth
+    double      reviewerFillScale    = 0.3;   // × selFillAlpha
     int         reviewerCursorShape  = 3;     // -1 = as editors · see cursorShape (3 bubble · 4 ring)
-    std::string reviewerLabelSuffix  = " (reviewer)";
+    // Nameplates: a small filled comment-bubble glyph in front of the name
+    // (vector geometry — the bitmap font has no icon glyphs), plus optional
+    // text before/after the name.
+    bool        reviewerLabelIcon    = true;
+    std::string reviewerLabelPrefix;
+    std::string reviewerLabelSuffix;
 
+    // Transient, set by reviewerStyle(): draw the bubble glyph on this
+    // style's labels (name tags AND cursor labels).
+    bool        labelIcon            = false;
 };
 
 /**
@@ -210,6 +221,8 @@ inline void patchStyle( STYLE& aStyle, const json& j )
     aStyle.reviewerWidthScale  = j.value( "reviewerWidthScale", aStyle.reviewerWidthScale );
     aStyle.reviewerFillScale   = j.value( "reviewerFillScale", aStyle.reviewerFillScale );
     aStyle.reviewerCursorShape = j.value( "reviewerCursorShape", aStyle.reviewerCursorShape );
+    aStyle.reviewerLabelIcon   = j.value( "reviewerLabelIcon", aStyle.reviewerLabelIcon );
+    aStyle.reviewerLabelPrefix = j.value( "reviewerLabelPrefix", aStyle.reviewerLabelPrefix );
     aStyle.reviewerLabelSuffix = j.value( "reviewerLabelSuffix", aStyle.reviewerLabelSuffix );
 }
 
@@ -237,13 +250,16 @@ inline STYLE reviewerStyle( const STYLE& aStyle )
     if( aStyle.reviewerCursorShape >= 0 )
         r.cursorShape = aStyle.reviewerCursorShape;
 
+    r.labelIcon = aStyle.reviewerLabelIcon;
     return r;
 }
 
-/** The name a peer's tags carry: reviewers get the configured suffix. */
+/** The name a peer's tags carry: reviewers get the configured prefix/suffix
+ *  text (the bubble glyph is drawn, not text — see drawTag). */
 inline std::string peerLabel( const STYLE& aStyle, const std::string& aName, bool aReviewer )
 {
-    return aReviewer && !aName.empty() ? aName + aStyle.reviewerLabelSuffix : aName;
+    return aReviewer && !aName.empty() ? aStyle.reviewerLabelPrefix + aName + aStyle.reviewerLabelSuffix
+                                       : aName;
 }
 
 /** The color a peer renders with under this style (fixed > palette-by-name-hash
@@ -434,6 +450,58 @@ inline std::vector<VECTOR2D> bubbleOutline( const VECTOR2D& aPos, double aR )
     return pts;
 }
 
+/** Width of the reviewer bubble glyph + its gap, in front of a tag's text
+ *  of glyph height `aH` (0 when the style draws no icon). */
+inline double tagIconWidth( const STYLE& aS, double aH )
+{
+    return aS.labelIcon ? aH * 1.0 : 0.0;
+}
+
+/** One nameplate: optional chip on the CHIPS overlay, then (on the TEXT
+ *  overlay, nearest depth) the reviewer bubble glyph and the text. `aAt` is
+ *  the top-left of the whole tag (icon included), `aH` the glyph height;
+ *  TOP-LEFT anchoring — PRESENCE_TEXT_OVERLAY pins the GAL justify. */
+inline void drawTag( KIGFX::VIEW_OVERLAY* aChipOv, KIGFX::VIEW_OVERLAY* aTextOv,
+                     const VECTOR2D& aAt, double aH, const std::string& aText, bool aChip,
+                     const KIGFX::COLOR4D& aColor, const KIGFX::COLOR4D& aTextColor, double aPx,
+                     const STYLE& aS )
+{
+    double iconW = tagIconWidth( aS, aH );
+    double w     = iconW + textWidth( aText, aH );
+
+    if( aChip )
+    {
+        double padX = 3 * aPx, padY = 2 * aPx;
+        aChipOv->SetIsStroke( false );
+        aChipOv->SetIsFill( true );
+        aChipOv->SetFillColor( aColor.WithAlpha( aS.chipBgAlpha ) );
+        aChipOv->Rectangle( aAt + VECTOR2D( -padX, -padY ), aAt + VECTOR2D( w + padX, aH + padY ) );
+        aChipOv->SetIsStroke( true );
+        aChipOv->SetIsFill( false );
+    }
+
+    KIGFX::COLOR4D ink = aChip ? aTextColor : aColor;
+
+    if( aS.labelIcon )
+    {
+        // Filled bubble, sharp corner bottom-left, ~0.72 h tall, sat on the
+        // text baseline — the same silhouette as the comment pins.
+        double r = 0.36 * aH;
+        std::vector<VECTOR2D> pts = bubbleOutline( aAt + VECTOR2D( 0.0, 0.88 * aH ), r );
+        aTextOv->SetIsStroke( false );
+        aTextOv->SetIsFill( true );
+        aTextOv->SetFillColor( ink );
+        aTextOv->Polygon( pts.data(), (int) pts.size() );
+    }
+
+    aTextOv->SetIsStroke( true );
+    aTextOv->SetIsFill( false );
+    aTextOv->SetStrokeColor( ink );
+    aTextOv->SetGlyphSize( VECTOR2I( KiROUND( aH ), KiROUND( aH ) ) );
+    aTextOv->BitmapText( wxString::FromUTF8( aText.c_str() ),
+                         VECTOR2I( KiROUND( aAt.x + iconW ), KiROUND( aAt.y ) ), ANGLE_0 );
+}
+
 /** Name tag next to (or inside) a box, per the label placement knobs. `px` is
  *  world-units-per-screen-pixel. The chip rect goes to the CHIPS overlay
  *  (above selection fills, below text), the text to the TEXT overlay (nearest
@@ -447,7 +515,7 @@ inline void drawLabel( KIGFX::VIEW_OVERLAY* aChipOv, KIGFX::VIEW_OVERLAY* aTextO
         return;
 
     double h = aS.labelSizePx * aPx;
-    double w = textWidth( aText, h );
+    double w = tagIconWidth( aS, h ) + textWidth( aText, h );
     double off = aS.labelOffsetPx * aPx;
 
     double x = aBox.GetOrigin().x;                                     // start
@@ -464,24 +532,8 @@ inline void drawLabel( KIGFX::VIEW_OVERLAY* aChipOv, KIGFX::VIEW_OVERLAY* aTextO
     else
         y = aS.labelInside ? aBox.GetEnd().y - off - h : aBox.GetEnd().y + off;
 
-    if( aS.labelChip )
-    {
-        double padX = 3 * aPx, padY = 2 * aPx;
-        aChipOv->SetIsStroke( false );
-        aChipOv->SetIsFill( true );
-        aChipOv->SetFillColor( aColor.WithAlpha( aS.chipBgAlpha ) );
-        aChipOv->Rectangle( VECTOR2D( x - padX, y - padY ),
-                            VECTOR2D( x + w + padX, y + h + padY ) );
-        aChipOv->SetIsStroke( true );
-        aChipOv->SetIsFill( false );
-    }
-
-    aTextOv->SetIsStroke( true );
-    aTextOv->SetIsFill( false );
-    aTextOv->SetStrokeColor( aS.labelChip ? chipTextColor( aColor ) : aColor );
-    aTextOv->SetGlyphSize( VECTOR2I( KiROUND( h ), KiROUND( h ) ) );
-    aTextOv->BitmapText( wxString::FromUTF8( aText.c_str() ),
-                         VECTOR2I( KiROUND( x ), KiROUND( y ) ), ANGLE_0 );
+    drawTag( aChipOv, aTextOv, VECTOR2D( x, y ), h, aText, aS.labelChip, aColor,
+             chipTextColor( aColor ), aPx, aS );
 }
 
 /** Selection highlight for one item, in the chosen shape. `aOutline` is the
@@ -690,32 +742,11 @@ inline void drawCursor( KIGFX::VIEW_OVERLAY* aOv, KIGFX::VIEW_OVERLAY* aChipOv,
     if( aS.cursorLabel && !aName.empty() )
     {
         double h = aS.cursorLabelSizePx * aPx;
-        double w = textWidth( aName, h );
-        // Top-left of the text block, below-right of the cursor glyph
-        // (TOP-LEFT anchoring — PRESENCE_OVERLAY pins the GAL justify).
+        // Top-left of the tag, below-right of the cursor glyph.
         VECTOR2D at = aPos + VECTOR2D( ( aS.cursorSizePx + 4 ) * aPx,
                                        ( aS.cursorSizePx + 4 ) * aPx );
-
-        // Chip rect on the CHIPS overlay, text on the TEXT overlay (nearest
-        // depth) — text on top of its chip, chip on top of selection fills.
-        if( aS.cursorLabelChip )
-        {
-            double padX = 3 * aPx, padY = 2 * aPx;
-            aChipOv->SetIsStroke( false );
-            aChipOv->SetIsFill( true );
-            aChipOv->SetFillColor( aColor.WithAlpha( aS.chipBgAlpha ) );
-            aChipOv->Rectangle( at + VECTOR2D( -padX, -padY ),
-                                at + VECTOR2D( w + padX, h + padY ) );
-            aChipOv->SetIsStroke( true );
-            aChipOv->SetIsFill( false );
-        }
-
-        aTextOv->SetIsStroke( true );
-        aTextOv->SetIsFill( false );
-        aTextOv->SetStrokeColor( aS.cursorLabelChip ? chipTextColor( aColor ) : c );
-        aTextOv->SetGlyphSize( VECTOR2I( KiROUND( h ), KiROUND( h ) ) );
-        aTextOv->BitmapText( wxString::FromUTF8( aName.c_str() ),
-                             VECTOR2I( KiROUND( at.x ), KiROUND( at.y ) ), ANGLE_0 );
+        drawTag( aChipOv, aTextOv, at, h, aName, aS.cursorLabelChip, aColor,
+                 aS.cursorLabelChip ? chipTextColor( aColor ) : c, aPx, aS );
     }
 }
 

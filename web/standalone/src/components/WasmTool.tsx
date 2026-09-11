@@ -543,6 +543,13 @@ export function WasmTool({
   // Dev-time presence style tuner (VITE_PRESENCE_TUNER=1) — set once the wasm
   // exposes the style bridge, mounts the floating panel.
   const [tunerMod, setTunerMod] = React.useState<TunerModule | null>(null);
+  // Mount as soon as the wasm is up — NOT from the comments start path, which
+  // plain readers never enter (comments are opt-in for them since 0003 C).
+  React.useEffect(() => {
+    if (!ready || !PRESENCE_TUNER_ENABLED) return;
+    const mod = (window as { Module?: unknown }).Module;
+    if (hasTunerBridge(mod)) setTunerMod(mod);
+  }, [ready]);
 
   // wx's window-level keydown handler forwards Ctrl/Cmd+C to the wasm app and
   // preventDefaults it, so the browser's native "copy selection" never runs —
@@ -847,9 +854,6 @@ export function WasmTool({
       // Test/debug handle (mirrors window.kicadCollab): lets the e2e reset
       // persisted threads deterministically without driving the whole UI.
       (win as { __pcbjamComments?: CommentsController }).__pcbjamComments = ctl;
-      if (PRESENCE_TUNER_ENABLED && hasTunerBridge(win.Module)) {
-        setTunerMod(win.Module);
-      }
       // Seed the transform (pushes only happen on input events after this).
       try {
         const vp = JSON.parse(win.Module.kicadCollabGetViewport() || "null");
