@@ -1,0 +1,93 @@
+---
+title: "KiCon Europe, and what we got wrong on stage (devblog, weeks 36-37)"
+description: "Our KiCon Europe 2026 talk, the lesson we took home, plus a production release and a week of fixes"
+author: Gergő Törcsvári
+pubDate: 2026-09-10
+---
+
+We said in the last post that we would be at [KiCon Europe](https://kicon.kicad.org/europe2026/), and we were, on the 7th and 8th. This post is half conference notes, half the usual changelog. The conference half is the more interesting one, so it goes first.
+
+# KiCon Europe 2026
+
+## The talk
+
+We gave a 30 minute talk, "pcbjam: KiCad on the web", as a team: product half, then engineering half. The one live moment was the cold open: a near-black slide with a URL on it, switch to the browser, load an Arduino board in a tab. It worked. After weeks of chasing browser-only crashes, "everything worked" is a sentence we are happy to write.
+
+The rest of the demos were recorded clips: sharing a read-only link, project pages, two cursors on one schematic, comments, cross-probing between the PCB and the schematic, the libraries hub and overrides. Then about six minutes of how it works under the hood (KiCad C++ to WASM, wxWidgets to DOM, JSPI, and the Safari-not-yet slide), our open-source stance, and a call to action.
+
+## How it landed
+
+Somewhere in the talk we joked that we are open to any feedback, including "this is a bad idea and you should stop". The session chair took us up on it and asked the room after the talk: who thinks this is a bad idea? No hands. Who thinks it is a good idea and will try it? About a third of the room. Then three people joined our Discord.
+
+So, a "meh" reaction, which we did not fully understand until the beer afterwards.
+
+We were talking with another attendee (Dennis from datasheets.md, he was super nice), and mentioned that the talk got a lukewarm response, even though we think running KiCad in the browser with live collaboration is kind of a big deal. His answer was: "what live collab?"
+
+We demonstrated it to him live, with two browsers editing the same schematic. He was genuinely amazed, and started asking the people around him whether they had caught that part. At least three out of five had not.
+
+That was the lesson of the conference. We showed the biggest thing we have as one recorded clip, in the middle of the talk, to a room that was already tired. People saw "KiCad in a browser tab", which is nice, and completely missed "several people in the same board at the same time", which (as we found out) was the more interesting thing to them. Next time the live moment is two laptops, not one.
+
+The Q&A questions were of the same flavor: how much memory does it need, canvas versus DOM in the wxWidgets port, is there a read-only mode. Nothing fascinating or controversial.
+
+## The CRDT debate
+
+The one technical argument we did get was a good one. Wayne (the KiCad project leader) pointed out that our merge is a CRDT, it never blocks anyone, and in network edge cases it can therefore merge two individually valid edits into a board with a DRC error that neither person made. Which is true. And a big problem.
+We then touched on how the DRC computation scales with board size and rule count, and we got some interesting perspectives from that discussion.
+
+Our position is that this is the same trade-off every live-collab editor makes: never lose someone's work, and let the checkers catch what the merge could not know about.
+But the debate is the reason one of this week's documents is a proposal for Altium-style area locks: claim a region of the board, work in it, release it.
+Not built right now, but written up, and we will come back to it.
+
+We also learned that a lot of people use EasyEDA simply because ordering assembly from JLCPCB is easy from there. If we can make part finding, stock availability and assembly ordering a smooth workflow, most mid-sized boards would be worth doing on our platform.
+We have been thinking about send-to-fab as a roadmap teaser; this moved it up a bit.
+
+## The rest of the conference
+
+We missed some talks, but two we really liked were the one about how to teach electronics and the one about how to write documentation. The space-hardware talks were humbling: people solve genuinely complex problems for designs they can never test in the real environment.
+
+At least three talks were about tooling and library versioning. Which, from where we sit, says that EE tooling is still a bit behind in the boring but important stuff: easy-to-use UX and management software. That is roughly the gap we are trying to fill, so we took it as encouragement.
+
+Going was worth it either way. We went to understand the problem space better, and to talk to people who use these tools every day, and we got exactly that. Discord signups were modest, but we came home with an ally who is interested in working with us and has already helped us understand who our users actually are.
+
+# Meanwhile, the code
+
+Conference prep did not stop the changelog. This is what landed since the last post.
+
+## v0.2.1 in production
+
+The first release on the JSPI line went to production. Idle tabs no longer keep our sync rooms awake. A tab left open in the background used to wake the room's durable object around 64 times a minute; now it is zero. Hidden tabs go "away" after a minute and suspend their socket after fifteen, then pick up again when you come back.
+Every room now also logs its own lifecycle (start, last event, duration, which project), so we can reconstruct what a room did from the logs alone, instead of guessing from the bill.
+
+## Two jobs that were slow for dumb reasons
+
+- **Queued lint took two minutes per file**, while the CLI lints the same file in a third of a second. The job runner was downloading the whole project, serially, including every STEP model and zip, just to lint one schematic. Now it stages only the target file, the project download has an allowlist of KiCad text inputs and four fetches in flight, storage reads get a 30 second deadline, and a queued lint gets skipped when a newer one already ran. A save loop on a hierarchical schematic no longer turns into hours of backlog.
+- **A library migration sat "ingesting" for an hour** with a live heartbeat and zero rows moved. One hung connection to storage, no request timeout, ten retries with exponential backoff: the heartbeat kept beating, the stall reaper saw nothing wrong. Every storage request now has one deadline, copies happen server-side instead of streaming through the runner, and long migrations report per-library progress on the admin page.
+
+## Editor fixes
+
+- **Opening a schematic in Chrome could crash on boot** with "memory access out of bounds". The wx port walked the live child list while the canvas deleted and re-appended its own DOM node mid-walk. A use-after-free that only showed when the freed memory got reused, which depended on locale, engine and build, so it hid from us for weeks and then blocked recording the KiCon clips. The walk now runs over a snapshot.
+- **Hotkeys fired twice.** Pressing R on a selected symbol rotated it 180 degrees. Browsers send a keydown and a keypress for one key, and our wx port dispatched both. They are paired now, and a regression test presses a real R and checks for exactly 90.
+- **Typing into a filled grid cell** in the symbol properties dialog put your characters at the front: selecting the footprint cell and typing "e" turned `R_0805` into `eRsistor_SMD:R_0805`. The port's cached caret said position zero while the browser drew the caret at the end. The text entry now reads the live DOM caret.
+- **Dropping files onto the editor** from the desktop is delivered to the editor now, queued and deduplicated.
+- **Dropdown problems.** A select bug meant you could not pick a net for a filled zone.
+- **PCB collab netlist drop.** In collab mode the netlist sometimes got lost when another editor moved parts. Fixed, and we routed a whole PCB in collab mode afterwards.
+- The `nanosleep` shim got proper POSIX semantics, and every JS-to-WASM bridge write is guarded against allocation failure.
+
+## CI broke itself
+
+GitHub started answering anonymous git-over-HTTPS with a 401 in the middle of the week, which broke our builder image (it cloned emsdk) and our submodule checkout. Both now fetch pinned, checksummed tarballs through authenticated API calls. Fewer moving parts, and the builds are faster.
+
+## New landing page
+
+The landing page got a redesign, README style: one column, IBM Plex, and KiCad's own copper colours as the palette (front copper red for actions, back copper blue for links). It has an FAQ, proper metadata and a sitemap, and the hero embeds the demo video.
+
+While redoing it we found that the embedded Gerber viewer in [our WebGL post](/blog/porting-kicad-graphics-to-webgl-in-2026) had been broken since the v0.2.0 CDN release: the newer Emscripten spawns its worker threads from the script's own URL, which is a security error when the script comes from a cross-origin CDN. It loads through a same-origin blob now, and the post works again.
+
+## On paper
+
+Two documents this week that are specs, not code, but we hope we will land them:
+
+- **Comment links**: shareable links that land on a specific comment thread, roles for who can comment on what, following a project, moderation (reports, hiding, bans), and presence for commenters who are not editing. This is the next thing we build.
+- **Area locks**, the proposal mentioned above.
+
+Next post will be shorter. Probably.
