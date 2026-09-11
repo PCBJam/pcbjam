@@ -1157,10 +1157,21 @@ static bool applyTargetsShownSheet( SCH_EDIT_FRAME* aFrame, const json& aWire )
 }
 
 
-void doApplyItems( SCH_EDIT_FRAME* aFrame, const json& aWire )
+void doApplyItems( SCH_EDIT_FRAME* aFrame, const json& aPayload )
 {
-    if( !applyTargetsShownSheet( aFrame, aWire ) )
+    if( !applyTargetsShownSheet( aFrame, aPayload ) )
         return;
+
+    // ysync 0012 #2: (a) pending LOCAL intent reaches the doc before a remote
+    // root replaces the native item it lives on — a flush queued behind this
+    // apply would otherwise diff against a baseline that already contains the
+    // remote content and silently drop the user's edit; (b) the payload was
+    // rendered when its doc event fired, so resolve it to the doc's latest
+    // content now that it actually executes (see resolveItemsWire).
+    if( g_flushScheduled )
+        flushDiff();
+
+    const json aWire = pcbjam_collab::resolveItemsWire( aPayload );
 
     SCHEMATIC& sch = aFrame->Schematic();
 

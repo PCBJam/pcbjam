@@ -31,6 +31,7 @@ import {
   type KicadDoc,
   type KicadItem,
   type KicadYItems,
+  type WireItem,
 } from "@pcbjam/shared";
 import { clog, cwarn } from "./debug";
 
@@ -66,6 +67,14 @@ export interface KicadItemsBridge {
   applyItems(json: string): void;
   /** Register the local-edit emit hook (Format changed items → JSON). */
   onItems(cb: (json: string) => void): void;
+  /**
+   * Register the apply-time resolver (ysync 0012 #2): the C++ apply runs
+   * deferred on its coroutine queue, so right before executing a payload it
+   * hands it back here and applies what the binding returns — the doc's
+   * LATEST content for those roots, not the snapshot rendered when the event
+   * fired. Optional: an older wasm applies payloads as sent.
+   */
+  onResolve?(cb: (json: string) => string): void;
 }
 
 export interface KicadBinding {
@@ -197,6 +206,52 @@ export function bindKicadCollab(
   let destroyed = false;
   // Concurrent double-seed arbitration cleanup (bug 06); set by the file-seed branch.
   let detachSeedArbitration: (() => void) | undefined;
+  // What the NATIVE editor last agreed the items were (ysync 0012 #2), keyed
+  // by doc uuid (post-rekey). Established by seed()'s snapshot, advanced by
+  // every local emit and every payload handed to the editor. The DOWN path
+  // diffs a local emit against THIS rather than against the doc: a slot the
+  // user did not touch is never written, so a peer's concurrent edit to
+  // another field of the same root survives the editor's full-subtree emit.
+  let nativeView: Record<string, KicadItem> | undefined;
+  // A payload handed to the editor is folded into the native view when the
+  // editor actually applies it (its resolve callback), never when it is sent:
+  // the apply runs deferred behind pending local flushes, and folding early
+  // would make the next flush read the user's untouched fields as "changed
+  // back". Without a resolver the apply is synchronous, so send == apply.
+  const resolves = typeof bridge.onResolve === "function";
+  const foldResolved = (resolved: Record<string, KicadItem>, removed: readonly string[]): void => {
+    if (!nativeView) return;
+    for (const [id, item] of Object.entries(resolved)) nativeView[id] = item;
+    for (const id of removed) delete nativeView[id];
+  };
+  /** Fold `roots` and their subtrees from `view` (a payload sent to the editor). */
+  const foldRootsFromView = (
+    roots: Iterable<string>,
+    view: Record<string, KicadItem>,
+    removed: readonly string[],
+  ): void => {
+    if (!nativeView) return;
+    const children = new Map<string, string[]>();
+    for (const [id, it] of Object.entries(view)) {
+      if (it.parent === null) continue;
+      const list = children.get(it.parent) ?? [];
+      list.push(id);
+      children.set(it.parent, list);
+    }
+    for (const root of roots) {
+      const stack = [root];
+      while (stack.length) {
+        const id = stack.pop()!;
+        const it = view[id];
+        if (!it) continue;
+        nativeView[id] = it;
+        stack.push(...(children.get(id) ?? []));
+      }
+    }
+    for (const id of removed) delete nativeView[id];
+  };
+  const wireRoots = (wire: ItemsWireDelta): string[] =>
+    [...wire.added, ...wire.changed].flatMap((w) => (w.uuid ? [w.uuid] : []));
 
   /**
    * Plain snapshot of the Y items (the `current`/`view` the conversions need).
@@ -241,20 +296,26 @@ export function bindKicadCollab(
     // failures are already skipped inside the conversion; this catch is the
     // backstop for everything else.
     try {
-      const delta = itemsWireToDelta(wire, itemsView(), warnSkip);
+      const resolved: Record<string, KicadItem> = {};
+      const delta = itemsWireToDelta(wire, itemsView(), warnSkip, {
+        baseline: nativeView,
+        resolved,
+      });
       // Library definitions the blob carried (a placed symbol's lib_symbols
       // context — miss 08): store them alongside the items, same transaction.
       const defs = wireLibSymbols(wire);
-      if (isEmptyKicadDelta(delta) && Object.keys(defs).length === 0) return;
-      clog("⬇ onItems (local edit):", {
-        added: delta.added.length,
-        updated: delta.updated.length,
-        removed: delta.removed.length,
-      });
-      doc.transact(() => {
-        applyDeltaToY(doc, delta, ORIGIN);
-        upsertLibSymbolsToY(doc, defs, ORIGIN);
-      }, ORIGIN);
+      if (!isEmptyKicadDelta(delta) || Object.keys(defs).length > 0) {
+        clog("⬇ onItems (local edit):", {
+          added: delta.added.length,
+          updated: delta.updated.length,
+          removed: delta.removed.length,
+        });
+        doc.transact(() => {
+          applyDeltaToY(doc, delta, ORIGIN);
+          upsertLibSymbolsToY(doc, defs, ORIGIN);
+        }, ORIGIN);
+      }
+      foldResolved(resolved, delta.removed);
     } catch (err) {
       cwarn("⬇ onItems from wasm: batch failed to apply", err);
     }
@@ -267,7 +328,8 @@ export function bindKicadCollab(
     if (!seeded) return; // pre-seed state sync — seed()'s adopt covers it
     const delta = deltaFromYEvents(items, events);
     if (isEmptyKicadDelta(delta)) return;
-    const wire = deltaToItemsWire(delta, itemsView(), libDefs);
+    const view = itemsView();
+    const wire = deltaToItemsWire(delta, view, libDefs);
     if (isEmptyItemsWireDelta(wire)) return;
     clog("⬆ remote Y change → apply to editor:", {
       added: wire.added.length,
@@ -276,6 +338,7 @@ export function bindKicadCollab(
     });
     try {
       bridge.applyItems(JSON.stringify(tagged(wire)));
+      if (!resolves) foldRootsFromView(wireRoots(wire), view, wire.removed);
     } catch (err) {
       // Symmetric with the DOWN hook's backstop above (findings C-7): a throw
       // here would otherwise unwind through Yjs's transaction cleanup inside
@@ -293,6 +356,55 @@ export function bindKicadCollab(
     }
   };
   items.observeDeep(observer);
+
+  // Apply-time resolution (0012 #2): the editor's apply queue hands each
+  // payload back right before executing it; answer with the doc's latest
+  // content for those roots (a root deleted meanwhile becomes a removal),
+  // so a payload that waited behind a local flush never lands stale state.
+  bridge.onResolve?.((json: string): string => {
+    if (destroyed) return json; // stale hook (bug 07 family): apply as sent
+    try {
+      const wire = parseItemsWireDelta(json);
+      const view = itemsView();
+      const removed = [...wire.removed];
+      const fresh = (entries: WireItem[]): WireItem[] => {
+        const out: WireItem[] = [];
+        for (const w of entries) {
+          if (!w.uuid) {
+            out.push(w); // untagged (older sender): as sent
+            continue;
+          }
+          const now = view[w.uuid];
+          if (!now) {
+            if (!removed.includes(w.uuid)) removed.push(w.uuid);
+            continue;
+          }
+          if (now.parent !== null) {
+            out.push(w); // re-parented meanwhile: its new parent's apply covers it
+            continue;
+          }
+          const re = deltaToItemsWire(
+            { added: [], updated: [{ uuid: w.uuid, ...now }], removed: [] },
+            view,
+            libDefs,
+          ).changed[0];
+          out.push(re ?? w);
+        }
+        return out;
+      };
+      const resolved: ItemsWireDelta = {
+        ...wire,
+        added: fresh(wire.added),
+        changed: fresh(wire.changed),
+        removed,
+      };
+      foldRootsFromView(wireRoots(resolved), view, removed);
+      return JSON.stringify(resolved);
+    } catch (err) {
+      cwarn("resolveItems failed — applying the payload as sent", err);
+      return json;
+    }
+  });
 
   // Layout convergence (ysync 0011 follow-up): a remote merge that lands a
   // second copy of the header block (a layout-only save-sync racing a file
@@ -365,9 +477,11 @@ export function bindKicadCollab(
     const view = itemsView();
     const changed = changedRootsBetween(loaded, view);
 
+    const wire = parseItemsWireDelta(snapshot);
+    const resolved: Record<string, KicadItem> = {};
+    const norm = itemsWireToDelta(wire, loaded, warnSkip, { resolved });
+    nativeView = resolved;
     if (!readOnly) {
-      const wire = parseItemsWireDelta(snapshot);
-      const norm = itemsWireToDelta(wire, loaded, warnSkip);
       const untouched = (uuid: string, parent: string | null): boolean =>
         !changed.has(liftRoot(loaded, parent ?? uuid)) &&
         !changed.has(liftRoot(view, parent ?? uuid));
@@ -403,7 +517,10 @@ export function bindKicadCollab(
       `seed: doc changed during load → catching up:`,
       `+${catchUp.added.length} ~${catchUp.changed.length} -${catchUp.removed.length}`,
     );
-    if (!isEmptyItemsWireDelta(catchUp)) bridge.applyItems(JSON.stringify(tagged(catchUp)));
+    if (!isEmptyItemsWireDelta(catchUp)) {
+      bridge.applyItems(JSON.stringify(tagged(catchUp)));
+      if (!resolves) foldRootsFromView(wireRoots(catchUp), view, catchUp.removed);
+    }
   }
 
   function seedInner(seedDoc?: KicadDoc, opts?: SeedOptions): void {
@@ -437,15 +554,15 @@ export function bindKicadCollab(
         // Identical bodies cost nothing; a viewer never writes. Without a
         // loaded snapshot the caller vouches that the doc has not changed
         // since the editor last saw it (sheet pool: parked-dirty tracking).
-        if (!readOnly) {
-          const wire = parseItemsWireDelta(snapshot);
-          const local = itemsWireToDelta(wire, itemsView(), warnSkip);
-          if (!isEmptyKicadDelta(local)) {
-            clog(
-              `seed: normalizing ${local.updated.length} server-serialized body(ies) to the editor's form`,
-            );
-            applyDeltaToY(doc, local, ORIGIN);
-          }
+        const wire = parseItemsWireDelta(snapshot);
+        const resolved: Record<string, KicadItem> = {};
+        const local = itemsWireToDelta(wire, itemsView(), warnSkip, { resolved });
+        nativeView = resolved;
+        if (!readOnly && !isEmptyKicadDelta(local)) {
+          clog(
+            `seed: normalizing ${local.updated.length} server-serialized body(ies) to the editor's form`,
+          );
+          applyDeltaToY(doc, local, ORIGIN);
         }
       } catch (err) {
         cwarn("seed: snapshotItems baseline failed", err);
@@ -496,7 +613,9 @@ export function bindKicadCollab(
       // and defeat upsertYItem's no-op skip. Meta + layout stay file-derived.
       try {
         const wire = parseItemsWireDelta(bridge.snapshotItems());
-        const local = itemsWireToDelta(wire, itemsView(), warnSkip);
+        const resolved: Record<string, KicadItem> = {};
+        const local = itemsWireToDelta(wire, itemsView(), warnSkip, { resolved });
+        nativeView = resolved;
         if (!isEmptyKicadDelta(local)) applyDeltaToY(doc, local, ORIGIN);
       } catch (err) {
         cwarn("seed: post-file-seed baseline failed", err);
@@ -520,7 +639,9 @@ export function bindKicadCollab(
         return;
       }
       // First tab, no file source: seed the shared doc from the editor model.
-      const local = itemsWireToDelta(wire, {}, warnSkip);
+      const resolved: Record<string, KicadItem> = {};
+      const local = itemsWireToDelta(wire, {}, warnSkip, { resolved });
+      nativeView = resolved;
       clog(`seed: doc empty → SEEDING from editor snapshot (${local.added.length} item(s))`);
       doc.transact(() => {
         applyDeltaToY(doc, local, ORIGIN);
@@ -542,7 +663,9 @@ export function bindKicadCollab(
     // adopt undo-bomb, miss 09) shrinks to the real changed set, and a clean
     // rebind degrades to baseline-only.
     const view = itemsView();
-    const editorDelta = itemsWireToDelta(wire, view, warnSkip); // editor state vs doc view
+    const resolved: Record<string, KicadItem> = {};
+    const editorDelta = itemsWireToDelta(wire, view, warnSkip, { resolved }); // editor state vs doc view
+    nativeView = resolved;
     const editorUuids = wireItemUuids(wire, warnSkip);
 
     // Doc authority, inverted per class:
@@ -583,6 +706,7 @@ export function bindKicadCollab(
     );
     if (isEmptyItemsWireDelta(adoptWire)) return; // editor already matches — baseline only
     bridge.applyItems(JSON.stringify(tagged(adoptWire)));
+    if (!resolves) foldRootsFromView(wireRoots(adoptWire), view, adoptWire.removed);
   }
 
   return {
@@ -608,7 +732,11 @@ export interface KicadItemsModule {
 }
 
 export interface KicadItemsWindow {
-  kicadCollab?: { onItems?: (json: string) => void };
+  kicadCollab?: {
+    onItems?: (json: string) => void;
+    /** Apply-time payload resolver (0012 #2) — see `KicadItemsBridge.onResolve`. */
+    resolveItems?: (json: string) => string;
+  };
 }
 
 /** Adapt a live wasm Module + window to the bridge interface. */
@@ -622,6 +750,9 @@ export function moduleItemsBridge(
     onItems: (cb) => {
       // Preserve any sibling hooks (e.g. the legacy onDelta) on the global.
       win.kicadCollab = { ...win.kicadCollab, onItems: cb };
+    },
+    onResolve: (cb) => {
+      win.kicadCollab = { ...win.kicadCollab, resolveItems: cb };
     },
   };
 }

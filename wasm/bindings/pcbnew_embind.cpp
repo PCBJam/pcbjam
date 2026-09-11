@@ -1165,8 +1165,16 @@ void doApply( PCB_EDIT_FRAME* aFrame, const json& aDelta )
 // parse the blob (wrapping bare non-footprint payloads in a live-board envelope),
 // then replace any existing item sharing the parsed uuid. Runs inside the apply
 // COROUTINE (see kicadCollabApplyItems), via BOARD_COMMIT like every remote op.
-void doApplyItems( PCB_EDIT_FRAME* aFrame, const json& aWire )
+void doApplyItems( PCB_EDIT_FRAME* aFrame, const json& aPayload )
 {
+    // ysync 0012 #2: flush pending local intent first, then resolve the queued
+    // payload to the doc's latest content at execution time (see the eeschema
+    // twin and resolveItemsWire).
+    if( g_flushScheduled )
+        flushDiff();
+
+    const json aWire = pcbjam_collab::resolveItemsWire( aPayload );
+
     BOARD* board = aFrame->GetBoard();
 
     s_applyingRemote = true;

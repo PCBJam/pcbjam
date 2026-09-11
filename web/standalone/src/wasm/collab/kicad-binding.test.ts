@@ -417,6 +417,139 @@ describe("bindKicadCollab — two editors over relayed Y.Docs", () => {
     });
   });
 
+  describe("deferred native apply (ysync 0012 #2)", () => {
+    /**
+     * The C++ contract: applyItems only QUEUES; the body runs later on the
+     * coroutine queue, first flushing any pending local diff, then resolving
+     * the payload through the binding (`resolveItems`), then applying. Local
+     * edits mutate the native model immediately; their flush is queued too.
+     */
+    class DeferredEditor implements KicadItemsBridge {
+      store: Record<string, KicadItem> = {};
+      pending: string[] = [];
+      applied: string[] = [];
+      private flushes: string[] = [];
+      private emit: ((json: string) => void) | null = null;
+      private resolve: ((json: string) => string) | null = null;
+      snapshotItems(): string {
+        const roots = Object.entries(this.store)
+          .filter(([, it]) => it.parent === null)
+          .map(([uuid]) => ({ sexpr: renderItem({ items: this.store }, uuid), parent: null }));
+        return JSON.stringify({ added: roots, changed: [], removed: [] });
+      }
+      onItems(cb: (json: string) => void): void {
+        this.emit = cb;
+      }
+      onResolve(cb: (json: string) => string): void {
+        this.resolve = cb;
+      }
+      applyItems(json: string): void {
+        this.pending.push(json);
+      }
+      /** A local edit: native model changes now, its flush is queued. */
+      localEdit(sexpr: string): void {
+        const json = JSON.stringify({ changed: [{ sexpr, parent: null }] });
+        this.applyToStore(json);
+        this.flushes.push(json);
+      }
+      flushLocal(): void {
+        for (const json of this.flushes.splice(0)) this.emit?.(json);
+      }
+      /** Run the queue like doApplyItems does. */
+      drain(): void {
+        while (this.pending.length) {
+          this.flushLocal(); // flush-before-apply
+          const sent = this.pending.shift()!;
+          const json = this.resolve?.(sent) ?? sent; // resolve-at-execution
+          this.applied.push(json);
+          this.applyToStore(json);
+        }
+      }
+      private applyToStore(json: string): void {
+        const delta = itemsWireToDelta(parseItemsWireDelta(json), this.store);
+        for (const it of [...delta.added, ...delta.updated]) {
+          const { uuid, ...item } = it;
+          this.store[uuid] = item;
+        }
+        for (const uuid of delta.removed) delete this.store[uuid];
+      }
+    }
+
+    const FPV = (x: number, value: string) =>
+      `(footprint "lib:R" (layer "F.Cu") (uuid "fp-1") (at ${x} 10)
+  (property "Value" "${value}")
+  (pad "1" smd (at 0 0) (uuid "pad-1")))`;
+
+    function setupDeferred() {
+      const { a, b } = pair();
+      seedDocToY(fileToDoc(`(kicad_pcb (version 20250114) (generator "pcbnew") ${FPV(10, "old")})`), a, "seed", "1:n");
+      const edA = new FakeEditor();
+      Object.assign(edA.store, yToDoc(a).items);
+      const bindA = bindKicadCollab(a, edA);
+      bindA.seed(undefined, { editorMatchesDoc: true });
+      const edB = new DeferredEditor();
+      Object.assign(edB.store, structuredClone(yToDoc(b).items));
+      const bindB = bindKicadCollab(b, edB);
+      bindB.seed(undefined, { editorMatchesDoc: true });
+      return { a, b, edA, edB, bindA, bindB };
+    }
+
+    it("a local move flushed behind a peer's Value edit keeps BOTH in the doc", () => {
+      const { b, edA, edB } = setupDeferred();
+      edB.localEdit(FPV(20, "old")); // B moves; its flush is queued
+      edA.localUpsert(FPV(10, "remote-value")); // A edits Value; B's apply is queued
+      expect(edB.pending).toHaveLength(1);
+      edB.flushLocal(); // the audit's ordering: flush runs before the apply
+      const text = docToFile(yToDoc(b));
+      expect(text).toContain("remote-value");
+      expect(text).toContain("(at 20 10)");
+    });
+
+    it("the native projection equals the doc after the queue drains", () => {
+      const { b, edA, edB } = setupDeferred();
+      edB.localEdit(FPV(20, "old"));
+      edA.localUpsert(FPV(10, "remote-value"));
+      edB.drain();
+      expect(renderItem({ items: edB.store }, "fp-1")).toBe(renderItem(yToDoc(b), "fp-1"));
+      expect(renderItem(yToDoc(b), "fp-1")).toContain("remote-value");
+      expect(renderItem(yToDoc(b), "fp-1")).toContain("(at 20 10)");
+    });
+
+    it("a payload that waited behind further doc changes applies the LATEST content", () => {
+      const { b, edA, edB } = setupDeferred();
+      edA.localUpsert(FPV(10, "v1")); // queued on B
+      edA.localUpsert(FPV(10, "v2")); // queued on B
+      edA.localUpsert(FPV(30, "v2")); // queued on B
+      expect(edB.pending).toHaveLength(3);
+      expect(edB.pending[0]).toContain("v1"); // rendered when the event fired
+      edB.drain();
+      expect(edB.applied).toHaveLength(3);
+      // Each executed payload carried the doc's content at execution time.
+      expect(edB.applied[0]).not.toContain("v1");
+      expect(edB.applied[0]).toContain("v2");
+      expect(edB.applied[0]).toContain("(at 30 10)");
+      expect(renderItem({ items: edB.store }, "fp-1")).toBe(renderItem(yToDoc(b), "fp-1"));
+    });
+
+    it("a root deleted while its apply waited resolves to a removal", () => {
+      const { b, edA, edB } = setupDeferred();
+      edA.localUpsert(FPV(10, "v1"));
+      edA.localRemove("fp-1");
+      edB.drain();
+      expect(edB.store["fp-1"]).toBeUndefined();
+      expect(yToDoc(b).items["fp-1"]).toBeUndefined();
+    });
+
+    it("the local edit's untouched fields are not written even without a queued apply", () => {
+      const { b, edB } = setupDeferred();
+      let updates = 0;
+      b.on("update", () => updates++);
+      edB.localEdit(FPV(10, "old")); // no-op edit
+      edB.flushLocal();
+      expect(updates).toBe(0);
+    });
+  });
+
   it("destroy() detaches the editor from further remote changes", () => {
     const { edA, edB, bindA, bindB } = setup();
     seedEditor(edA, FP);

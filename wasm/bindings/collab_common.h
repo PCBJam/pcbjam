@@ -13,6 +13,7 @@
 
 #include <deque>
 #include <emscripten.h>
+#include <emscripten/val.h>
 #include <functional>
 #include <string>
 #include <nlohmann/json.hpp>
@@ -206,6 +207,52 @@ inline void emitDelta( const nlohmann::json& aDelta )
             catch( e ) { console.error( '[pcbjam collab] onDelta listener threw', e ); }
         }
     }, s.c_str() );
+}
+
+/**
+ * Apply-time payload resolution (ysync 0012 #2): a queued v2 items payload was
+ * rendered when the doc event fired, but it executes later on the coroutine
+ * queue — possibly behind a local flush that moved the doc on. Hand it back to
+ * the binding (window.kicadCollab.resolveItems) and apply what it returns: the
+ * doc's LATEST content for those roots (a root deleted meanwhile comes back as
+ * a removal). Without a resolver, or on any failure, the payload applies as
+ * sent. Runs inside the apply coroutine; a JS throw is caught in the binding.
+ */
+inline nlohmann::json resolveItemsWire( const nlohmann::json& aWire )
+{
+    using emscripten::val;
+
+    try
+    {
+        val win = val::global( "window" );
+
+        if( win.isUndefined() || win.isNull() )
+            return aWire;
+
+        val kc = win["kicadCollab"];
+
+        if( kc.isUndefined() || kc.isNull() )
+            return aWire;
+
+        val fn = kc["resolveItems"];
+
+        if( fn.isUndefined() || fn.isNull() )
+            return aWire;
+
+        val out = kc.call<val>( "resolveItems", aWire.dump() );
+
+        if( !out.isString() )
+            return aWire;
+
+        nlohmann::json resolved = nlohmann::json::parse( out.as<std::string>(), nullptr,
+                                                         /*allow_exceptions*/ false );
+
+        return resolved.is_discarded() ? aWire : resolved;
+    }
+    catch( ... )
+    {
+        return aWire;
+    }
 }
 
 /** v2 per-item s-expr blob wire (ysync 0008): window.kicadCollab.onItems. */
