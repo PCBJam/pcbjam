@@ -123,7 +123,8 @@ import {
 } from "@/components/wasm-tool/collab-start";
 import { installQuitHook } from "@/components/wasm-tool/quit-hook";
 import { runDeferredModelPrescan } from "@/wasm/libs/models-bridge";
-import { installToolNavigationHook } from "@/components/wasm-tool/tool-navigation";
+import { chooseToolFile, installToolNavigationHook } from "@/components/wasm-tool/tool-navigation";
+import { markDeliberateNavigation } from "@/components/wasm-tool/quit-hook";
 import {
   chromeSetter,
   show3DOpener,
@@ -542,6 +543,23 @@ export function WasmTool({
   }, [theme, ready]);
   // Dev-time presence style tuner (VITE_PRESENCE_TUNER=1) — set once the wasm
   // exposes the style bridge, mounts the floating panel.
+  // View-only / commenter sessions have no wx "Tools" menu to switch
+  // editors from — offer the counterpart document (same stem preferred) as
+  // a menu row instead. Editors keep the native menu item.
+  const jumpTool = React.useMemo(() => {
+    if (!readOnly || (tool !== "pcbnew" && tool !== "eeschema")) return null;
+    const other: Tool = tool === "pcbnew" ? "eeschema" : "pcbnew";
+    const path = chooseToolFile(files, other, undefined, targetPath);
+    if (!path) return null;
+    return {
+      tool: other,
+      label: other === "pcbnew" ? "Open PCB" : "Open schematic",
+      onClick: () => {
+        markDeliberateNavigation();
+        window.location.assign(projectPath(currentScope(), slug, path) + window.location.search);
+      },
+    };
+  }, [readOnly, tool, files, targetPath, slug]);
   const [tunerMod, setTunerMod] = React.useState<TunerModule | null>(null);
   // Mount as soon as the wasm is up — NOT from the comments start path, which
   // plain readers never enter (comments are opt-in for them since 0003 C).
@@ -1186,6 +1204,7 @@ export function WasmTool({
           targetPath,
           // Viewers fetch 3D bodies only if they open the viewer (session menu).
           deferModelPrescan: readOnly,
+          viewerLocalSettings: readOnly,
           // ydoc source with a populated room: the target file's bytes come
           // from the doc; everything else (sibling files) still fetches.
           fetchBytes:
@@ -1775,6 +1794,7 @@ export function WasmTool({
           chromeHidden={chromeHidden}
           onToggleChrome={() => toggleChromeHidden()}
           onShow3D={show3DFn}
+          jumpTool={jumpTool}
         />
       )}
 

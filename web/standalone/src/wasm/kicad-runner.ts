@@ -6,6 +6,7 @@ import { memfsFilePath, memfsProjectDir } from "./constants";
 import { mark } from "./load-trace";
 import { deferBoardModelPrescan, prescanBoardModels } from "./libs/models-bridge";
 import { openFileInTool } from "./open-flow";
+import { isLocalSettingsPath, viewerLocalSettings } from "@/lib/viewer-local-settings";
 
 /**
  * The only thing the editor needs to know about a file to sync it into MEMFS:
@@ -68,6 +69,10 @@ export interface DriveOptions {
   /** Read-only sessions: park the board's 3D prescan until the viewer opens
    *  (runDeferredModelPrescan) instead of prefetching every model at open. */
   deferModelPrescan?: boolean;
+  /** Read-only / commenter session: strip the saved selection filters from
+   *  the project's `.kicad_prl` (see lib/viewer-local-settings) — a viewer
+   *  has no panel to re-enable them. */
+  viewerLocalSettings?: boolean;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -164,6 +169,11 @@ async function syncProjectToMemfs(win: ToolWindow, opts: DriveOptions): Promise<
   let staged = 0;
   opts.onFileProgress?.(0, opts.files.length);
   const stageOne = (path: string, bytes: Uint8Array): void => {
+    if (opts.viewerLocalSettings && isLocalSettingsPath(path)) {
+      const stripped = viewerLocalSettings(bytes);
+      if (stripped !== bytes) opts.log(`[memfs] ${path}: selection filters dropped for the viewer`);
+      bytes = stripped;
+    }
     restageFile(win, opts.slug, path, bytes, opts.log);
     opts.onFileProgress?.(++staged, opts.files.length);
     // 3D models: prefetch every model this board references (R2 → IDB → MEMFS)

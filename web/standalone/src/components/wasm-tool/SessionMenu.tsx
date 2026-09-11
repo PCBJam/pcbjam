@@ -10,7 +10,7 @@ import {
   Moon,
   PanelsTopLeft,
   RefreshCw,
-  Sun, MessageSquare, Eye } from "lucide-react";
+  Sun, MessageSquare, Eye, ArrowRightLeft } from "lucide-react";
 import type { Tool } from "@pcbjam/shared";
 import { setTheme } from "@/lib/theme";
 import type { SourceDescriptor } from "@/lib/project-source-shared";
@@ -165,6 +165,7 @@ export function SessionMenu({
   chromeHidden,
   onToggleChrome,
   onShow3D,
+  jumpTool,
 }: {
   tool: Tool;
   readOnly: boolean;
@@ -211,6 +212,9 @@ export function SessionMenu({
   /** Open the board's 3D viewer (pcbnew only); null when the bundle lacks
    *  the bridge. The only 3D entry point once the wx menus are hidden. */
   onShow3D: (() => void) | null;
+  /** View-only / commenter sessions: navigate to the project's counterpart
+   *  document (PCB ⇄ schematic); null when there is none. */
+  jumpTool?: { tool: Tool; label: string; onClick: () => void } | null;
 }) {
   return (
     <OverlayMenu
@@ -264,6 +268,18 @@ export function SessionMenu({
                 {commentAccess === "comment" ? "commenter" : "read-only"}
               </span>
             </div>
+          )}
+          {readOnly && jumpTool && (
+            <button
+              data-testid="jump-tool"
+              data-tool={jumpTool.tool}
+              title={`${jumpTool.label} of this project`}
+              onClick={jumpTool.onClick}
+              className={overlayRowClass}
+            >
+              <ArrowRightLeft size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
+              <span>{jumpTool.label}</span>
+            </button>
           )}
           {readOnly && commentAccess !== "comment" && onToggleReaderComments && (
             <button
