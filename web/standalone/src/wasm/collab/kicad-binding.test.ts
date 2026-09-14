@@ -540,6 +540,25 @@ describe("bindKicadCollab — two editors over relayed Y.Docs", () => {
       expect(yToDoc(b).items["fp-1"]).toBeUndefined();
     });
 
+    it("a local move of a root whose peer-delete is still queued does NOT resurrect it (delete wins)", () => {
+      // CI run 34711238549 (drift-trio S4 move-vs-delete): B's delete is
+      // handed to A's apply queue; A moves the same item before the queue
+      // drains; flush-before-apply then emitted the move as an ADD (the root
+      // is gone from the doc) and re-created the item for every peer while
+      // the resolved removal took it out of A — A's editor ≠ doc, forever.
+      const { a, b, edA, edB } = setupDeferred();
+      edA.localRemove("fp-1"); // peer deletes; B's apply is queued
+      expect(edB.pending).toHaveLength(1);
+      expect(yToDoc(b).items["fp-1"]).toBeUndefined();
+      edB.localEdit(FPV(20, "old")); // B moves it meanwhile (native still has it)
+      edB.drain(); // flush-before-apply, resolve, apply
+      expect(yToDoc(b).items["fp-1"]).toBeUndefined();
+      expect(yToDoc(a).items["fp-1"]).toBeUndefined();
+      expect(edB.store["fp-1"]).toBeUndefined();
+      expect(edA.store["fp-1"]).toBeUndefined();
+      expect(docToFile(yToDoc(a))).toBe(docToFile(yToDoc(b)));
+    });
+
     it("the local edit's untouched fields are not written even without a queued apply", () => {
       const { b, edB } = setupDeferred();
       let updates = 0;

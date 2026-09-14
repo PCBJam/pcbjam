@@ -297,10 +297,42 @@ export function bindKicadCollab(
     // backstop for everything else.
     try {
       const resolved: Record<string, KicadItem> = {};
-      const delta = itemsWireToDelta(wire, itemsView(), warnSkip, {
+      const view = itemsView();
+      const delta = itemsWireToDelta(wire, view, warnSkip, {
         baseline: nativeView,
         resolved,
       });
+      // Delete wins (ysync 0012 #2 follow-up): an emitted item that the doc no
+      // longer holds but the native view still does is one a peer deleted while
+      // that removal sits in the editor's apply queue — the editor touched it
+      // in the gap (drift-trio S4 move-vs-delete, CI run 34711238549). Writing
+      // it would re-create the root for every peer while the resolved removal
+      // takes it out of THIS editor: editor ≠ doc, permanently. Drop it (and any
+      // child riding on it); the queued removal folds it out of the native
+      // view when it executes. A genuinely new item is in neither, so it
+      // still lands; the resolver applies the same policy in the UP direction.
+      const concurrentlyDeleted = new Set<string>();
+      if (nativeView) {
+        for (const it of delta.added) {
+          if (!(it.uuid in view) && it.uuid in nativeView) concurrentlyDeleted.add(it.uuid);
+        }
+        let grew = concurrentlyDeleted.size > 0;
+        while (grew) {
+          grew = false;
+          for (const it of [...delta.added, ...delta.updated]) {
+            if (it.parent !== null && concurrentlyDeleted.has(it.parent) && !concurrentlyDeleted.has(it.uuid)) {
+              concurrentlyDeleted.add(it.uuid);
+              grew = true;
+            }
+          }
+        }
+      }
+      if (concurrentlyDeleted.size > 0) {
+        clog("⬇ onItems (local edit): dropped", concurrentlyDeleted.size, "item(s) a peer deleted meanwhile (delete wins)");
+        delta.added = delta.added.filter((it) => !concurrentlyDeleted.has(it.uuid));
+        delta.updated = delta.updated.filter((it) => !concurrentlyDeleted.has(it.uuid));
+        for (const id of concurrentlyDeleted) delete resolved[id];
+      }
       // Library definitions the blob carried (a placed symbol's lib_symbols
       // context — miss 08): store them alongside the items, same transaction.
       const defs = wireLibSymbols(wire);
