@@ -1,0 +1,72 @@
+---
+import { pcbjamSources, CHECKED_ON, type Source } from '../data/compare';
+import SectionTitle from './SectionTitle.astro';
+
+interface Props {
+  competitorSources: { name: string; sources: Source[] }[];
+}
+const { competitorSources } = Astro.props;
+---
+
+<section class="readme readme-section" id="sources">
+  <SectionTitle>Sources, checked {CHECKED_ON}</SectionTitle>
+  <p>
+    Every cell above comes from one of these pages. If a vendor changes something, tell us on
+    <a href="https://discord.gg/ybhqJxjR3E" rel="noopener" target="_blank">Discord</a> and we will fix the row.
+  </p>
+  <div class="src mono small">
+    {
+      competitorSources.map((g) => (
+        <div class="group">
+          <div class="who">{g.name}</div>
+          <ul>
+            {g.sources.map((s) => (
+              <li>
+                <a href={s.url} rel="noopener" target="_blank">{s.label}</a>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))
+    }
+    <div class="group">
+      <div class="who">PCBJam</div>
+      <ul>
+        {
+          pcbjamSources.map((s) => (
+            <li>
+              <a href={s.url} rel={s.url.startsWith('http') ? 'noopener' : undefined} target={s.url.startsWith('http') ? '_blank' : undefined}>{s.label}</a>
+            </li>
+          ))
+        }
+      </ul>
+    </div>
+  </div>
+</section>
+
+<style>
+  .src {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1rem 2rem;
+    color: var(--fg-muted);
+  }
+  .who {
+    color: var(--fg);
+    font-weight: 600;
+    margin-bottom: 0.25rem;
+  }
+  ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+  @media (max-width: 560px) {
+    .src {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>

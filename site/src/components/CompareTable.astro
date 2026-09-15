@@ -1,0 +1,146 @@
+---
+/**
+ * CompareTable — PCBJam beside one or more competitors, one criterion per row.
+ * Rows where every shown column has the same tone carry data-same="1"; the
+ * optional "show only differences" checkbox hides them (progressive: without
+ * JS every row shows).
+ */
+import { rows, columnNames, toneMark, toneWord, type ColKey } from '../data/compare';
+
+interface Props {
+  columns: ColKey[]; // always starts with 'pcbjam'
+  id?: string;
+}
+const { columns, id = 'compare' } = Astro.props;
+const shown = rows.map((r) => {
+  const tones = columns.map((c) => r.cells[c].tone);
+  return { ...r, same: tones.every((t) => t === tones[0]) };
+});
+const diffCount = shown.filter((r) => !r.same).length;
+---
+
+<div class="cmp" data-compare id={id}>
+  <label class="diff-toggle mono small">
+    <input type="checkbox" data-diff-toggle />
+    show only the differences ({diffCount} of {rows.length} rows)
+  </label>
+  <div class="scroll">
+    <table class="table">
+      <thead>
+        <tr>
+          <th scope="col">Criterion</th>
+          {columns.map((c) => <th scope="col">{columnNames[c]}</th>)}
+        </tr>
+      </thead>
+      <tbody>
+        {
+          shown.map((r) => (
+            <tr data-same={r.same ? '1' : undefined}>
+              <th scope="row">{r.label}</th>
+              {columns.map((c) => {
+                const cell = r.cells[c];
+                return (
+                  <td>
+                    <span class={`mark mark-${cell.tone}`} aria-hidden="true">{toneMark[cell.tone]}</span>
+                    <span class="sr-only">{toneWord[cell.tone]}</span>
+                    <span class="note">{cell.note || toneWord[cell.tone]}</span>
+                  </td>
+                );
+              })}
+            </tr>
+          ))
+        }
+      </tbody>
+    </table>
+  </div>
+  <p class="legend mono small muted">[x] yes · [~] partly · [ ] no</p>
+</div>
+
+<style>
+  .cmp {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+  }
+  .diff-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: var(--accent);
+    cursor: pointer;
+    align-self: flex-end;
+  }
+  .scroll {
+    overflow-x: auto;
+  }
+  .table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+    border-top: 1px solid var(--border);
+  }
+  thead th {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--fg-muted);
+    font-weight: 500;
+    text-align: left;
+    padding: 0.55rem 0.5rem;
+    background: var(--bg-soft);
+    border-bottom: 1px solid var(--border);
+  }
+  tbody th {
+    text-align: left;
+    font-weight: 400;
+    color: var(--fg);
+    padding: 0.6rem 0.5rem;
+    vertical-align: top;
+    border-bottom: 1px solid var(--border);
+    min-width: 12rem;
+  }
+  td {
+    padding: 0.6rem 0.5rem;
+    vertical-align: top;
+    border-bottom: 1px solid var(--border);
+    color: var(--fg-2);
+    min-width: 11rem;
+  }
+  .mark {
+    font-family: var(--font-mono);
+    font-weight: 600;
+    margin-right: 0.45rem;
+    white-space: nowrap;
+  }
+  .mark-yes {
+    color: #1f7a4d;
+  }
+  .mark-part {
+    color: #9a6200;
+  }
+  .mark-no {
+    color: var(--red);
+  }
+  .legend {
+    margin: 0;
+  }
+  .cmp[data-diff-only] tr[data-same] {
+    display: none;
+  }
+</style>
+
+<script>
+  function initCompare() {
+    document.querySelectorAll<HTMLElement>('[data-compare]').forEach((wrap) => {
+      const box = wrap.querySelector<HTMLInputElement>('[data-diff-toggle]');
+      if (!box || box.dataset.bound === '1') return;
+      box.dataset.bound = '1';
+      box.addEventListener('change', () => {
+        if (box.checked) wrap.setAttribute('data-diff-only', '');
+        else wrap.removeAttribute('data-diff-only');
+      });
+    });
+  }
+  document.addEventListener('astro:page-load', initCompare);
+</script>
