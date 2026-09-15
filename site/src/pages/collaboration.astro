@@ -1,0 +1,271 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import SectionTitle from '../components/SectionTitle.astro';
+import WaitlistForm from '../components/WaitlistForm.astro';
+
+// Sourced from devblog week 28 (presence, selection highlights, soft locks,
+// follow, comment threads, undo, library sync, mobile read-only view), week 30
+// (comment bubbles, seen marks, reactions, mentions), week 31 (library sync per
+// team), the pricing page (roles, public projects, free seats) and weeks 32-35
+// (Safari / JSPI). The three clips are the ones published with week 28.
+const DISCORD_URL = 'https://discord.gg/ybhqJxjR3E';
+
+const title = 'Real-time KiCad collaboration: one board, your whole team';
+const description =
+  'Several people in one KiCad board at the same time, in a browser: live cursors, selection highlights, follow mode, comment threads with mentions, invite links and roles. Nothing to install, files stay in KiCad’s format.';
+
+const clips = [
+  { src: '/blog/w28-assets/follow.mp4', caption: 'follow a teammate: see what they see, move with their viewport' },
+  { src: '/blog/w28-assets/comments.mp4', caption: 'a comment thread on the board: reply, hide, resolve' },
+];
+---
+
+<BaseLayout title={title} description={description} wide>
+  <section class="readme hero">
+    <p class="eyebrow-line mono small muted">KiCad collaboration</p>
+    <h1>One board. Your whole team. At the same time.</h1>
+    <p class="lead">
+      Real-time collaboration in KiCad. Everyone opens the same project in a browser, sees each
+      other’s cursors and selections, and edits together. Comments and invite links for review.
+      Nothing to install, and the files stay KiCad’s own.
+    </p>
+    <WaitlistForm source="collaboration" class="hero-form">
+      <Fragment slot="micro">
+        or <a href={DISCORD_URL} rel="noopener" target="_blank">join the Discord</a> ·
+        <a href="/privacy">privacy</a>
+      </Fragment>
+    </WaitlistForm>
+    <figure class="loop">
+      <div class="frame">
+        <video data-loop autoplay muted loop playsinline preload="metadata" aria-label="Two people on one board: live cursors and selection highlights">
+          <source src="/blog/w28-assets/presence-and-select.mp4" type="video/mp4" />
+        </video>
+      </div>
+      <figcaption class="mono small muted">two people on one board: cursors and selection highlights · <a href="/blog/devblog-2026-w28/">devblog, week 28</a></figcaption>
+    </figure>
+  </section>
+
+  <section class="readme readme-section" id="today">
+    <SectionTitle>What works today</SectionTitle>
+    <ul class="todo mono">
+      <li><span class="box" aria-hidden="true">[x]</span> live cursors and selection highlights</li>
+      <li><span class="box" aria-hidden="true">[x]</span> highlights cross files: select a footprint on the board, its symbol lights up in the schematic</li>
+      <li><span class="box" aria-hidden="true">[x]</span> selected elements are soft-locked, so nobody moves them from under you</li>
+      <li><span class="box" aria-hidden="true">[x]</span> follow a teammate: see what they see, move with their cursor and viewport</li>
+      <li><span class="box" aria-hidden="true">[x]</span> comments on the board, in threads: reply, hide, resolve</li>
+      <li><span class="box" aria-hidden="true">[x]</span> avatar pins on the canvas, a panel listing the threads, seen marks, reactions, @-mentions</li>
+      <li><span class="box" aria-hidden="true">[x]</span> invite links with an expiry and a use limit</li>
+      <li><span class="box" aria-hidden="true">[x]</span> readers, commenters and editors</li>
+      <li><span class="box" aria-hidden="true">[x]</span> component libraries synced across the team</li>
+      <li><span class="box" aria-hidden="true">[x]</span> public projects: free for everyone, unlimited members</li>
+    </ul>
+    <ul class="clips">
+      {
+        clips.map((c) => (
+          <li>
+            <div class="frame">
+              <video data-loop autoplay muted loop playsinline preload="metadata" aria-label={c.caption}>
+                <source src={c.src} type="video/mp4" />
+              </video>
+            </div>
+            <span class="mono small muted">{c.caption}</span>
+          </li>
+        ))
+      }
+    </ul>
+  </section>
+
+  <section class="readme readme-section" id="how">
+    <SectionTitle>How it works</SectionTitle>
+    <p>
+      Edits travel as small changes over our own sync protocol; a move is about 30 bytes on the
+      wire. Undo is yours alone: it takes back your own edits, not your teammate’s. Libraries sync
+      per team, so a part added by one person is there for the next. The details, including what
+      was hard, are in the <a href="/blog/devblog-2026-w28/">week-28 devblog</a>.
+    </p>
+  </section>
+
+  <section class="readme readme-section" id="review">
+    <SectionTitle>A review, start to finish</SectionTitle>
+    <ol class="steps">
+      <li>Create an invite link. Seven days and one use, or whatever the reviewer needs.</li>
+      <li>They open it in a browser and sign in. Nothing to install. <a href="/viewer/">Reading only</a> works on mobile too, except iPhone and iPad until Apple’s September 2026 Safari release.</li>
+      <li>They leave a comment on the board, on the exact footprint, and mention you.</li>
+      <li>You fix it in the same project, resolve the thread, and export to desktop KiCad if you like. Same file.</li>
+    </ol>
+  </section>
+
+  <section class="readme readme-section" id="next">
+    <SectionTitle>Next for collaboration</SectionTitle>
+    <ul class="todo mono two">
+      <li><span class="box" aria-hidden="true">[ ]</span> comment-only mode</li>
+      <li><span class="box" aria-hidden="true">[ ]</span> per-project invites</li>
+      <li><span class="box" aria-hidden="true">[ ]</span> history: who changed what</li>
+      <li><span class="box" aria-hidden="true">[ ]</span> git integration</li>
+      <li><span class="box" aria-hidden="true">[ ]</span> organization support</li>
+      <li><span class="box" aria-hidden="true">[ ]</span> mobile editing</li>
+    </ul>
+  </section>
+
+  <section class="readme readme-section" id="faq">
+    <SectionTitle>FAQ</SectionTitle>
+    <dl class="faq">
+      <div class="qa">
+        <dt>Does everyone need an account?</dt>
+        <dd>Joining a project from an invite link needs a sign-in, so comments have a name on them. The <a href="https://demo.pcbjam.com" rel="noopener" target="_blank">demo</a> needs no account.</dd>
+      </div>
+      <div class="qa">
+        <dt>What if two people grab the same thing?</dt>
+        <dd>Whatever someone has selected is soft-locked: others cannot move it until they let go. Undo only ever takes back your own edits.</dd>
+      </div>
+      <div class="qa">
+        <dt>What does it cost for a team?</dt>
+        <dd>Public projects are free for everyone, editing included. Private work is free for three people and seven projects in your personal team, then one seat per person. Details on the <a href="/pricing/">pricing page</a>.</dd>
+      </div>
+    </dl>
+  </section>
+
+  <section class="readme readme-section contact">
+    <SectionTitle>Get your team in the board</SectionTitle>
+    <WaitlistForm source="collaboration-final" class="contact-form">
+      <Fragment slot="micro">
+        <a href={DISCORD_URL} rel="noopener" target="_blank">discord.gg/ybhqJxjR3E</a> ·
+        <a href="mailto:hello@pcbjam.com">hello@pcbjam.com</a> ·
+        <a href="/privacy">privacy</a>
+      </Fragment>
+    </WaitlistForm>
+  </section>
+</BaseLayout>
+
+<style>
+  .hero {
+    padding-block: 2.5rem 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1.1rem;
+  }
+  .eyebrow-line {
+    margin: 0;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+  h1 {
+    font-size: clamp(1.9rem, 5vw, 2.6rem);
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    line-height: 1.12;
+    margin: 0;
+    text-wrap: balance;
+  }
+  .lead {
+    margin: 0;
+    font-size: 1.1rem;
+    color: var(--fg-muted);
+    max-width: 40rem;
+    text-wrap: pretty;
+  }
+  .hero-form,
+  .contact-form {
+    max-width: 32rem;
+  }
+  .loop {
+    margin: 0.5rem 0 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+  video {
+    display: block;
+    width: 100%;
+    height: auto;
+    background: #000;
+  }
+  .todo {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    font-size: 0.9rem;
+    color: var(--fg-2);
+  }
+  .todo.two {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.35rem 1.5rem;
+  }
+  .todo li {
+    display: flex;
+    gap: 0.5rem;
+  }
+  .box {
+    color: var(--blue);
+    flex-shrink: 0;
+  }
+  .clips {
+    list-style: none;
+    margin: 0.25rem 0 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.75rem;
+  }
+  .clips li {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+  .steps {
+    margin: 0;
+    padding-left: 1.4rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    color: var(--fg-2);
+  }
+  .faq {
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+  .qa {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+  dt {
+    font-weight: 600;
+  }
+  dd {
+    margin: 0;
+    color: var(--fg-2);
+    font-size: 0.95rem;
+  }
+  .contact {
+    border-top: 2px solid var(--red);
+    margin-top: 1rem;
+    padding-block: 2rem 3rem;
+  }
+  @media (max-width: 560px) {
+    .clips,
+    .todo.two {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>
+
+<script>
+  // The clips autoplay muted, like GIFs; with reduced motion they pause and
+  // show controls instead. Bound on astro:page-load for ClientRouter.
+  function initLoops() {
+    if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    document.querySelectorAll<HTMLVideoElement>('video[data-loop]').forEach((v) => {
+      v.removeAttribute('autoplay');
+      v.pause();
+      v.controls = true;
+    });
+  }
+  document.addEventListener('astro:page-load', initLoops);
+</script>

@@ -16,7 +16,7 @@ import { defineMiddleware } from 'astro:middleware';
  * Production is static (output: 'static'); the headers come from public/_headers,
  * so we no-op outside dev to keep the prerender/build output untouched.
  */
-const ISOLATED_PREFIXES = ['/blog/porting-kicad-graphics-to-webgl-in-2026', '/gerber-demo'];
+const ISOLATED_PREFIXES = ['/blog/porting-kicad-graphics-to-webgl-in-2026', '/gerber-demo', '/compare'];
 
 export const onRequest = defineMiddleware(async (context, next) => {
   const response = await next();

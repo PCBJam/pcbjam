@@ -1,0 +1,23 @@
+---
+/**
+ * "Do not take our word for it": the real KiCad Gerber viewer, embedded. Loads
+ * ~22 MB on demand (click), nothing on page view.
+ *
+ * Needs COOP/COEP on the route: public/_headers covers /compare and /compare/*,
+ * and src/middleware.ts + the vite plugin in astro.config.mjs mirror it in dev.
+ * The glue is loaded through a same-origin blob in public/gerber-demo/boot.js,
+ * which is what makes the pthread worker spawn legal on a cross-origin CDN.
+ */
+import GerberDemo from './GerberDemo.astro';
+import SectionTitle from './SectionTitle.astro';
+---
+
+<section class="readme readme-section" id="try">
+  <SectionTitle>Do not take our word for it</SectionTitle>
+  <p>
+    This is the real KiCad Gerber viewer, running on this page. Pan, zoom, toggle layers. The full
+    editor, with schematic capture and layout, is one click away in the
+    <a href="https://demo.pcbjam.com" rel="noopener" target="_blank">demo</a>.
+  </p>
+  <GerberDemo />
+</section>
