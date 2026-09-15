@@ -75,8 +75,43 @@ function serveWasm(): Plugin {
   };
 }
 
+// Local POC artifacts are fixed trusted runtime files. Publisher UI is served
+// separately on :4318 and must never be made executable on the editor origin.
+function pluginRuntimeAssets(): Plugin {
+  return {
+    name: "plugin-runtime-poc-assets",
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        const url = req.url?.split("?")[0] ?? "";
+        if (!url.startsWith("/plugin-runtime/")) return next();
+        const name = url.slice("/plugin-runtime/".length);
+        const mime: Record<string, string> = {
+          "editor-host.js": "text/javascript", "worker.js": "text/javascript",
+          "guest.js": "text/javascript", "quickjs.wasm": "application/wasm",
+          "package-host.js": "text/javascript", "package-worker.js": "text/javascript", "package-prelude.js": "text/javascript",
+        };
+        if (req.method !== "GET" || !Object.hasOwn(mime, name)) {
+          res.writeHead(404); res.end(); return;
+        }
+        const file = path.resolve(__dirname, "public/plugin-runtime", name);
+        fs.readFile(file, (error, bytes) => {
+          if (error) { res.writeHead(404); res.end("Run pnpm editor:install in tools/plugin-runtime-poc"); return; }
+          res.setHeader("Content-Type", mime[name]!);
+          res.setHeader("Cache-Control", "no-store");
+          res.setHeader("X-Content-Type-Options", "nosniff");
+          res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+          res.setHeader("Cross-Origin-Embedder-Policy", "require-corp");
+          res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+          if (name === "worker.js" || name === "package-worker.js") res.setHeader("Content-Security-Policy", "default-src 'none'; script-src 'wasm-unsafe-eval'; connect-src 'none'; worker-src 'none'; object-src 'none'; base-uri 'none'");
+          res.end(bytes);
+        });
+      });
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [serveWasm(), react()],
+  plugins: [pluginRuntimeAssets(), serveWasm(), react()],
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
@@ -88,6 +123,7 @@ export default defineConfig({
     dedupe: ["yjs"],
   },
   server: {
+    proxy: { '/plugin-dev/': { target: 'http://127.0.0.1:4317', changeOrigin: false } },
     // Default :3048. The closed `pnpm dev:gpl` runs a second editor instance on
     // :3049 (alongside the closed stack) via STANDALONE_PORT. strictPort so a
     // busy port fails loudly instead of drifting onto another service's port.

@@ -153,7 +153,7 @@ export function LayerPanel({
   // Default anchor: below the overlay-menu FAB (right-anchored, top 12 + 36 + gap).
   const style: React.CSSProperties = drag.pos
     ? { left: drag.pos.x, top: drag.pos.y }
-    : { right: 12, top: 56 };
+    : { right: "calc(12px + var(--plugin-sidebar-offset, 0px))", top: 56 };
 
   return (
     <div

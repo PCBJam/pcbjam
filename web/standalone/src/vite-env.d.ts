@@ -1,6 +1,8 @@
 /// <reference types="vite/client" />
 
 interface ImportMetaEnv {
+  /** Local-only Board Inspector plugin sidebar POC. */
+  readonly VITE_PLUGIN_POC?: string;
   readonly VITE_API_BASE_URL?: string;
   /** WASM asset root, no trailing slash. Dev: "/wasm". Prod CDN: e.g. "https://cdn.pcbjam.com/wasm". */
   readonly VITE_WASM_ROOT?: string;

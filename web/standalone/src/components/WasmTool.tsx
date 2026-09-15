@@ -87,6 +87,7 @@ import { hasTunerBridge, PresenceTuner, type TunerModule } from "@/components/Pr
 import { hasLayersBridge, LayerPanel, type LayersModule } from "@/components/LayerPanel";
 import { ImportItemPanel } from "@/components/ImportItemPanel";
 import { hasImportBridge, type ImportModule } from "@/wasm/import-item";
+import { PluginSidebar } from "@/plugins/PluginManagerSidebar";
 import { SelectionInspector } from "@/components/SelectionInspector";
 import { hasSheetsBridge, SheetPanel, type SheetsModule } from "@/components/SheetPanel";
 import { bindLocalSelectionFeed } from "@/wasm/collab/local-selection";
@@ -422,6 +423,8 @@ export function WasmTool({
   // bound collab doc (pcbnew: the board room; eeschema: the ACTIVE sheet's
   // room, re-pointed on navigation). Null without a doc room (?collab=0).
   const [panelDoc, setPanelDoc] = React.useState<Y.Doc | null>(null);
+  const pluginPocEnabled = import.meta.env.DEV && import.meta.env.VITE_PLUGIN_POC === "1" && (tool === "pcbnew" || tool === "eeschema");
+  const [pluginsOpen, setPluginsOpen] = React.useState(true);
   // Read-only sessions never bind presence, so the inspector's selection
   // store is fed by this minimal local handler (+ the C++ input hooks).
   const localSelectionRef = React.useRef<{ destroy(): void } | null>(null);
@@ -1724,7 +1727,7 @@ export function WasmTool({
   }, [setChromeFn, effectiveChromeHidden, append]);
 
   return (
-    <div className="relative h-screen w-screen overflow-hidden bg-[#1a1a2e]">
+    <div className="relative h-screen w-screen overflow-hidden bg-[#1a1a2e]" style={{ "--plugin-sidebar-offset": ready && pluginPocEnabled && pluginsOpen ? "min(360px, 90vw)" : "0px" } as React.CSSProperties}>
       {/*
         wx.js addresses the DOM by id: #main-window is its top-level (id=0)
         window — it owns #canvas (created in boot's preRun) — and #window-container
@@ -1876,6 +1879,11 @@ export function WasmTool({
       {/* POC (import-item): add a local .kicad_sym / .kicad_mod to the canvas. */}
       {ready && importOpen && importMod && (
         <ImportItemPanel mod={importMod} tool={tool} onClose={() => setImportOpen(false)} />
+      )}
+
+      {ready && pluginPocEnabled && (
+        <PluginSidebar project={{id:projectId,scope:scopeId,name:slug}} projectFiles={files} doc={panelDoc} tool={tool} readOnly={!!readOnly} fileName={targetPath ?? "Current document"} open={pluginsOpen}
+          onOpen={() => setPluginsOpen(true)} onClose={() => setPluginsOpen(false)} />
       )}
 
       {/* DEV: presence style tuner (VITE_PRESENCE_TUNER=1). */}

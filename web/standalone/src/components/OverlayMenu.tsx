@@ -129,7 +129,7 @@ export function OverlayMenu({
   // Default anchor: top-right (the old row's home). After a drag, explicit px.
   const style: React.CSSProperties = pos
     ? { left: pos.x, top: pos.y }
-    : { right: 12, top: 12 };
+    : { right: "calc(12px + var(--plugin-sidebar-offset, 0px))", top: 12 };
   // The panel opens toward the screen's center from wherever the FAB sits.
   const onLeftHalf = pos ? pos.x < window.innerWidth / 2 : false;
   const onTopHalf = pos ? pos.y < window.innerHeight / 2 : true;
