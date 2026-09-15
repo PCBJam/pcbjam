@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  canChooseMode,
+  requestedMode,
   resolveCommentAccess,
   resolveReadOnly,
   type ReadOnlyWindow,
@@ -50,5 +52,43 @@ describe("resolveCommentAccess", () => {
 
   it("?readonly=1 on a writer never yields comment access (no widening, no REST for members)", () => {
     expect(resolveCommentAccess("write", true)).toBe("none");
+  });
+});
+
+describe("?mode= (mobile 0002)", () => {
+  it("view/comment narrow a writer; edit does not", () => {
+    expect(resolveReadOnly("write", fakeWin("?mode=view"))).toBe(true);
+    expect(resolveReadOnly("write", fakeWin("?mode=comment"))).toBe(true);
+    expect(resolveReadOnly("write", fakeWin("?mode=edit"))).toBe(false);
+    expect(resolveReadOnly(undefined, fakeWin("?mode=comment"))).toBe(true);
+  });
+
+  it("never widens: mode=edit on a reader/commenter stays read-only", () => {
+    expect(resolveReadOnly("read", fakeWin("?mode=edit"))).toBe(true);
+    expect(resolveReadOnly("comment", fakeWin("?mode=edit"))).toBe(true);
+    expect(resolveCommentAccess("read", true, fakeWin("?mode=comment"))).toBe("none");
+  });
+
+  it("mode=comment keeps a writer's ydoc comment path with the frame locked", () => {
+    expect(resolveCommentAccess("write", true, fakeWin("?mode=comment"))).toBe("write");
+    expect(resolveCommentAccess(undefined, true, fakeWin("?mode=comment"))).toBe("write");
+    // mode=view: a pure viewer, comments only behind the reader opt-in.
+    expect(resolveCommentAccess("write", true, fakeWin("?mode=view"))).toBe("none");
+    // A server-side commenter keeps the REST route whatever the URL says.
+    expect(resolveCommentAccess("comment", true, fakeWin("?mode=comment"))).toBe("comment");
+  });
+
+  it("requestedMode: explicit mode wins over the legacy readonly alias", () => {
+    expect(requestedMode(fakeWin(""))).toBe(null);
+    expect(requestedMode(fakeWin("?readonly=1"))).toBe("view");
+    expect(requestedMode(fakeWin("?readonly=1&mode=comment"))).toBe("comment");
+    expect(requestedMode(fakeWin("?mode=bogus"))).toBe(null);
+  });
+
+  it("only writers can choose", () => {
+    expect(canChooseMode(undefined)).toBe(true);
+    expect(canChooseMode("write")).toBe(true);
+    expect(canChooseMode("comment")).toBe(false);
+    expect(canChooseMode("read")).toBe(false);
   });
 });

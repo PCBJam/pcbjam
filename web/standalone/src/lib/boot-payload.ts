@@ -25,8 +25,31 @@ export interface BootLibDto {
   name: string;
   description?: string | null;
   type: string;
+  /** Origin identity kind ('symbol' | 'footprint' | 'model3d'); absent on
+   *  non-origin libs and on older backends. */
+  kind?: string | null;
   itemCount?: number;
   sync?: { namespace: string; bytes: number | null } | null;
+}
+
+/**
+ * The server's viewer rule (closed `routes/boot.ts` `isModel3dOnlyLib`),
+ * applied CLIENT-side: a session that locked itself (mobile 0002 view /
+ * comment mode on a writer) received the writer's full catalog, but renders
+ * from the file's embedded symbols/footprints and can never place a part —
+ * the symbol/footprint catalog is the bulk of a cold boot's download and
+ * dead weight for it. Keep only the 3D-model origins (sparse: manifest now,
+ * bodies on demand) so the 3D viewer still resolves `(model …)` refs.
+ * Idempotent on a payload the server already narrowed.
+ */
+export function narrowBootForViewer(boot: BootPayload): BootPayload {
+  const libs = boot.libs.filter((l) => l.type === "origin" && l.kind === "model3d");
+  const keep = new Set(libs.map((l) => l.id));
+  const stacks: BootPayload["stacks"] = {};
+  for (const [id, stack] of Object.entries(boot.stacks)) {
+    if (keep.has(id)) stacks[id] = stack;
+  }
+  return { ...boot, libs, stacks };
 }
 
 export interface BootPayload extends ProjectWithFiles {

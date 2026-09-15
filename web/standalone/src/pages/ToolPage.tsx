@@ -12,9 +12,17 @@ import {
   useProjectBoot,
   useSourceDescriptor,
 } from "@/lib/api";
+import { narrowBootForViewer } from "@/lib/boot-payload";
 import { docSourceConfig } from "@/lib/config";
 import { decodeRoutePath } from "@/lib/route-path";
-import { resolveCommentAccess, resolveReadOnly } from "@/lib/read-only-mode";
+import { isMobileMode } from "@/lib/mobile-mode";
+import { rememberMobileMode } from "@/lib/mobile-mode-choice";
+import {
+  canChooseMode,
+  resolveCommentAccess,
+  resolveReadOnly,
+} from "@/lib/read-only-mode";
+import { MobileModeGate } from "@/components/MobileModeGate";
 import { WasmTool } from "@/components/WasmTool";
 import { PreflightGate } from "@/preflight/PreflightGate";
 
@@ -85,16 +93,43 @@ export function ToolPage() {
   // (or `?readonly=1`) turns this session into a pure viewer — no save
   // upload (absent saveBytes ⇒ MEMFS-only saves), and WasmTool disables
   // every other outbound writer + locks the wasm frame.
-  const readOnly = resolveReadOnly(data.access);
+  // Resolved from the router's search params (not window.location) so the
+  // MobileModeGate's `?mode=` write re-renders us with the new answer.
+  const modeWin = { location: { search: `?${search.toString()}` } };
+  const readOnly = resolveReadOnly(data.access, modeWin);
   // Comment capability (comments-ux 0003): writers comment into the ydoc,
   // commenters through the REST comment-op route, readers only look.
-  const commentAccess = resolveCommentAccess(data.access, readOnly);
+  const commentAccess = resolveCommentAccess(data.access, readOnly, modeWin);
+  // A read-only session boots with the VIEWER's catalog (3D-model origins
+  // only). The server already does this for readers/commenters; a writer who
+  // locked themselves (mobile 0002) got the full catalog in the payload, so
+  // narrow it here BEFORE the lib source is seeded — no symbol/footprint
+  // bundle downloads for a phone that only views or comments.
+  const boot = bootData?.boot
+    ? readOnly
+      ? narrowBootForViewer(bootData.boot)
+      : bootData.boot
+    : null;
+  // Mobile 0002: a writer on a phone/tablet can re-choose the session mode —
+  // forget the device choice and reload without one, so the gate asks again
+  // (a mode switch needs a fresh boot: the lock/writers are set up at boot).
+  const onChangeMobileMode =
+    isMobileMode() && canChooseMode(data.access)
+      ? () => {
+          rememberMobileMode(null);
+          const url = new URL(window.location.href);
+          url.searchParams.delete("mode");
+          url.searchParams.delete("readonly");
+          window.location.assign(url.toString());
+        }
+      : undefined;
 
   // PreflightGate runs the device-capability check; on a fatal mismatch it blocks
   // here (before WasmTool mounts) so the expensive WASM asset fetch is skipped.
   // fetch/upload go through the active project source (api.ts): a backend
   // project uploads saves; the static gallery downloads them to local.
   return (
+    <MobileModeGate access={data.access} tool={tool}>
     <PreflightGate>
       <WasmTool
         tool={tool}
@@ -128,8 +163,10 @@ export function ToolPage() {
         sourceDescriptor={sourceDescriptor}
         readOnly={readOnly}
         commentAccess={commentAccess}
-        boot={bootData?.boot ?? null}
+        onChangeMobileMode={onChangeMobileMode}
+        boot={boot}
       />
     </PreflightGate>
+    </MobileModeGate>
   );
 }

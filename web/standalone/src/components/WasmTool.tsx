@@ -164,6 +164,7 @@ export function WasmTool({
   sourceDescriptor,
   readOnly = false,
   commentAccess,
+  onChangeMobileMode,
   boot = null,
 }: {
   tool: Tool;
@@ -248,6 +249,11 @@ export function WasmTool({
    * "none" (a reader — comments render only behind the reader opt-in).
    */
   commentAccess?: CommentAccess;
+  /**
+   * Mobile 0002: present when this session may re-choose its mode (a writer
+   * on a phone/tablet) — the session menu offers the switch.
+   */
+  onChangeMobileMode?: () => void;
 }) {
   const containerRef = React.useRef<HTMLDivElement>(null);
   // Reader opt-in (comments-ux 0003 decision 6): plain read-only sessions
@@ -849,9 +855,17 @@ export function WasmTool({
       setCommentsCtl(null);
       // Comment capability (comments-ux 0003 §4.5): editors write into the
       // ydoc; commenters (read-only frame) through the REST comment-op route;
-      // plain readers only behind the "Show comments" opt-in.
+      // plain readers only behind the "Show comments" opt-in. A writer who
+      // locked their own frame (mobile 0002 "comment only") keeps the ydoc
+      // path: their socket is a write socket, only the frame is locked.
       const access: CommentAccess = commentAccess ?? (readOnly ? "none" : "write");
-      const cmode: CommentsMode = !readOnly ? "write" : access === "comment" ? "comment" : "read";
+      const cmode: CommentsMode = !readOnly
+        ? "write"
+        : access === "comment"
+          ? "comment"
+          : access === "write"
+            ? "write"
+            : "read";
       if (cmode === "read" && !readerCommentsRef.current) return;
       if (!doc || (tool !== "pcbnew" && tool !== "eeschema") || !hasCommentsBridge(win.Module)) {
         return;
@@ -1778,6 +1792,7 @@ export function WasmTool({
           commentAccess={commentAccess ?? (readOnly ? "none" : "write")}
           readerComments={readerComments}
           onToggleReaderComments={readOnly ? toggleReaderComments : undefined}
+          onChangeMobileMode={onChangeMobileMode}
           reviewerSelections={reviewerSelections}
           onToggleReviewerSelections={readOnly ? undefined : toggleReviewerSelections}
           setCommentsSlot={setCommentsSlot}

@@ -10,7 +10,7 @@ import {
   Moon,
   PanelsTopLeft,
   RefreshCw,
-  Sun, MessageSquare, Eye, ArrowRightLeft } from "lucide-react";
+  Sun, MessageSquare, Eye, ArrowRightLeft, Smartphone } from "lucide-react";
 import type { Tool } from "@pcbjam/shared";
 import { setTheme } from "@/lib/theme";
 import type { SourceDescriptor } from "@/lib/project-source-shared";
@@ -149,6 +149,7 @@ export function SessionMenu({
   commentAccess,
   readerComments,
   onToggleReaderComments,
+  onChangeMobileMode,
   reviewerSelections,
   onToggleReviewerSelections,
   setCommentsSlot,
@@ -188,6 +189,9 @@ export function SessionMenu({
    *  read-only session. Off by default, remembered per browser. */
   readerComments?: boolean;
   onToggleReaderComments?: () => void;
+  /** Mobile 0002: re-choose view / comment / full editor (writers on a
+   *  phone/tablet only — absent otherwise). */
+  onChangeMobileMode?: () => void;
   /** Editors: show/hide reviewers' (commenters') selection outlines
    *  (comments-ux 0003 §5.2 rule 5). Default on, remembered per browser. */
   reviewerSelections?: boolean;
@@ -241,7 +245,7 @@ export function SessionMenu({
           SourceChip is shared with the light project pages, so instead of
           restyling it we ask for its `muted` tone: colour drops to a dot,
           and the chip sits in a normal row like everything else. */}
-      {(sourceDescriptor || readOnly || staleLibItems.size > 0) && (
+      {(sourceDescriptor || readOnly || staleLibItems.size > 0 || onChangeMobileMode) && (
         <OverlayMenuSection label="Document">
           {staleLibItems.size > 0 && (
             <StaleLibsRow
@@ -263,9 +267,13 @@ export function SessionMenu({
               className={`${overlayRowClass} cursor-default`}
             >
               <EyeOff size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
-              <span>{commentAccess === "comment" ? "View only · can comment" : "View only"}</span>
+              <span>{commentAccess !== "none" ? "View only · can comment" : "View only"}</span>
               <span className="ml-auto text-[10px] text-neutral-400 dark:text-white/40">
-                {commentAccess === "comment" ? "commenter" : "read-only"}
+                {commentAccess === "comment"
+                  ? "commenter"
+                  : commentAccess === "write"
+                    ? "your choice"
+                    : "read-only"}
               </span>
             </div>
           )}
@@ -281,7 +289,7 @@ export function SessionMenu({
               <span>{jumpTool.label}</span>
             </button>
           )}
-          {readOnly && commentAccess !== "comment" && onToggleReaderComments && (
+          {readOnly && commentAccess === "none" && onToggleReaderComments && (
             <button
               data-testid="reader-comments-toggle"
               aria-pressed={!!readerComments}
@@ -291,6 +299,17 @@ export function SessionMenu({
             >
               <MessageSquare size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
               <span>{readerComments ? "Hide comments" : "Show comments"}</span>
+            </button>
+          )}
+          {onChangeMobileMode && (
+            <button
+              data-testid="mobile-mode-change"
+              title="Choose again: view only, comment only or the full editor (reloads)"
+              onClick={onChangeMobileMode}
+              className={overlayRowClass}
+            >
+              <Smartphone size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
+              <span>{readOnly ? "Open the full editor…" : "Lighter mode (view / comment)…"}</span>
             </button>
           )}
         </OverlayMenuSection>

@@ -198,7 +198,10 @@ test.beforeAll(async ({ browser }: { browser: Browser }) => {
   page.on('console', (m) => {
     if (/Aborted\(|pageerror/i.test(m.text())) console.log(`[mobile-e2e console] ${m.text()}`);
   });
-  await page.goto(`/${SCOPE}/projects/demo/demo.kicad_pcb?mobile=1`);
+  // `mode=edit` answers the mobile session-mode gate (mobile 0002) up front:
+  // this spec is about the FULL editor on a phone; the gate itself is
+  // covered by mobile-mode-gate.spec.ts.
+  await page.goto(`/${SCOPE}/projects/demo/demo.kicad_pcb?mobile=1&mode=edit`);
   await expect(page.locator('#canvas')).toBeVisible({ timeout: 180000 });
   await expect
     .poll(() => page.title(), { timeout: 120000, intervals: [1000] })
