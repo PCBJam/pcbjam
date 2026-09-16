@@ -8,7 +8,9 @@ source /emsdk/emsdk_env.sh 2>/dev/null
 # This fixes macOS Docker timestamp issues with bind mounts
 # (autoconf sanity checks fail when timestamps appear inconsistent)
 # Touch transferred files to set container timestamps for correct make detection
-if [[ -d /workspace-host ]]; then
+# Automated builds perform their own checksum-based sync after startup. Do not
+# race that sync (or compilation) with a second, timestamp-based background copy.
+if [[ "${KICAD_SKIP_ENTRYPOINT_SYNC:-0}" != "1" && -d /workspace-host ]]; then
     echo "Syncing source code to container volume..."
     rsync -ai --delete \
         --exclude='build-wasm' \

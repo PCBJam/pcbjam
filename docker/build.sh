@@ -152,6 +152,10 @@ fi
 # which is pure host work on the already-built base wasm in output/.
 if [[ "$PHASE" != "postprocess" ]]; then
 
+# This driver owns source synchronization. An entrypoint copy runs concurrently
+# with `compose exec` and can overwrite source/generated headers mid-compile.
+export KICAD_SKIP_ENTRYPOINT_SYNC=1
+
 # Start container if not running. --build so the image is rebuilt when the pinned EMSCRIPTEN_VERSION
 # (build-arg from versions.sh) changes; Docker layer-caches it to a near no-op when unchanged.
 docker compose -f docker/docker-compose.yml up -d --build

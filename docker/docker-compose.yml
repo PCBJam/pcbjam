@@ -28,6 +28,7 @@ services:
     # host can pre-seed port tarballs into emcache/ports/.
     environment:
       EM_CACHE: /workspace/build-wasm/emcache
+      KICAD_SKIP_ENTRYPOINT_SYNC: ${KICAD_SKIP_ENTRYPOINT_SYNC:-0}
 
     volumes:
       # Host source mounted read-only at staging location

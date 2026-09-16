@@ -217,13 +217,20 @@ if [ $NEEDS_CONFIGURE -eq 1 ]; then
     # pcre2 (homebrew on macOS) and configure silently picks "regex sys", which
     # skips the bundled 3rdparty/pcre build dir the next step requires.
 
-    # Build PCRE first to avoid race condition with parallel builds
-    # PCRE headers (pcre2.h) must be generated before regex.cpp compiles
-    echo ""
-    echo "=== Building PCRE first (dependency) ==="
-    # Serial relative to the main build (it fully completes first); parallel inside.
-    emmake make -j${JOBS} -C 3rdparty/pcre
 fi
+
+# Cached PCRE dependency files can reference this generated source-tree link.
+# docker/build.sh's source sync removes it because it is not a tracked input.
+# Restore it before make, including on already-configured incremental builds.
+if [ ! -e "$WX_SOURCE/3rdparty/pcre/src/pcre2_chartables.c" ]; then
+    ln -sf pcre2_chartables.c.dist "$WX_SOURCE/3rdparty/pcre/src/pcre2_chartables.c"
+fi
+
+# PCRE headers must exist before the parallel wx build. A configured cache is
+# normally a no-op here; rebuilding it first also repairs stale dependencies.
+echo ""
+echo "=== Building PCRE first (dependency) ==="
+emmake make -j${JOBS} -C 3rdparty/pcre
 
 # Ensure the Emscripten zlib port exists before compiling. We configure with
 # --with-zlib=sys, which resolves zlib.h/libz.a to the emsdk cache sysroot —
