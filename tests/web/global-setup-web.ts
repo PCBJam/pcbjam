@@ -65,8 +65,11 @@ async function verifyLibs(): Promise<void> {
     if (!r.ok) {
       throw new Error(`GET /api/scopes/${SCOPE}/libs?kind=${kind} -> HTTP ${r.status}`);
     }
-    const libs = (await r.json()) as { id: string }[];
-    const have = new Set(libs.map((l) => l.id));
+    // The reference backend keys libs by their KiCad name; the full server
+    // keys them by uuid and carries the name separately — accept either, so the
+    // suite can also run against a dev stack (BACKEND_URL=http://localhost:3050).
+    const libs = (await r.json()) as { id: string; name?: string }[];
+    const have = new Set(libs.flatMap((l) => (l.name ? [l.id, l.name] : [l.id])));
     const missing = REQUIRED_LIBS[kind].filter((id) => !have.has(id));
     if (missing.length) {
       throw new Error(
