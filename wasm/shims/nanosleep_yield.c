@@ -120,6 +120,18 @@ EM_ASYNC_JS( void, __wasm_main_thread_yield_ms, ( double ms ), {
     await new Promise( function( resolve ) { setTimeout( resolve, ms ); } );
 } );
 
+/*
+ * wx wasm port hook (wxwidgets include/wx/wasm/private/mailbox.h): a MAIN-THREAD
+ * sleep marks the calling dispatch chain as "spinning" so its next wxYield()
+ * delivers due mailbox timers on its behalf (KiCad's RunSynchronousAction
+ * `wxYield(); wxMilliSleep(1);` loop - the paste-move). Weak: harness builds
+ * without the wx core library resolve it to null.
+ */
+#ifdef __cplusplus
+extern "C"
+#endif
+void wxWasmNoteSleep( void ) __attribute__(( weak ));
+
 int nanosleep( const struct timespec* req, struct timespec* rem )
 {
     if( !req )
@@ -160,7 +172,11 @@ int nanosleep( const struct timespec* req, struct timespec* rem )
             const int delay = pcbjam_nanosleep_timer_chunk_ms( remaining );
 
             if( emscripten_is_main_runtime_thread() )
+            {
+                if( wxWasmNoteSleep )
+                    wxWasmNoteSleep();
                 __wasm_main_thread_yield_ms( delay ); /* yield -> event loop runs -> Worker boots */
+            }
             else
                 emscripten_thread_sleep( delay );     /* worker: real blocking sleep */
 

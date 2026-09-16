@@ -111,19 +111,20 @@ the depth with its own guard, so a fresh browser entry arriving meanwhile
 still defers. The top-level delivery tick (`wxWasmMailboxDeliver`) is
 unchanged and still never runs over a parked chain.
 
-Category mask (added 2026-09-16 after the first staging run): the nested
-delivery runs only when the yield's mask includes `wxEVT_CATEGORY_TIMER`,
-i.e. a plain `wxYield()`/`wxSafeYield()` (`wxEVT_CATEGORY_ALL` - the
-RunSynchronousAction spin). `wxProgressDialog` updates yield with
-`wxEVT_CATEGORY_UI|USER_INPUT`, and native wx keeps timer events pending
-across those; KiCad drives every board/schematic load through that dialog
-(`WX_PROGRESS_REPORTER`), so an unmasked nested delivery ran refresh/auto-pan
-timers in the middle of a load. Staging CI on the unmasked build hung two
-Firefox tabs in the open path in two of three runs (run 35088893676: S4's
-trio boot never reached the loaded title; the ysync repro's first synchronous
-snapshot call never returned; console silent for the whole test timeout, no
-timer tripwire), 0 of 3 on the runs before. The gate restores the native
-rule; the paste gates stay green (wxYield is an ALL-yield).
+Delivery rule (revised 2026-09-16 twice): the nested delivery runs only for
+the RunSynchronousAction spin signature - the yield asks for timer events
+AND the calling chain has SLEPT at the current dispatch depth since the last
+delivery. The main-thread nanosleep shim (`wasm/shims/nanosleep_yield.c`)
+calls the weak hook `wxWasmNoteSleep()` before it parks; `DoYieldFor` consumes
+`wxWasmMailboxSleptDepth`. History: the first landing delivered on every
+yield and hung Firefox tabs in the open path (board-load progress dialog
+yields, two of three staging runs); a mask-only gate (`wxEVT_CATEGORY_TIMER`)
+still hung the web symbol-editor boot on Firefox three of three runs - the
+instrumented run 35110465379 showed a bare `YieldFor(TIMER)` at depth 1 with
+three timers pending during frame creation, delivered nested, then 115 s of
+silence. Boot-time and progress-dialog yield loops never sleep between yields,
+so the sleep signature excludes all of them while the paste spin matches from
+its second iteration on.
 
 ## Gates
 
