@@ -500,14 +500,17 @@ const NAV = (process.env.PCBJAM_E2E_NAV ?? "menu") as Nav;
     // from the file on disk, so a single-tab tool switch cannot carry an edit
     // there by design. The flow under test needs the full server's rooms — run
     // with WEB_APP_URL=http://localhost:3048 BACKEND_URL=http://localhost:3050.
+    // Discriminator: only the full server (apps/server routes/boot.ts) serves
+    // the project boot route; the reference backend answers 404 there. (Both
+    // serve the bare project route from the shared contract, so "project has
+    // an id" cannot tell them apart — CI 2026-09-16 ran the flow on the
+    // reference backend and failed at the room fence.)
     const backend = process.env.BACKEND_URL ?? "http://localhost:3060";
-    const projectMeta = (await (
-      await fetch(`${backend}/api/scopes/${SCOPE}/projects/${SLUG}`)
-    ).json()) as {
-      project?: { id?: string };
-    };
+    const bootStatus = (
+      await fetch(`${backend}/api/scopes/${SCOPE}/projects/${SLUG}/boot`)
+    ).status;
     test.skip(
-      !projectMeta.project?.id,
+      bootStatus === 404,
       "needs a server-side collab room (the full server), not the reference backend"
     );
 
