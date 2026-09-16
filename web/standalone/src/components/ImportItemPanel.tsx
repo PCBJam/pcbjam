@@ -15,6 +15,8 @@ import {
   type CssRect,
   type ImportKind,
   type ImportModule,
+  buildInteractiveImport,
+  hasInteractivePlacement,
 } from "@/wasm/import-item";
 
 /**
@@ -123,6 +125,24 @@ export function ImportItemPanel({
     if (!picked || picked.kind !== wanted) return;
     if (mod.kicadOpenFileBusy?.()) {
       setStatus({ kind: "err", text: "The editor is still loading — try again in a moment." });
+      return;
+    }
+    // Editor builds with interactive placement: the item hangs off the pointer
+    // (the editor's own placement tool: R rotates, Esc cancels, the click
+    // commits with undo + collab broadcast). Older builds fall back to the
+    // JS click catcher below.
+    if (hasInteractivePlacement(mod)) {
+      try {
+        const r = buildInteractiveImport(picked, symbol || undefined);
+        const res = JSON.parse(mod.kicadPlaceImportedItem(r.sexpr)) as { ok?: boolean; error?: string };
+        if (res.ok) {
+          setStatus({ kind: "info", text: `${r.label} is on the cursor — click on the canvas to place it (Esc to cancel).` });
+        } else {
+          setStatus({ kind: "err", text: res.error ?? "The editor refused the placement." });
+        }
+      } catch (e) {
+        setStatus({ kind: "err", text: e instanceof Error ? e.message : String(e) });
+      }
       return;
     }
     const rect = glCanvasRect();

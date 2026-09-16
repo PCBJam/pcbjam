@@ -2474,6 +2474,115 @@ static bool kicadCollabBusyProbe()
     return pcbjam_collab::applyBusy() || !pcbjam_collab::applyQueue().empty();
 }
 
+// ── Interactive placement of an imported symbol (Import-from-file panel) ───
+// `aSexpr` is the clipboard-dialect blob the panel already builds for
+// kicadCollabApplyItems: `(lib_symbols …)` + one `(symbol …)`. Instead of
+// committing it at a JS-computed point with SKIP_UNDO (invisible to peers,
+// not undoable), hand the parsed symbol to the stock placement tool: it hangs
+// off the pointer exactly like a chooser pick, R rotates it, Esc cancels (the
+// tool deletes it) and the click commits "Place Symbol" — on the undo stack,
+// and broadcast by the collab bridge like any local placement.
+// Returns {"ok":true} when the placement was queued; parse problems are
+// logged from the coroutine like applyItems does.
+std::string schPlaceImportedItem( std::string aSexpr )
+{
+    json out;
+
+    if( pcbjam_open::busy() ) // open in flight (open_gate.h) — see schCollabApply
+    {
+        out["ok"] = false;
+        out["error"] = "open in flight";
+        return out.dump();
+    }
+
+    SCH_EDIT_FRAME* fr = schFrame();
+
+    if( !fr )
+    {
+        out["ok"] = false;
+        out["error"] = "no schematic frame";
+        return out.dump();
+    }
+
+    // Same CallAfter + COROUTINE context as kicadCollabApplyItems: LoadContent
+    // and the placement tool must run where native edits run.
+    pcbjam_collab::runOnCoroutine( fr, [fr, aSexpr]()
+    {
+        SCHEMATIC&  sch = fr->Schematic();
+        SCH_SHEET   tempSheet;
+        SCH_SCREEN* tempScreen = new SCH_SCREEN( &sch );
+        tempSheet.SetScreen( tempScreen );
+
+        STRING_LINE_READER reader( aSexpr, wxT( "import-item" ) );
+        SCH_IO_KICAD_SEXPR plugin;
+
+        try
+        {
+            plugin.LoadContent( reader, &tempSheet );
+        }
+        catch( ... )
+        {
+            EM_ASM( { console.log( "[import-item] eeschema: blob parse failed" ); } );
+            return;
+        }
+
+        SCH_SYMBOL* sym = nullptr;
+
+        for( SCH_ITEM* item : tempScreen->Items().OfType( SCH_SYMBOL_T ) )
+        {
+            sym = static_cast<SCH_SYMBOL*>( item );
+            break;
+        }
+
+        if( !sym )
+        {
+            EM_ASM( { console.log( "[import-item] eeschema: no symbol in blob" ); } );
+            return;
+        }
+
+        // The LIB_SYMBOL, resolved BEFORE detaching: SCH_SCREEN::Remove drops a
+        // definition from the screen cache with its last user. Same rule as
+        // SCH_EDITOR_CONTROL::Paste — the current screen's copy wins (it may
+        // have diverged from the library), else the blob's own (lib_symbols …).
+        const wxString lookup = sym->GetSchSymbolLibraryName();
+        LIB_SYMBOL*    lib = nullptr;
+        auto&          tlibs = tempScreen->GetLibSymbols();
+        auto&          libs = fr->GetScreen()->GetLibSymbols();
+        auto           li = libs.find( lookup );
+        auto           ti = tlibs.find( lookup );
+
+        if( li != libs.end() )
+            lib = new LIB_SYMBOL( *li->second );
+        else if( ti != tlibs.end() )
+            lib = new LIB_SYMBOL( *ti->second );
+
+        tempScreen->Remove( sym ); // detach: tempSheet's dtor must not free it
+
+        if( !lib )
+        {
+            EM_ASM( { console.log( "[import-item] eeschema: lib symbol not found for " + UTF8ToString( $0 ) ); },
+                    toUtf8( lookup ).c_str() );
+            delete sym;
+            return;
+        }
+
+        sym->SetLibSymbol( lib ); // takes ownership; SCH_SCREEN::Append caches it on commit
+        sym->SetParent( &sch );
+        sym->ClearFlags();
+
+        // Fresh identity per placement: the same blob may be placed repeatedly.
+        const_cast<KIID&>( sym->m_Uuid ) = KIID();
+
+        // PlaceSymbol takes ownership of `sym` (deleted on cancel, committed on click).
+        // m_Reannotate = true: the blob carries an unannotated "R?" reference.
+        fr->GetToolManager()->RunAction<SCH_ACTIONS::PLACE_SYMBOL_PARAMS>(
+                SCH_ACTIONS::placeSymbol, SCH_ACTIONS::PLACE_SYMBOL_PARAMS{ sym, true } );
+    } );
+
+    out["ok"] = true;
+    return out.dump();
+}
+
 EMSCRIPTEN_BINDINGS(eeschema) {
     // Programmatic save of the in-memory schematic (round-trip tests, README §A).
     function("kicadSaveSchematic", &kicadSaveSchematic);
@@ -2507,6 +2616,7 @@ EMSCRIPTEN_BINDINGS(eeschema) {
     function("kicadCollabSnapshot", &schCollabSnapshot);
     // v2 items bridge: per-item s-expr payloads (ysync 0008).
     function("kicadCollabApplyItems", &schCollabApplyItems);
+    function("kicadPlaceImportedItem", &schPlaceImportedItem);
     function("kicadCollabSnapshotItems", &schCollabSnapshotItems);
     function("kicadCollabTestMoveFirst", &schCollabTestMoveFirst);
     function("kicadCollabGetPos", &schCollabGetPos);

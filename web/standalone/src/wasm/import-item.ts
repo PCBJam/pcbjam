@@ -20,6 +20,16 @@ export interface ImportModule {
   kicadCollabApplyItems(json: string): unknown;
   kicadCollabGetViewport?: () => string;
   kicadOpenFileBusy?: () => boolean;
+  /** Interactive placement (editor builds since 2026-09-15): the item hangs
+   *  off the pointer like a chooser pick, the click commits it through the
+   *  editor's own undo + collab path. Absent on older builds. */
+  kicadPlaceImportedItem?: (sexpr: string) => string;
+}
+
+export function hasInteractivePlacement(
+  mod: unknown,
+): mod is ImportModule & { kicadPlaceImportedItem: (sexpr: string) => string } {
+  return typeof (mod as Partial<ImportModule> | undefined)?.kicadPlaceImportedItem === "function";
 }
 
 export function hasImportBridge(mod: unknown): mod is ImportModule {
@@ -308,4 +318,30 @@ export function buildFootprintImport(modText: string, x: number, y: number): Foo
  *  to the shown sheet / the board). */
 export function applyEnvelope(sexpr: string): string {
   return JSON.stringify({ added: [{ sexpr }], changed: [], removed: [] });
+}
+
+/** The picked file as the panel holds it. */
+export interface PickedFile {
+  kind: ImportKind;
+  fileName: string;
+  text: string;
+}
+
+/**
+ * Build the blob for `kicadPlaceImportedItem`: the same clipboard-dialect
+ * text as the click-to-place path, but the position is a placeholder — the
+ * editor's placement tool puts the item under the pointer and the click
+ * decides where it lands. Returns the blob and a human label for the status.
+ */
+export function buildInteractiveImport(
+  picked: PickedFile,
+  symbolName?: string,
+): { sexpr: string; label: string } {
+  if (picked.kind === "symbol") {
+    const nick = picked.fileName.replace(/\.kicad_sym$/i, "");
+    const r = buildSymbolImport(picked.text, symbolName || undefined, nick, 0, 0);
+    return { sexpr: r.sexpr, label: r.libId };
+  }
+  const r = buildFootprintImport(picked.text, 0, 0);
+  return { sexpr: r.sexpr, label: r.name };
 }

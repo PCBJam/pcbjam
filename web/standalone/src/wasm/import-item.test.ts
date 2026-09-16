@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   applyEnvelope,
   buildFootprintImport,
+  buildInteractiveImport,
   buildSymbolImport,
+  hasInteractivePlacement,
   kindForFile,
   placementAtCssPx,
   placementMm,
@@ -137,5 +139,30 @@ describe("placementAtCssPx", () => {
 describe("applyEnvelope", () => {
   it("wraps one added blob", () => {
     expect(JSON.parse(applyEnvelope("(x)"))).toEqual({ added: [{ sexpr: "(x)" }], changed: [], removed: [] });
+  });
+});
+
+describe("hasInteractivePlacement", () => {
+  it("is true only when the editor exports kicadPlaceImportedItem", () => {
+    expect(hasInteractivePlacement({ kicadCollabApplyItems: () => 0 })).toBe(false);
+    expect(hasInteractivePlacement({ kicadCollabApplyItems: () => 0, kicadPlaceImportedItem: () => "{}" })).toBe(true);
+    expect(hasInteractivePlacement(undefined)).toBe(false);
+  });
+});
+
+describe("buildInteractiveImport", () => {
+  it("builds the symbol blob with a placeholder position and labels it by lib id", () => {
+    const r = buildInteractiveImport({ kind: "symbol", fileName: "MyLib.kicad_sym", text: SYM_LIB }, "R");
+    expect(r.label).toBe("MyLib:R");
+    expect(r.sexpr).toMatch(/^\(lib_symbols \(symbol "MyLib:R"/);
+    expect(r.sexpr).toContain('(lib_id "MyLib:R") (at 0 0 0) (unit 1)');
+    expect(r.sexpr).toContain('(property "Reference" "R?"');
+  });
+
+  it("builds the footprint blob with a placeholder position and labels it by name", () => {
+    const r = buildInteractiveImport({ kind: "footprint", fileName: "R_0603_1608Metric.kicad_mod", text: FP }, undefined);
+    expect(r.label).toBe("R_0603_1608Metric");
+    expect(r.sexpr).toMatch(/^\s*\(footprint /);
+    expect(r.sexpr).toContain("(at 0 0)");
   });
 });

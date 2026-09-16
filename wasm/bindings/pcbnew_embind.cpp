@@ -49,6 +49,10 @@
 #include <tool/actions.h>
 #include <tool/coroutine.h>
 #include <tool/tool_manager.h>
+#include <tool/tool_event.h>
+#include <tools/pcb_actions.h>
+#include <pcbnew_settings.h>
+#include <view/view_controls.h>
 #include <pcbjam_remote_lock.h>
 #include <pcbjam_read_only.h>
 #include <project.h>
@@ -2860,6 +2864,102 @@ static std::string pcbUpdateFromLibraryShim( std::string aKind, std::string aLib
     return pcbUpdateFromLibrary( aLib, aNames );
 }
 
+// ── Interactive placement of an imported footprint (Import-from-file panel) ─
+// `aSexpr` is the bare `(footprint …)` blob the panel builds for
+// kicadCollabApplyItems. Instead of committing it at a JS-computed point with
+// SKIP_UNDO (invisible to peers, not undoable), mirror the paste path
+// (PCB_CONTROL::placeBoardItems with aIsNew): stage the footprint in a
+// BOARD_COMMIT, select it, and drive the stock move tool synchronously — it
+// hangs off the pointer, R rotates it, Esc cancels (the commit reverts, the
+// footprint is gone) and the click pushes "Place Footprint" — on the undo
+// stack, and broadcast by the collab bridge like any local placement.
+// PCB_ACTIONS::placeFootprint is NOT used for a pre-built footprint: it
+// expects the caller to have already committed the footprint at the origin,
+// which would broadcast that origin position to peers.
+std::string pcbPlaceImportedItem( std::string aSexpr )
+{
+    json out;
+
+    if( pcbjam_open::busy() ) // open in flight (open_gate.h) — see pcbCollabApply
+    {
+        out["ok"] = false;
+        out["error"] = "open in flight";
+        return out.dump();
+    }
+
+    PCB_EDIT_FRAME* fr = pcbFrame();
+
+    if( !fr )
+    {
+        out["ok"] = false;
+        out["error"] = "no board frame";
+        return out.dump();
+    }
+
+    // Same CallAfter + COROUTINE context as kicadCollabApplyItems. The body
+    // stays on the apply slot for the whole placement (RunSynchronousAction
+    // suspends inside its wxMilliSleep); remote applies queue behind it.
+    pcbjam_collab::runOnCoroutine( fr, [fr, aSexpr]()
+    {
+        BOARD*      board = fr->GetBoard();
+        BOARD_ITEM* item = makeFromBlob( *board, aSexpr );
+
+        if( !item )
+        {
+            EM_ASM( { console.log( "[import-item] pcbnew: blob parse failed" ); } );
+            return;
+        }
+
+        if( item->Type() != PCB_FOOTPRINT_T )
+        {
+            EM_ASM( { console.log( "[import-item] pcbnew: blob is not a footprint" ); } );
+            delete item;
+            return;
+        }
+
+        FOOTPRINT*            fp = static_cast<FOOTPRINT*>( item );
+        TOOL_MANAGER*         tm = fr->GetToolManager();
+        KIGFX::VIEW_CONTROLS* vc = fr->GetCanvas()->GetViewControls();
+
+        tm->RunAction( ACTIONS::selectionClear );
+
+        // New-item preparation, as placeBoardItems( aIsNew ) and the footprint
+        // viewer's "add to board" do.
+        const_cast<KIID&>( fp->m_Uuid ) = KIID();
+        fp->RunOnChildren( []( BOARD_ITEM* aChild ) { const_cast<KIID&>( aChild->m_Uuid ) = KIID(); },
+                           RECURSE_MODE::RECURSE );
+        fp->SetParent( board );
+        fp->SetPath( KIID_PATH() );
+
+        for( PAD* pad : fp->Pads() )
+            pad->SetNetCode( 0 ); // library pads carry orphaned nets
+
+        if( fp->IsFlipped() )
+            fp->Flip( fp->GetPosition(), fr->GetPcbNewSettings()->m_FlipDirection );
+
+        // Start under the pointer; the move tool anchors the selection there.
+        fp->SetPosition( vc->GetCursorPosition() );
+
+        BOARD_COMMIT commit( fr );
+        EDA_ITEMS    toSel{ fp };
+        tm->RunAction<EDA_ITEMS*>( ACTIONS::selectItems, &toSel );
+        commit.Add( fp );
+
+        PCB_SELECTION& selection = tm->GetTool<PCB_SELECTION_TOOL>()->GetSelection();
+        selection.SetReferencePoint( fp->GetPosition() );
+        vc->SetCursorPosition( vc->GetMousePosition(), false );
+        tm->ProcessEvent( EVENTS::SelectedEvent );
+
+        if( tm->RunSynchronousAction( PCB_ACTIONS::move, &commit ) )
+            commit.Push( wxT( "Place Footprint" ) );
+        else
+            commit.Revert();
+    } );
+
+    out["ok"] = true;
+    return out.dump();
+}
+
 EMSCRIPTEN_BINDINGS(pcbnew) {
     // Register vector types for iteration
     register_vector<FOOTPRINT*>("FootprintVector");
@@ -2927,6 +3027,7 @@ EMSCRIPTEN_BINDINGS(pcbnew) {
     function("kicadCollabSnapshot", &pcbCollabSnapshot);
     // v2 items bridge: per-item s-expr payloads (ysync 0008).
     function("kicadCollabApplyItems", &pcbCollabApplyItems);
+    function("kicadPlaceImportedItem", &pcbPlaceImportedItem);
     function("kicadCollabSnapshotItems", &pcbCollabSnapshotItems);
     function("kicadCollabTestMoveFirst", &pcbCollabTestMoveFirst);
     function("kicadCollabGetPos", &pcbCollabGetPos);

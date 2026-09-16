@@ -61,6 +61,7 @@ std::string pcbUpdateFromLibrary( std::string aLib, std::string aNamesJson );
 std::string schUpdateFromLibrary( std::string aLib, std::string aNamesJson );
 void        pcbCollabApply( std::string aJson );
 void        pcbCollabApplyItems( std::string aJson );
+std::string pcbPlaceImportedItem( std::string aSexpr );
 std::string pcbCollabSnapshot();
 std::string pcbCollabSnapshotItems();
 std::string pcbCollabTestMoveFirst( int aDx, int aDy );
@@ -109,6 +110,7 @@ bool        schEditorActive();
 int         schLibsSymbolUsage( std::string aLibNickname, std::string aSymbolName );
 void        schCollabApply( std::string aJson );
 void        schCollabApplyItems( std::string aJson );
+std::string schPlaceImportedItem( std::string aSexpr );
 std::string schCollabSnapshot();
 std::string schCollabSnapshotItems();
 std::string schCollabTestMoveFirst( int aDx, int aDy );
@@ -374,6 +376,13 @@ static void collabApply( std::string aJson )
 static void collabApplyItems( std::string aJson )
 {
     pcbEditorActive() ? pcbCollabApplyItems( aJson ) : schCollabApplyItems( aJson );
+}
+
+// Import-from-file panel: interactive placement through the shown editor's
+// own placement flow (undo + collab broadcast like a chooser pick).
+static std::string placeImportedItem( std::string aSexpr )
+{
+    return pcbEditorActive() ? pcbPlaceImportedItem( aSexpr ) : schPlaceImportedItem( aSexpr );
 }
 
 static std::string collabSnapshot()
@@ -657,6 +666,7 @@ EMSCRIPTEN_BINDINGS(kicad_editor) {
     function("kicadCollabApply", &collabApply);
     function("kicadCollabSnapshot", &collabSnapshot);
     function("kicadCollabApplyItems", &collabApplyItems);
+    function("kicadPlaceImportedItem", &placeImportedItem);
     function("kicadCollabSnapshotItems", &collabSnapshotItems);
     function("kicadCollabTestMoveFirst", &collabTestMoveFirst);
     function("kicadCollabGetPos", &collabGetPos);
