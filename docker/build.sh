@@ -238,6 +238,7 @@ compile_app() {
     # for headless CLIs like kicad_tools — the gl1 shim needs glm).
     docker compose -f docker/docker-compose.yml exec -e EMSDK=/emsdk \
         -e BUILD_3D_VIEWER="${BUILD_3D_VIEWER:-}" \
+        -e KICAD_WASM_OPT="${KICAD_WASM_OPT:-}" \
         kicad-wasm-builder \
         "/workspace/scripts/kicad/build-${app}.sh" "${ARGS[@]}"
 
