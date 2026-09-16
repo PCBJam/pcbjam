@@ -362,6 +362,29 @@ dropfiles: $(S)/dropfiles/dropfiles_test.html
 
 all: $(S)/dropfiles/dropfiles_test.html
 
+# Parked-dispatch motion delivery harness — wx-owned test case
+# (wxwidgets/tests/wasm), same pattern as dropfiles: KiCad's paste-move never
+# followed the pointer because wxApp::HandleMouseEvent dropped wxEVT_MOTION
+# while a dispatch chain was parked in RunSynchronousAction's
+# `wxYield(); wxMilliSleep(1);` spin. Links the nanosleep shim like the
+# production editor so the harness's wxMilliSleep really SUSPENDS (without it
+# the sleep busy-spins and the harness hangs instead of going red).
+$(S)/parked-motion/parked_motion_test.o: $(WX_TESTS_WASM_DIR)/parked_motion_test.cpp
+	@mkdir -p $(@D)
+	$(CXX) -c $(CXXFLAGS) $< -o $@
+
+$(S)/parked-motion/nanosleep_yield.o: ../../wasm/shims/nanosleep_yield.c
+	@mkdir -p $(@D)
+	$(CXX) -c -pthread $< -o $@
+
+$(S)/parked-motion/parked_motion_test.html: $(S)/parked-motion/parked_motion_test.o $(S)/parked-motion/nanosleep_yield.o $(WX_CORE_LIB) $(JS_FILES)
+	$(CXX) $(filter %.o %.a,$^) $(LDFLAGS_NOGL) --pre-js $(JS) --shell-file $(HTML) -o $@
+
+parked-motion: $(S)/parked-motion/parked_motion_test.html
+.PHONY: parked-motion
+
+all: $(S)/parked-motion/parked_motion_test.html
+
 # FileDialog test (no GL)
 $(S)/filedialog/filedialog_test.o: $(S)/filedialog/filedialog_test.cpp
 	$(CXX) -c $(CXXFLAGS) $< -o $@
