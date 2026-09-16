@@ -33,3 +33,14 @@
 /gerber-demo/*
   Cross-Origin-Opener-Policy: same-origin
   Cross-Origin-Embedder-Policy: require-corp
+
+# The comparison pages embed the same Gerber viewer as the blog post, so they
+# need the same isolation. Both URL forms for the same reason as above. The
+# landing page stays un-isolated (YouTube embed).
+/compare
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
+
+/compare/*
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp

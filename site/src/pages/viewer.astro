@@ -1,0 +1,284 @@
+---
+import { Image } from 'astro:assets';
+import BaseLayout from '../layouts/BaseLayout.astro';
+import SectionTitle from '../components/SectionTitle.astro';
+import WaitlistForm from '../components/WaitlistForm.astro';
+import eeschema from '../assets/screens/eeschema.png';
+import pcbnew from '../assets/screens/pcbnew.png';
+import gerbview from '../assets/screens/gerbview.png';
+
+// Everything on this page is sourced: the demo's own description ("nothing
+// uploaded", "open your own KiCad project"), the pricing page (roles, public
+// projects), devblog week 28 (mobile read-only view, comments) and weeks 32-35
+// (Safari / JSPI). Do not add claims that are not in one of those.
+const DEMO_URL = 'https://demo.pcbjam.com';
+const DISCORD_URL = 'https://discord.gg/ybhqJxjR3E';
+
+const title = 'KiCad viewer online: open and share KiCad files in a browser';
+const description =
+  'View a KiCad schematic or board in a browser without installing KiCad: layers, 3D, Gerbers, rendered by KiCad itself. Share a project with an invite link; the other person needs a browser and nothing else.';
+
+const shots = [
+  { img: eeschema, label: 'schematic', alt: 'KiCad schematic open in the PCBJam viewer in a browser tab' },
+  { img: pcbnew, label: 'board', alt: 'KiCad board open in the PCBJam viewer in a browser tab' },
+  { img: gerbview, label: 'gerbers', alt: 'Gerber files open in the PCBJam viewer in a browser tab' },
+];
+---
+
+<BaseLayout title={title} description={description} wide>
+  <section class="readme hero">
+    <p class="eyebrow-line mono small muted">KiCad viewer online</p>
+    <h1>View any KiCad project in a browser.</h1>
+    <p class="lead">
+      Open a schematic, a board or a whole KiCad project without installing KiCad. It is KiCad’s own
+      renderer, running in your browser, so what you see is what the designer saw. Share it with a
+      link; the other person needs a browser and nothing else.
+    </p>
+    <div class="cta-row">
+      <a class="btn btn-primary" href={DEMO_URL} rel="noopener" target="_blank">Open the viewer</a>
+      <span class="mono small muted">no account · nothing is uploaded, your file is read in your browser</span>
+    </div>
+    <p class="mono small muted">Open the example boards, or your own KiCad project.</p>
+  </section>
+
+  <section class="readme readme-section">
+    <SectionTitle>What the viewer shows</SectionTitle>
+    <p>Not an approximation of the file. The file, drawn by KiCad.</p>
+    <ul class="todo mono">
+      <li><span class="box" aria-hidden="true">[x]</span> schematics and boards, as KiCad draws them</li>
+      <li><span class="box" aria-hidden="true">[x]</span> layers on and off</li>
+      <li><span class="box" aria-hidden="true">[x]</span> the 3D view</li>
+      <li><span class="box" aria-hidden="true">[x]</span> Gerber and drill files, for the fab check</li>
+      <li><span class="box" aria-hidden="true">[~]</span> a touch-friendly read-only view on mobile, except iPhone and iPad until Apple’s September 2026 Safari release</li>
+    </ul>
+    <ul class="shots">
+      {
+        shots.map((s) => (
+          <li>
+            <a class="frame" href={DEMO_URL} rel="noopener" target="_blank">
+              <Image src={s.img} alt={s.alt} widths={[360, 720]} sizes="(max-width: 560px) 100vw, 230px" loading="lazy" />
+            </a>
+            <span class="mono small muted">{s.label}</span>
+          </li>
+        ))
+      }
+    </ul>
+  </section>
+
+  <section class="readme readme-section" id="share">
+    <SectionTitle>Share a KiCad project with someone who does not have KiCad</SectionTitle>
+    <p>
+      Send an invite link with an expiry and a use limit; anyone with an active link can join after
+      signing in. Members are readers, commenters or editors. Public projects are free for everyone,
+      with unlimited members. Comments live on the board itself, in threads, with mentions.
+      <a href="/collaboration/">More on collaboration.</a>
+    </p>
+    <figure class="invite frame">
+      <div class="invite-head">
+        <strong>Invite links</strong>
+        <span class="muted">Anyone with an active link can join after signing in.</span>
+      </div>
+      <div class="invite-row">
+        <span class="field"><span class="muted small">Expires (days)</span><span class="input">7</span></span>
+        <span class="field"><span class="muted small">Max uses</span><span class="input">1</span></span>
+        <span class="create">Create invite link</span>
+      </div>
+      <figcaption class="sr-only">The invite links panel of a PCBJam project: expiry in days and maximum uses.</figcaption>
+    </figure>
+  </section>
+
+  <section class="readme readme-section">
+    <SectionTitle>When looking is not enough</SectionTitle>
+    <p>
+      The viewer is the same KiCad as the editor. Open the project in the editor and route, run DRC
+      and export Gerbers, in the same tab. The file stays in KiCad’s own format the whole way.
+      <a href="/">More about the editor.</a>
+    </p>
+  </section>
+
+  <section class="readme readme-section" id="faq">
+    <SectionTitle>FAQ</SectionTitle>
+    <dl class="faq">
+      <div class="qa">
+        <dt>Does my file get uploaded?</dt>
+        <dd>Not in the demo viewer: the file is read in your browser. Sharing by link needs the project in PCBJam, where your team can open it.</dd>
+      </div>
+      <div class="qa">
+        <dt>Which KiCad is this?</dt>
+        <dd>PCBJam is built on KiCad 10.</dd>
+      </div>
+      <div class="qa">
+        <dt>How is this different from KiCanvas?</dt>
+        <dd>KiCanvas is a browser viewer that re-implements KiCad’s rendering in TypeScript. PCBJam runs KiCad itself, so everything renders as KiCad renders it, and the same project can be edited.</dd>
+      </div>
+    </dl>
+  </section>
+
+  <section class="readme readme-section contact">
+    <SectionTitle>Open a board now, or get the full editor</SectionTitle>
+    <WaitlistForm source="viewer" class="contact-form">
+      <Fragment slot="micro">
+        <a href={DEMO_URL} rel="noopener" target="_blank">open the viewer</a> (no account) ·
+        <a href={DISCORD_URL} rel="noopener" target="_blank">discord</a> ·
+        <a href="/privacy">privacy</a>
+      </Fragment>
+    </WaitlistForm>
+  </section>
+</BaseLayout>
+
+<style>
+  .hero {
+    padding-block: 2.5rem 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+  .eyebrow-line {
+    margin: 0;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+  h1 {
+    font-size: clamp(1.9rem, 5vw, 2.6rem);
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    line-height: 1.12;
+    margin: 0;
+    text-wrap: balance;
+  }
+  .lead {
+    margin: 0;
+    font-size: 1.1rem;
+    color: var(--fg-muted);
+    max-width: 40rem;
+    text-wrap: pretty;
+  }
+  .cta-row {
+    display: flex;
+    align-items: center;
+    gap: 0.9rem;
+    flex-wrap: wrap;
+  }
+  .hero > p.mono {
+    margin: 0;
+  }
+  .todo {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    font-size: 0.9rem;
+    color: var(--fg-2);
+  }
+  .todo li {
+    display: flex;
+    gap: 0.5rem;
+  }
+  .box {
+    color: var(--blue);
+    flex-shrink: 0;
+  }
+  .shots {
+    list-style: none;
+    margin: 0.25rem 0 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.75rem;
+  }
+  .shots li {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+  .shots a {
+    display: block;
+  }
+  .shots img {
+    display: block;
+    width: 100%;
+    height: auto;
+    aspect-ratio: 16 / 10;
+    object-fit: cover;
+    object-position: left top;
+  }
+  .invite {
+    margin: 0;
+    padding: 1rem 1.1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    font-size: 0.9rem;
+  }
+  .invite-head {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+  }
+  .invite-row {
+    display: flex;
+    align-items: flex-end;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+  }
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    width: 7.5rem;
+  }
+  .input {
+    height: 2.35rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    display: flex;
+    align-items: center;
+    padding: 0 0.6rem;
+    background: var(--bg);
+  }
+  .create {
+    height: 2.35rem;
+    padding: 0 0.85rem;
+    border-radius: var(--radius-sm);
+    background: var(--fg);
+    color: var(--bg);
+    display: inline-flex;
+    align-items: center;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .faq {
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+  .qa {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+  dt {
+    font-weight: 600;
+  }
+  dd {
+    margin: 0;
+    color: var(--fg-2);
+    font-size: 0.95rem;
+  }
+  .contact {
+    border-top: 2px solid var(--red);
+    margin-top: 1rem;
+    padding-block: 2rem 3rem;
+  }
+  .contact-form {
+    max-width: 32rem;
+  }
+  @media (max-width: 560px) {
+    .shots {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>

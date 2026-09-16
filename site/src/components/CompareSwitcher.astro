@@ -1,0 +1,47 @@
+---
+/** Links between the comparison pages (each pair is its own URL for search). */
+import { competitors } from '../data/compare';
+
+interface Props {
+  current: 'all' | 'kicad' | 'easyeda' | 'flux';
+}
+const { current } = Astro.props;
+const items = [
+  ...competitors.map((c) => ({ href: `/compare/${c.slug}/`, label: c.tab, key: c.slug })),
+  { href: '/compare/', label: 'All three', key: 'all' },
+];
+---
+
+<nav class="switch mono small" aria-label="Compare PCBJam with">
+  {
+    items.map((it) => (
+      <a href={it.href} class:list={[{ on: it.key === current }]} aria-current={it.key === current ? 'page' : undefined}>
+        {it.label}
+      </a>
+    ))
+  }
+</nav>
+
+<style>
+  .switch {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+  }
+  .switch a {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 0.4rem 0.75rem;
+    color: var(--fg);
+    background: var(--bg);
+  }
+  .switch a:hover {
+    text-decoration: none;
+    border-color: var(--fg);
+  }
+  .switch a.on {
+    background: var(--fg);
+    color: var(--bg);
+    border-color: var(--fg);
+  }
+</style>

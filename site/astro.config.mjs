@@ -13,7 +13,7 @@ import sitemap from '@astrojs/sitemap';
  */
 function scopedIsolation() {
   // Keep in sync with public/_headers and src/middleware.ts.
-  const ISOLATED_PREFIXES = ['/blog/porting-kicad-graphics-to-webgl-in-2026', '/gerber-demo'];
+  const ISOLATED_PREFIXES = ['/blog/porting-kicad-graphics-to-webgl-in-2026', '/gerber-demo', '/compare'];
   /** @type {import('vite').Connect.NextHandleFunction} */
   const middleware = (req, res, next) => {
     const url = req.url ?? '';
