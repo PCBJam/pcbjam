@@ -2,6 +2,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vite";
+import { buildPluginRuntime, WORKER_CSP } from '@pcbjam/plugin-platform/build.mjs';
+import { buildGuide } from '@pcbjam/plugin-platform/build-guide.mjs';
 
 /**
  * Serve /wasm assets from public/wasm (the link-wasm.mjs symlink) in BOTH the
@@ -78,13 +80,35 @@ function serveWasm(): Plugin {
 // Local POC artifacts are fixed trusted runtime files. Publisher UI is served
 // separately on :4318 and must never be made executable on the editor origin.
 function pluginRuntimeAssets(): Plugin {
+  const middleware = (server: { middlewares: { use: Function } }) => {
+    server.middlewares.use((req: { url?: string }, res: import('node:http').ServerResponse, next: () => void) => {
+      if (req.url?.startsWith('/plugin-runtime/')) {
+        res.setHeader('Content-Security-Policy', WORKER_CSP);
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+        const url = req.url.split('?')[0]!;
+        if (/^\/plugin-runtime\/[a-f0-9]{64}\//.test(url) && !fs.existsSync(path.resolve(__dirname,'public'+url))) {
+          res.writeHead(404);res.end('Runtime asset unavailable');return;
+        }
+      }
+      if (req.url?.startsWith('/plugin-guide')) {
+        res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'");
+        res.setHeader('X-Content-Type-Options','nosniff');
+      }
+      next();
+    });
+  };
   return {
     name: "plugin-runtime-poc-assets",
+    configurePreviewServer: middleware,
     configureServer(server) {
+      middleware(server);
       server.middlewares.use((req, res, next) => {
         const url = req.url?.split("?")[0] ?? "";
         if (!url.startsWith("/plugin-runtime/")) return next();
         const name = url.slice("/plugin-runtime/".length);
+        // Immutable runtime sets are served by Vite's normal public middleware.
+        if (/^[a-f0-9]{64}\/[a-z.-]+$/.test(name)) return next();
         const mime: Record<string, string> = {
           "editor-host.js": "text/javascript", "worker.js": "text/javascript",
           "guest.js": "text/javascript", "quickjs.wasm": "application/wasm",
@@ -110,7 +134,13 @@ function pluginRuntimeAssets(): Plugin {
   };
 }
 
-export default defineConfig({
+export default defineConfig(async () => {
+const runtime = await buildPluginRuntime(path.resolve(__dirname, 'public/plugin-runtime'));
+await buildGuide(path.resolve(__dirname,'public/plugin-guide'));
+fs.mkdirSync(path.resolve(__dirname,'src/generated'),{recursive:true});
+fs.writeFileSync(path.resolve(__dirname,'src/generated/plugin-runtime.json'),JSON.stringify({version:runtime.version,files:Object.keys(runtime.manifest.files)}));
+return {
+  define: { 'import.meta.env.VITE_PLUGIN_RUNTIME_BASE': JSON.stringify(runtime.base) },
   plugins: [pluginRuntimeAssets(), serveWasm(), react()],
   resolve: {
     alias: {
@@ -147,4 +177,5 @@ export default defineConfig({
       "Cross-Origin-Embedder-Policy": "require-corp",
     },
   },
+};
 });

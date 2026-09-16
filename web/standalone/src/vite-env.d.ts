@@ -1,6 +1,8 @@
 /// <reference types="vite/client" />
 
 interface ImportMetaEnv {
+  readonly VITE_PLUGIN_PLATFORM?: string;
+  readonly VITE_PLUGIN_RUNTIME_BASE?: string;
   /** Local-only Board Inspector plugin sidebar POC. */
   readonly VITE_PLUGIN_POC?: string;
   readonly VITE_API_BASE_URL?: string;

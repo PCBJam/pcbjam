@@ -29,6 +29,13 @@ inline int& busyCount()
     return s_count;
 }
 
+/** Changes when an open starts, including opens that fail partway through. */
+inline unsigned long long& generation()
+{
+    static unsigned long long value = 0;
+    return value;
+}
+
 /**
  * Held for the whole open. Two counters, same suspension-RAII trick:
  *
@@ -49,7 +56,7 @@ inline int& busyCount()
  */
 struct BusyGuard
 {
-    BusyGuard() { ++busyCount(); }
+    BusyGuard() { ++busyCount(); ++generation(); }
     ~BusyGuard() { --busyCount(); }
 
 private:

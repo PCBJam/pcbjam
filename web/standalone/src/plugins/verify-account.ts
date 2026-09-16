@@ -1,6 +1,6 @@
 /** Cached display identity is not proof the account is still signed in. */
 export async function verifyPluginAccount(apiBase: string, expectedSlug: string, signal: AbortSignal) {
-    const response = await fetch(apiBase + '/api/me', { credentials: 'include', cache: 'no-store', signal });
+    const response = await fetch(apiBase + '/api/me', { credentials: 'include', cache: 'no-store', redirect: 'error', signal: AbortSignal.any([signal, AbortSignal.timeout(10000)]) });
     if (!response.ok || !response.body)
         throw new Error('Cannot verify plugin account; sign in again');
     const reader = response.body.getReader();

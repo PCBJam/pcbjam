@@ -88,6 +88,7 @@ import { hasLayersBridge, LayerPanel, type LayersModule } from "@/components/Lay
 import { ImportItemPanel } from "@/components/ImportItemPanel";
 import { hasImportBridge, type ImportModule } from "@/wasm/import-item";
 import { PluginSidebar } from "@/plugins/PluginManagerSidebar";
+import { usePluginCatalog, type PluginView } from "@/plugins/plugin-catalog";
 import { SelectionInspector } from "@/components/SelectionInspector";
 import { hasSheetsBridge, SheetPanel, type SheetsModule } from "@/components/SheetPanel";
 import { bindLocalSelectionFeed } from "@/wasm/collab/local-selection";
@@ -423,8 +424,9 @@ export function WasmTool({
   // bound collab doc (pcbnew: the board room; eeschema: the ACTIVE sheet's
   // room, re-pointed on navigation). Null without a doc room (?collab=0).
   const [panelDoc, setPanelDoc] = React.useState<Y.Doc | null>(null);
-  const pluginPocEnabled = import.meta.env.DEV && import.meta.env.VITE_PLUGIN_POC === "1" && (tool === "pcbnew" || tool === "eeschema");
-  const [pluginsOpen, setPluginsOpen] = React.useState(true);
+  const pluginPocEnabled = (import.meta.env.VITE_PLUGIN_PLATFORM === "1" || import.meta.env.DEV && import.meta.env.VITE_PLUGIN_POC === "1") && (tool === "pcbnew" || tool === "eeschema");
+  const [pluginView, setPluginView] = React.useState<PluginView>(null);
+  const pluginCatalog = usePluginCatalog(ready && pluginPocEnabled);
   // Read-only sessions never bind presence, so the inspector's selection
   // store is fed by this minimal local handler (+ the C++ input hooks).
   const localSelectionRef = React.useRef<{ destroy(): void } | null>(null);
@@ -1727,7 +1729,7 @@ export function WasmTool({
   }, [setChromeFn, effectiveChromeHidden, append]);
 
   return (
-    <div className="relative h-screen w-screen overflow-hidden bg-[#1a1a2e]" style={{ "--plugin-sidebar-offset": ready && pluginPocEnabled && pluginsOpen ? "min(360px, 90vw)" : "0px" } as React.CSSProperties}>
+    <div className="relative h-screen w-screen overflow-hidden bg-[#1a1a2e]" style={{ "--plugin-sidebar-offset": ready && pluginPocEnabled && pluginView?.kind === 'manager' ? "min(360px, 90vw)" : "0px" } as React.CSSProperties}>
       {/*
         wx.js addresses the DOM by id: #main-window is its top-level (id=0)
         window — it owns #canvas (created in boot's preRun) — and #window-container
@@ -1827,6 +1829,7 @@ export function WasmTool({
           onToggleChrome={() => toggleChromeHidden()}
           onShow3D={show3DFn}
           jumpTool={jumpTool}
+          plugins={pluginPocEnabled ? { tool, catalog: pluginCatalog, view: pluginView, onViewChange: setPluginView } : undefined}
         />
       )}
 
@@ -1882,8 +1885,8 @@ export function WasmTool({
       )}
 
       {ready && pluginPocEnabled && (
-        <PluginSidebar project={{id:projectId,scope:scopeId,name:slug}} projectFiles={files} doc={panelDoc} tool={tool} readOnly={!!readOnly} fileName={targetPath ?? "Current document"} open={pluginsOpen}
-          onOpen={() => setPluginsOpen(true)} onClose={() => setPluginsOpen(false)} />
+        <PluginSidebar project={{id:projectId,scope:scopeId,name:slug}} projectFiles={files} doc={panelDoc} tool={tool} readOnly={!!readOnly} fileName={targetPath ?? "Current document"}
+          view={pluginView} onViewChange={setPluginView} catalog={pluginCatalog} />
       )}
 
       {/* DEV: presence style tuner (VITE_PRESENCE_TUNER=1). */}

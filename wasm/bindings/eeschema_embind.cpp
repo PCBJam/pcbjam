@@ -62,6 +62,7 @@
 #include <pcbjam_remote_lock.h>
 #include "collab_common.h"
 #include "open_gate.h"
+#include "plugin_placement.h"
 #include "collab_presence_core.h"
 #include "collab_presence_style.h"
 #include "pcbjam_theme.h"
@@ -2482,11 +2483,15 @@ static bool kicadCollabBusyProbe()
 // off the pointer exactly like a chooser pick, R rotates it, Esc cancels (the
 // tool deletes it) and the click commits "Place Symbol" — on the undo stack,
 // and broadcast by the collab bridge like any local placement.
-// Returns {"ok":true} when the placement was queued; parse problems are
-// logged from the coroutine like applyItems does.
+// Returns an operation receipt when queued. The host polls until placement,
+// cancellation or a bounded error, and can cancel before the native commit.
 std::string schPlaceImportedItem( std::string aSexpr )
 {
     json out;
+
+    if( PCBJAM_READ_ONLY::IsReadOnly() || aSexpr.empty() || aSexpr.size() > 512 * 1024
+        || aSexpr.find( '\0' ) != std::string::npos )
+        return json{ { "ok", false }, { "error", "invalid or read-only import" } }.dump();
 
     if( pcbjam_open::busy() ) // open in flight (open_gate.h) — see schCollabApply
     {
@@ -2506,8 +2511,24 @@ std::string schPlaceImportedItem( std::string aSexpr )
 
     // Same CallAfter + COROUTINE context as kicadCollabApplyItems: LoadContent
     // and the placement tool must run where native edits run.
-    pcbjam_collab::runOnCoroutine( fr, [fr, aSexpr]()
+    const int operation = pcbjam_plugin_placement::begin();
+    if( !operation ) return json{ { "ok", false }, { "error", "another import is active" } }.dump();
+    const auto generation = pcbjam_open::generation();
+    SCH_SCREEN* originalScreen = fr->GetScreen();
+    pcbjam_collab::runOnCoroutine( fr, [fr, aSexpr, operation, generation, originalScreen]()
     {
+        const auto permitted = [fr, operation, generation, originalScreen]()
+        {
+            return pcbjam_plugin_placement::allowed( operation )
+                && !pcbjam_open::busy() && pcbjam_open::generation() == generation
+                && schFrame() == fr && fr->GetScreen() == originalScreen
+                && !PCBJAM_READ_ONLY::IsReadOnly();
+        };
+        if( !permitted() )
+        {
+            pcbjam_plugin_placement::finish( operation, "cancelled" );
+            return;
+        }
         SCHEMATIC&  sch = fr->Schematic();
         SCH_SHEET   tempSheet;
         SCH_SCREEN* tempScreen = new SCH_SCREEN( &sch );
@@ -2522,7 +2543,7 @@ std::string schPlaceImportedItem( std::string aSexpr )
         }
         catch( ... )
         {
-            EM_ASM( { console.log( "[import-item] eeschema: blob parse failed" ); } );
+            pcbjam_plugin_placement::finish( operation, "error", "native symbol parse failed" );
             return;
         }
 
@@ -2536,7 +2557,7 @@ std::string schPlaceImportedItem( std::string aSexpr )
 
         if( !sym )
         {
-            EM_ASM( { console.log( "[import-item] eeschema: no symbol in blob" ); } );
+            pcbjam_plugin_placement::finish( operation, "error", "no symbol in import" );
             return;
         }
 
@@ -2560,8 +2581,7 @@ std::string schPlaceImportedItem( std::string aSexpr )
 
         if( !lib )
         {
-            EM_ASM( { console.log( "[import-item] eeschema: lib symbol not found for " + UTF8ToString( $0 ) ); },
-                    toUtf8( lookup ).c_str() );
+            pcbjam_plugin_placement::finish( operation, "error", "symbol definition unavailable" );
             delete sym;
             return;
         }
@@ -2575,11 +2595,40 @@ std::string schPlaceImportedItem( std::string aSexpr )
 
         // PlaceSymbol takes ownership of `sym` (deleted on cancel, committed on click).
         // m_Reannotate = true: the blob carries an unannotated "R?" reference.
+        if( !permitted() )
+        {
+            delete sym;
+            pcbjam_plugin_placement::finish( operation, "cancelled" );
+            return;
+        }
+        pcbjam_plugin_placement::current().status = "placing";
+        pcbjam_plugin_placement::current().cancelNative = [fr, generation, operation]()
+        {
+            if( schFrame() != fr || pcbjam_open::busy() || pcbjam_open::generation() != generation )
+            {
+                pcbjam_plugin_placement::finish( operation, "cancelled" );
+                return;
+            }
+            fr->CallAfter( [fr, generation, operation]()
+            {
+                if( pcbjam_plugin_placement::current().id == operation
+                    && pcbjam_plugin_placement::current().status == "placing"
+                    && pcbjam_plugin_placement::current().cancelled
+                    && schFrame() == fr && !pcbjam_open::busy()
+                    && pcbjam_open::generation() == generation )
+                    fr->GetToolManager()->CancelTool();
+            } );
+        };
         fr->GetToolManager()->RunAction<SCH_ACTIONS::PLACE_SYMBOL_PARAMS>(
-                SCH_ACTIONS::placeSymbol, SCH_ACTIONS::PLACE_SYMBOL_PARAMS{ sym, true } );
+                SCH_ACTIONS::placeSymbol, SCH_ACTIONS::PLACE_SYMBOL_PARAMS{ sym, true, permitted,
+                    [operation]( bool placed )
+                    {
+                        pcbjam_plugin_placement::finish( operation, placed ? "placed" : "cancelled" );
+                    } } );
     } );
 
     out["ok"] = true;
+    out["operation"] = operation;
     return out.dump();
 }
 
@@ -2617,6 +2666,9 @@ EMSCRIPTEN_BINDINGS(eeschema) {
     // v2 items bridge: per-item s-expr payloads (ysync 0008).
     function("kicadCollabApplyItems", &schCollabApplyItems);
     function("kicadPlaceImportedItem", &schPlaceImportedItem);
+    function("kicadPluginPlacementVersion", &pcbjam_plugin_placement::version);
+    function("kicadImportedItemStatus", &pcbjam_plugin_placement::status);
+    function("kicadCancelImportedItem", &pcbjam_plugin_placement::cancel);
     function("kicadCollabSnapshotItems", &schCollabSnapshotItems);
     function("kicadCollabTestMoveFirst", &schCollabTestMoveFirst);
     function("kicadCollabGetPos", &schCollabGetPos);

@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { validatePlacement } from './placement';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { validatePlacement, placeImportedItem, preflightPlacement, type PlacementModule } from './placement';
 const symbol = '(lib_symbols (symbol "Local:R" (symbol "R_0_1"))) (symbol (lib_id "Local:R") (uuid "11111111-2222-4333-8444-555555555555"))';
 describe('plugin placement boundary', () => {
   it('accepts one matching symbol or one footprint for the appropriate editor', () => {
@@ -40,5 +40,49 @@ describe('plugin placement boundary', () => {
   it('ignores parentheses and escaped quotes within quoted properties', () => {
     const quoted = '(footprint "Test" (property "Value" "a (b) \\"quoted\\""))';
     expect(() => validatePlacement(quoted, 'pcbnew')).not.toThrow();
+  });
+});
+
+describe('hosted native placement lifecycle',()=>{
+  afterEach(()=>{vi.useRealTimers();vi.unstubAllGlobals();vi.unstubAllEnvs();});
+  const native=()=>({kicadPluginPlacementVersion:()=>1,kicadPlaceImportedItem:vi.fn(()=>JSON.stringify({ok:true,operation:1})),
+    kicadImportedItemStatus:vi.fn(()=>JSON.stringify({status:'placing'})),kicadCancelImportedItem:vi.fn(()=>true)} satisfies PlacementModule);
+  it('does not report queued/placing as success and resolves only after commit',async()=>{
+    vi.useFakeTimers();const mod=native();let finished=false;
+    const result=placeImportedItem(mod,symbol,new AbortController().signal).then(value=>{finished=true;return value;});
+    await vi.advanceTimersByTimeAsync(100);expect(finished).toBe(false);
+    mod.kicadImportedItemStatus.mockReturnValue(JSON.stringify({status:'placed'}));
+    await vi.advanceTimersByTimeAsync(50);expect(await result).toEqual({status:'placed'});expect(vi.getTimerCount()).toBe(0);
+  });
+  it.each(['cancelled','error','expired'])('handles native %s without leaving timers',async status=>{
+    vi.useFakeTimers();const mod=native();mod.kicadImportedItemStatus.mockReturnValue(JSON.stringify({status,error:'Parse failed'}));
+    const result=placeImportedItem(mod,symbol,new AbortController().signal);
+    const check=status==='cancelled'?expect(result).resolves.toEqual({status:'cancelled'}):expect(result).rejects.toThrow();
+    await vi.advanceTimersByTimeAsync(50);await check;expect(vi.getTimerCount()).toBe(0);
+  });
+  it('cancels native work on teardown and on deadline',async()=>{
+    vi.useFakeTimers();const mod=native(),abort=new AbortController();
+    const result=placeImportedItem(mod,symbol,abort.signal);const rejected=expect(result).rejects.toThrow(/cancelled/);
+    await Promise.resolve();abort.abort();await rejected;expect(mod.kicadCancelImportedItem).toHaveBeenCalledWith(1);expect(vi.getTimerCount()).toBe(0);
+    const timed=expect(placeImportedItem(mod,symbol,new AbortController().signal)).rejects.toThrow(/timed out/);
+    await vi.advanceTimersByTimeAsync(110000);await timed;expect(vi.getTimerCount()).toBe(0);
+  });
+  it('refuses older native builds before handing over a proposal',async()=>{
+    const mod=native();mod.kicadPluginPlacementVersion=()=>0;
+    await expect(placeImportedItem(mod,symbol,new AbortController().signal)).rejects.toThrow(/build/);
+    expect(mod.kicadPlaceImportedItem).not.toHaveBeenCalled();
+  });
+  it('settles teardown even if a failed native runtime throws while cancelling',async()=>{
+    vi.useFakeTimers();const mod=native(),abort=new AbortController();
+    mod.kicadCancelImportedItem.mockImplementation(()=>{throw new Error('Native runtime stopped');});
+    const result=expect(placeImportedItem(mod,symbol,abort.signal)).rejects.toThrow(/cancelled/);
+    await Promise.resolve();abort.abort();await result;expect(vi.getTimerCount()).toBe(0);
+  });
+  it('terminates a stuck preflight worker within its budget',async()=>{
+    vi.useFakeTimers();const terminate=vi.fn();
+    vi.stubGlobal('Worker',class{terminate=terminate;postMessage=vi.fn();});
+    vi.stubEnv('VITE_PLUGIN_RUNTIME_BASE','/plugin-runtime/test/');
+    const result=expect(preflightPlacement(symbol,'eeschema',new AbortController().signal)).rejects.toThrow(/timed out/);
+    await vi.advanceTimersByTimeAsync(1000);await result;expect(terminate).toHaveBeenCalledOnce();
   });
 });

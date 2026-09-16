@@ -3,6 +3,51 @@ import { parseSexpr, type SNode } from '@pcbjam/shared';
 export interface PlacementModule {
   kicadPlaceImportedItem(text: string): string | Promise<string>;
   kicadOpenFileBusy?(): boolean;
+  kicadPluginPlacementVersion?():number;
+  kicadImportedItemStatus?(operation:number):string;
+  kicadCancelImportedItem?(operation:number):boolean;
+}
+
+export async function preflightPlacement(text:string,tool:string,signal:AbortSignal) {
+  signal.throwIfAborted();
+  const base=import.meta.env.VITE_PLUGIN_RUNTIME_BASE;
+  if(!base)throw new Error('Plugin validation runtime unavailable');
+  const worker=new Worker(base+'placement-validation-worker.js',{name:'pcbjam-import-validation'});
+  try {await new Promise<void>((resolve,reject)=>{
+    const finish=(error?:Error)=>{clearTimeout(timer);signal.removeEventListener('abort',abort);error?reject(error):resolve();};
+    const abort=()=>finish(new Error('Import validation cancelled'));
+    const timer=setTimeout(()=>finish(new Error('Import validation timed out')),1000);
+    signal.addEventListener('abort',abort,{once:true});
+    worker.onerror=()=>finish(new Error('Import validation failed'));
+    worker.onmessage=event=>event.data?.ok===true?finish():finish(new Error(String(event.data?.error??'Invalid import').slice(0,400)));
+    worker.postMessage({text,tool});
+  });}finally{worker.terminate();}
+}
+
+/** Resolves after native commit or cancellation, never after the queue acknowledgement. */
+export async function placeImportedItem(mod:PlacementModule,text:string,signal:AbortSignal):Promise<{status:'placed'|'cancelled'}> {
+  if(mod.kicadPluginPlacementVersion?.()!==1||!mod.kicadImportedItemStatus||!mod.kicadCancelImportedItem)throw new Error('This editor build does not support verified plugin placement. Reload PCBJam.');
+  signal.throwIfAborted();
+  const started=JSON.parse(await mod.kicadPlaceImportedItem(text));
+  if(!started.ok||!Number.isSafeInteger(started.operation)||started.operation<=0)throw new Error(started.error??'Placement was refused');
+  const id=started.operation;
+  return new Promise((resolve,reject)=>{
+    let settled=false;
+    const cancel=()=>{try{mod.kicadCancelImportedItem!(id);}catch{/* Always settle the host request, including a failed native runtime. */}};
+    const abort=()=>{cancel();finish(new Error('Plugin placement cancelled'));};
+    const finish=(error?:Error,status?:'placed'|'cancelled')=>{if(settled)return;settled=true;clearTimeout(deadline);clearInterval(poll);signal.removeEventListener('abort',abort);error?reject(error):resolve({status:status!});};
+    const deadline=setTimeout(()=>{cancel();finish(new Error('Plugin placement timed out'));},110000);
+    const poll=setInterval(()=>{
+      try {
+        const result=JSON.parse(mod.kicadImportedItemStatus!(id));
+        if(result.status==='placed'||result.status==='cancelled')finish(undefined,result.status);
+        else if(result.status==='error')finish(new Error(result.error??'Native import failed'));
+        else if(!['queued','placing'].includes(result.status))finish(new Error('Placement operation expired'));
+      }catch(error){cancel();finish(error instanceof Error?error:new Error('Native import failed'));}
+    },50);
+    signal.addEventListener('abort',abort,{once:true});
+    if(signal.aborted)abort();
+  });
 }
 export function placementModule(): PlacementModule | null {
   const mod = (window as unknown as { Module?: Partial<PlacementModule> }).Module;

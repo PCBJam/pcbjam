@@ -22,6 +22,7 @@ import { SourceChip } from "@/components/SourceChip";
 import { OverlayMenu, OverlayMenuSection, overlayRowClass } from "@/components/OverlayMenu";
 import { CHROME_HOTKEY_LABEL } from "./ui-helpers";
 import type { StaleLibEntry } from "./useLibNotices";
+import { PluginMenu, type PluginMenuProps } from "@/plugins/PluginMenu";
 
 /**
  * Behind-the-library state (libs 0017 §2b/2c): placed items a peer updated in
@@ -171,6 +172,7 @@ export function SessionMenu({
   onToggleChrome,
   onShow3D,
   jumpTool,
+  plugins,
 }: {
   tool: Tool;
   readOnly: boolean;
@@ -227,6 +229,7 @@ export function SessionMenu({
   /** View-only / commenter sessions: navigate to the project's counterpart
    *  document (PCB ⇄ schematic); null when there is none. */
   jumpTool?: { tool: Tool; label: string; onClick: () => void } | null;
+  plugins?: PluginMenuProps;
 }) {
   return (
     <OverlayMenu
@@ -332,6 +335,8 @@ export function SessionMenu({
           />
         </OverlayMenuSection>
       )}
+
+      {plugins && <PluginMenu {...plugins} />}
 
       <OverlayMenuSection label="View">
         {onToggleReviewerSelections && (

@@ -43,6 +43,7 @@
 #include "pcbjam_libs_reload.h"
 #include "pcbjam_async_policy.h"
 #include "open_gate.h"
+#include "plugin_placement.h"
 #include "timer_park.h"
 
 using namespace emscripten;
@@ -667,6 +668,9 @@ EMSCRIPTEN_BINDINGS(kicad_editor) {
     function("kicadCollabSnapshot", &collabSnapshot);
     function("kicadCollabApplyItems", &collabApplyItems);
     function("kicadPlaceImportedItem", &placeImportedItem);
+    function("kicadPluginPlacementVersion", &pcbjam_plugin_placement::version);
+    function("kicadImportedItemStatus", &pcbjam_plugin_placement::status);
+    function("kicadCancelImportedItem", &pcbjam_plugin_placement::cancel);
     function("kicadCollabSnapshotItems", &collabSnapshotItems);
     function("kicadCollabTestMoveFirst", &collabTestMoveFirst);
     function("kicadCollabGetPos", &collabGetPos);

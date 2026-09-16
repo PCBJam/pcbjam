@@ -50,6 +50,7 @@
     "tailwindcss": "^3.4.17",
     "typescript": "^5.7.3",
     "vite": "^6.0.7",
-    "vitest": "^3.0.0"
+    "vitest": "^3.0.0",
+    "@pcbjam/plugin-platform": "workspace:*"
   }
 }

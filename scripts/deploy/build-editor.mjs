@@ -45,6 +45,7 @@ function parseArgs(argv) {
     // Companion mgmt app origin; set ⇒ non-editor routes redirect there
     // (standalone-hardening 0006). Omitted ⇒ every route renders locally.
     appBase: null,
+    plugins: false,
   };
   for (let i = 2; i < argv.length; i++) {
     const next = () => argv[++i];
@@ -60,6 +61,7 @@ function parseArgs(argv) {
       case "--errors-dsn": a.errorsDsn = next(); break;
       case "--errors-env": a.errorsEnv = next(); break;
       case "--app-base": a.appBase = next(); break;
+      case "--plugins": a.plugins = true; break;
       default: throw new Error(`unknown arg: ${argv[i]}`);
     }
   }
@@ -104,6 +106,8 @@ function main() {
     // Remote mode: projects, files and auth all come from the closed API.
     // (No VITE_PROJECT_SOURCE ⇒ "remote"; no VITE_LOCAL_PROJECTS.)
     VITE_API_BASE_URL: a.apiBase,
+    VITE_PLUGIN_PLATFORM: a.plugins ? "1" : "0",
+    VITE_PLUGIN_POC: "0",
     // Live collab: Y.Doc rooms on the sync worker, reached through the API
     // host's path route; documents load from their ydoc.
     VITE_YJS_PROVIDER: "partykit",

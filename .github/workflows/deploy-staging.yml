@@ -113,10 +113,13 @@ jobs:
           node scripts/deploy/build-editor.mjs --tag "$STAGING_TAG" \
             --cdn "$CDN_ORIGIN" --api-base "$API_ORIGIN" \
             --app-base "$APP_ORIGIN" --errors-env staging \
-            --models-source registry
+            --models-source registry --plugins
           # Worker Static Assets uses not_found_handling=single-page-application.
           # The generated _redirects file is for Pages and duplicates that fallback.
           rm -f web/standalone/dist/_redirects
+
+      - name: Verify immutable plugin runtime assets
+        run: node scripts/deploy/verify-plugin-runtime.mjs web/standalone/src/generated/plugin-runtime.json web/standalone/dist
 
       - name: Deploy staging editor Worker
         run: npx --yes wrangler@4.99.0 deploy --config web/standalone/wrangler.staging.jsonc
@@ -132,3 +135,13 @@ jobs:
           echo "$headers" | grep -qi '^cross-origin-opener-policy: same-origin'
           echo "$headers" | grep -qi '^cross-origin-embedder-policy: require-corp'
           echo "$headers" | grep -qi '^x-robots-tag:.*noindex'
+
+      - name: Verify deployed plugin runtime boundaries
+        run: node scripts/deploy/verify-plugin-runtime.mjs web/standalone/src/generated/plugin-runtime.json "$EDITOR_ORIGIN"
+
+      - name: Publish matching runtime receipt for the closed stack
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugin-runtime-receipt
+          path: web/standalone/src/generated/plugin-runtime.json
+          if-no-files-found: error

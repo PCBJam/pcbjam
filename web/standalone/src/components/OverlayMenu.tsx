@@ -59,6 +59,8 @@ export function OverlayMenuSection({
 
 const POS_KEY = "pcbjam:overlay-menu-pos";
 const FAB_SIZE = 36;
+const CloseOverlayMenu = React.createContext<() => void>(() => {});
+export const useCloseOverlayMenu = () => React.useContext(CloseOverlayMenu);
 
 export function OverlayMenu({
   badge,
@@ -200,7 +202,7 @@ export function OverlayMenu({
               </span>
             )}
           </div>
-          {children}
+          <CloseOverlayMenu.Provider value={() => setOpen(false)}>{children}</CloseOverlayMenu.Provider>
         </div>
       )}
     </div>
