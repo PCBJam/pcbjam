@@ -81,7 +81,7 @@ function serveWasm(): Plugin {
 // separately on :4318 and must never be made executable on the editor origin.
 function pluginRuntimeAssets(): Plugin {
   const middleware = (server: { middlewares: { use: Function } }) => {
-    server.middlewares.use((req: { url?: string }, res: import('node:http').ServerResponse, next: () => void) => {
+    server.middlewares.use((req: { url?: string; method?: string }, res: import('node:http').ServerResponse, next: () => void) => {
       if (req.url?.startsWith('/plugin-runtime/')) {
         res.setHeader('Content-Security-Policy', WORKER_CSP);
         res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -91,9 +91,35 @@ function pluginRuntimeAssets(): Plugin {
           res.writeHead(404);res.end('Runtime asset unavailable');return;
         }
       }
-      if (req.url?.startsWith('/plugin-guide')) {
+      if (req.url === '/plugin-guide' || req.url?.startsWith('/plugin-guide/')) {
         res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'");
         res.setHeader('X-Content-Type-Options','nosniff');
+        // Serve generated docs directly: Vite otherwise rewrites directory URLs
+        // to the editor SPA and injects scripts that the guide's CSP rejects.
+        const pathname = req.url.split('?')[0]!.replace(/\/$/, '');
+        const pages: Record<string, string> = {
+          '/plugin-guide': 'index.html',
+          '/plugin-guide/api': 'api/index.html',
+          '/plugin-guide/architecture': 'architecture/index.html',
+          '/plugin-guide/security': 'security/index.html',
+        };
+        const downloads = ['external-symbol-import.zip', 'external-symbol-import-source.zip', 'sample-symbols.kicad_sym', 'sdk.d.ts'];
+        const download = downloads.find(name => pathname === '/plugin-guide/download/' + name);
+        const relative = pages[pathname] ?? (pathname === '/plugin-guide/guide.css' ? 'guide.css' : download ? 'download/' + download : undefined);
+        if (!relative || !['GET', 'HEAD'].includes(req.method ?? 'GET')) {
+          res.writeHead(404);res.end('Documentation page not found');return;
+        }
+        const file = path.resolve(__dirname, 'public/plugin-guide', relative);
+        if (!fs.existsSync(file)) {
+          res.writeHead(503);res.end('Developer guide has not been generated');return;
+        }
+        res.setHeader('Content-Type', download ? download.endsWith('.zip') ? 'application/zip' : 'application/octet-stream' : relative.endsWith('.css') ? 'text/css; charset=utf-8' : 'text/html; charset=utf-8');
+        if (download) res.setHeader('Content-Disposition', `attachment; filename="${download}"`);
+        res.setHeader('Cache-Control', 'no-store');
+        res.setHeader('Content-Length', fs.statSync(file).size);
+        if (req.method === 'HEAD') res.end();
+        else fs.createReadStream(file).on('error', () => res.destroy()).pipe(res);
+        return;
       }
       next();
     });

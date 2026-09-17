@@ -11,6 +11,7 @@ export interface Descriptor {
   installed?: boolean;
   enabled?: boolean;
   fileMetadata?: Record<string, { sha256: string; bytes: number }>;
+  backends?: Array<{endpoint:string;origin:string;paths:string[];methods:('GET'|'POST')[];auth:'none'|'pcbjam-user';registrationId?:string;policyDigest:string;status:string;ready:boolean;audience?:string;issuer?:string}>;
   digest: string;
   manifest: {
     id: string;
@@ -19,6 +20,7 @@ export interface Descriptor {
     description: string;
     surfaces: string[];
     permissions: string[];
+    endpoints?: Record<string,{origin:string;paths:string[];methods:('GET'|'POST')[];auth:'none'|'pcbjam-user'}>;
   };
 }
 export interface PackageHost {

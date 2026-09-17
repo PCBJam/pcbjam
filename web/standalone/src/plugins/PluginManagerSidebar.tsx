@@ -169,7 +169,7 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
         <button type="button" title="Close plugins" aria-label="Close plugins" onClick={onClose} className="rounded p-2 hover:bg-black/5 dark:hover:bg-white/10"><X size={17} /></button>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 text-xs">
-        <a href={hostedPlugins ? "/plugin-guide/" : "/plugin-dev/guide"} target="_blank" rel="noopener noreferrer" className="mb-4 flex w-fit items-center gap-1.5 rounded text-sky-600 hover:underline dark:text-sky-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4"><BookOpen size={14} /> Developer guide <ExternalLink size={12} aria-hidden="true" /></a>
+        <a href="/plugin-guide/" target="_blank" rel="noopener noreferrer" className="mb-4 flex w-fit items-center gap-1.5 rounded text-sky-600 hover:underline dark:text-sky-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4"><BookOpen size={14} /> Developer guide <ExternalLink size={12} aria-hidden="true" /></a>
         <h3 className="text-sm font-semibold">Add a plugin</h3>
         <p className="mt-1 text-neutral-500 dark:text-white/60">Choose a built plugin ZIP or folder. Review its permissions before installing.</p>
         <div className="mt-3 flex gap-2">
@@ -184,7 +184,15 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
           <p className="mt-2 text-amber-700 dark:text-amber-200">{hostedPlugins ? "Private upload · Publisher not verified" : "Local package · Publisher not verified"}</p>
           <ul className="my-2 list-disc space-y-1 pl-4">{candidate.manifest.permissions.map(permission => <li key={permission}>{permissions[permission] ?? permission}</li>)}</ul>
           <p className="mb-3 text-neutral-500 dark:text-white/60">Install only code you trust. Custom UI receives the data returned by its plugin logic.</p>
-          <button className={button} disabled={busy} onClick={() => void install()}>Install plugin</button>{' '}<button className={button} disabled={busy} onClick={() => setCandidate(null)}>Cancel</button>
+          {candidate.backends?.map(backend=><div key={backend.endpoint} className="my-3 rounded border border-amber-500/40 p-2">
+            <p className="break-all font-semibold">{backend.origin}</p>
+            <p>{backend.methods.join(', ')}: {backend.paths.join(', ')}</p>
+            <p>This plugin can send data it is allowed to read to this backend.</p>
+            <p>{backend.auth==='pcbjam-user'?'The backend can recognize you using a stable ID unique to this plugin. Your email and PCBJam account ID are not shared.':'No PCBJam identity is attached.'}</p>
+            <p>{backend.ready?'Approved by PCBJam':backend.status==='approved'?'Awaiting PCBJam setup or renewed domain verification.':'Not ready: '+backend.status+' — ask PCBJam to review this backend.'}</p>
+            <p className="mt-1 break-all text-[10px]">Plugin: {candidate.pluginId}</p>
+          </div>)}
+          <button className={button} disabled={busy || candidate.backends?.some(b=>!b.ready)} onClick={() => void install()}>Install plugin</button>{' '}<button className={button} disabled={busy} onClick={() => setCandidate(null)}>Cancel</button>
         </section>}
         {resetCandidate && <section aria-label="Reset plugin data" className="mt-4 rounded border border-amber-500 p-3">
           <p>Reset local data for {resetCandidate.manifest.name}? Data is cleared in this browser and in other browsers the next time they connect.</p>
