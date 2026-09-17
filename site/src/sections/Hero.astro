@@ -1,5 +1,5 @@
 ---
-import WaitlistForm from '../components/WaitlistForm.astro';
+import AppCta from '../components/AppCta.astro';
 
 const DISCORD_URL = 'https://discord.gg/ybhqJxjR3E';
 const DEMO_URL = 'https://demo.pcbjam.com';
@@ -13,13 +13,13 @@ const DEMO_URL = 'https://demo.pcbjam.com';
     format.
   </p>
 
-  <WaitlistForm source="hero" id="waitlist" class="hero-form">
+  <AppCta id="waitlist" class="hero-form">
     <Fragment slot="micro">
       or <a href={DISCORD_URL} rel="noopener" target="_blank">join the Discord</a> ·
       <a href={DEMO_URL} rel="noopener" target="_blank">open the demo</a> (no account) ·
       <a href="/privacy">privacy</a>
     </Fragment>
-  </WaitlistForm>
+  </AppCta>
 
   {/* Demo video (YouTube, privacy-enhanced host: no cookies until play). The
       landing page is deliberately NOT cross-origin isolated (see public/_headers)

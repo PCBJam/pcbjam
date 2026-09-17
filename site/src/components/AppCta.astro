@@ -1,0 +1,43 @@
+---
+/**
+ * AppCta — the primary call to action: a button into the app.
+ * Drop-in for WaitlistForm (same `id` / `class` props and `micro` slot), used in
+ * the hero and the contact section.
+ */
+import { APP_URL } from '../lib/app-url';
+
+interface Props {
+  id?: string; // wrapper id; the hero keeps "waitlist" so old /#waitlist links still land
+  class?: string;
+}
+
+const { id, class: cls = '' } = Astro.props;
+---
+
+<div class={`app-cta ${cls}`} id={id}>
+  <a class="btn btn-primary" href={APP_URL}>Go to app</a>
+
+  {
+    Astro.slots.has('micro') && (
+      <p class="cta-micro muted">
+        <slot name="micro" />
+      </p>
+    )
+  }
+</div>
+
+<style>
+  .app-cta {
+    width: 100%;
+  }
+  .cta-micro {
+    font-size: 0.85rem;
+    margin: 0.6rem 0 0;
+  }
+
+  @media (max-width: 540px) {
+    .app-cta .btn {
+      width: 100%;
+    }
+  }
+</style>

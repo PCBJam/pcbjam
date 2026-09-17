@@ -1,19 +1,19 @@
 ---
 import SectionTitle from '../components/SectionTitle.astro';
-import WaitlistForm from '../components/WaitlistForm.astro';
+import AppCta from '../components/AppCta.astro';
 
 const DISCORD_URL = 'https://discord.gg/ybhqJxjR3E';
 ---
 
 <section class="readme readme-section contact" id="contact">
-  <SectionTitle>Sign up, join the waitlist, write to us</SectionTitle>
-  <WaitlistForm source="final" class="contact-form">
+  <SectionTitle>Sign up, write to us</SectionTitle>
+  <AppCta class="contact-form">
     <Fragment slot="micro">
       <a href={DISCORD_URL} rel="noopener" target="_blank">discord.gg/ybhqJxjR3E</a> ·
       <a href="mailto:hello@pcbjam.com">hello@pcbjam.com</a> ·
       <a href="/privacy">privacy</a>
     </Fragment>
-  </WaitlistForm>
+  </AppCta>
 </section>
 
 <style>

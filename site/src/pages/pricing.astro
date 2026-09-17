@@ -2,12 +2,14 @@
 import BaseLayout from '../layouts/BaseLayout.astro';
 import SectionBand from '../components/SectionBand.astro';
 import CheckItem from '../components/CheckItem.astro';
+import { APP_URL } from '../lib/app-url';
 
 // Copy source of truth: docs/features/pricing/copy.md (root repo). Team and
 // Enterprise are v1/v2 - rendered as "coming soon" cards (no live CTA) so the
 // launch page sells only Free + Pro while still telling teams what's ahead.
-// TODO(launch): Free/Pro CTAs open the coming-soon dialog until signup ships;
-// then point them at the real signup/billing flow.
+// Signup is live, so the Free CTA goes straight to the app.
+// TODO(launch): the Pro CTA opens the coming-soon dialog until checkout ships;
+// then point it at the real billing flow.
 
 const description =
   'PCBJam pricing - everything public is free, for everyone, forever. Private work is free for three people and seven projects in your personal team, then one seat per person.';
@@ -20,7 +22,7 @@ const plans: {
   tagline: string;
   price: { monthly: Price; yearly?: Price };
   features: Feature[];
-  cta: { label: string } | null;
+  cta: { label: string; href?: string } | null; // no href = opens the coming-soon dialog
   soon: boolean;
   featured: boolean;
 }[] = [
@@ -36,7 +38,7 @@ const plans: {
       '1 GB storage',
       'Unlimited free members on public projects - view, comment & edit',
     ],
-    cta: { label: 'Start free' },
+    cta: { label: 'Start free', href: APP_URL },
     soon: false,
     featured: false,
   },
@@ -214,14 +216,22 @@ const jsonLd = {
                 ),
               )}
             </ul>
-            {p.cta && (
-              <button
-                type="button"
-                class:list={['btn', 'plan-cta', p.featured ? 'btn-primary' : 'btn-ghost']}
-              >
-                {p.cta.label}
-              </button>
-            )}
+            {p.cta &&
+              (p.cta.href ? (
+                <a
+                  class:list={['btn', 'plan-cta', p.featured ? 'btn-primary' : 'btn-ghost']}
+                  href={p.cta.href}
+                >
+                  {p.cta.label}
+                </a>
+              ) : (
+                <button
+                  type="button"
+                  class:list={['btn', 'plan-cta', p.featured ? 'btn-primary' : 'btn-ghost']}
+                >
+                  {p.cta.label}
+                </button>
+              ))}
           </div>
         ))
       }
@@ -254,11 +264,11 @@ const jsonLd = {
     <div class="dialog-body">
       <h3 id="coming-soon-h3">Coming soon</h3>
       <p class="muted">
-        Plans aren't live yet - we're getting signup and checkout ready. Join the waitlist and
-        we'll tell you the moment they open.
+        Pro isn't live yet - we're getting checkout ready. Everything in Free is open today, so
+        you can start now and upgrade when Pro lands.
       </p>
       <div class="dialog-actions">
-        <a class="btn btn-primary" href="/#waitlist">Join the waitlist</a>
+        <a class="btn btn-primary" href={APP_URL}>Go to app</a>
         <button type="button" class="btn btn-ghost dialog-close">Close</button>
       </div>
     </div>
@@ -290,7 +300,7 @@ const jsonLd = {
   }
   document.addEventListener('astro:page-load', initBillingToggle);
 
-  // "Coming soon" dialog for the Free/Pro CTAs (no signup flow yet). Native
+  // "Coming soon" dialog for the Pro CTA (no checkout yet). Native
   // <dialog>: Esc closes for free; backdrop clicks are detected because the
   // padded .dialog-body swallows inside clicks, so e.target === dialog only
   // on the backdrop.
@@ -304,7 +314,7 @@ const jsonLd = {
     if (dialog.dataset.bound === '1') return;
     dialog.dataset.bound = '1';
     document
-      .querySelectorAll<HTMLButtonElement>('.plan-cta')
+      .querySelectorAll<HTMLButtonElement>('button.plan-cta')
       .forEach((b) => b.addEventListener('click', () => dialog.showModal()));
     dialog.addEventListener('click', (e) => {
       if (e.target === dialog) dialog.close();

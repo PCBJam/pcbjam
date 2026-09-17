@@ -1,7 +1,10 @@
 ---
-// README-style header: jar mark + mono wordmark, four mono links. The primary
-// call to action lives in the hero (#waitlist), not up here.
-const links = [
+// README-style header: jar mark + mono wordmark, five mono links. The primary
+// call to action lives in the hero, not up here.
+import { APP_URL } from '../lib/app-url';
+
+const links: { href: string; label: string; external?: boolean; primary?: boolean }[] = [
+  { href: APP_URL, label: 'app', primary: true }, // same tab + same red as the hero's "Go to app"
   { href: 'https://demo.pcbjam.com', label: 'demo', external: true },
   { href: '/blog', label: 'blog' },
   { href: '/pricing', label: 'pricing' },
@@ -30,6 +33,7 @@ const isActive = (href: string, external?: boolean) =>
         links.map((l) => (
           <a
             href={l.href}
+            class:list={[{ primary: l.primary }]}
             aria-current={isActive(l.href, l.external) ? 'page' : undefined}
             rel={l.external ? 'noopener' : undefined}
             target={l.external ? '_blank' : undefined}
@@ -91,6 +95,14 @@ const isActive = (href: string, external?: boolean) =>
   }
   .nav > a[aria-current='page'] {
     color: var(--fg);
+  }
+  /* The app link wears the primary button's colours (and its hover). */
+  .nav > a.primary {
+    color: var(--brand-600);
+    font-weight: 600;
+  }
+  .nav > a.primary:hover {
+    color: var(--brand-700);
   }
 
   /* Mobile menu (CSS-only via checkbox toggle). */
