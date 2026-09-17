@@ -62,6 +62,7 @@ function parseArgs(argv) {
       case "--errors-env": a.errorsEnv = next(); break;
       case "--app-base": a.appBase = next(); break;
       case "--plugins": a.plugins = true; break;
+      case "--no-plugins": a.plugins = false; break;
       default: throw new Error(`unknown arg: ${argv[i]}`);
     }
   }

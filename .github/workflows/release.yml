@@ -243,6 +243,7 @@ jobs:
           --plausible "https://plausible.io/js/pa-KjNS9YmidydULZTstsjRg.js"
           ${ERRORS_DSN:+--errors-dsn "$ERRORS_DSN" --errors-env production}
           --models-source registry
+          --no-plugins
 
       - name: Ensure Pages project exists
         run: >
