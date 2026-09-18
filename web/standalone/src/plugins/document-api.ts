@@ -1,5 +1,5 @@
 import * as Y from 'yjs';
-import { kicadItemsMap, kicadLibSymbolsMap, yToItemUnchecked, Y_KDOC_META, Y_KDOC_LAYOUT } from '@pcbjam/shared';
+import { kicadItemsMap, kicadLibSymbolsMap, yToItemUnchecked, streamBodyJson, Y_KDOC_META, Y_KDOC_LAYOUT } from '@pcbjam/shared';
 const MAX_BYTES = 1024 * 1024;
 /** Copy selected JSON/Yjs values with a shared budget before toJSON/serialization. */
 function copier() {
@@ -131,6 +131,63 @@ export function createDocumentAPI(options: {
                 }
             });
         }) as { (ids: string[]): Item[]; (ids: string[], partial: boolean): Array<Item | { id: string; error: 'TOO_LARGE' | 'DEFERRED' }> },
+        /**
+         * Whole-document read that never holds the UI thread: newline-delimited JSON
+         * records produced a slice at a time. `read` stops after `budgetMs` or `maxChars`,
+         * even in the middle of one huge zone, and refuses to resume once the document
+         * has changed, because the walk reads the live document lazily.
+         */
+        openExport: (request: { types: string[]; omit: string[]; layout: boolean; libSymbols: boolean }) => {
+            const source = live(), started = revision, omit = new Set(request.omit);
+            const ids = [...source.keys()].sort().filter(id => !request.types.length || request.types.includes(String(source.get(id)!.get('type'))));
+            let buffer = '', deadline = 0, maxChars = 0, ticks = 0, finished = false;
+            const emit = (text: string) => { buffer += text; };
+            const pause = () => buffer.length >= maxChars || (++ticks & 63) === 0 && performance.now() >= deadline;
+            const records = (function* () {
+                const root = options.doc.getMap(Y_KDOC_META).get('root');
+                emit(JSON.stringify({ $: 'root', value: typeof root === 'string' ? root : '' }) + '\n');
+                for (const id of ids) {
+                    const entry = source.get(id)!, parent = entry.get('parent');
+                    emit('{"id":' + JSON.stringify(id) + ',"type":' + JSON.stringify(String(entry.get('type'))) + ',"parent":' + JSON.stringify(typeof parent === 'string' ? parent : null) + ',"body":');
+                    yield* streamBodyJson(entry.get('body'), emit, pause, omit);
+                    emit('}\n');
+                    if (pause()) yield;
+                }
+                if (request.layout) {
+                    emit('{"$":"layout","value":');
+                    yield* streamBodyJson(options.doc.getArray(Y_KDOC_LAYOUT).toArray(), emit, pause);
+                    emit('}\n');
+                }
+                if (request.libSymbols) {
+                    const symbols = kicadLibSymbolsMap(options.doc);
+                    for (const id of [...symbols.keys()].sort()) {
+                        const text = symbols.get(id);
+                        if (typeof text !== 'string' || text.length > MAX_BYTES)
+                            throw new Error('Document structure exceeds limits');
+                        emit(JSON.stringify({ $: 'libSymbol', id, text }) + '\n');
+                        if (pause()) yield;
+                    }
+                }
+            })();
+            return {
+                revision: started,
+                read: (budgetMs: number, max: number) => {
+                    live();
+                    if (revision !== started)
+                        throw new Error('Document changed: get its current revision and retry');
+                    maxChars = max; ticks = 0; deadline = performance.now() + budgetMs;
+                    if (!finished && buffer.length < max)
+                        finished = records.next().done === true;
+                    // Never split a surrogate pair across two slices.
+                    let cut = Math.min(max, buffer.length);
+                    if (cut < buffer.length && cut > 0 && (buffer.charCodeAt(cut - 1) & 0xfc00) === 0xd800)
+                        cut--;
+                    const text = buffer.slice(0, cut);
+                    buffer = buffer.slice(cut);
+                    return { text, done: finished && !buffer.length };
+                },
+            };
+        },
         snapshot: () => {
             const source = live(), copy = copier();
             // Export only KiCad content. Presence, comments, sync state and credentials

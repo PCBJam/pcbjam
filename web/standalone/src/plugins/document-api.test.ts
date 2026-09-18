@@ -110,6 +110,54 @@ describe('plugin current-document adapter', () => {
     finally {
         f.close();
     } });
+    const drain = (cursor: { read(ms: number, max: number): { text: string; done: boolean } }, ms: number, max: number) => {
+        let text = '', slices = 0;
+        for (;;) { const part = cursor.read(ms, max); expect(part.text.length).toBeLessThanOrEqual(max); text += part.text; slices++; if (part.done) break; if (slices > 100000) throw new Error('export never finished'); }
+        return { records: text.split('\n').filter(Boolean).map(line => JSON.parse(line)), slices, text };
+    };
+    it.each([1, 2])('exports the whole document in resumable slices for format %s', version => { const f = fixture(version); try {
+        const snap = f.api.snapshot(), all = { types: [], omit: [], layout: true, libSymbols: true };
+        const whole = drain(f.api.openExport(all), 1000, 1 << 20);
+        expect(whole.text.endsWith('\n')).toBe(true);
+        expect(whole.records[0]).toEqual({ $: 'root', value: snap.root });
+        expect(whole.records.filter(r => !r.$)).toEqual(snap.items);
+        expect(whole.records.find(r => r.$ === 'layout').value).toEqual(snap.layout);
+        expect(whole.records.filter(r => r.$ === 'libSymbol').map(r => r.text)).toEqual(snap.libSymbols);
+        // Slicing is invisible: 7 characters at a time, and a zero time budget, give the same text.
+        const tiny = drain(f.api.openExport(all), 1000, 7);
+        expect(tiny.slices).toBeGreaterThan(20);
+        expect(tiny.text).toBe(whole.text);
+        expect(drain(f.api.openExport(all), 0, 1 << 20).text).toBe(whole.text);
+        const bare = drain(f.api.openExport({ types: ['wire'], omit: [], layout: false, libSymbols: false }), 1000, 1 << 20).records;
+        expect(bare.map(r => r.$ ?? r.type)).toEqual(['root', 'wire']);
+        const noPins = drain(f.api.openExport({ ...all, omit: ['lib_id'] }), 1000, 1 << 20).text;
+        expect(whole.text).toContain('lib_id');
+        expect(noPins).not.toContain('lib_id');
+    }
+    finally {
+        f.close();
+    } });
+    it('export stops inside a huge item, keeps surrogate pairs whole, and refuses a changed document', () => { const f = fixture(); try {
+        const points = Array.from({ length: 5000 }, (_, i) => ({ k: 'xy', v: [{ atom: String(i) }, { atom: '😀' }] }));
+        kicadItemsMap(f.doc).get('w1')!.set('body', [{ k: 'pts', v: points }]);
+        const request = { types: ['wire'], omit: [], layout: false, libSymbols: false };
+        const sliced = drain(f.api.openExport(request), 1000, 1001);
+        expect(sliced.slices).toBeGreaterThan(50);
+        expect(sliced.records[1].body[0].v).toEqual(points);
+        const cursor = f.api.openExport(request), first = cursor.read(1000, 1001);
+        expect(first.done).toBe(false);
+        for (const part of [first.text, cursor.read(1000, 1000).text]) {
+            expect((part.charCodeAt(part.length - 1) & 0xfc00) === 0xd800).toBe(false);
+            expect((part.charCodeAt(0) & 0xfc00) === 0xdc00).toBe(false);
+        }
+        kicadItemsMap(f.doc).get('s1')!.set('parent', null);
+        expect(() => cursor.read(1000, 1000)).toThrow(/Document changed/);
+        f.abort.abort();
+        expect(() => f.api.openExport(request)).toThrow();
+    }
+    finally {
+        f.close();
+    } });
     it('bounds nesting and selection cardinality', () => { const f = fixture(); try {
         f.select(Array(1001).fill('s1'));
         expect(() => f.api.selection()).toThrow(/limits/);
