@@ -74,6 +74,42 @@ describe('plugin current-document adapter', () => {
     finally {
         f.close();
     } });
+    it('partial reads isolate oversized items instead of failing the page', () => { const f = fixture(); try {
+        const items = kicadItemsMap(f.doc);
+        items.get('w1')!.set('body', [{ atom: 'é'.repeat(600000) }]);
+        expect(() => f.api.getItems(['p1', 'w1', 's1'])).toThrow(/1 MiB/);
+        const result = f.api.getItems(['p1', 'w1', 's1'], true) as any[];
+        expect(result[1]).toEqual({ id: 'w1', error: 'TOO_LARGE' });
+        // The failed item's partial walk does not count against its neighbours.
+        expect(result[0].body.length).toBeGreaterThan(0);
+        expect(result[2].body.length).toBeGreaterThan(0);
+        // Fits alone, but not after p1 has used most of the shared response budget.
+        items.get('p1')!.set('body', [{ atom: 'a'.repeat(700000) }]);
+        items.get('w1')!.set('body', [{ atom: 'b'.repeat(700000) }]);
+        const deferred = f.api.getItems(['p1', 'w1', 's1'], true) as any[];
+        expect(deferred[0].body).toBeDefined();
+        expect(deferred.slice(1)).toEqual([{ id: 'w1', error: 'DEFERRED' }, { id: 's1', error: 'DEFERRED' }]);
+        expect((f.api.getItems(['w1'], true) as any[])[0].body).toBeDefined();
+        expect(() => f.api.getItems(['p1', 'w1', 'foreign'], true)).toThrow(/current document/);
+    }
+    finally {
+        f.close();
+    } });
+    it('bounds classification walks for a page of oversized items', () => { const f = fixture(); try {
+        const items = kicadItemsMap(f.doc), ids = ['p1', 's1', 'w1'];
+        for (let i = 0; i < 7; i++) {
+            const clone = new Y.Map<any>();
+            clone.set('type', 'wire'); clone.set('parent', null);
+            items.set('big' + i, clone); ids.push('big' + i);
+        }
+        for (const id of ids) items.get(id)!.set('body', [{ atom: 'é'.repeat(600000) }]);
+        const result = f.api.getItems(ids, true) as any[];
+        expect(result.filter(item => item.error === 'TOO_LARGE')).toHaveLength(4);
+        expect(result.filter(item => item.error === 'DEFERRED')).toHaveLength(ids.length - 4);
+    }
+    finally {
+        f.close();
+    } });
     it('bounds nesting and selection cardinality', () => { const f = fixture(); try {
         f.select(Array(1001).fill('s1'));
         expect(() => f.api.selection()).toThrow(/limits/);

@@ -39,8 +39,14 @@ function copier() {
         active.delete(value);
         return result;
     }
+    // A failed item must not consume the budget of the items that follow it.
+    copy.mark = () => ({ nodes, bytes });
+    copy.rewind = (mark: { nodes: number; bytes: number }) => { nodes = mark.nodes; bytes = mark.bytes; active.clear(); };
     return copy;
 }
+const LIMIT_ERROR = /exceeds/;
+/** Classification walks are bounded too: each one may visit up to the node limit. */
+const MAX_OVERSIZE_PROBES = 4;
 export function createDocumentAPI(options: {
     doc: Y.Doc;
     project: {
@@ -76,6 +82,7 @@ export function createDocumentAPI(options: {
         const stored = entry.get('body'), body = copy(stored ?? []);
         return { id: copy(id), type: copy(entry.get('type')), parent: copy(entry.get('parent') ?? null), body: stored instanceof Y.Map ? yToItemUnchecked(entry).body : body };
     };
+    type Item = ReturnType<typeof item>;
     return {
         projectInfo: () => { live(); return { ...options.project }; },
         catalog: () => {
@@ -93,7 +100,37 @@ export function createDocumentAPI(options: {
             const copy = copier();
             return { items: ids.slice(cursor, cursor + limit).map(id => { const entry = source.get(id)!; return copy({ id, type: entry.get('type'), parent: entry.get('parent') ?? null }); }), nextCursor: cursor + limit < ids.length ? cursor + limit : null };
         },
-        getItems: (ids: string[]) => { const copy = copier(); return ids.map(id => item(id, copy)); },
+        getItems: ((ids: string[], partial = false) => {
+            const copy = copier();
+            if (!partial)
+                return ids.map(id => item(id, copy));
+            // TOO_LARGE: over the limits on its own. DEFERRED: fits, but not in what is
+            // left of this response; ask again. Unknown IDs still fail the whole call.
+            let probes = 0, full = false;
+            return ids.map(id => {
+                if (full) {
+                    if (!live().has(id))
+                        throw new Error('Item is not in the current document');
+                    return { id, error: 'DEFERRED' };
+                }
+                const mark = copy.mark();
+                try { return item(id, copy); }
+                catch (error) {
+                    if (!(error instanceof Error) || !LIMIT_ERROR.test(error.message))
+                        throw error;
+                    copy.rewind(mark);
+                    if (++probes > MAX_OVERSIZE_PROBES) { full = true; return { id, error: 'DEFERRED' }; }
+                    try { item(id, copier()); }
+                    catch (alone) {
+                        if (!(alone instanceof Error) || !LIMIT_ERROR.test(alone.message))
+                            throw alone;
+                        return { id, error: 'TOO_LARGE' };
+                    }
+                    full = true;
+                    return { id, error: 'DEFERRED' };
+                }
+            });
+        }) as { (ids: string[]): Item[]; (ids: string[], partial: boolean): Array<Item | { id: string; error: 'TOO_LARGE' | 'DEFERRED' }> },
         snapshot: () => {
             const source = live(), copy = copier();
             // Export only KiCad content. Presence, comments, sync state and credentials

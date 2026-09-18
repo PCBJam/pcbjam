@@ -20,3 +20,11 @@ https://pcbjam-editor-staging.pcbjam-staging.workers.dev/*
 /plugin-guide/*
   Content-Security-Policy: default-src 'none'; style-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
   X-Content-Type-Options: nosniff
+
+# The asset server maps .ts to video/mp2t (MPEG transport stream); with nosniff
+# a browser then refuses to show the SDK types. Splats only match a suffix, so
+# the two published copies are listed explicitly.
+/plugin-guide/download/sdk.d.ts
+  Content-Type: text/plain; charset=utf-8
+/plugin-guide/download/external-symbol-import/sdk.d.ts
+  Content-Type: text/plain; charset=utf-8
