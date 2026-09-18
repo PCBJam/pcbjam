@@ -256,17 +256,39 @@ test.describe('ngspice_service probe', () => {
 
         expect((await svcRequest(page, { kind: 'circ', lines: deck })).ret).toBe(0);
 
+        // No simulator frame here, so nothing consumes event frames: the
+        // harness parks them for the editor's dispatcher and RETIRES the
+        // worker past 64 parked frames — which the run prelude (a ~150-node
+        // initial solution) exceeds whenever it streams as small frames. The
+        // fresh generation then answers running:false mid-"run". Consume the
+        // frames like the editor would (they are still recorded in
+        // __ngspiceEvents first).
+        await page.evaluate(() => {
+            (globalThis as any).__ngspiceOnEvent ??= () => {};
+        });
+
         const evtsBefore = await page.evaluate(
             () => (window as any).__ngspiceEvents.length as number);
 
         expect((await svcRequest(page, { kind: 'command', cmd: 'bg_run' })).ret,
             'bg_run accepted').toBe(0);
 
-        // Live streaming: char/stat frames must arrive WHILE the background
-        // thread simulates (not only after completion).
+        // Live streaming: char/stat output must arrive WHILE the background
+        // thread simulates (not only after completion). Count LINES, and only
+        // AFTER BGThreadRunning(started): events hop to the page async, so the
+        // circ load's trailing frames can land past evtsBefore while running()
+        // is still false (the worker thread has not started yet), and under
+        // load the worker coalesces the whole run prelude into one or two
+        // frames — an event count is wrong in both directions.
         await page.waitForFunction((n: number) => {
-            const evts = (window as any).__ngspiceEvents as Array<{ kind: string }>;
-            return evts.slice(n).filter((e) => e.kind === 'char' || e.kind === 'stat').length >= 3;
+            const evts = ((window as any).__ngspiceEvents as Array<{
+                kind: string; finished?: boolean; lines?: string[];
+            }>).slice(n);
+            const started = evts.findIndex((e) => e.kind === 'bg' && e.finished === false);
+            if (started < 0) return false;
+            return evts.slice(started)
+                .filter((e) => e.kind === 'char' || e.kind === 'stat')
+                .reduce((sum, e) => sum + (e.lines?.length ?? 1), 0) >= 3;
         }, evtsBefore, { timeout: 60000 });
 
         const midRunning = await svcRequest(page, { kind: 'running' });

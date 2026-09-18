@@ -222,13 +222,26 @@ test("local emit: keyboard Delete on the canvas does publish the empty selection
   const canvas = await galPanel(page);
   const box = await canvas.boundingBox();
   expect(box).toBeTruthy();
-  // Give the wx canvas keyboard focus with a click on empty sheet space (this
-  // clears any selection — the programmatic select comes after).
+  // The focus click below reaches the editor ASYNC (page.mouse.click resolves
+  // before the selection tool has handled it), and a click on empty sheet
+  // space clears the selection. Make that observable instead of racing it:
+  // select first, click, and wait for the click's clear to be PUBLISHED — only
+  // then is the click fully processed and the real select safe to issue. (Was:
+  // click → select with nothing in between; a late click wiped the select and
+  // the emit went [id] → [] for good.)
+  const selectFirst = () =>
+    page.evaluate(() => (window as unknown as W).Module.kicadCollabTestSelectFirst());
+  const probe = await selectFirst();
+  expect(probe).toBeTruthy();
+  await expect.poll(() => lastEmit(page), { timeout: 10000 }).toEqual([probe]);
+  // Give the wx canvas keyboard focus with a click on empty sheet space.
   await page.mouse.click(box!.x + box!.width * 0.5, box!.y + box!.height * 0.95);
   await page.locator("#canvas").focus().catch(() => {}); // documented best-effort: wx canvas may reject DOM focus after the click already focused it
-  const id = await page.evaluate(() =>
-    (window as unknown as W).Module.kicadCollabTestSelectFirst(),
-  );
+  await expect
+    .poll(() => lastEmit(page), { timeout: 10000, message: "focus click never cleared the selection" })
+    .toEqual([]);
+
+  const id = await selectFirst();
   expect(id).toBeTruthy();
   await expect.poll(() => lastEmit(page), { timeout: 10000 }).toEqual([id]);
 
