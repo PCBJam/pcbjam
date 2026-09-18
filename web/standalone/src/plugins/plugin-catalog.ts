@@ -20,6 +20,7 @@ export interface Descriptor {
     description: string;
     surfaces: string[];
     permissions: string[];
+    uiSize?: { width: number; height: number };
     endpoints?: Record<string,{origin:string;paths:string[];methods:('GET'|'POST')[];auth:'none'|'pcbjam-user'}>;
   };
 }

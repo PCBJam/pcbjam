@@ -162,6 +162,7 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
   const [resetCandidate,setResetCandidate]=React.useState<Descriptor|null>(null);
   const button = 'rounded border border-neutral-300 px-2 py-1.5 text-xs hover:bg-black/5 disabled:opacity-40 dark:border-white/20 dark:hover:bg-white/10';
   const title = selected === BUILTIN ? 'Board Inspector' : active?.manifest.name ?? 'Plugin unavailable';
+  const panelStorageKey = 'pcbjam:plugin-panel-layout:' + JSON.stringify([API_BASE_URL, sessionIdentity()?.slug ?? null, active?.pluginId ?? selected]);
   return <>
     {open && <aside aria-label="Plugins sidebar" className="absolute inset-y-0 right-0 z-[55] flex flex-col border-l border-black/10 bg-white text-neutral-900 shadow-2xl dark:border-white/15 dark:bg-neutral-950 dark:text-white" style={{ width: 'min(360px, 90vw)' }}>
       <header className="flex h-14 shrink-0 items-center gap-2 border-b border-black/10 px-4 dark:border-white/10">
@@ -213,7 +214,7 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
         {(notice || catalog.error) && <p role="alert" className="mt-3 text-amber-700 dark:text-amber-200">{notice || catalog.error}</p>}
       </div>
     </aside>}
-    {selected && <PluginFloatingPanel key={selected} title={title} forceExpanded={!!prompt} onRestart={restart} onClose={onClose}>
+    {selected && <PluginFloatingPanel key={panelStorageKey} storageKey={panelStorageKey} preferredSize={active?.manifest.uiSize} title={title} forceExpanded={!!prompt} onRestart={restart} onClose={onClose}>
       <div className="max-h-[55%] shrink-0 overflow-y-auto border-b border-black/10 px-3 py-2 text-xs dark:border-white/10">
         <p className="truncate text-neutral-500 dark:text-white/60" title={fileName}>{fileName} · {selection.uuids.length} selected</p>
       {prompt?.kind === 'file' && <section aria-label="Plugin file request" className="mt-3 rounded border border-sky-500/40 p-3">
@@ -241,7 +242,7 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
         {notice && <p role="alert" className="mt-3 text-amber-700 dark:text-amber-200">{notice}</p>}
       </div>
       <div ref={container} className="min-h-0 flex-1" />
-      <footer className="shrink-0 border-t border-black/10 px-3 py-2 text-[11px] text-neutral-500 dark:border-white/10 dark:text-white/50" role="status">{!doc ? 'Waiting for the editor document…' : status || 'Starting plugin…'}</footer>
+      <footer className="shrink-0 border-t border-black/10 px-7 py-2 text-[11px] text-neutral-500 dark:border-white/10 dark:text-white/50" role="status">{!doc ? 'Waiting for the editor document…' : status || 'Starting plugin…'}</footer>
     </PluginFloatingPanel>}
   </>;
 }
