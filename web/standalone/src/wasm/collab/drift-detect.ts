@@ -14,7 +14,7 @@
  * looks like a user save (no upload, no peer-tab dirty flag).
  */
 import {
-  compareSlots,
+  compareDriftLayouts,
   type DriftReportBody,
   driftDocDelta,
   fileToDoc,
@@ -149,7 +149,8 @@ export function startDriftDetection(opts: DriftDetectOptions): DriftDetector {
     // v2 reorders legitimately, so they are noise, not divergence (kicad-delta.ts).
     const diff = driftDocDelta(ydocDoc, wasmDoc);
     // driftDocDelta covers items only; flag layout/preamble divergence separately.
-    const layoutRelation = compareSlots(ydocDoc.layout, wasmDoc.layout);
+    // Orphaned Y-side lib_symbols definitions are excused (compareDriftLayouts).
+    const layoutRelation = compareDriftLayouts(ydocDoc, wasmDoc);
     const layoutChanged = layoutRelation === "different";
     const layoutReordered = layoutRelation === "reordered";
     const metaChanged = ydocDoc.root !== wasmDoc.root;
