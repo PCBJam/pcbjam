@@ -367,6 +367,7 @@ const PCB: ToolCfg = {
 		(layer "F.Cu")
 		(uuid "66666666-0000-0000-0000-000000000001")
 		(at 100 100)
+		(units (unit (name "A") (pins "2" "1")))
 		(attr smd)
 		(property "Reference" "R1" (at 0 -4.2 0) (layer "F.SilkS") (uuid "66666666-0000-0000-0000-0000000000aa") (effects (font (size 1 1) (thickness 0.15))))
 		(property "Value" "R" (at 0 4.6 0) (layer "F.Fab") (uuid "66666666-0000-0000-0000-0000000000bb") (effects (font (size 1 1) (thickness 0.15))))
@@ -421,6 +422,7 @@ const PCB_FP: ToolCfg = {
 		(layer "F.Cu")
 		(uuid "66666666-0000-0000-0000-000000000001")
 		(at 100 100)
+		(units (unit (name "A") (pins "2" "1")))
 		(attr smd)
 		(property "Reference" "R1" (at 0 -4.2 0) (layer "F.SilkS") (uuid "66666666-0000-0000-0000-0000000000aa") (effects (font (size 1 1) (thickness 0.15))))
 		(property "Value" "R" (at 0 4.6 0) (layer "F.Fab") (uuid "66666666-0000-0000-0000-0000000000bb") (effects (font (size 1 1) (thickness 0.15))))
@@ -492,6 +494,11 @@ test.describe("round trip: file → yjs → file", () => {
     testLogger,
   }) => {
     await expectWireMatchesFile(context, PCB_FP);
+    // `(units …)` is only in the diff if BOTH sides keep it: FOOTPRINT's copy ctor
+    // dropped m_unitInfo, so the wire's safety copy lost it while the save kept it.
+    const { file, wire } = await fileAndWire(context, PCB_FP);
+    expect(file, "file save keeps (units …)").toContain("(units");
+    expect(wire, "wire blob keeps (units …)").toContain("(units");
     expect(hasAbort(testLogger), "no WASM abort").toBe(false);
   });
 
