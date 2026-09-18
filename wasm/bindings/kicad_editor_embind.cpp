@@ -93,6 +93,8 @@ bool        pcbCollabTestSelectByUuid( std::string aUuid );
 // Selection soft-locks (collab-presence 0007).
 void        pcbCollabReleaseSelection( std::string aUuidsJson, std::string aHolder );
 std::string pcbPluginSelectItems( std::string aUuidsJson );
+std::string pcbPluginBoardGeometry( std::string aOptionsJson, std::string aCursorJson, double aBudgetMs,
+                                    int aMaxChars );
 std::string pcbCollabTestGetLocked();
 std::string pcbCollabTestSelectFirst();
 bool        pcbCollabTestClearSelection();
@@ -622,6 +624,19 @@ static void collabReleaseSelection( std::string aUuidsJson, std::string aHolder 
                       : schCollabReleaseSelection( aUuidsJson, aHolder );
 }
 
+// Board shapes exist for the PCB editor only; the schematic side answers like any other refusal.
+static std::string pluginBoardGeometry( std::string aOptionsJson, std::string aCursorJson, double aBudgetMs,
+                                        int aMaxChars )
+{
+    return pcbEditorActive() ? pcbPluginBoardGeometry( aOptionsJson, aCursorJson, aBudgetMs, aMaxChars )
+                             : std::string( "{\"ok\":false,\"error\":\"NOT_PCB\"}\n" );
+}
+
+static int pluginBoardGeometryVersion()
+{
+    return 1;
+}
+
 static int pluginSelectVersion()
 {
     return 1;
@@ -718,6 +733,8 @@ EMSCRIPTEN_BINDINGS(kicad_editor) {
     function("kicadCollabReleaseSelection", &collabReleaseSelection);
     function("kicadPluginSelectItems", &pluginSelectItems);
     function("kicadPluginSelectVersion", &pluginSelectVersion);
+    function("kicadPluginBoardGeometry", &pluginBoardGeometry);
+    function("kicadPluginBoardGeometryVersion", &pluginBoardGeometryVersion);
     function("kicadCollabTestGetLocked", &collabTestGetLocked);
     function("kicadCollabTestSelectFirst", &collabTestSelectFirst);
     function("kicadCollabTestClearSelection", &collabTestClearSelection);

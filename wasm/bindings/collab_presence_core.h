@@ -41,6 +41,7 @@
 #include <view/view_overlay.h>
 
 #include "collab_common.h"
+#include "open_gate.h"
 #include "collab_presence_style.h"
 
 namespace pcbjam_presence {
@@ -864,6 +865,10 @@ struct CORE
 
         if( j.is_discarded() || !j.is_array() || j.size() > PLUGIN_SELECT_MAX )
             return refuse( "INVALID" );
+
+        // An open in flight has a half-built model (open_gate.h); the TS adapter checks too.
+        if( pcbjam_open::busy() )
+            return refuse( "NO_EDITOR" );
 
         EDA_DRAW_FRAME* fr = frame();
 

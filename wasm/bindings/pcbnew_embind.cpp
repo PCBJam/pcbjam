@@ -62,6 +62,7 @@
 #include <nlohmann/json.hpp>
 #include "collab_common.h"
 #include "collab_presence_core.h"
+#include "plugin_board_geometry.h"
 #include "open_gate.h"
 #include "pcbjam_async_policy.h"
 #include "timer_park.h"
@@ -2140,6 +2141,17 @@ void pcbCollabReleaseSelection( std::string aUuidsJson, std::string aHolder )
 
 // Plugin platform (editor.select): replace the selection with these items, never
 // taking one a collaborator holds. JSON in, JSON out; see CORE::pluginSelect.
+// Plugin platform (board.geometry): the open board as finished shapes, a bounded slice per call.
+// Read-only; see plugin_board_geometry.h for the contract.
+std::string pcbPluginBoardGeometry( std::string aOptionsJson, std::string aCursorJson, double aBudgetMs,
+                                    int aMaxChars )
+{
+    PCB_EDIT_FRAME* fr = pcbFrame();
+
+    return pcbjam_plugin_geometry::read( fr ? fr->GetBoard() : nullptr, aOptionsJson, aCursorJson, aBudgetMs,
+                                         aMaxChars );
+}
+
 // The host feature-detects this before offering editor.select (like kicadPluginPlacementVersion).
 static int pluginSelectVersion()
 {
@@ -3073,6 +3085,8 @@ EMSCRIPTEN_BINDINGS(pcbnew) {
     function("kicadCollabReleaseSelection", &pcbCollabReleaseSelection);
     function("kicadPluginSelectItems", &pcbPluginSelectItems);
     function("kicadPluginSelectVersion", &pluginSelectVersion);
+    function("kicadPluginBoardGeometry", &pcbPluginBoardGeometry);
+    function("kicadPluginBoardGeometryVersion", &pcbjam_plugin_geometry::version);
     function("kicadCollabTestGetLocked", &pcbCollabTestGetLocked);
     function("kicadCollabTestSelectFirst", &pcbCollabTestSelectFirst);
     function("kicadCollabTestSelectComponent", &pcbCollabTestSelectComponent);

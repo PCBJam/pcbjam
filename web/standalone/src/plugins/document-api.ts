@@ -59,6 +59,8 @@ export function createDocumentAPI(options: {
         path: string;
     }[];
     selection(): readonly string[];
+    /** Engine-backed board shapes, where the loaded engine has them. Pinned to the document revision here. */
+    geometry?(request: { tracks: boolean; zones: boolean }): { read(budgetMs: number, maxChars: number): Promise<{ text: string; done: boolean }> };
     subscribeSelection(callback: () => void): () => void;
     signal: AbortSignal;
 }) {
@@ -185,6 +187,22 @@ export function createDocumentAPI(options: {
                     const text = buffer.slice(0, cut);
                     buffer = buffer.slice(cut);
                     return { text, done: finished && !buffer.length };
+                },
+            };
+        },
+        /** Same session contract as openExport; the shapes come from the engine, the revision pin from here. */
+        openGeometry: (request: { tracks: boolean; zones: boolean }) => {
+            live();
+            if (!options.geometry)
+                throw new Error('Board shapes are unavailable in this editor');
+            const started = revision, reader = options.geometry(request);
+            return {
+                revision: started,
+                read: async (budgetMs: number, maxChars: number) => {
+                    live();
+                    if (revision !== started)
+                        throw new Error('Document changed: get its current revision and retry');
+                    return reader.read(budgetMs, maxChars);
                 },
             };
         },

@@ -158,6 +158,27 @@ describe('plugin current-document adapter', () => {
     finally {
         f.close();
     } });
+    it('pins engine board shapes to the document revision', async () => {
+        const doc = new Y.Doc(), abort = new AbortController();
+        doc.getMap(Y_KDOC_META).set('sexprVersion', 2);
+        docToY(fileToDoc(text), doc);
+        const reads: Array<[number, number]> = [], requests: unknown[] = [];
+        const base = { doc, project: { id: 'p1', scope: 'scope', name: 'test' }, fileName: 'b.kicad_pcb', files: [{ path: 'b.kicad_pcb' }], signal: abort.signal, selection: () => [], subscribeSelection: () => () => { } };
+        try {
+            expect(() => createDocumentAPI(base).openGeometry({ tracks: false, zones: false })).toThrow(/unavailable/);
+            const api = createDocumentAPI({ ...base, geometry: request => { requests.push(request); return { read: async (ms, max) => { reads.push([ms, max]); return { text: 'x', done: false }; } }; } });
+            const cursor = api.openGeometry({ tracks: true, zones: false });
+            expect(await cursor.read(8, 1024)).toEqual({ text: 'x', done: false });
+            expect([requests, reads]).toEqual([[{ tracks: true, zones: false }], [[8, 1024]]]);
+            kicadItemsMap(doc).get('s1')!.set('parent', null);
+            await expect(cursor.read(8, 1024)).rejects.toThrow(/Document changed/);
+            expect(reads).toHaveLength(1); // the engine is not entered again once the document moved on
+            const fresh = api.openGeometry({ tracks: false, zones: false });
+            abort.abort();
+            await expect(fresh.read(8, 1024)).rejects.toThrow();
+        }
+        finally { abort.abort(); doc.destroy(); }
+    });
     it('bounds nesting and selection cardinality', () => { const f = fixture(); try {
         f.select(Array(1001).fill('s1'));
         expect(() => f.api.selection()).toThrow(/limits/);

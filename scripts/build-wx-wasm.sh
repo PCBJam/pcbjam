@@ -226,6 +226,16 @@ if [ ! -e "$WX_SOURCE/3rdparty/pcre/src/pcre2_chartables.c" ]; then
     ln -sf pcre2_chartables.c.dist "$WX_SOURCE/3rdparty/pcre/src/pcre2_chartables.c"
 fi
 
+# PCRE ships its generated autotools files (made with Automake 1.16.1) but has no maintainer-mode
+# switch, so make regenerates them whenever they look older than configure.ac / Makefile.am. A git
+# checkout or the source sync gives all of them near-identical mtimes, which makes that a coin toss,
+# and the regeneration then fails on this image's Automake 1.16.5 ("version mismatch") or, run in
+# parallel with config.status --recheck, only sometimes. Nothing here edits those inputs: mark the
+# generated files current, in dependency order, so make never tries.
+for generated in aclocal.m4 configure Makefile.in src/config.h.in; do
+    [ -e "$WX_SOURCE/3rdparty/pcre/$generated" ] && touch "$WX_SOURCE/3rdparty/pcre/$generated"
+done
+
 # PCRE headers must exist before the parallel wx build. A configured cache is
 # normally a no-op here; rebuilding it first also repairs stale dependencies.
 echo ""

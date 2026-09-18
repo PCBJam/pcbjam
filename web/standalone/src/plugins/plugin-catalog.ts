@@ -53,6 +53,7 @@ export interface PackageHost {
         readOnly: boolean;
         canPlaceItems: boolean;
         canSelectItems?: boolean;
+        canReadGeometry?: boolean;
       };
       chooseFile(
         extensions: string[],

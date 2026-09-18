@@ -7,6 +7,7 @@ import { getLocalSelection, subscribeLocalSelection } from '@/wasm/collab/local-
 import { inspectorSnapshot, type InspectorSnapshot } from './board-inspector-projection';
 import { placementModule, validatePlacement, preflightPlacement, placeImportedItem } from './placement';
 import { selectModule, selectItems } from './selection';
+import { geometryModule, openGeometry } from './board-geometry';
 import { createDocumentAPI } from './document-api';
 import { sessionIdentity } from '@/lib/session-identity';
 import { API_BASE_URL } from '@/lib/config';
@@ -93,7 +94,7 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
         const authorize = () => account ? verifyPluginAccount(API_BASE_URL, account, abort.signal) : Promise.resolve();
         let authorizeOperation:(method:string)=>Promise<void> = async()=>{if(hostedPlugins)throw new Error('Plugin is still starting');await authorize();};
         const documents = project ? createDocumentAPI({doc,project,fileName,files:projectFiles ?? [],signal:abort.signal,
-          selection:()=>getLocalSelection().uuids,subscribeSelection:subscribeLocalSelection}) : undefined;
+          selection:()=>getLocalSelection().uuids,subscribeSelection:subscribeLocalSelection,geometry:openGeometry}) : undefined;
         instance = await host.mountPackagePlugin(target, {
           plugin: active, signal: abort.signal, documents, authorize,
           onAuthorizationReady:check=>{authorizeOperation=check;},
@@ -102,7 +103,7 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
             return user && project ? JSON.stringify([API_BASE_URL,user,project.scope,project.id]) : null;
           },
           saveFile: (proposal, signal) => requestUser<{status:'download-requested'|'cancelled'}>(signal,finish=>({kind:'download',name:proposal.name,content:proposal.kind,bytes:proposal.bytes,finish,signal,authorize:()=>authorizeOperation(SAVE_METHODS[proposal.kind])})),
-          context: () => ({ tool, fileName, readOnly, canSelectItems: !!selectModule(), canPlaceItems: !readOnly && !!placementModule() && (!hostedPlugins || tool==='eeschema' && placementModule()?.kicadPluginPlacementVersion?.()===1) }),
+          context: () => ({ tool, fileName, readOnly, canSelectItems: !!selectModule(), canReadGeometry: tool === 'pcbnew' && !!geometryModule(), canPlaceItems: !readOnly && !!placementModule() && (!hostedPlugins || tool==='eeschema' && placementModule()?.kicadPluginPlacementVersion?.()===1) }),
           selectItems: ids => selectItems(ids),
           chooseFile: (extensions, signal) => requestUser<File | null>(signal, finish => ({ kind: 'file', extensions, finish })),
           requestPlacement: (proposal, signal) => {
