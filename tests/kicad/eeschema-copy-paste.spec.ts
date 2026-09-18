@@ -16,9 +16,9 @@ import { stableShot } from '../e2e/utils/element-tracker';
  *  - chromium-only: the copied s-expression must reach the browser clipboard
  *    IN FULL (cross-instance copy/paste transport).
  *  - both engines: copy → paste → save must yield a second symbol and no
- *    stray text item. On firefox (no clipboard permission grants) the paste
- *    exercises the wxClipboard m_textCache fallback; on chromium the real
- *    browser clipboard — both transports covered.
+ *    stray text item. Firefox explicitly exercises the wxClipboard m_textCache
+ *    fallback for denied and timed-out reads; Chromium uses the real browser
+ *    clipboard. No copied payload or native clipboard logic is mocked.
  *
  * The wx-API-level contract has its own harness:
  * wxwidgets/tests/wasm/textdataobj_test.cpp + e2e/textdataobj.spec.ts.
@@ -64,13 +64,17 @@ const SAMPLE_SCH = `(kicad_sch
 `;
 
 const SCH_PATH = '/home/kicad/documents/copypaste.kicad_sch';
+const ORIGINAL_UUID = 'bbbbbbbb-2222-2222-2222-222222222222';
 
 type EmscriptenFS = {
     mkdirTree(path: string): void;
     writeFile(path: string, data: string): void;
     readFile(path: string): Uint8Array;
 };
-type KicadModule = { kicadOpenFile(path: string): unknown };
+type KicadModule = {
+    kicadOpenFile(path: string): unknown;
+    kicadCollabGetSelection(): string;
+};
 type WxWindow = Window & { FS: EmscriptenFS; Module: KicadModule };
 
 async function bootWithSchematic(page: import('@playwright/test').Page) {
@@ -137,15 +141,19 @@ async function bootWithSchematic(page: import('@playwright/test').Page) {
 // ignores (observed: 'a' alone opened the Place Symbol dialog).
 async function selectAllAndCopy(page: import('@playwright/test').Page) {
     await page.keyboard.press('Control+a');
-    // Interaction dwell: select-all resolves inside the wx tool framework with
-    // no page-observable (the element registry doesn't expose selection).
-    await page.waitForTimeout(800); // dwell
+    await expect.poll(() => selectedUuids(page), { timeout: 10000 }).toContain(ORIGINAL_UUID);
     await page.keyboard.press('Control+c');
     // Interaction dwell: the copy's clipboard write suspends via JSPI (browser
     // round-trip, 2 s timeout budget inside wxClipboard) and firefox offers no
     // readText to poll; chromium callers re-verify via expect.poll on the
     // clipboard content.
     await page.waitForTimeout(2500); // dwell
+}
+
+async function selectedUuids(page: import('@playwright/test').Page): Promise<string[]> {
+    return page.evaluate(() =>
+        JSON.parse((window as unknown as WxWindow).Module.kicadCollabGetSelection()) as string[]
+    );
 }
 
 test.describe('Eeschema copy/paste', () => {
@@ -178,61 +186,95 @@ test.describe('Eeschema copy/paste', () => {
         expect(clip).toContain('(lib_id "Device:R")');
     });
 
-    test('copy → paste → save yields a second symbol and no stray text item', async ({
-        page,
-    }) => {
-        await bootWithSchematic(page);
+    for (const readFailure of ['denied', 'timeout'] as const) {
+        const suffix = readFailure === 'timeout' ? ' (clipboard read timeout)' : '';
+        test(`copy → paste → save yields a second symbol and no stray text item${suffix}`, async ({
+            page,
+            browserName,
+            testLogger,
+        }) => {
+            test.skip(readFailure === 'timeout' && browserName !== 'firefox',
+                'Firefox covers native cache fallbacks; Chromium covers real clipboard transport');
 
-        await selectAllAndCopy(page);
-        await page.keyboard.press('Escape');
-        // Interaction dwell: selection-clear has no page-observable.
-        await page.waitForTimeout(300); // dwell
+            if (browserName === 'firefox') {
+                // Firefox cannot grant clipboard-read through Playwright. Its browser-level
+                // Paste permission popup can outlive wxClipboard's read timeout and consume
+                // the placement click. Explicitly exercise both failure paths without that
+                // browser UI; keep the copy, native cache and paste implementation real.
+                await page.addInitScript((failure) => {
+                    Object.defineProperty(navigator.clipboard, 'readText', {
+                        configurable: true,
+                        value: () => failure === 'denied'
+                            ? Promise.reject(new DOMException('Test clipboard read denied', 'NotAllowedError'))
+                            : new Promise<string>(() => { /* let wxClipboard's own deadline expire */ }),
+                    });
+                }, readFailure);
+            }
 
-        // Paste attaches the items to the cursor; click commits the placement.
-        await page.mouse.move(500, 300);
-        await page.keyboard.press('Control+v');
-        // Interaction dwell: paste parses the clipboard (a JSPI-suspending
-        // read) and attaches the preview with no page-observable; the real
-        // gate is the FS-save poll below.
-        await page.waitForTimeout(2500); // dwell
-        await stableShot(page, 'eeschema-copy-paste-preview.png');
-        await page.mouse.click(500, 300);
-        // Interaction dwell: the placement commit has no page-observable.
-        await page.waitForTimeout(800); // dwell
-        await page.keyboard.press('Escape');
-        // Interaction dwell: exit-move-tool has no page-observable.
-        await page.waitForTimeout(300); // dwell
+            await bootWithSchematic(page);
+            await expect(page).not.toHaveTitle(/^\*/);
+            await selectAllAndCopy(page);
+            await page.keyboard.press('Escape');
+            await expect.poll(() => selectedUuids(page), { timeout: 10000 }).toEqual([]);
 
-        await page.keyboard.press('Control+s');
+            // Paste selects the new symbol for placement. Wait for that native state,
+            // including the browser read/timeout and JSPI resume, before clicking.
+            await page.mouse.move(500, 300);
+            await page.keyboard.press('Control+v');
+            await expect.poll(async () => {
+                const selected = await selectedUuids(page);
+                return selected.length === 1 && selected[0] !== ORIGINAL_UUID;
+            }, {
+                message: 'the pasted symbol must be attached to the cursor before placement',
+                timeout: 15000,
+            }).toBe(true);
 
-        await expect
-            .poll(
-                async () => {
-                    const content = await page.evaluate((path) => {
-                        const w = window as unknown as WxWindow;
-                        return new TextDecoder().decode(w.FS.readFile(path));
-                    }, SCH_PATH);
-                    return (content.match(/\(lib_id "Device:R"\)/g) || []).length;
-                },
-                {
-                    message:
-                        'saved schematic should contain the original AND the pasted symbol ' +
-                        '(the truncation bug pasted a stray "(" text item instead)',
-                    timeout: 20000,
-                    intervals: [1000],
-                }
-            )
-            .toBe(2);
+            if (browserName === 'firefox') {
+                const warning = readFailure === 'denied'
+                    ? '[wxClipboard] Clipboard read permission denied'
+                    : '[wxClipboard] Clipboard read timed out';
+                expect(testLogger.consoleLogs.some((line) => line.includes(warning)),
+                    'the intended native clipboard fallback must actually execute').toBe(true);
+            }
 
-        const content = await page.evaluate((path) => {
-            const w = window as unknown as WxWindow;
-            return new TextDecoder().decode(w.FS.readFile(path));
-        }, SCH_PATH);
+            const shotSuffix = readFailure === 'timeout' ? '-timeout' : '';
+            await stableShot(page, `eeschema-copy-paste-preview${shotSuffix}.png`);
+            await expect(page).not.toHaveTitle(/^\*/);
+            await page.mouse.click(500, 300);
+            // The title becomes dirty when the paste commit is pushed. Sending Escape
+            // before this point could cancel the pending placement on a busy CI runner.
+            await expect(page).toHaveTitle(/^\*/, { timeout: 15000 });
+            await page.keyboard.press('Escape');
+            await expect.poll(() => selectedUuids(page), { timeout: 10000 }).toEqual([]);
+            await page.keyboard.press('Control+s');
 
-        // The failure mode of the truncation bug: an unparseable clipboard
-        // pastes as a SCH_TEXT (serialized as a (text …) node).
-        expect(content).not.toContain('(text "');
+            await expect
+                .poll(
+                    async () => {
+                        const content = await page.evaluate((path) => {
+                            const w = window as unknown as WxWindow;
+                            return new TextDecoder().decode(w.FS.readFile(path));
+                        }, SCH_PATH);
+                        return (content.match(/\(lib_id "Device:R"\)/g) || []).length;
+                    },
+                    {
+                        message:
+                            'saved schematic should contain the original AND the pasted symbol ' +
+                            '(the truncation bug pasted a stray "(" text item instead)',
+                        timeout: 20000,
+                        intervals: [1000],
+                    }
+                )
+                .toBe(2);
 
-        await stableShot(page, 'eeschema-copy-paste-committed.png');
-    });
+            const content = await page.evaluate((path) => {
+                const w = window as unknown as WxWindow;
+                return new TextDecoder().decode(w.FS.readFile(path));
+            }, SCH_PATH);
+
+            // An unparseable clipboard pastes as a SCH_TEXT instead of a symbol.
+            expect(content).not.toContain('(text "');
+            await stableShot(page, `eeschema-copy-paste-committed${shotSuffix}.png`);
+        });
+    }
 });
