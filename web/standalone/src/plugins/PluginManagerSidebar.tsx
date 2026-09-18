@@ -17,7 +17,7 @@ interface InspectorHost {
     snapshot(scope: 'selection' | 'board'): InspectorSnapshot; signal: AbortSignal; onDisconnected(): void;
   }): Promise<{ dispose(): void }>;
 }
-type Prompt = {kind:'download';name:string;text:string;finish(value:{status:'download-requested'|'cancelled'}):void;signal:AbortSignal;authorize():Promise<void>}
+type Prompt = {kind:'download';name:string;content:'text'|'html'|'image';bytes:Uint8Array;finish(value:{status:'download-requested'|'cancelled'}):void;signal:AbortSignal;authorize():Promise<void>}
   | { kind: 'file'; extensions: string[]; finish(file: File | null): void }
   | { kind: 'placement'; label: string; sexpr: string; finish(value: { status: string }): void;fail(error:Error):void;signal:AbortSignal;authorize():Promise<void> };
 
@@ -97,7 +97,7 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
             const user=sessionIdentity()?.slug;
             return user && project ? JSON.stringify([API_BASE_URL,user,project.scope,project.id]) : null;
           },
-          saveFile: (proposal, signal) => requestUser<{status:'download-requested'|'cancelled'}>(signal,finish=>({kind:'download',...proposal,finish,signal,authorize:()=>authorizeOperation('files.save')})),
+          saveFile: (proposal, signal) => requestUser<{status:'download-requested'|'cancelled'}>(signal,finish=>({kind:'download',name:proposal.name,content:proposal.kind,bytes:proposal.bytes,finish,signal,authorize:()=>authorizeOperation(proposal.method)})),
           context: () => ({ tool, fileName, readOnly, canPlaceItems: !readOnly && !!placementModule() && (!hostedPlugins || tool==='eeschema' && placementModule()?.kicadPluginPlacementVersion?.()===1) }),
           chooseFile: (extensions, signal) => requestUser<File | null>(signal, finish => ({ kind: 'file', extensions, finish })),
           requestPlacement: (proposal, signal) => {
@@ -224,11 +224,12 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
       </section>}
       {prompt?.kind === 'download' && <section aria-label="Confirm plugin download" className="mt-3 rounded border border-sky-500/40 p-3">
         <p>{active?.manifest.name} requests a download of <strong>{prompt.name}</strong>.</p>
-        <p className="my-2 text-neutral-500 dark:text-white/60">{new TextEncoder().encode(prompt.text).length.toLocaleString()} bytes. This downloads a file; it does not save changes to your project.</p>
+        <p className="my-2 text-neutral-500 dark:text-white/60">{prompt.bytes.length.toLocaleString()} bytes. This downloads a file; it does not save changes to your project.</p>
+        {prompt.content === 'html' && <p className="my-2 text-neutral-500 dark:text-white/60">This is a web page containing code from this plugin and data from your design. The code runs when you open the file. PCBJam blocks the page from loading or sending anything over the network.</p>}
         <button className={button} disabled={placementBusy} onClick={async () => {
           if(placing.current)return;placing.current=true;setPlacementBusy(true);
           try {await prompt.authorize();prompt.signal.throwIfAborted();if(promptRef.current!==prompt)return;
-            downloadBytes(prompt.name,new TextEncoder().encode(prompt.text));prompt.finish({status:'download-requested'});
+            downloadBytes(prompt.name,prompt.bytes);prompt.finish({status:'download-requested'});
           }catch(error){setNotice((error as Error).message);}finally{placing.current=false;setPlacementBusy(false);}
         }}>Download file</button>{' '}
         <button className={button} disabled={placementBusy} onClick={()=>prompt.finish({status:'cancelled'})}>Cancel download</button>

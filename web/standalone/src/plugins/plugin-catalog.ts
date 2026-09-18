@@ -67,7 +67,7 @@ export interface PackageHost {
       authorize?(signal: AbortSignal): Promise<void>;
       onAuthorizationReady?(check: (method: string) => Promise<void>): void;
       saveFile?(
-        proposal: { name: string; text: string },
+        proposal: { name: string; text?: string; kind: "text" | "html" | "image"; bytes: Uint8Array; method: string },
         signal: AbortSignal
       ): Promise<{ status: "download-requested" | "cancelled" }>;
     }
