@@ -23,6 +23,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 #include <wx/event.h>
@@ -837,6 +838,101 @@ struct CORE
                 scheduleSelCheck();
             }
         } );
+    }
+
+    /** kicadPluginSelectItems: REPLACE the local selection with the listed items
+     *  on behalf of a plugin. Unlike a click this is bulk and blind, and a
+     *  selection is a soft-lock claim whose tiebreak ignores who held the item
+     *  first (lock-tiebreak.ts) — so an item another client holds is never
+     *  taken: it is reported back as `held` (uuid only — who holds it is other
+     *  users' presence, which no plugin permission covers). Refused
+     *  while a tool is running (would change the selection under a move).
+     *
+     *  The answer is computed now; the selection itself changes on the next
+     *  event-loop turn (never from inside an embind call), re-resolving every
+     *  id there so an item deleted in between is skipped, not dereferenced.
+     *  Input is a JSON array of uuid strings and nothing else reaches the tools. */
+    static constexpr size_t PLUGIN_SELECT_MAX = 500;
+
+    std::string pluginSelect( const std::string& aUuidsJson )
+    {
+        auto refuse = []( const char* aCode ) {
+            return json( { { "ok", false }, { "error", aCode } } ).dump();
+        };
+
+        json j = json::parse( aUuidsJson, nullptr, /*allow_exceptions*/ false );
+
+        if( j.is_discarded() || !j.is_array() || j.size() > PLUGIN_SELECT_MAX )
+            return refuse( "INVALID" );
+
+        EDA_DRAW_FRAME* fr = frame();
+
+        if( !fr || !selectionTool( fr ) )
+            return refuse( "NO_EDITOR" );
+
+        if( !fr->ToolStackIsEmpty() )
+            return refuse( "TOOL_ACTIVE" );
+
+        std::vector<KIID> ids;
+        std::set<KIID>    seen;
+        json              selected = json::array(), held = json::array(), missing = json::array();
+
+        for( const json& u : j )
+        {
+            if( !u.is_string() || u.get_ref<const std::string&>().size() > 64 )
+                return refuse( "INVALID" );
+
+            const std::string& text = u.get_ref<const std::string&>();
+            KIID               id( wxString::FromUTF8( text.c_str() ) );
+
+            if( !seen.insert( id ).second )
+                continue;
+
+            if( !resolveItem( fr, id ) )
+                missing.push_back( text );
+            else if( locks.count( id ) )
+                held.push_back( text );
+            else
+            {
+                ids.push_back( id );
+                selected.push_back( text );
+            }
+        }
+
+        fr->CallAfter( [this, fr, ids]() {
+            SELECTION_TOOL* st = selectionTool( fr );
+
+            if( !st || !fr->ToolStackIsEmpty() )
+                return;
+
+            EDA_ITEMS add;
+
+            for( const KIID& id : ids )
+            {
+                EDA_ITEM* item = resolveItem( fr, id );
+
+                // A lock may have arrived since the answer was computed.
+                if( item && !locks.count( id ) )
+                    add.push_back( item );
+            }
+
+            EDA_ITEMS current;
+
+            for( EDA_ITEM* item : st->GetSelection() )
+                current.push_back( item );
+
+            // One selection event for the whole change, not one per half.
+            if( !current.empty() )
+                st->RemoveItemsFromSel( &current, /*aQuietMode*/ !add.empty() );
+
+            if( !add.empty() )
+                st->AddItemsToSel( &add );
+
+            scheduleSelCheck();
+        } );
+
+        return json( { { "ok", true }, { "selected", selected }, { "held", held }, { "missing", missing } } )
+                .dump();
     }
 
     /** Test probe (0007): the current remote soft-lock set as `[{uuid, name}]`. */

@@ -6,6 +6,7 @@ import { PluginFloatingPanel } from './PluginFloatingPanel';
 import { getLocalSelection, subscribeLocalSelection } from '@/wasm/collab/local-selection';
 import { inspectorSnapshot, type InspectorSnapshot } from './board-inspector-projection';
 import { placementModule, validatePlacement, preflightPlacement, placeImportedItem } from './placement';
+import { selectModule, selectItems } from './selection';
 import { createDocumentAPI } from './document-api';
 import { sessionIdentity } from '@/lib/session-identity';
 import { API_BASE_URL } from '@/lib/config';
@@ -17,6 +18,9 @@ interface InspectorHost {
     snapshot(scope: 'selection' | 'board'): InspectorSnapshot; signal: AbortSignal; onDisconnected(): void;
   }): Promise<{ dispose(): void }>;
 }
+// The confirmation authorizes the operation that matches what is being saved, from a closed table,
+// never a method name carried in the request.
+const SAVE_METHODS = { text: 'files.save', html: 'files.saveHtml', image: 'files.saveImage' } as const;
 type Prompt = {kind:'download';name:string;content:'text'|'html'|'image';bytes:Uint8Array;finish(value:{status:'download-requested'|'cancelled'}):void;signal:AbortSignal;authorize():Promise<void>}
   | { kind: 'file'; extensions: string[]; finish(file: File | null): void }
   | { kind: 'placement'; label: string; sexpr: string; finish(value: { status: string }): void;fail(error:Error):void;signal:AbortSignal;authorize():Promise<void> };
@@ -97,8 +101,9 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
             const user=sessionIdentity()?.slug;
             return user && project ? JSON.stringify([API_BASE_URL,user,project.scope,project.id]) : null;
           },
-          saveFile: (proposal, signal) => requestUser<{status:'download-requested'|'cancelled'}>(signal,finish=>({kind:'download',name:proposal.name,content:proposal.kind,bytes:proposal.bytes,finish,signal,authorize:()=>authorizeOperation(proposal.method)})),
-          context: () => ({ tool, fileName, readOnly, canPlaceItems: !readOnly && !!placementModule() && (!hostedPlugins || tool==='eeschema' && placementModule()?.kicadPluginPlacementVersion?.()===1) }),
+          saveFile: (proposal, signal) => requestUser<{status:'download-requested'|'cancelled'}>(signal,finish=>({kind:'download',name:proposal.name,content:proposal.kind,bytes:proposal.bytes,finish,signal,authorize:()=>authorizeOperation(SAVE_METHODS[proposal.kind])})),
+          context: () => ({ tool, fileName, readOnly, canSelectItems: !!selectModule(), canPlaceItems: !readOnly && !!placementModule() && (!hostedPlugins || tool==='eeschema' && placementModule()?.kicadPluginPlacementVersion?.()===1) }),
+          selectItems: ids => selectItems(ids),
           chooseFile: (extensions, signal) => requestUser<File | null>(signal, finish => ({ kind: 'file', extensions, finish })),
           requestPlacement: (proposal, signal) => {
             if (readOnly) throw new Error('This document is read-only');

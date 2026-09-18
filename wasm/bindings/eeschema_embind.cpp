@@ -2505,6 +2505,19 @@ void schCollabReleaseSelection( std::string aUuidsJson, std::string aHolder )
     presenceCore().releaseSelection( aUuidsJson, aHolder );
 }
 
+// Plugin platform (editor.select): replace the selection with these items, never
+// taking one a collaborator holds. JSON in, JSON out; see CORE::pluginSelect.
+// The host feature-detects this before offering editor.select (like kicadPluginPlacementVersion).
+static int pluginSelectVersion()
+{
+    return 1;
+}
+
+std::string schPluginSelectItems( std::string aUuidsJson )
+{
+    return presenceCore().pluginSelect( aUuidsJson );
+}
+
 // Test probe (0007): the current remote soft-lock set as `[{uuid, name}]`.
 std::string schCollabTestGetLocked()
 {
@@ -2858,6 +2871,8 @@ EMSCRIPTEN_BINDINGS(eeschema) {
     function("kicadCollabTestGetCrossMapped", &schCollabTestGetCrossMapped);
     // Selection soft-locks (0007).
     function("kicadCollabReleaseSelection", &schCollabReleaseSelection);
+    function("kicadPluginSelectItems", &schPluginSelectItems);
+    function("kicadPluginSelectVersion", &pluginSelectVersion);
     function("kicadCollabTestGetLocked", &schCollabTestGetLocked);
     function("kicadCollabTestSelectFirst", &schCollabTestSelectFirst);
     function("kicadCollabTestSelectComponent", &schCollabTestSelectComponent);

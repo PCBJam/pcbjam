@@ -92,6 +92,7 @@ std::string pcbCollabTestSelectComponent();
 bool        pcbCollabTestSelectByUuid( std::string aUuid );
 // Selection soft-locks (collab-presence 0007).
 void        pcbCollabReleaseSelection( std::string aUuidsJson, std::string aHolder );
+std::string pcbPluginSelectItems( std::string aUuidsJson );
 std::string pcbCollabTestGetLocked();
 std::string pcbCollabTestSelectFirst();
 bool        pcbCollabTestClearSelection();
@@ -143,6 +144,7 @@ std::string schCollabTestSelectComponent();
 bool        schCollabTestSelectByUuid( std::string aUuid );
 // Selection soft-locks (collab-presence 0007).
 void        schCollabReleaseSelection( std::string aUuidsJson, std::string aHolder );
+std::string schPluginSelectItems( std::string aUuidsJson );
 std::string schCollabTestGetLocked();
 std::string schCollabTestSelectFirst();
 bool        schCollabTestClearSelection();
@@ -620,6 +622,16 @@ static void collabReleaseSelection( std::string aUuidsJson, std::string aHolder 
                       : schCollabReleaseSelection( aUuidsJson, aHolder );
 }
 
+static int pluginSelectVersion()
+{
+    return 1;
+}
+
+static std::string pluginSelectItems( std::string aUuidsJson )
+{
+    return pcbEditorActive() ? pcbPluginSelectItems( aUuidsJson ) : schPluginSelectItems( aUuidsJson );
+}
+
 static std::string collabTestGetLocked()
 {
     return pcbEditorActive() ? pcbCollabTestGetLocked() : schCollabTestGetLocked();
@@ -704,6 +716,8 @@ EMSCRIPTEN_BINDINGS(kicad_editor) {
     function("kicadCollabTestSelectByUuid", &collabTestSelectByUuid);
     // Selection soft-locks (collab-presence 0007).
     function("kicadCollabReleaseSelection", &collabReleaseSelection);
+    function("kicadPluginSelectItems", &pluginSelectItems);
+    function("kicadPluginSelectVersion", &pluginSelectVersion);
     function("kicadCollabTestGetLocked", &collabTestGetLocked);
     function("kicadCollabTestSelectFirst", &collabTestSelectFirst);
     function("kicadCollabTestClearSelection", &collabTestClearSelection);

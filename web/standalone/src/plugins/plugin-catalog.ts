@@ -52,6 +52,7 @@ export interface PackageHost {
         fileName: string;
         readOnly: boolean;
         canPlaceItems: boolean;
+        canSelectItems?: boolean;
       };
       chooseFile(
         extensions: string[],
@@ -66,6 +67,7 @@ export interface PackageHost {
       storageBinding?(): string | null;
       authorize?(signal: AbortSignal): Promise<void>;
       onAuthorizationReady?(check: (method: string) => Promise<void>): void;
+      selectItems?(ids: string[], signal: AbortSignal): Promise<{ selected: string[]; held: string[]; missing: string[] }>;
       saveFile?(
         proposal: { name: string; text?: string; kind: "text" | "html" | "image"; bytes: Uint8Array; method: string },
         signal: AbortSignal
