@@ -1,7 +1,9 @@
 import { Resend } from 'resend';
 
 /**
- * Waitlist endpoint — a Cloudflare Pages Function.
+ * Newsletter signup endpoint — a Cloudflare Pages Function. It began as the
+ * waitlist and keeps that path: the demo cross-posts to it and the deploy smoke
+ * check + deploy/site/verify.sh pin it.
  *
  * The rest of the site is fully static, so this is the only server-side code we
  * ship. It lives in functions/ rather than src/pages/ because the Astro build
@@ -224,13 +226,15 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     const { error: sendError } = await resend.emails.send({
       from: env.WAITLIST_FROM_EMAIL ?? DEFAULT_FROM_EMAIL,
       to: email,
-      subject: "You're on the PCBJam waitlist",
+      subject: "You're subscribed to PCBJam updates",
       text: [
-        "You're on the list. 🎉",
+        "You're subscribed. 🎉",
         '',
-        "We'll send your early-access invite as seats open in waves, plus the occasional",
-        'product update. Every update includes an unsubscribe link — and you can reply',
-        'to this email at any time to be taken off the list.',
+        "We'll write when there's product news: releases, new features, the occasional",
+        'devblog. Every update includes an unsubscribe link — and you can reply to this',
+        'email at any time to be taken off the list.',
+        '',
+        'PCBJam is open to use now, no invite needed: https://app.pcbjam.com',
         '',
         "Didn't sign up? Just reply and we'll remove this address.",
         '',

@@ -1,21 +1,31 @@
 ---
 /**
- * AppCta — the primary call to action: a button into the app.
- * Drop-in for WaitlistForm (same `id` / `class` props and `micro` slot), used in
- * the hero and the contact section.
+ * AppCta — the primary call to action: a button into the app. Used in the hero
+ * and the contact section. Pass `newsletter` (the form's attribution tag) to also
+ * render the newsletter signup underneath — only the contact section does.
  */
 import { APP_URL } from '../lib/app-url';
+import NewsletterForm from './NewsletterForm.astro';
 
 interface Props {
+  newsletter?: string; // NewsletterForm `source`, e.g. 'final'; omit for no form
   id?: string; // wrapper id; the hero keeps "waitlist" so old /#waitlist links still land
   class?: string;
 }
 
-const { id, class: cls = '' } = Astro.props;
+const { newsletter, id, class: cls = '' } = Astro.props;
 ---
 
 <div class={`app-cta ${cls}`} id={id}>
   <a class="btn btn-primary" href={APP_URL}>Go to app</a>
+
+  {
+    newsletter && (
+      <div class="cta-newsletter">
+        <NewsletterForm source={newsletter} />
+      </div>
+    )
+  }
 
   {
     Astro.slots.has('micro') && (
@@ -30,13 +40,17 @@ const { id, class: cls = '' } = Astro.props;
   .app-cta {
     width: 100%;
   }
+  .cta-newsletter {
+    max-width: 32rem;
+    margin-top: 0.75rem;
+  }
   .cta-micro {
     font-size: 0.85rem;
     margin: 0.6rem 0 0;
   }
 
   @media (max-width: 540px) {
-    .app-cta .btn {
+    .app-cta > .btn {
       width: 100%;
     }
   }

@@ -1,15 +1,19 @@
 ---
 /**
- * WaitlistForm — email capture with progressive enhancement.
+ * NewsletterForm — email capture with progressive enhancement. It posts to
+ * /api/waitlist: the endpoint kept its name from the waitlist days (the demo, the
+ * deploy smoke check and deploy/site/verify.sh all pin that path), and it does the
+ * same job — add the address to the Resend segment, send a confirmation.
  *  - Works with NO JS: native POST to /api/waitlist → 303 back to /?waitlist=ok.
  *  - With JS: fetch + inline success state, no navigation.
- * Reused in the hero and the contact section via the `source` prop (attribution).
+ * Rendered by AppCta under the contact section's "Go to app" button; the `source`
+ * prop is attribution. The submit button is a ghost so the page keeps one red CTA.
  * Pass a `micro` slot to replace the default line under the form.
  * The script is bound on astro:page-load so it survives ClientRouter SPA swaps.
  */
 interface Props {
   source: string; // 'hero' | 'final' | 'footer' …
-  id?: string; // wrapper id; pass "waitlist" on the hero for the #waitlist anchor
+  id?: string;
   layout?: 'row' | 'stack';
   microcopy?: string;
   class?: string;
@@ -19,7 +23,7 @@ const {
   source,
   id,
   layout = 'row',
-  microcopy = 'Get early-access invites and the occasional product update.',
+  microcopy = 'The occasional product update by email.',
   class: cls = '',
 } = Astro.props;
 
@@ -52,7 +56,7 @@ const hpId = `wl-hp-${source}`;
     </div>
 
     <input type="hidden" name="source" value={source} />
-    <button class="btn btn-primary" type="submit">Join the waitlist</button>
+    <button class="btn btn-ghost" type="submit">Subscribe</button>
   </form>
 
   <p class="wl-error" role="alert" hidden data-wl-error>
@@ -60,8 +64,8 @@ const hpId = `wl-hp-${source}`;
   </p>
 
   <div class="wl-success" hidden data-wl-success>
-    <strong>You're on the list. 🎉</strong>
-    <span class="muted">We'll be in touch with product updates and your early-access invite.</span>
+    <strong>You're subscribed. 🎉</strong>
+    <span class="muted">Check your inbox for a confirmation. We'll write when there's product news.</span>
   </div>
 
   {
@@ -173,7 +177,7 @@ const hpId = `wl-hp-${source}`;
         const label = btn?.textContent;
         if (btn) {
           btn.disabled = true;
-          btn.textContent = 'Joining…';
+          btn.textContent = 'Subscribing…';
         }
         try {
           const res = await fetch(form.action, {
@@ -193,7 +197,7 @@ const hpId = `wl-hp-${source}`;
         }
         if (btn) {
           btn.disabled = false;
-          btn.textContent = label ?? 'Join the waitlist';
+          btn.textContent = label ?? 'Subscribe';
         }
       });
     });
@@ -203,10 +207,13 @@ const hpId = `wl-hp-${source}`;
     const status = params.get('waitlist');
     if (status === 'ok' || status === 'error') {
       const hashId = window.location.hash.slice(1);
-      const wrap =
-        (hashId && document.getElementById(hashId)?.closest('[data-waitlist-wrap]')) ||
-        document.querySelector('[data-waitlist-wrap]');
+      // The endpoint redirects to #waitlist (the hero), but the form lives in the
+      // contact section — bring it into view so the result isn't off-screen.
+      const anchored =
+        hashId && document.getElementById(hashId)?.querySelector('[data-waitlist-wrap]');
+      const wrap = anchored || document.querySelector('[data-waitlist-wrap]');
       if (wrap) {
+        if (!anchored) wrap.scrollIntoView({ block: 'center' });
         if (status === 'ok') {
           wrap.querySelector('[data-waitlist]')?.setAttribute('hidden', '');
           wrap.querySelector('[data-wl-success]')?.removeAttribute('hidden');
