@@ -17,38 +17,11 @@
  * to all project sheets when the closure cannot be computed at all — the cost
  * of over-warming is sockets, the cost of under-warming would be missed
  * collab, so unknowns err toward inclusion.
+ *
+ * The reference grammar itself (`SHEETFILE_RE`, `resolveSheetRef`) lives in
+ * @pcbjam/shared: the platform's file ops resolve the same references.
  */
-
-/** `(property "Sheetfile" "…")` — value may contain escaped quotes. */
-const SHEETFILE_RE = /\(property\s+"Sheetfile"\s+"((?:[^"\\]|\\.)*)"/g;
-
-function unescapeSexpr(value: string): string {
-  return value.replace(/\\(.)/g, "$1");
-}
-
-/**
- * Resolve a Sheetfile reference against the REFERENCING sheet's directory.
- * KiCad writes plain relative paths (`Power.kicad_sch`, `../shared/x.kicad_sch`);
- * a `${KIPRJMOD}/` prefix (project root) appears in some hand-edited files.
- */
-function resolveRef(parentPath: string, ref: string): string {
-  let r = unescapeSexpr(ref).trim().replace(/\\/g, "/");
-  const projRelative = r.startsWith("${KIPRJMOD}/");
-  if (projRelative) r = r.slice("${KIPRJMOD}/".length);
-  const baseDir = projRelative
-    ? []
-    : parentPath.split("/").slice(0, -1);
-  const out = [...baseDir];
-  for (const seg of r.split("/")) {
-    if (seg === "" || seg === ".") continue;
-    if (seg === "..") {
-      out.pop();
-      continue;
-    }
-    out.push(seg);
-  }
-  return out.join("/");
-}
+import { resolveSheetRef, SHEETFILE_RE } from "@pcbjam/shared";
 
 /**
  * The opened hierarchy: `rootPath` plus every transitively referenced sheet
@@ -68,7 +41,7 @@ export function resolveSheetHierarchy(
     const text = readText(parent);
     if (text === null) continue; // unreadable: keep it warmed, don't expand
     for (const match of text.matchAll(SHEETFILE_RE)) {
-      const child = resolveRef(parent, match[1]!);
+      const child = resolveSheetRef(parent, match[1]!);
       // Only project members get rooms — a reference outside the file list
       // has nothing to collaborate on (missing file, external path).
       if (!known.has(child) || visited.has(child)) continue;

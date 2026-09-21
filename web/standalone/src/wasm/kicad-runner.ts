@@ -117,6 +117,23 @@ export function restageFile(
   log(`[memfs] wrote ${dest} (${bytes.length} bytes)`);
 }
 
+/** Remove one staged project file from the tool's MEMFS (a peer's file op
+ *  deleted or moved it — project-page 0003). Missing is fine. */
+export function unstageFile(
+  win: ToolWindow,
+  slug: string,
+  relPath: string,
+  log: (msg: string) => void,
+): void {
+  const dest = memfsFilePath(slug, relPath);
+  try {
+    (getFS(win) as unknown as { unlink(path: string): void }).unlink(dest);
+    log(`[memfs] removed ${dest}`);
+  } catch {
+    /* never staged, or already gone */
+  }
+}
+
 /** Read one staged project file back from the tool's MEMFS (null if absent).
  *  Counterpart of {@link restageFile}; used post-open to inspect the target
  *  document (e.g. which lib nicknames it references). */

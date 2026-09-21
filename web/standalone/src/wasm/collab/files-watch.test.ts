@@ -122,6 +122,51 @@ describe("files hint router (project-sync 0002 §3)", () => {
     expect(log.mock.calls.some((c) => String(c[0]).includes("deleted"))).toBe(true);
   });
 
+  it("a removed sibling is unstaged — room-backed or not — and a pending restage is cancelled", async () => {
+    const removed: string[] = [];
+    const { router, restaged } = makeRouter({
+      debounceMs: 20,
+      onPathRemoved: (c) => removed.push(c.path),
+    });
+    router.handle(1, [ch({ by: "peer" })]); // restage queued…
+    router.handle(2, [
+      ch({ revision: 0, deleted: true, origin: "upload", by: "peer" }), // …then the file goes
+      ch({ path: "root.kicad_sch", revision: 0, deleted: true, origin: "upload", by: "peer" }),
+    ]);
+    await new Promise((r) => setTimeout(r, 40));
+    expect(removed).toEqual(["x.kicad_pro", "root.kicad_sch"]);
+    expect(restaged).toEqual([]);
+  });
+
+  it("a move unstages the old path and stages the new one from the same batch", async () => {
+    const events: string[] = [];
+    const { router, restaged } = makeRouter({
+      onPathRemoved: (c) => events.push(`gone:${c.path}->${c.movedTo}`),
+      onNewPath: (p) => events.push(`new:${p}`),
+    });
+    router.handle(1, [
+      ch({ path: "root.kicad_sch", revision: 0, deleted: true, movedTo: "hw/root.kicad_sch", origin: "upload", by: "peer" }),
+      ch({ path: "hw/root.kicad_sch", revision: 4, origin: "upload", by: "peer" }),
+    ]);
+    await tick();
+    expect(events).toEqual(["gone:root.kicad_sch->hw/root.kicad_sch", "new:hw/root.kicad_sch"]);
+    expect(restaged).toEqual(["hw/root.kicad_sch"]);
+  });
+
+  it("removing the open document — the target or the active sheet — raises the banner, not an unstage", () => {
+    const events: string[] = [];
+    const { router } = makeRouter({
+      isOpenPath: (p) => p === "root.kicad_sch",
+      onPathRemoved: (c) => events.push(`gone:${c.path}`),
+      onTargetRemoved: (c) => events.push(`banner:${c.path}:${c.movedTo ?? "deleted"}`),
+    });
+    router.handle(1, [
+      ch({ path: "board.kicad_pcb", revision: 0, deleted: true, origin: "upload", by: "peer" }),
+      ch({ path: "root.kicad_sch", revision: 0, deleted: true, movedTo: "b.kicad_sch", origin: "upload", by: "peer" }),
+    ]);
+    expect(events).toEqual(["banner:board.kicad_pcb:deleted", "banner:root.kicad_sch:b.kicad_sch"]);
+  });
+
   it("destroy cancels pending restages", async () => {
     const { router, restaged } = makeRouter({ debounceMs: 20 });
     router.handle(1, [ch({ by: "peer" })]);

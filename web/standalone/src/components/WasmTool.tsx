@@ -40,6 +40,7 @@ import {
   driveProjectIntoTool,
   readStagedFile,
   restageFile,
+  unstageFile,
   usedLibNicknames,
   type ToolFile,
 } from "@/wasm/kicad-runner";
@@ -112,7 +113,7 @@ import { BootOverlay } from "@/components/wasm-tool/BootOverlay";
 import { ConsolePanel } from "@/components/wasm-tool/ConsolePanel";
 import { FatalOverlay } from "@/components/wasm-tool/FatalOverlay";
 import { LibLoadingOverlay } from "@/components/wasm-tool/LibLoadingOverlay";
-import { NoticeStack } from "@/components/wasm-tool/NoticeStack";
+import { NoticeStack, type FileGoneNotice } from "@/components/wasm-tool/NoticeStack";
 import { FollowBanner, SessionMenu } from "@/components/wasm-tool/SessionMenu";
 import { useLibNotices } from "@/components/wasm-tool/useLibNotices";
 import {
@@ -389,6 +390,7 @@ export function WasmTool({
   // silently absorbed, so without this surface the user would keep "saving"
   // into the void.
   const [saveBlocked, setSaveBlocked] = React.useState<SaveBlock | null>(null);
+  const [fileGone, setFileGone] = React.useState<FileGoneNotice | null>(null);
   // The OTHER users in this document's collab room (awareness roster) — drives
   // the PresenceRoster chip next to SourceChip. Empty when collab is off, the
   // provider has no awareness (kind "none"), or nobody else is here.
@@ -1496,6 +1498,28 @@ export function WasmTool({
             rememberObserved: (p, r) => rememberObservedRevision?.(p, r),
             fetchBytes,
             restage: (p, bytes) => restageFile(win, slug, p, bytes, append),
+            // A peer's file op (project-page 0003). Not on screen: drop it
+            // from MEMFS + the sheet pool so nothing reads a file that is gone.
+            onPathRemoved: (c) => {
+              roomBacked.delete(c.path);
+              sheetManagerRef.current?.invalidate(c.path);
+              unstageFile(win, slug, c.path, append);
+            },
+            isOpenPath: (p) => sheetManagerRef.current?.active()?.sheetPath === p,
+            // On screen: keep MEMFS (the frame is on it) and say what happened.
+            onTargetRemoved: (c) =>
+              setFileGone({
+                path: c.path,
+                by: c.by ?? null,
+                ...(c.movedTo
+                  ? {
+                      movedTo: {
+                        path: c.movedTo,
+                        href: projectPath(currentScope(), slug, c.movedTo) + window.location.search,
+                      },
+                    }
+                  : {}),
+              }),
             onNewPath: (p) => {
               if (p.endsWith(".kicad_sch")) void sheetManagerRef.current?.onboard(p);
             },
@@ -1914,6 +1938,7 @@ export function WasmTool({
         modelsSync={notices.modelsSync}
         libBusy={notices.libBusy}
         saveBlocked={saveBlocked}
+        fileGone={fileGone}
         libError={notices.libError}
         onDismissLibError={notices.dismissLibError}
         libUpdate={notices.libUpdate}

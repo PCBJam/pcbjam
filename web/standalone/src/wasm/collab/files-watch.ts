@@ -17,6 +17,14 @@ import { connectProvider, type ProviderConfig, type YjsProvider } from "./provid
  *    no room): `onTargetChanged` — the host shows a reload/conflict notice;
  *    the CAS lane keeps guarding the next save.
  *
+ *  - Removed paths (project-page 0003): a `deleted` entry — a file op trashed
+ *    the file, or moved it (`movedTo`; the same batch announces the new path
+ *    as an ordinary change). `onPathRemoved` drops it from MEMFS / parked
+ *    rooms so "Update PCB from Schematic" cannot read a file that no longer
+ *    exists; when it is the OPEN document, `onTargetRemoved` raises the
+ *    persistent "deleted / moved to …" banner. Room-backed or not makes no
+ *    difference here: existence is not something the room carries.
+ *
  * Room-backed paths (listing hasYdoc/isLive) are ignored for EDITOR-origin
  * hints: the room is the truth there and already carries its own
  * `touched`/frames. An `upload`/`job` hint on a room-backed path is an
@@ -61,6 +69,12 @@ export interface FilesWatchOptions {
   /** A room-backed path was replaced at rest by an upload/job (0004 §2.5). */
   onRoomBackedChanged?: (relPath: string) => void;
   onTargetChanged?: (change: GatewayFileChange) => void;
+  /** A file op removed / moved a path that is NOT open here: unstage it. */
+  onPathRemoved?: (change: GatewayFileChange) => void;
+  /** Is this path on screen right now (the target, or the active sheet)? */
+  isOpenPath?: (relPath: string) => boolean;
+  /** A file op removed / moved the document this editor has open. */
+  onTargetRemoved?: (change: GatewayFileChange) => void;
   onListingStale?: () => void;
   log: (m: string) => void;
   /** Test seam: replace the gateway connect. */
@@ -114,9 +128,25 @@ export function createFilesHintRouter(opts: FilesWatchOptions) {
         continue;
       }
       opts.rememberObserved(change.path, change.revision);
+      if (change.deleted) {
+        knownPaths.delete(change.path);
+        const pending = timers.get(change.path);
+        if (pending) {
+          clearTimeout(pending);
+          timers.delete(change.path);
+        }
+        const where = change.movedTo ? `moved to ${change.movedTo}` : "deleted";
+        opts.log(`[files] ${change.path} ${where} by ${change.by ?? "a job"}`);
+        if (change.path === opts.targetPath || opts.isOpenPath?.(change.path)) {
+          opts.onTargetRemoved?.(change);
+        } else {
+          opts.onPathRemoved?.(change);
+        }
+        continue;
+      }
       if (opts.isRoomBacked(change.path)) {
         // The room owns editor writes; an at-rest replacement is different.
-        if (change.origin === "editor" || change.deleted) continue;
+        if (change.origin === "editor") continue;
         if (change.path === opts.targetPath) {
           opts.onTargetChanged?.(change);
           continue;
@@ -125,11 +155,6 @@ export function createFilesHintRouter(opts: FilesWatchOptions) {
       }
       if (change.path === opts.targetPath) {
         opts.onTargetChanged?.(change);
-        continue;
-      }
-      if (change.deleted) {
-        // v1: MEMFS keeps the last copy; the next boot drops it.
-        opts.log(`[files] ${change.path} deleted by ${change.by ?? "a job"} — kept in MEMFS until reload`);
         continue;
       }
       if (!knownPaths.has(change.path)) {

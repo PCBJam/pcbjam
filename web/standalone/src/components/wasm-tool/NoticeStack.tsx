@@ -4,6 +4,15 @@ import type { SaveBlock } from "@/wasm/save-flow";
 import { libSyncLabel } from "./DownloadConsent";
 import type { LibSetNotice } from "./useLibNotices";
 
+/** The open document was deleted / moved by a collaborator's file op
+ *  (project-page 0003): nothing typed from here on can be saved. */
+export interface FileGoneNotice {
+  path: string;
+  by: string | null;
+  /** Set for a move: editor URL of the file's new home. */
+  movedTo?: { path: string; href: string };
+}
+
 /**
  * Every transient notice the running editor shows over the canvas: the
  * bottom-left progress badges (lib pre-sync, 3D models), the busy pill, the
@@ -17,6 +26,7 @@ export function NoticeStack({
   modelsSync,
   libBusy,
   saveBlocked,
+  fileGone,
   libError,
   onDismissLibError,
   libUpdate,
@@ -31,6 +41,7 @@ export function NoticeStack({
   modelsSync: string | null;
   libBusy: string | null;
   saveBlocked: SaveBlock | null;
+  fileGone?: FileGoneNotice | null;
   libError: string | null;
   onDismissLibError: () => void;
   libUpdate: string | null;
@@ -76,6 +87,30 @@ export function NoticeStack({
           className="absolute inset-x-0 top-0 z-40 bg-red-900/95 px-4 py-2 text-center text-xs font-medium text-red-100 shadow-lg"
         >
           {saveBlocked.message}
+        </div>
+      )}
+
+      {/* The open file no longer exists under this name — persistent, above
+          the save-blocked banner: it explains every symptom that follows. */}
+      {fileGone && (
+        <div
+          data-testid="file-gone-banner"
+          className="absolute inset-x-0 top-0 z-50 bg-red-900/95 px-4 py-2 text-center text-xs font-medium text-red-100 shadow-lg"
+        >
+          {fileGone.movedTo ? (
+            <>
+              {fileGone.path} was moved to {fileGone.movedTo.path} by {fileGone.by ?? "a collaborator"}.{" "}
+              <a data-testid="file-gone-open" className="underline" href={fileGone.movedTo.href}>
+                Open it there
+              </a>{" "}
+              — edits made here are no longer saved.
+            </>
+          ) : (
+            <>
+              {fileGone.path} was deleted by {fileGone.by ?? "a collaborator"} — edits made here are no
+              longer saved.
+            </>
+          )}
         </div>
       )}
 
