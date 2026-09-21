@@ -1,10 +1,21 @@
 import type * as Y from "yjs";
 import {
+  applyDeltaToY,
   collabRoomId,
   fileToDoc,
+  isEmptyKicadDelta,
+  itemsWireToDelta,
+  kicadItemsMap,
+  kicadLibSymbolsMap,
+  parseItemsWireDelta,
   syncLayoutToY,
+  upsertLibSymbolsToY,
+  wireLibSymbols,
   ydocHasState,
+  ydocIsHollow,
+  yToItemUnchecked,
   type KicadDoc,
+  type KicadItem,
   type PresenceUser,
 } from "@pcbjam/shared";
 import { connectKicadDoc, type KicadDocSession } from "./index";
@@ -62,6 +73,14 @@ export interface SheetCollabManager {
    * otherwise only carries them from seed time. No-op for unknown sheets.
    */
   syncLayoutFromSave(sheetPath: string, fileText: string): void;
+  /**
+   * A local commit touched items of a sheet that is NOT the shown one (annotate
+   * all, global edits — the C++ `onSheetItems` hook, 2026-09-21 audit): write
+   * the batch into THAT sheet's room doc. The bound room must never carry it —
+   * peers would add another sheet's items to the shown sheet while the owning
+   * room kept the old state. Resolves once written (or skipped).
+   */
+  writeOffSheet(sheetPath: string, json: string): Promise<void>;
   /** The currently-bound sheet, for drift-detection + presence wiring (null
    *  before first switch). `provider` carries the room's awareness. */
   active(): ActiveSheet | null;
@@ -133,6 +152,13 @@ interface Room {
   editorMatchesDoc: boolean;
   /** A remote update arrived while this sheet was parked → catch-up adopt on next bind. */
   dirty: boolean;
+  /**
+   * The sheet's layout as the editor last agreed on it (the file it loaded,
+   * then each save) — what the save-sync diffs against (syncLayoutToY).
+   */
+  layoutBaseline?: KicadDoc;
+  /** Library definitions changed while parked → the catch-up adopt refreshes their users. */
+  dirtyLibs: Set<string>;
   /** Active only while parked: marks `dirty` on remote doc updates. */
   detachWatch?: () => void;
 }
@@ -168,6 +194,8 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
       seeded: false,
       editorMatchesDoc,
       dirty: false,
+      dirtyLibs: new Set(),
+      layoutBaseline: seedDocForPath(sheetPath),
     });
   }
 
@@ -215,6 +243,10 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
         seeded: false,
         editorMatchesDoc: false,
         dirty: false,
+        dirtyLibs: new Set(),
+        // Read NOW: the MEMFS file is still what the editor loaded — the first
+        // save overwrites it.
+        layoutBaseline: seedDocForPath(sheetPath),
       };
       // Gateway transport: a `touched` hint means the doc changed server-side
       // while this subscription was passive — same catch-up contract as the
@@ -250,8 +282,19 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
     const onUpdate = () => {
       room.dirty = true;
     };
+    // A definition-only change leaves the adopt's item diff empty — remember
+    // which definitions moved so the rebind refreshes their instances.
+    const libs = kicadLibSymbolsMap(room.doc);
+    const onLibs = (ev: Y.YMapEvent<string>, txn: Y.Transaction) => {
+      if (txn.local) return; // our own save-sync: the editor already holds these
+      for (const id of ev.keysChanged) room.dirtyLibs.add(id);
+    };
     room.doc.on("update", onUpdate);
-    room.detachWatch = () => room.doc.off("update", onUpdate);
+    libs.observe(onLibs);
+    room.detachWatch = () => {
+      room.doc.off("update", onUpdate);
+      libs.unobserve(onLibs);
+    };
   }
 
   async function doSwitch(sheetPath: string): Promise<void> {
@@ -319,7 +362,7 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
       clog(`[sheet] seeded ${sheetPath} (editorMatchesDoc=${room.editorMatchesDoc})`);
     } else if (room.dirty) {
       // Remote edits landed while parked: adopt to catch the editor's screen up.
-      binding.seed(undefined, { editorMatchesDoc: false });
+      binding.seed(undefined, { editorMatchesDoc: false, refreshLibIds: room.dirtyLibs });
       clog(`[sheet] re-adopted ${sheetPath} (caught up parked remote edits)`);
     } else {
       // Clean revisit: the editor screen already matches the doc — baseline the differ
@@ -329,6 +372,7 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
     }
 
     room.dirty = false;
+    room.dirtyLibs = new Set();
     room.editorMatchesDoc = false; // only meaningful for the first ydoc-entry seed
     activePath = sheetPath;
     opts.onActiveChange?.({ sheetPath, doc: room.doc, provider: room.session.provider });
@@ -413,6 +457,15 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
     const room = rooms.get(sheetPath);
     if (!room) return; // not a collab sheet (or still onboarding) — nothing to sync
     const write = (): void => {
+      let fileDoc: KicadDoc;
+      try {
+        fileDoc = fileToDoc(fileText);
+      } catch (err) {
+        cwarn(`[sheet] layout save-sync: ${sheetPath} unparseable`, err);
+        return;
+      }
+      const baseline = room.layoutBaseline;
+      room.layoutBaseline = fileDoc;
       // A room nobody has entered yet (never bound this session) and whose
       // doc is still empty has nothing to reconcile: a layout-only write
       // would leave a HOLLOW doc (layout, zero items) that every later first
@@ -425,7 +478,7 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
       try {
         // Writing to a PARKED room's doc marks it dirty via startWatch — fine:
         // the diff-on-rebind adopt makes the catch-up cost the real delta only.
-        if (syncLayoutToY(fileToDoc(fileText), room.doc, "layout-save")) {
+        if (syncLayoutToY(fileDoc, room.doc, "layout-save", baseline)) {
           clog(`[sheet] layout save-sync: ${sheetPath} updated`);
         }
       } catch (err) {
@@ -442,6 +495,63 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
     } else {
       write();
     }
+  }
+
+  // Off-sheet writes run one at a time: two batches for one sheet must land in
+  // emit order, and each awaits a connect/activate.
+  let offSheetQueue: Promise<void> = Promise.resolve();
+
+  async function doWriteOffSheet(sheetPath: string, json: string): Promise<void> {
+    if (opts.readOnly || destroyed) return;
+    // Raced a navigation INTO that sheet: its binding owns the editor now and
+    // diffs against the native view — hand it the batch like any local emit.
+    if (sheetPath === activePath && rooms.get(sheetPath)?.binding) {
+      win.kicadCollab?.onItems?.(json);
+      return;
+    }
+    const room = await ensureRoom(sheetPath);
+    // A write IS demand (same as the layout save-sync): sync a passive doc first.
+    await room.session.provider.activate?.();
+    if (destroyed) return;
+    if (room.binding) {
+      win.kicadCollab?.onItems?.(json);
+      return;
+    }
+    // Never entered and still empty: the first bind file-seeds it and then
+    // re-upserts the editor's snapshot, which already contains this edit. A
+    // partial write here would leave a doc that looks seeded but is not.
+    if (!room.seeded && (!ydocHasState(room.doc) || ydocIsHollow(room.doc))) {
+      clog(`[sheet] off-sheet edit: ${sheetPath} skipped (room never seeded — first bind carries it)`);
+      return;
+    }
+    const wire = parseItemsWireDelta(json);
+    const view: Record<string, KicadItem> = {};
+    kicadItemsMap(room.doc).forEach((ym, uuid) => {
+      view[uuid] = yToItemUnchecked(ym);
+    });
+    // No native-view baseline exists for a parked sheet, so this diffs against
+    // the doc: slots the editor's copy agrees on are not written.
+    const delta = itemsWireToDelta(wire, view, (w, err) =>
+      cwarn("[sheet] off-sheet wire entry skipped:", err, w.sexpr.slice(0, 200)),
+    );
+    const defs = wireLibSymbols(wire);
+    if (isEmptyKicadDelta(delta) && Object.keys(defs).length === 0) return;
+    room.doc.transact(() => {
+      applyDeltaToY(room.doc, delta, OFF_SHEET_ORIGIN);
+      upsertLibSymbolsToY(room.doc, defs, OFF_SHEET_ORIGIN);
+    }, OFF_SHEET_ORIGIN);
+    clog(
+      `[sheet] off-sheet edit → ${sheetPath}:`,
+      `+${delta.added.length} ~${delta.updated.length} -${delta.removed.length}`,
+    );
+  }
+
+  function writeOffSheet(sheetPath: string, json: string): Promise<void> {
+    const run = offSheetQueue.then(() => doWriteOffSheet(sheetPath, json));
+    offSheetQueue = run.catch((err: unknown) => {
+      cwarn(`[sheet] off-sheet edit for ${sheetPath} failed`, err);
+    });
+    return offSheetQueue;
   }
 
   async function connectAll(sheetPaths: string[]): Promise<void> {
@@ -487,7 +597,35 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
     opts.onActiveChange?.(null);
   }
 
-  return { connectAll, switchTo, onboard, invalidate, syncLayoutFromSave, active, destroy };
+  return {
+    connectAll,
+    switchTo,
+    onboard,
+    invalidate,
+    syncLayoutFromSave,
+    writeOffSheet,
+    active,
+    destroy,
+  };
+}
+
+/** Transaction origin of {@link SheetCollabManager.writeOffSheet} writes. */
+export const OFF_SHEET_ORIGIN = "off-sheet-edit";
+
+export interface SheetItemsWindow {
+  kicadCollab?: { onSheetItems?: (absPath: string, json: string) => void };
+}
+
+/**
+ * Register the C++ → JS off-sheet items hook: `window.kicadCollab.onSheetItems(absPath,
+ * json)`, fired from eeschema's flush for dirty roots owned by a screen other than the
+ * shown one. Spread-merges like the sibling hooks.
+ */
+export function registerSheetItemsHook(
+  win: SheetItemsWindow,
+  cb: (absPath: string, json: string) => void,
+): void {
+  win.kicadCollab = { ...win.kicadCollab, onSheetItems: cb };
 }
 
 export interface SheetChangedWindow {

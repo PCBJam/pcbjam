@@ -10,6 +10,7 @@
 #include <emscripten/bind.h>
 #include <kiway_player.h>
 #include <kiway.h>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -18,6 +19,7 @@
 #include <wx/window.h>
 #include <nlohmann/json.hpp>
 #include "open_gate.h"
+#include "collab_common.h"
 #include "pcbjam_async_policy.h"
 #include <eda_draw_frame.h>
 #include <kiid.h>
@@ -222,6 +224,29 @@ std::map<std::string, json> snapshotMap()
     return out;
 }
 
+// Full serialized state per item — the v2 items wire's change detector. The scalar
+// projection above omits persisted fields (repeat count/step/label increment, comment,
+// page option, text box/font/colour…), so an edit to only those never differed and
+// never emitted (2026-09-21 desync audit). The blob is what the wire carries anyway.
+std::map<std::string, std::string> blobMap()
+{
+    std::map<std::string, std::string> out;
+
+    for( DS_DATA_ITEM* it : DS_DATA_MODEL::GetTheInstance().GetItems() )
+        out[ toUtf8( it->m_Uuid.AsString() ) ] = itemBlob( it );
+
+    return out;
+}
+
+std::map<std::string, std::string> s_blobs;
+
+// Declare "current model == broadcast state" for both wires.
+void rebaseline()
+{
+    s_snapshot = snapshotMap();
+    s_blobs = blobMap();
+}
+
 void emit( const json& aDelta )
 {
     std::string s = aDelta.dump();
@@ -392,7 +417,7 @@ void kicadCollabApply( std::string aJson )
     // Rebase the differ on the post-apply state so our own mutations aren't echoed,
     // then rebuild the GAL view from the model. (Selection re-acquire by uuid is a
     // deferred refinement — 0002.)
-    s_snapshot = snapshotMap();
+    rebaseline();
 
     if( EDA_DRAW_FRAME* fr = topFrame() )
         fr->HardRedraw();
@@ -409,17 +434,23 @@ extern "C" void kicadCollabOnModify()
     if( s_applyingRemote )
         return;
 
-    std::map<std::string, json> cur = snapshotMap();
+    std::map<std::string, json>        cur = snapshotMap();
+    std::map<std::string, std::string> curBlobs = blobMap();
 
     json added   = json::array();
     json changed = json::array();
     json removed = json::array();
 
-    // v2 items wire (per-item s-expr blobs), built from the same diff.
+    // v2 items wire (per-item s-expr blobs). Same add/remove set as the scalar diff,
+    // but "changed" compares the FULL blob: a field the scalar projection does not
+    // carry (repeat count/step, comment, page option…) still reaches the wire.
     json wAdded   = json::array();
     json wChanged = json::array();
 
-    DS_DATA_MODEL& model = DS_DATA_MODEL::GetTheInstance();
+    auto wireFor = [&]( const std::string& id )
+    {
+        return json{ { "sexpr", curBlobs[id] }, { "parent", nullptr } };
+    };
 
     for( const auto& [id, j] : cur )
     {
@@ -428,17 +459,17 @@ extern "C" void kicadCollabOnModify()
         if( prev == s_snapshot.end() )
         {
             added.push_back( j );
-
-            if( DS_DATA_ITEM* item = findByUuid( model, id ) )
-                wAdded.push_back( wireItemFor( item ) );
+            wAdded.push_back( wireFor( id ) );
+            continue;
         }
-        else if( prev->second != j )
-        {
+
+        if( prev->second != j )
             changed.push_back( j );
 
-            if( DS_DATA_ITEM* item = findByUuid( model, id ) )
-                wChanged.push_back( wireItemFor( item ) );
-        }
+        auto prevBlob = s_blobs.find( id );
+
+        if( prev->second != j || prevBlob == s_blobs.end() || prevBlob->second != curBlobs[id] )
+            wChanged.push_back( wireFor( id ) );
     }
 
     for( const auto& [id, j] : s_snapshot )
@@ -448,12 +479,13 @@ extern "C" void kicadCollabOnModify()
     }
 
     s_snapshot = std::move( cur );
+    s_blobs = std::move( curBlobs );
 
-    if( added.empty() && changed.empty() && removed.empty() )
-        return;
+    if( !added.empty() || !changed.empty() || !removed.empty() )
+        emit( json{ { "added", added }, { "changed", changed }, { "removed", removed } } );
 
-    emit( json{ { "added", added }, { "changed", changed }, { "removed", removed } } );
-    emitItems( json{ { "added", wAdded }, { "changed", wChanged }, { "removed", removed } } );
+    if( !wAdded.empty() || !wChanged.empty() || !removed.empty() )
+        emitItems( json{ { "added", wAdded }, { "changed", wChanged }, { "removed", removed } } );
 }
 
 
@@ -491,6 +523,7 @@ std::string kicadCollabSnapshot()
         added.push_back( j );
 
     s_snapshot = cur;
+    s_blobs = blobMap();
 
     return json{ { "added", added }, { "changed", json::array() },
                  { "removed", json::array() } }.dump();
@@ -518,7 +551,7 @@ std::string kicadCollabSnapshotItems()
     for( DS_DATA_ITEM* item : model.GetItems() )
         added.push_back( wireItemFor( item ) );
 
-    s_snapshot = snapshotMap();
+    rebaseline();
 
     return json{ { "added", added }, { "changed", json::array() },
                  { "removed", json::array() } }.dump();
@@ -533,10 +566,17 @@ void kicadCollabApplyItems( std::string aJson )
     if( pcbjam_open::busy() ) // open in flight (open_gate.h) — see kicadCollabApply
         return;
 
-    json wire = json::parse( aJson, nullptr, /*allow_exceptions*/ false );
+    json sent = json::parse( aJson, nullptr, /*allow_exceptions*/ false );
 
-    if( wire.is_discarded() )
+    if( sent.is_discarded() )
         return;
+
+    // The binding's resolver contract (ysync 0012 #2): it advances its view of the
+    // native model only when the editor hands a payload back at apply time. This
+    // apply is synchronous, so resolve right here — skipping it left the binding on
+    // the pre-apply baseline, and a local edit BACK to that baseline was then
+    // swallowed as "unchanged" (2026-09-21 desync audit). No-op without a resolver.
+    const json wire = pcbjam_collab::resolveItemsWire( sent );
 
     s_applyingRemote = true;
 
@@ -596,7 +636,7 @@ void kicadCollabApplyItems( std::string aJson )
 
     // Rebase the differ on the post-apply state so our own mutations aren't echoed,
     // then rebuild the GAL view from the model.
-    s_snapshot = snapshotMap();
+    rebaseline();
 
     if( EDA_DRAW_FRAME* fr = topFrame() )
         fr->HardRedraw();
@@ -629,6 +669,42 @@ std::string kicadCollabTestAddText( std::string aText, double aX, double aY )
     return toUtf8( item->m_Uuid.AsString() );
 }
 
+// Test hooks (2026-09-21 desync audit): genuine local edits of an EXISTING item, fired
+// through OnModify like a properties-panel edit. SetPos moves it (the scalar projection
+// sees that); SetRepeat changes only the repeat count, a persisted field the scalar
+// projection never carried. Return false when the uuid is unknown.
+static bool testLocalEdit( const std::string& aId, const std::function<void( DS_DATA_ITEM* )>& aEdit )
+{
+    DS_DATA_ITEM* item = findByUuid( DS_DATA_MODEL::GetTheInstance(), aId );
+
+    if( !item )
+        return false;
+
+    aEdit( item );
+
+    if( EDA_DRAW_FRAME* fr = topFrame() )
+    {
+        fr->OnModify();
+        fr->HardRedraw();
+    }
+
+    return true;
+}
+
+bool kicadCollabTestSetPos( std::string aId, double aX, double aY )
+{
+    return testLocalEdit( aId, [&]( DS_DATA_ITEM* item )
+    {
+        item->m_Pos.m_Pos.x = aX;
+        item->m_Pos.m_Pos.y = aY;
+    } );
+}
+
+bool kicadCollabTestSetRepeat( std::string aId, int aCount )
+{
+    return testLocalEdit( aId, [&]( DS_DATA_ITEM* item ) { item->m_RepeatCount = aCount; } );
+}
+
 EMSCRIPTEN_BINDINGS(pl_editor) {
     // Programmatic file open (preferred over UI automation from the web app).
     function("kicadOpenFile", &kicadOpenFile PCBJAM_PARKER_POLICY);
@@ -644,5 +720,7 @@ EMSCRIPTEN_BINDINGS(pl_editor) {
     function("kicadCollabApplyItems", &kicadCollabApplyItems);
     function("kicadCollabSnapshotItems", &kicadCollabSnapshotItems);
     function("kicadCollabTestAddText", &kicadCollabTestAddText);
+    function("kicadCollabTestSetPos", &kicadCollabTestSetPos);
+    function("kicadCollabTestSetRepeat", &kicadCollabTestSetRepeat);
 }
 #endif

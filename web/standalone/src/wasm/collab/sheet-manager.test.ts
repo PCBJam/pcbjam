@@ -10,16 +10,26 @@ const { connectKicadDoc, bindKicadCollab, moduleItemsBridge } = vi.hoisted(() =>
 
 vi.mock("./index", () => ({ connectKicadDoc }));
 vi.mock("./kicad-binding", () => ({ bindKicadCollab, moduleItemsBridge }));
-const { ydocHasState, syncLayoutToY, fileToDoc } = vi.hoisted(() => ({
+const { ydocHasState, syncLayoutToY, fileToDoc, libObservers } = vi.hoisted(() => ({
   ydocHasState: vi.fn(() => false),
   syncLayoutToY: vi.fn(() => true),
   fileToDoc: vi.fn((t: string) => ({ text: t })),
+  /** Parked-room kdoc_libsymbols observers, keyed by (fake) doc. */
+  libObservers: new Map<unknown, Set<(ev: unknown, txn: unknown) => void>>(),
 }));
 vi.mock("@pcbjam/shared", () => ({
   collabRoomId: (s: string, p: string, d: string) => `${s}:${p}:${d}`,
   ydocHasState,
   syncLayoutToY,
   fileToDoc,
+  kicadLibSymbolsMap: (doc: unknown) => ({
+    observe: (cb: (ev: unknown, txn: unknown) => void) => {
+      const set = libObservers.get(doc) ?? new Set();
+      set.add(cb);
+      libObservers.set(doc, set);
+    },
+    unobserve: (cb: (ev: unknown, txn: unknown) => void) => libObservers.get(doc)?.delete(cb),
+  }),
 }));
 
 import { createSheetCollabManager } from "./sheet-manager";
@@ -162,7 +172,28 @@ describe("sheet-manager warm pool", () => {
     await m.switchTo("b.kicad_sch"); // parks a, starts its update watch
     aDoc.emitRemote(); // remote edit lands on the parked doc
     await m.switchTo("a.kicad_sch");
-    expect(bindings.at(-1)!.lastSeedOpts).toEqual({ editorMatchesDoc: false });
+    expect(bindings.at(-1)!.lastSeedOpts).toEqual({
+      editorMatchesDoc: false,
+      refreshLibIds: new Set(),
+    });
+  });
+
+  it("a REMOTE definition change while parked is handed to the catch-up adopt (2026-09-21 audit)", async () => {
+    const m = makeManager();
+    await m.switchTo("a.kicad_sch");
+    const aDoc = sessions[0]!.doc;
+    await m.switchTo("b.kicad_sch");
+    const fire = (keys: string[], local: boolean) =>
+      libObservers.get(aDoc)!.forEach((cb) => cb({ keysChanged: new Set(keys) }, { local }));
+    fire(["Device:R"], false);
+    fire(["Device:C"], true); // our own save-sync — the editor already holds it
+    aDoc.emitRemote();
+    await m.switchTo("a.kicad_sch");
+    expect(bindings.at(-1)!.lastSeedOpts).toEqual({
+      editorMatchesDoc: false,
+      refreshLibIds: new Set(["Device:R"]),
+    });
+    expect(libObservers.get(aDoc)!.size).toBe(0); // watch detached on rebind
   });
 
   it("invalidate drops a PARKED room (reconnects fresh on the next switch) but never the bound one", async () => {
@@ -255,6 +286,27 @@ describe("sheet-manager layout save-sync (hollow-room guard)", () => {
     ydocHasState.mockReturnValue(true); // Headers was seeded by a peer
     m.syncLayoutFromSave("Headers.kicad_sch", "(kicad_sch …)");
     expect(syncLayoutToY).toHaveBeenCalledTimes(2);
+  });
+
+  it("diffs each save against the layout the editor last agreed on (2026-09-21 audit)", async () => {
+    const loaded = { text: "as loaded" };
+    const m = createSheetCollabManager({
+      mod: {} as never,
+      win: {} as never,
+      scopeId: "S",
+      projectId: "P",
+      provider: { kind: "none" } as never,
+      seedDocForPath: () => loaded as never,
+      log: () => {},
+    });
+    await m.switchTo("root.kicad_sch");
+    m.syncLayoutFromSave("root.kicad_sch", "save 1");
+    m.syncLayoutFromSave("root.kicad_sch", "save 2");
+    // First save: relative to the file the editor opened; then relative to save 1.
+    expect(syncLayoutToY.mock.calls.map((c) => (c as unknown[])[3])).toEqual([
+      loaded,
+      { text: "save 1" },
+    ]);
   });
 });
 

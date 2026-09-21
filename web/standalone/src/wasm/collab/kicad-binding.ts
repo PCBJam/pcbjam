@@ -6,6 +6,7 @@ import {
   isEmptyItemsWireDelta,
   isEmptyKicadDelta,
   itemsWireToDelta,
+  itemLibRef,
   kicadItemsMap,
   kicadLibSymbolsMap,
   parseItemsWireDelta,
@@ -124,6 +125,12 @@ export class SexprVersionError extends Error {
 export interface SeedOptions {
   editorMatchesDoc?: boolean;
   loadedView?: Record<string, KicadItem>;
+  /**
+   * `kdoc_libsymbols` keys that changed while no binding was watching (a
+   * parked sheet room): the adopt re-applies every root using one, since a
+   * definition-only change leaves the item diff empty (2026-09-21 audit).
+   */
+  refreshLibIds?: Iterable<string>;
 }
 
 /** Root ancestor of `uuid` within `view` (cycle-guarded; dangling chains stop). */
@@ -353,17 +360,9 @@ export function bindKicadCollab(
     }
   });
 
-  // UP: remote Y change → editor. The subscription + origin policy live HERE
-  // (the runtime); the event→delta computation is the shared default impl.
-  const observer = (events: Y.YEvent<Y.Map<unknown>>[], txn: Y.Transaction) => {
-    if (txn.origin === ORIGIN) return; // our own echo — ignore
-    if (!seeded) return; // pre-seed state sync — seed()'s adopt covers it
-    const delta = deltaFromYEvents(items, events);
-    if (isEmptyKicadDelta(delta)) return;
-    const view = itemsView();
-    const wire = deltaToItemsWire(delta, view, libDefs);
-    if (isEmptyItemsWireDelta(wire)) return;
-    clog("⬆ remote Y change → apply to editor:", {
+  /** Hand a Y → editor payload to the bridge and keep the native view honest. */
+  const sendToEditor = (wire: ItemsWireDelta, view: Record<string, KicadItem>, why: string): void => {
+    clog(`⬆ ${why} → apply to editor:`, {
       added: wire.added.length,
       changed: wire.changed.length,
       removed: wire.removed.length,
@@ -387,7 +386,54 @@ export function bindKicadCollab(
       report(err);
     }
   };
+
+  // UP: remote Y change → editor. The subscription + origin policy live HERE
+  // (the runtime); the event→delta computation is the shared default impl.
+  const observer = (events: Y.YEvent<Y.Map<unknown>>[], txn: Y.Transaction) => {
+    if (txn.origin === ORIGIN) return; // our own echo — ignore
+    if (!seeded) return; // pre-seed state sync — seed()'s adopt covers it
+    const delta = deltaFromYEvents(items, events);
+    if (isEmptyKicadDelta(delta)) return;
+    const view = itemsView();
+    const wire = deltaToItemsWire(delta, view, libDefs);
+    if (isEmptyItemsWireDelta(wire)) return;
+    sendToEditor(wire, view, "remote Y change");
+  };
   items.observeDeep(observer);
+
+  /** Root items in `view` whose library definition is one of `libIds`. */
+  const rootsUsingLibs = (
+    view: Record<string, KicadItem>,
+    libIds: ReadonlySet<string>,
+  ): string[] =>
+    Object.entries(view)
+      .filter(([, it]) => it.parent === null && libIds.has(itemLibRef(it) ?? ""))
+      .map(([uuid]) => uuid);
+
+  // UP, definitions (2026-09-21 audit): a remote change to a library definition
+  // whose instances did not change produces no item event, so the editor would
+  // keep the old geometry until a reload. Re-apply the roots using it — their
+  // payload carries the new definition (libDefs). Roots the item observer
+  // already sends in this transaction are left to it. `txn.local` rather than
+  // the origin tag: this client's own layout save-sync writes definitions the
+  // editor already holds.
+  const libs = kicadLibSymbolsMap(doc);
+  const onLibs = (ev: Y.YMapEvent<string>, txn: Y.Transaction) => {
+    if (txn.local || !seeded) return;
+    const view = itemsView();
+    type AnyYType = Y.AbstractType<Y.YEvent<Y.AbstractType<unknown>>>;
+    const roots = rootsUsingLibs(view, ev.keysChanged).filter((uuid) => {
+      const ym = items.get(uuid);
+      if (ym && txn.changedParentTypes.has(ym as unknown as AnyYType)) return false;
+      return !txn.changed.get(items as unknown as AnyYType)?.has(uuid);
+    });
+    if (roots.length === 0) return;
+    const updated = roots.map((uuid) => ({ uuid, ...view[uuid]! }));
+    const wire = deltaToItemsWire({ added: [], updated, removed: [] }, view, libDefs);
+    if (isEmptyItemsWireDelta(wire)) return;
+    sendToEditor(wire, view, "remote library definition change");
+  };
+  libs.observe(onLibs);
 
   // Apply-time resolution (0012 #2): the editor's apply queue hands each
   // payload back right before executing it; answer with the doc's latest
@@ -716,9 +762,13 @@ export function bindKicadCollab(
       .filter(([uuid, it]) => it.parent === null && !editorUuids.has(uuid))
       .map(([uuid, it]) => ({ uuid, ...it }));
     const changedRoots = [
-      ...new Set(
-        editorDelta.updated.filter((it) => it.uuid in view).map((it) => liftToRoot(it.uuid)),
-      ),
+      ...new Set([
+        ...editorDelta.updated.filter((it) => it.uuid in view).map((it) => liftToRoot(it.uuid)),
+        // Definition-only changes while unwatched leave the item diff empty.
+        ...rootsUsingLibs(view, new Set(opts?.refreshLibIds ?? [])).filter((uuid) =>
+          editorUuids.has(uuid),
+        ),
+      ]),
     ]
       .filter((uuid) => !docOnly.some((it) => it.uuid === uuid))
       .map((uuid) => ({ uuid, ...view[uuid]! }));
@@ -749,6 +799,7 @@ export function bindKicadCollab(
       detachSeedArbitration?.();
       detachSeedArbitration = undefined;
       items.unobserveDeep(observer);
+      libs.unobserve(onLibs);
       revMeta.unobserve(onRevertMeta);
     },
     items,

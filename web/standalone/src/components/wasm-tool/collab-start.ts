@@ -19,10 +19,12 @@ import {
   createSheetCollabManager,
   registerSheetChangedHook,
   registerSheetCreatedHook,
+  registerSheetItemsHook,
   type ActiveSheet,
   type SheetChangedWindow,
   type SheetCollabManager,
   type SheetCreatedWindow,
+  type SheetItemsWindow,
 } from "@/wasm/collab/sheet-manager";
 import { clog, cwarn } from "@/wasm/collab/debug";
 import { relativeProjectPath } from "./tool-navigation";
@@ -308,6 +310,13 @@ export async function startSheetCollab(
         opts.onStatus("Collab: version skew on this sheet");
       });
     }
+  });
+
+  // A commit that touched items of a sheet other than the shown one (annotate
+  // all, global edits): route the batch to that sheet's own room.
+  registerSheetItemsHook(win as unknown as SheetItemsWindow, (abs, json) => {
+    const rel = relativeProjectPath(opts.slug, abs);
+    if (rel && rel.endsWith(".kicad_sch")) void manager.writeOffSheet(rel, json);
   });
 
   // C++ sheet creation ("Add Sheet") → the child .kicad_sch was just written to MEMFS by

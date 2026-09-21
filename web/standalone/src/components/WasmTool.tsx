@@ -122,6 +122,7 @@ import {
 import {
   maybeConnectDocSession,
   maybeStartCollab,
+  seedDocFromMemfs,
   startSheetCollab,
   waitForWxUi,
 } from "@/components/wasm-tool/collab-start";
@@ -327,6 +328,9 @@ export function WasmTool({
   // The single-room collab doc (pcbnew/pl_editor), for the layout save-sync
   // (miss 08B); eeschema routes per sheet through the manager instead.
   const collabDocRef = React.useRef<import("yjs").Doc | null>(null);
+  // The layout the editor last agreed on (opened file, then each save) — the
+  // save-sync reconciles only what changed relative to it (syncLayoutToY).
+  const layoutBaselineRef = React.useRef<import("@pcbjam/shared").KicadDoc | undefined>(undefined);
   // Its owning handle, so unmount tears the room socket + doc down — eeschema's
   // equivalent lives inside sheetManagerRef.
   const collabHandleRef = React.useRef<KicadCollabHandle | null>(null);
@@ -530,6 +534,7 @@ export function WasmTool({
     collabHandleRef.current?.destroy();
     collabHandleRef.current = null;
     collabDocRef.current = null;
+    layoutBaselineRef.current = undefined;
     const pending = pendingDocSessionRef.current;
     pendingDocSessionRef.current = null;
     if (pending) {
@@ -1201,7 +1206,14 @@ export function WasmTool({
                   }
                   if (collabDocRef.current && relPath === targetPath) {
                     try {
-                      syncLayoutToY(fileToDoc(text), collabDocRef.current, "layout-save");
+                      const fileDoc = fileToDoc(text);
+                      syncLayoutToY(
+                        fileDoc,
+                        collabDocRef.current,
+                        "layout-save",
+                        layoutBaselineRef.current,
+                      );
+                      layoutBaselineRef.current = fileDoc;
                     } catch (err) {
                       append(`[save] layout sync failed: ${String(err)}`);
                     }
@@ -1398,6 +1410,10 @@ export function WasmTool({
           }
           collabHandleRef.current = collabHandle ?? null;
           collabDocRef.current = collabHandle?.doc ?? null;
+          // Still the file as opened: nothing has saved over it yet.
+          layoutBaselineRef.current = collabHandle
+            ? seedDocFromMemfs(win, slug, targetPath)
+            : undefined;
           startPresence(collabHandle?.provider, undefined, collabHandle?.doc);
           startComments(collabHandle?.doc, targetPath ?? "");
           setPanelDoc(collabHandle?.doc ?? null);

@@ -392,6 +392,25 @@ void emitSheetChanged()
     }, s.c_str() );
 }
 
+// v2 items wire for a sheet that is NOT the shown one (a cross-sheet commit — see
+// g_dirty). Same envelope as onItems plus the owning screen's load path, in the same
+// absolute MEMFS form onSheetChanged uses; the standalone writes it into that sheet's
+// room doc. Without a listener the batch is dropped — never folded into the shown room.
+void emitSheetItems( SCH_SCREEN* aScreen, const json& aWire )
+{
+    std::string path = toUtf8( aScreen->GetFileName() );
+    std::string s = aWire.dump();
+    EM_ASM( {
+        if( window.kicadCollab && window.kicadCollab.onSheetItems )
+        {
+            // A throwing listener must never unwind the wasm frame that called it: under
+            // JSPI that rejects the running coroutine's entry (findings P-1).
+            try { window.kicadCollab.onSheetItems( UTF8ToString( $0 ), UTF8ToString( $1 ) ); }
+            catch( e ) { console.error( '[pcbjam collab] onSheetItems listener threw', e ); }
+        }
+    }, path.c_str(), s.c_str() );
+}
+
 // ───────────────────────── sheet navigator bridge (sheet-panel) ─────────────────────────
 //
 // The React stand-in for the docked wx HIERARCHY_PANE that kicadSetChrome(false)
@@ -470,10 +489,13 @@ void emitSheetsState( SCH_EDIT_FRAME* aFrame )
 //
 // aRelativePath is still required (Format wxCHECKs it non-null) but is unread on
 // the aForClipboard=false path.
-std::string itemBlob( SCH_EDIT_FRAME* aFrame, SCH_ITEM* aItem )
+//
+// aScreen: the screen that OWNS the item (the (lib_symbols …) prelude is read from
+// the selection's screen); null = the shown one.
+std::string itemBlob( SCH_EDIT_FRAME* aFrame, SCH_ITEM* aItem, SCH_SCREEN* aScreen = nullptr )
 {
     SCH_SELECTION sel;
-    sel.SetScreen( aFrame->GetScreen() );
+    sel.SetScreen( aScreen ? aScreen : aFrame->GetScreen() );
     sel.Add( aItem );
 
     STRING_FORMATTER   fmt;
@@ -533,7 +555,29 @@ bool                        g_flushScheduled = false;
 // properties etc. never move it (bug 04). Dirty roots emit their v2 blob
 // unconditionally; the apply is an idempotent upsert and the TS layer drops
 // no-op bodies, so a false positive costs one local serialization.
-std::set<std::string> g_dirty;
+//
+// Each root is keyed to the SCREEN that owned it at callback time (2026-09-21 desync
+// audit): one commit can span sheets (annotate all, global edits, find/replace), and
+// every sheet is its own room. Roots of the shown screen ride the bound room's wire;
+// the rest are emitted per owning sheet (onSheetItems) so the standalone writes them
+// to THAT sheet's doc. nullptr = owner unknown → treated as the shown screen (legacy).
+// A removed item keeps its screen parent (SCH_SCREEN::Remove does not clear it), so
+// the owner of a deletion is known too even though the uuid no longer resolves.
+std::map<std::string, SCH_SCREEN*> g_dirty;
+
+// The screen an item lives on, via its parent chain (SCH_SCREEN::Append parents every
+// screen item to the screen). Deliberately NOT SCHEMATIC::ResolveItem: a copied sheet
+// file repeats its uuids, and a hierarchy-wide lookup answers with the first copy.
+SCH_SCREEN* owningScreen( EDA_ITEM* aItem )
+{
+    for( EDA_ITEM* p = aItem ? aItem->GetParent() : nullptr; p; p = p->GetParent() )
+    {
+        if( p->Type() == SCH_SCREEN_T )
+            return static_cast<SCH_SCREEN*>( p );
+    }
+
+    return nullptr;
+}
 
 // Lift a commit-staged item to the SCREEN item the differ tracks (a field/pin/cell
 // lifts to its symbol/sheet/label/table — same promotion sch_commit's undo uses).
@@ -550,19 +594,56 @@ void noteDirty( SCH_ITEM* aItem )
         aItem = static_cast<SCH_ITEM*>( p );
     }
 
-    g_dirty.insert( toUtf8( aItem->m_Uuid.AsString() ) );
+    g_dirty[toUtf8( aItem->m_Uuid.AsString() )] = owningScreen( aItem );
 }
 
 // Re-seed the diff baseline to the current model — after handing out a seed snapshot, or after
 // applying a remote delta (so those items aren't re-broadcast as a spurious local diff/echo).
 // Declares "current model == broadcast state", so pending dirty marks are stale too — on a
 // sheet switch they'd otherwise emit the OLD sheet's items into the new sheet's room.
+// Marks owned by ANOTHER screen are not covered by that declaration and survive: the
+// next flush routes them to their own sheet (on a sheet switch that is the sheet just
+// left, whose queued edit would otherwise be dropped).
 void rebaseline()
 {
-    if( SCH_EDIT_FRAME* fr = schFrame() )
+    SCH_EDIT_FRAME* fr = schFrame();
+
+    if( fr )
         g_baseline = snapshotByUuid( fr );
 
-    g_dirty.clear();
+    SCH_SCREEN* shown = currentScreen( fr );
+
+    for( auto it = g_dirty.begin(); it != g_dirty.end(); )
+    {
+        if( !it->second || it->second == shown )
+            it = g_dirty.erase( it );
+        else
+            ++it;
+    }
+}
+
+// The live item a room payload's uuid refers to: one on the SHOWN screen (a room is
+// one sheet). SCHEMATIC::ResolveItem alone is hierarchy-wide — with a copied sheet file
+// (repeated uuids), or a doc that already holds another sheet's root (the pre-fix
+// cross-sheet emit, 2026-09-21 audit), it answers with an item of ANOTHER screen, and
+// the apply then pulled that item out of its own sheet.
+static SCH_ITEM* resolveOnShown( SCH_EDIT_FRAME* aFrame, const KIID& aId )
+{
+    SCH_SCREEN* shown = currentScreen( aFrame );
+
+    if( !shown )
+        return nullptr;
+
+    for( SCH_ITEM* item : shown->Items() )
+    {
+        if( item->m_Uuid == aId )
+            return item;
+    }
+
+    // A child (field, pin, sheet pin): reachable only through the hierarchy walk.
+    SCH_ITEM* item = aFrame->Schematic().ResolveItem( aId, nullptr, /*allowNull*/ true );
+
+    return item && owningScreen( item ) == shown ? item : nullptr;
 }
 
 // TARGETED rebaseline (bug 05): refresh baseline entries ONLY for the uuids a remote
@@ -579,7 +660,7 @@ void rebaselineTouched( SCH_EDIT_FRAME* aFrame, const std::vector<std::string>& 
 
         KIID kid( wxString::FromUTF8( id.c_str() ) );
 
-        if( SCH_ITEM* live = aFrame->Schematic().ResolveItem( kid, nullptr, /*allowNull*/ true ) )
+        if( SCH_ITEM* live = resolveOnShown( aFrame, kid ) )
             g_baseline[id] = itemToJson( live );
     }
 }
@@ -603,14 +684,30 @@ void flushDiff()
     json                  wAdded = json::array(), wChanged = json::array();
     std::set<std::string> wDone;
 
-    auto blobFor = [&]( const std::string& id, json& aArr )
+    SCH_SCREEN* shown = currentScreen( fr );
+
+    // uuid → root item, per screen, built on first use (one pass over the screen).
+    std::map<SCH_SCREEN*, std::map<std::string, SCH_ITEM*>> screenIndex;
+
+    auto rootItemOn = [&]( SCH_SCREEN* aScreen, const std::string& id ) -> SCH_ITEM*
     {
-        KIID kid( wxString::FromUTF8( id.c_str() ) );
+        if( !aScreen )
+            return nullptr;
 
-        SCH_ITEM* item = fr->Schematic().ResolveItem( kid, nullptr, /*allowNull*/ true );
+        auto idx = screenIndex.find( aScreen );
 
-        if( !item )
-            return;
+        if( idx == screenIndex.end() )
+        {
+            idx = screenIndex.emplace( aScreen, std::map<std::string, SCH_ITEM*>() ).first;
+
+            for( SCH_ITEM* it : aScreen->Items() )
+                idx->second[toUtf8( it->m_Uuid.AsString() )] = it;
+        }
+
+        auto found = idx->second.find( id );
+
+        if( found != idx->second.end() )
+            return found->second;
 
         // A child that reached the dirty set unlifted (field/pin/sheet-pin —
         // ResolveItem walks direct children too) serializes to an EMPTY blob:
@@ -618,6 +715,12 @@ void flushDiff()
         // JS as envelope furniture and be skipped, silently losing the edit.
         // Lift to the screen item the differ tracks (same promotion as
         // noteDirty) so the parent's re-blob carries the child's content.
+        KIID      kid( wxString::FromUTF8( id.c_str() ) );
+        SCH_ITEM* item = fr->Schematic().ResolveItem( kid, nullptr, /*allowNull*/ true );
+
+        if( !item )
+            return nullptr;
+
         while( EDA_ITEM* p = item->GetParent() )
         {
             if( !p->IsType( { SCH_SYMBOL_T, SCH_TABLE_T, SCH_SHEET_T, SCH_LABEL_LOCATE_ANY_T } ) )
@@ -626,12 +729,24 @@ void flushDiff()
             item = static_cast<SCH_ITEM*>( p );
         }
 
-        std::string rootId = toUtf8( item->m_Uuid.AsString() );
+        // Never serialize another screen's item into this screen's batch.
+        return owningScreen( item ) == aScreen ? item : nullptr;
+    };
 
-        if( !wDone.insert( rootId ).second )
+    auto blobFor = [&]( SCH_SCREEN* aScreen, const std::string& id, json& aArr,
+                        std::set<std::string>& aDone )
+    {
+        SCH_ITEM* item = rootItemOn( aScreen, id );
+
+        if( !item )
             return;
 
-        std::string sexpr = itemBlob( fr, item );
+        std::string rootId = toUtf8( item->m_Uuid.AsString() );
+
+        if( !aDone.insert( rootId ).second )
+            return;
+
+        std::string sexpr = itemBlob( fr, item, aScreen );
 
         // Still empty after lifting (a marker that slipped in, an unformattable
         // type): never put a hollow envelope on the wire — mirror pcbnew's P-5
@@ -656,12 +771,12 @@ void flushDiff()
         if( it == g_baseline.end() )
         {
             added.push_back( j );
-            blobFor( id, wAdded );
+            blobFor( shown, id, wAdded, wDone );
         }
         else if( it->second != j )
         {
             changed.push_back( j );
-            blobFor( id, wChanged );
+            blobFor( shown, id, wChanged, wDone );
         }
     }
 
@@ -675,8 +790,46 @@ void flushDiff()
     // v2 wire even when the scalar projection didn't move (rotation, field text,
     // stroke edits). wDone dedups against the scalar-diff emits; deleted ids
     // resolve null inside blobFor and skip (the removal loop covered them).
-    for( const std::string& id : g_dirty )
-        blobFor( id, wChanged );
+    //
+    // Roots owned by ANOTHER screen (a cross-sheet commit) never enter this room's
+    // wire — peers would add them to the shown sheet while the owning sheet's room
+    // kept the old state. They batch per owning sheet instead; a deleted one (the
+    // uuid is gone from its screen) becomes that sheet's removal.
+    struct OffSheet
+    {
+        json                  changed = json::array();
+        json                  removed = json::array();
+        std::set<std::string> done;
+    };
+
+    std::map<SCH_SCREEN*, OffSheet> offSheet;
+    std::set<SCH_SCREEN*>           liveScreens;
+
+    {
+        SCH_SCREENS screens( fr->Schematic().Root() );
+
+        for( SCH_SCREEN* sc = screens.GetFirst(); sc; sc = screens.GetNext() )
+            liveScreens.insert( sc );
+    }
+
+    for( const auto& [id, owner] : g_dirty )
+    {
+        if( !owner || owner == shown )
+        {
+            blobFor( shown, id, wChanged, wDone );
+            continue;
+        }
+
+        if( !liveScreens.count( owner ) )
+            continue; // its sheet was deleted meanwhile — nothing left to sync
+
+        OffSheet& batch = offSheet[owner];
+
+        if( rootItemOn( owner, id ) )
+            blobFor( owner, id, batch.changed, batch.done );
+        else
+            batch.removed.push_back( id );
+    }
 
     g_dirty.clear();
 
@@ -687,6 +840,16 @@ void flushDiff()
 
     if( !wAdded.empty() || !wChanged.empty() || !removed.empty() )
         emitItemsWire( json{ { "added", wAdded }, { "changed", wChanged }, { "removed", removed } } );
+
+    for( const auto& [screen, batch] : offSheet )
+    {
+        if( batch.changed.empty() && batch.removed.empty() )
+            continue;
+
+        emitSheetItems( screen, json{ { "added", json::array() },
+                                      { "changed", batch.changed },
+                                      { "removed", batch.removed } } );
+    }
 }
 
 // Coalesce all the listener callbacks of one commit (and any other edits in the same loop
@@ -1189,14 +1352,13 @@ void doApplyItems( SCH_EDIT_FRAME* aFrame, const json& aPayload )
 
     for( const json& rid : aWire.value( "removed", json::array() ) )
     {
-        SCH_SHEET_PATH path;
-        KIID           id( wxString::FromUTF8( rid.get<std::string>().c_str() ) );
+        KIID id( wxString::FromUTF8( rid.get<std::string>().c_str() ) );
 
         touched.push_back( rid.get<std::string>() );
 
-        if( SCH_ITEM* item = sch.ResolveItem( id, &path, /*allowNull*/ true ) )
+        if( SCH_ITEM* item = resolveOnShown( aFrame, id ) )
         {
-            commit.Remove( item, path.LastScreen() );
+            commit.Remove( item, currentScreen( aFrame ) );
 
             if( item->Type() != SCH_FIELD_T )
                 removedItems.push_back( item );
@@ -1265,11 +1427,9 @@ void doApplyItems( SCH_EDIT_FRAME* aFrame, const json& aPayload )
         {
             tempScreen->Remove( item );     // detach: tempSheet's dtor must not free it
 
-            SCH_SHEET_PATH path;
-
-            if( SCH_ITEM* existing = sch.ResolveItem( item->m_Uuid, &path, /*allowNull*/ true ) )
+            if( SCH_ITEM* existing = resolveOnShown( aFrame, item->m_Uuid ) )
             {
-                commit.Remove( existing, path.LastScreen() );
+                commit.Remove( existing, currentScreen( aFrame ) );
 
                 if( existing->Type() != SCH_FIELD_T )
                     removedItems.push_back( existing );
