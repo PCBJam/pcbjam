@@ -133,8 +133,29 @@ function pluginRuntimeAssets(): Plugin {
         const url = req.url?.split("?")[0] ?? "";
         if (!url.startsWith("/plugin-runtime/")) return next();
         const name = url.slice("/plugin-runtime/".length);
-        // Immutable runtime sets are served by Vite's normal public middleware.
-        if (/^[a-f0-9]{64}\/[a-z.-]+$/.test(name)) return next();
+        // Immutable runtime sets: serve the bytes directly. Vite's dev transform
+        // refuses `import()` of a /public .js file ("copied as-is"), which is how
+        // the editor loads package-host.js; production static hosting has no
+        // such step.
+        const versioned = /^([a-f0-9]{64})\/([a-z.-]+)$/.exec(name);
+        if (versioned) {
+          if (req.method !== "GET") { res.writeHead(404); res.end(); return; }
+          const type = name.endsWith(".wasm") ? "application/wasm" : name.endsWith(".json") ? "application/json" : "text/javascript";
+          fs.readFile(path.resolve(__dirname, "public/plugin-runtime", versioned[1]!, versioned[2]!), (error, bytes) => {
+            if (error) { res.writeHead(404); res.end("Runtime asset unavailable"); return; }
+            res.setHeader("Content-Type", type);
+            res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+            res.setHeader("X-Content-Type-Options", "nosniff");
+            // The editor document is COEP require-corp; a dedicated Worker script
+            // must carry the same policy or the browser blocks the response.
+            res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+            res.setHeader("Cross-Origin-Embedder-Policy", "require-corp");
+            res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+            if (/worker\.js$/.test(versioned[2]!)) res.setHeader("Content-Security-Policy", WORKER_CSP);
+            res.end(bytes);
+          });
+          return;
+        }
         const mime: Record<string, string> = {
           "editor-host.js": "text/javascript", "worker.js": "text/javascript",
           "guest.js": "text/javascript", "quickjs.wasm": "application/wasm",
