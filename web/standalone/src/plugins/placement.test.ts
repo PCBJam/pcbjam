@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { validatePlacement, placeImportedItem, preflightPlacement, type PlacementModule } from './placement';
+import { validatePlacement, placeImportedItem, preflightPlacement, validateInWorker, placeClipboard, type PlacementModule } from './placement';
 const symbol = '(lib_symbols (symbol "Local:R" (symbol "R_0_1"))) (symbol (lib_id "Local:R") (uuid "11111111-2222-4333-8444-555555555555"))';
 describe('plugin placement boundary', () => {
   it('accepts one matching symbol or one footprint for the appropriate editor', () => {
@@ -77,6 +77,42 @@ describe('hosted native placement lifecycle',()=>{
     mod.kicadCancelImportedItem.mockImplementation(()=>{throw new Error('Native runtime stopped');});
     const result=expect(placeImportedItem(mod,symbol,abort.signal)).rejects.toThrow(/cancelled/);
     await Promise.resolve();abort.abort();await result;expect(vi.getTimerCount()).toBe(0);
+  });
+  /** A Worker that answers the next message with `reply` after `delay` ms. */
+  const answering=(reply:unknown,delay=0)=>{const posted:unknown[]=[];const terminate=vi.fn();
+    vi.stubGlobal('Worker',class{terminate=terminate;onmessage:((e:{data:unknown})=>void)|null=null;postMessage(m:unknown){posted.push(m);setTimeout(()=>this.onmessage?.({data:reply}),delay);}});
+    vi.stubEnv('VITE_PLUGIN_RUNTIME_BASE','/plugin-runtime/test/');return {posted,terminate};};
+  it('validateInWorker forwards the request and returns the worker\'s sanitized text for footprints',async()=>{
+    vi.useFakeTimers();
+    const fp=answering({ok:true,text:'(footprint "X")'});
+    const result=validateInWorker({text:'(footprint "raw" (model "x"))',tool:'pcbnew',kind:'footprint',name:'X'},new AbortController().signal,5000);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await result).toEqual({text:'(footprint "X")'});
+    expect(fp.posted).toEqual([{text:'(footprint "raw" (model "x"))',tool:'pcbnew',kind:'footprint',name:'X'}]);expect(fp.terminate).toHaveBeenCalledOnce();
+    // A symbol answer carries no text: the input is returned unchanged.
+    answering({ok:true});const sym=validateInWorker({text:symbol,tool:'eeschema'},new AbortController().signal);await vi.advanceTimersByTimeAsync(1);expect((await sym).text).toBe(symbol);
+    // A footprint answer without text is a protocol failure, not a pass.
+    answering({ok:true});const bad=expect(validateInWorker({text:'(footprint "X")',tool:'pcbnew',kind:'footprint',name:'X'},new AbortController().signal)).rejects.toThrow(/failed/);await vi.advanceTimersByTimeAsync(1);await bad;
+    answering({ok:false,error:'Unsupported footprint: net is not supported in pad'});const refused=expect(validateInWorker({text:'x',tool:'pcbnew',kind:'footprint',name:'X'},new AbortController().signal)).rejects.toThrow(/net is not supported/);await vi.advanceTimersByTimeAsync(1);await refused;
+  });
+  it('validateInWorker honours a longer footprint budget',async()=>{
+    vi.useFakeTimers();const fp=answering({ok:true,text:'(footprint "X")'},3000);
+    const result=validateInWorker({text:'x',tool:'pcbnew',kind:'footprint',name:'X'},new AbortController().signal,5000);
+    await vi.advanceTimersByTimeAsync(3001);expect((await result).text).toBe('(footprint "X")');expect(fp.terminate).toHaveBeenCalledOnce();
+  });
+  it('placeClipboard validates, preflights, runs beforeNative, then places; a failing hook never reaches native',async()=>{
+    vi.useFakeTimers();answering({ok:true});
+    const mod=native();mod.kicadImportedItemStatus.mockReturnValue(JSON.stringify({status:'placed'}));
+    (globalThis as any).window={Module:mod};
+    const order:string[]=[];
+    mod.kicadPlaceImportedItem.mockImplementation(()=>{order.push('native');return JSON.stringify({ok:true,operation:1});});
+    const placed=placeClipboard(symbol,'eeschema',new AbortController().signal,{beforeNative:async()=>{order.push('hook');}});
+    await vi.advanceTimersByTimeAsync(100);expect(await placed).toEqual({status:'placed'});expect(order).toEqual(['hook','native']);
+    const denied=expect(placeClipboard(symbol,'eeschema',new AbortController().signal,{beforeNative:async()=>{throw new Error('Placement superseded');}})).rejects.toThrow(/superseded/);
+    await vi.advanceTimersByTimeAsync(100);await denied;expect(mod.kicadPlaceImportedItem).toHaveBeenCalledTimes(1);
+    // Structural failure short-circuits before any Worker or hook.
+    const hook=vi.fn();await expect(placeClipboard('(footprint "x")','eeschema',new AbortController().signal,{beforeNative:hook})).rejects.toThrow(/lib_symbols/);expect(hook).not.toHaveBeenCalled();
+    delete (globalThis as any).window;
   });
   it('terminates a stuck preflight worker within its budget',async()=>{
     vi.useFakeTimers();const terminate=vi.fn();

@@ -5,7 +5,7 @@ import { BUILTIN, hostedPlugins, packageHost, type Descriptor, type PluginCatalo
 import { PluginFloatingPanel } from './PluginFloatingPanel';
 import { getLocalSelection, subscribeLocalSelection } from '@/wasm/collab/local-selection';
 import { inspectorSnapshot, type InspectorSnapshot } from './board-inspector-projection';
-import { placementModule, validatePlacement, preflightPlacement, placeImportedItem } from './placement';
+import { placementModule, validatePlacement, placeClipboard } from './placement';
 import { selectModule, selectItems } from './selection';
 import { geometryModule, openGeometry } from './board-geometry';
 import { createDocumentAPI } from './document-api';
@@ -150,14 +150,16 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
     try {
       await prompt.authorize();prompt.signal.throwIfAborted();if(promptRef.current!==prompt)return;
       if (readOnly) throw new Error('This document is read-only');
-      validatePlacement(prompt.sexpr, tool);
-      if(hostedPlugins){await preflightPlacement(prompt.sexpr,tool,prompt.signal);await prompt.authorize();prompt.signal.throwIfAborted();}
-      const mod = placementModule(); if (!mod || mod.kicadOpenFileBusy?.()) throw new Error('The editor is not ready for placement');
       if(hostedPlugins){
-        setNotice('Move onto the canvas and click to place. Esc cancels.');
-        const result=await placeImportedItem(mod,prompt.sexpr,prompt.signal);
+        const result=await placeClipboard(prompt.sexpr,tool,prompt.signal,{beforeNative:async()=>{
+          await prompt.authorize();prompt.signal.throwIfAborted();
+          if(promptRef.current!==prompt)throw new Error('Placement superseded');
+          setNotice('Move onto the canvas and click to place. Esc cancels.');
+        }});
         prompt.finish(result);setNotice(result.status==='placed'?'Symbol placed. Undo removes it.':'Placement cancelled.');return;
       }
+      validatePlacement(prompt.sexpr, tool);
+      const mod = placementModule(); if (!mod || mod.kicadOpenFileBusy?.()) throw new Error('The editor is not ready for placement');
       const result = JSON.parse(await mod.kicadPlaceImportedItem(prompt.sexpr));
       if (!result.ok) throw new Error(result.error ?? 'Placement was refused');
       prompt.finish({ status: 'queued' });

@@ -205,7 +205,7 @@ export function docSourceConfig(): DocSource {
  * production builds never do, so a user can't pick an arbitrary identity via
  * the URL (collab-presence 0009).
  */
-const USER_OVERRIDE_ALLOWED =
+export const USER_OVERRIDE_ALLOWED =
   import.meta.env.VITE_ALLOW_USER_OVERRIDE === "1";
 
 /**

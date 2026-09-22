@@ -8,20 +8,58 @@ export interface PlacementModule {
   kicadCancelImportedItem?(operation:number):boolean;
 }
 
-export async function preflightPlacement(text:string,tool:string,signal:AbortSignal) {
+export interface ValidationRequest {
+  text: string;
+  tool: string;
+  /** Omitted or 'symbol': a placement blob. 'footprint': sanitize + allowlist, answer carries the storable text. */
+  kind?: 'symbol' | 'footprint';
+  name?: string;
+}
+
+/**
+ * One bounded validation in a throwaway Worker from the plugin runtime bundle, so
+ * third-party text is never parsed on the editor's thread. Resolves with the text
+ * the worker answered (the sanitized footprint), or the input for a symbol.
+ */
+export async function validateInWorker(request:ValidationRequest,signal:AbortSignal,timeoutMs=1000):Promise<{text:string}> {
   signal.throwIfAborted();
   const base=import.meta.env.VITE_PLUGIN_RUNTIME_BASE;
   if(!base)throw new Error('Plugin validation runtime unavailable');
   const worker=new Worker(base+'placement-validation-worker.js',{name:'pcbjam-import-validation'});
-  try {await new Promise<void>((resolve,reject)=>{
-    const finish=(error?:Error)=>{clearTimeout(timer);signal.removeEventListener('abort',abort);error?reject(error):resolve();};
+  try {return await new Promise<{text:string}>((resolve,reject)=>{
+    const finish=(error?:Error,text?:string)=>{clearTimeout(timer);signal.removeEventListener('abort',abort);error?reject(error):resolve({text:text??request.text});};
     const abort=()=>finish(new Error('Import validation cancelled'));
-    const timer=setTimeout(()=>finish(new Error('Import validation timed out')),1000);
+    const timer=setTimeout(()=>finish(new Error('Import validation timed out')),timeoutMs);
     signal.addEventListener('abort',abort,{once:true});
     worker.onerror=()=>finish(new Error('Import validation failed'));
-    worker.onmessage=event=>event.data?.ok===true?finish():finish(new Error(String(event.data?.error??'Invalid import').slice(0,400)));
-    worker.postMessage({text,tool});
+    worker.onmessage=event=>{
+      if(event.data?.ok!==true)return finish(new Error(String(event.data?.error??'Invalid import').slice(0,400)));
+      if(request.kind==='footprint'&&typeof event.data.text!=='string')return finish(new Error('Import validation failed'));
+      finish(undefined,request.kind==='footprint'?event.data.text:undefined);
+    };
+    worker.postMessage(request);
   });}finally{worker.terminate();}
+}
+
+export async function preflightPlacement(text:string,tool:string,signal:AbortSignal) {
+  await validateInWorker({text,tool},signal);
+}
+
+/**
+ * The verified placement path, shared by the plugin sidebar and part imports:
+ * structural check → Worker allowlist → `beforeNative` (the caller's authorization,
+ * run after validation so a rejected blob never costs a server round trip) →
+ * native placement with the operation receipt. Resolves on the user's canvas click
+ * or Esc; rejects on anything else.
+ */
+export async function placeClipboard(sexpr:string,tool:string,signal:AbortSignal,hooks:{beforeNative?:()=>Promise<void>}={}):Promise<{status:'placed'|'cancelled'}> {
+  validatePlacement(sexpr,tool);
+  await preflightPlacement(sexpr,tool,signal);
+  await hooks.beforeNative?.();
+  signal.throwIfAborted();
+  const mod=placementModule();
+  if(!mod||mod.kicadOpenFileBusy?.())throw new Error('The editor is not ready for placement');
+  return placeImportedItem(mod,sexpr,signal);
 }
 
 /** Resolves after native commit or cancellation, never after the queue acknowledgement. */

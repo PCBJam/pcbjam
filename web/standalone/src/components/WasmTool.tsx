@@ -131,6 +131,8 @@ import { installQuitHook } from "@/components/wasm-tool/quit-hook";
 import { runDeferredModelPrescan } from "@/wasm/libs/models-bridge";
 import { chooseToolFile, installToolNavigationHook } from "@/components/wasm-tool/tool-navigation";
 import { markDeliberateNavigation } from "@/components/wasm-tool/quit-hook";
+import { setActiveEditor } from "@/wasm/active-editor";
+import { savePartAndPlace } from "@/libs/save-part";
 import {
   chromeSetter,
   show3DOpener,
@@ -977,6 +979,10 @@ export function WasmTool({
               );
         if (libsSource === undefined) ownedLibsSource = source;
         activeLibsSourceRef.current = source;
+        // The one live libs source, for callers outside the React tree (part saves).
+        // The scope SLUG: the lib routes are addressed by slug, like every other lib call here.
+        setActiveEditor({ source, tool, scope: currentScope(), projectId });
+        if (import.meta.env.DEV) (window as unknown as { __pcbjamSavePart?: typeof savePartAndPlace }).__pcbjamSavePart = savePartAndPlace;
         // Download-consent gate (standalone-load-ux 0001): before pulling the
         // (large) cold wasm + lib bundles, say how many MB and wait for the OK.
         // Runs only on versioned CDN deploys (`meta.ver` — flat dev roots and
@@ -1671,6 +1677,7 @@ export function WasmTool({
       // sockets); IDB caches stay. Injected sources belong to the caller.
       ownedLibsSource?.dispose?.();
       ownedLibsSource = null;
+      setActiveEditor(null);
       oom.stop();
     };
     // Boot is one-shot per mount; deps intentionally exclude files/targetPath so
