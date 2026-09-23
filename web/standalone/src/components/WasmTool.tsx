@@ -76,6 +76,8 @@ import {
 } from "@/wasm/collab/follow-user";
 import { startCrossAppPresence, type CrossAppHandle } from "@/wasm/collab/cross-app";
 import { connectKicadDoc } from "@/wasm/collab";
+import { isGatewayFenced, onGatewayFenced } from "@/wasm/collab/gateway";
+import { copySegment } from "@/lib/copy-context";
 import {
   startSiblingRestage,
   type SiblingRestageHandle,
@@ -117,6 +119,7 @@ import { WasmErrorBoundary } from "@/components/wasm-tool/WasmErrorBoundary";
 import { BootOverlay } from "@/components/wasm-tool/BootOverlay";
 import { ConsolePanel } from "@/components/wasm-tool/ConsolePanel";
 import { FatalOverlay } from "@/components/wasm-tool/FatalOverlay";
+import { FENCE_SAVE_MESSAGE, FenceOverlay } from "@/components/wasm-tool/FenceOverlay";
 import { LibLoadingOverlay } from "@/components/wasm-tool/LibLoadingOverlay";
 import { NoticeStack, type FileGoneNotice } from "@/components/wasm-tool/NoticeStack";
 import { FollowBanner, SessionMenu } from "@/components/wasm-tool/SessionMenu";
@@ -169,7 +172,7 @@ export function WasmTool({
   onStagedRevision,
   observedRevision,
   rememberObservedRevision,
-  saveBytes,
+  saveBytes: saveBytesProp,
   createFile,
   docSource,
   assetBaseUrl,
@@ -357,6 +360,27 @@ export function WasmTool({
   // came up (a wasm abort/trap, a failed staging fetch surfacing late) used to
   // leave a blank page with no explanation at all — the "white screen of death".
   const [fatal, setFatal] = React.useState<string | null>(null);
+  // Generation fence (git-integration 0004 §E): the gateway refused this
+  // tab's working-copy generation. Terminal — the banner stays until reload.
+  const [fenced, setFenced] = React.useState(() => isGatewayFenced());
+  React.useEffect(() => onGatewayFenced(() => setFenced(true)), []);
+  // Every save sink of the session goes through this guard: once fenced, a
+  // save is refused HERE (a clear not-committed outcome, counted for tests)
+  // instead of a CAS PUT that could land in the copy's new generation.
+  const saveBytes = React.useMemo<SaveBytes | undefined>(
+    () =>
+      saveBytesProp
+        ? async (relPath, bytes, signal) => {
+            if (isGatewayFenced()) {
+              const w = window as { __pcbjamFencedSaves?: number };
+              w.__pcbjamFencedSaves = (w.__pcbjamFencedSaves ?? 0) + 1;
+              return { kind: "not-committed", message: FENCE_SAVE_MESSAGE };
+            }
+            return saveBytesProp(relPath, bytes, signal);
+          }
+        : undefined,
+    [saveBytesProp],
+  );
   // Editor lifecycle for the loading chrome: false until the tool has booted +
   // opened (covers the big WASM-compile freeze with a full-screen overlay).
   const [ready, setReady] = React.useState(false);
@@ -1348,6 +1372,8 @@ export function WasmTool({
                   scope: currentScope(),
                   scopeId,
                   projectId,
+                  // Per-copy IDB namespace (git-integration 0004).
+                  copyId: copySegment(),
                   // Boot's fresh digest: a warm match stages with ZERO HTTP.
                   digest: boot?.projectSync.digest,
                 }
@@ -2051,6 +2077,7 @@ export function WasmTool({
       </WasmErrorBoundary>
 
       {fatal && <FatalOverlay message={fatal} />}
+      {fenced && !fatal && <FenceOverlay />}
 
       {/* The log console (z-40, above boot + fatal overlays) — forced visible
           on a fatal even with chrome hidden: the log is the only account of

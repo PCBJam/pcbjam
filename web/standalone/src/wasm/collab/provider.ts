@@ -1,6 +1,7 @@
 import type * as Y from "yjs";
 import { Awareness } from "y-protocols/awareness";
 import { parseCollabRoomId } from "@pcbjam/shared";
+import { copyGeneration, copySegment } from "@/lib/copy-context";
 import { connectBroadcastChannel } from "./broadcast-transport";
 import { connectAwarenessBroadcast } from "./awareness-bc";
 
@@ -209,6 +210,11 @@ export async function connectProvider(
           scopeId: parsed.scopeId,
           projectId: parsed.projectId,
           docPath: parsed.docPath,
+          // The session's gateway is its working copy's (git-integration
+          // 0004). A project-level room id (`~comments`, no copy segment)
+          // still rides THIS copy's gateway, which relays it project-wide.
+          copyId: parsed.copyId ?? copySegment(),
+          gen: copyGeneration(),
           token: config.params?.token,
           passive: opts.passive,
           passiveSync: opts.passiveSync,

@@ -1,4 +1,5 @@
 import { collabRoomId, FILES_DOC_PATH, type GatewayFileChange } from "@pcbjam/shared";
+import { copySegment } from "@/lib/copy-context";
 import * as Y from "yjs";
 import { connectProvider, type ProviderConfig, type YjsProvider } from "./provider";
 
@@ -205,7 +206,7 @@ export async function startFilesWatch(
 async function connectGateway(opts: FilesWatchOptions): Promise<FilesHintSource> {
   const doc = new Y.Doc();
   const provider: YjsProvider = await connectProvider(doc, opts.provider, {
-    room: collabRoomId(opts.scopeId, opts.projectId, FILES_DOC_PATH),
+    room: collabRoomId(opts.scopeId, opts.projectId, FILES_DOC_PATH, copySegment()),
     passive: true,
   });
   const facade = provider as YjsProvider & Partial<FilesHintSource>;

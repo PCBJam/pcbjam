@@ -292,6 +292,13 @@ export function currentScope(): string {
   return import.meta.env.VITE_SCOPE ?? userSlug();
 }
 
+/**
+ * The working copy the URL asks for (`?copy=<uuid>`, git-integration 0004).
+ * Re-exported from lib/copy-context so URL readers sit together; see that
+ * module for the bound-copy identity every room and cache derives from.
+ */
+export { currentCopyId } from "@/lib/copy-context";
+
 /** Full URL of the CDN libs top manifest (required for VITE_LIBS_SOURCE=cdn),
  *  e.g. https://cdn.pcbjam.com/libs/kicad/9.0.0/manifest.json. The full default
  *  KiCad symbol+footprint set, served read-only as version-pinned static origins

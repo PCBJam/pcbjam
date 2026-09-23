@@ -107,6 +107,9 @@ function openDb(): Promise<IDBDatabase> {
   }));
 }
 
+// `projectId` is the caller's cache key: the project uuid for the default
+// working copy, `<projectId>:<copyId>` for a non-default one (lib/copy-context
+// fileCacheProjectKey) — two copies of one file never alias in this store.
 function key(projectId: string, path: string): string {
   return `${projectId}${SEP}${path}`;
 }

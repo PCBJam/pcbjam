@@ -30,6 +30,9 @@ import {
   type GatewaySubMode,
   parseGatewayServerMsg,
   FILES_DOC_PATH,
+  GENERATION_CLOSE_CODE,
+  GENERATION_REFUSED,
+  isGenerationRefusal,
   PRESENCE_DOC_PATH,
   projectRoomName,
   tagGatewayFrame,
@@ -64,6 +67,60 @@ export class CollabSubRejectedError extends Error {
   }
 }
 
+/**
+ * Generation fence (git-integration 0004 §E): the working copy this tab was
+ * booted on had its base changed, so the gateway refused our generation
+ * (`suberr` 409 `generation`) or closed the socket with 4409. Terminal for the
+ * whole session: no reconnect, no replay, every facade is dead. A subclass of
+ * the sub-rejection so the sheet manager's "do not retry" rule applies.
+ */
+export class CollabFencedError extends CollabSubRejectedError {
+  constructor(docPath: string) {
+    super(docPath, 409, GENERATION_REFUSED);
+    this.name = "CollabFencedError";
+  }
+}
+
+let fenced = false;
+const fencedCbs = new Set<() => void>();
+
+/** True once any gateway connection of this tab was fenced. */
+export function isGatewayFenced(): boolean {
+  return fenced;
+}
+
+/** Fires once, when the tab becomes fenced (already fenced ⇒ fires now). */
+export function onGatewayFenced(cb: () => void): () => void {
+  if (fenced) {
+    cb();
+    return () => {};
+  }
+  fencedCbs.add(cb);
+  return () => {
+    fencedCbs.delete(cb);
+  };
+}
+
+function markFenced(): void {
+  if (fenced) return;
+  fenced = true;
+  // Test/debug handle: the e2e asserts the fence without driving the UI.
+  if (typeof window !== "undefined") {
+    (window as { __pcbjamFenced?: boolean }).__pcbjamFenced = true;
+  }
+  for (const cb of [...fencedCbs]) cb();
+  fencedCbs.clear();
+}
+
+/** Unit-test seam: forget the fence between tests. */
+export function resetGatewayFenceForTests(): void {
+  fenced = false;
+  fencedCbs.clear();
+  if (typeof window !== "undefined") {
+    delete (window as { __pcbjamFenced?: boolean }).__pcbjamFenced;
+  }
+}
+
 function gatewayWsUrl(endpoint: string, room: string, token?: string): string {
   let base = endpoint.replace(/\/$/, "");
   if (!/^[a-z]+:\/\//i.test(base)) {
@@ -88,6 +145,8 @@ class GatewayConnection {
   /** Hidden-tab suspend (do-observability 0001 §B): socket closed on
    *  purpose, facades kept, no reconnect ladder until resume(). */
   private suspended = false;
+  /** Generation fence: terminal, see {@link CollabFencedError}. */
+  private isFenced = false;
   private attempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private chSeq = 0;
@@ -152,8 +211,45 @@ class GatewayConnection {
     return this.suspended;
   }
 
+  /**
+   * The gateway fenced this generation: drop the socket for good, kill every
+   * facade (pending and future waits reject with {@link CollabFencedError}),
+   * never reconnect. Local edits stay in the Y.Docs / MEMFS of this tab for
+   * an explicit recovery; nothing is replayed into the new generation.
+   */
+  fence(): void {
+    if (this.isFenced) return;
+    this.isFenced = true;
+    if (this.reconnectTimer !== undefined) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = undefined;
+    }
+    const ws = this.ws;
+    const wasOpen = this.open;
+    this.ws = null;
+    this.open = false;
+    console.warn(`[gateway] FENCED (working copy generation changed): ${this.room}`);
+    if (ws) {
+      ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
+      try {
+        ws.close();
+      } catch {
+        /* already dead */
+      }
+    }
+    for (const facade of this.facades.values()) {
+      if (wasOpen) facade.handleSocketDown();
+      facade.handleFenced();
+    }
+    markFenced();
+  }
+
+  fencedState(): boolean {
+    return this.isFenced;
+  }
+
   private dial(): void {
-    if (this.closed || this.suspended) return;
+    if (this.closed || this.suspended || this.isFenced) return;
     let ws: WebSocket;
     try {
       ws = new WebSocket(gatewayWsUrl(this.endpoint, this.room, this.token));
@@ -198,12 +294,20 @@ class GatewayConnection {
       }
       this.scheduleReconnect();
     };
-    ws.onclose = down;
+    ws.onclose = (e: CloseEvent) => {
+      if (this.ws !== ws) return;
+      // A 4409 close is the fence itself (the sub refusal is the other path).
+      if (e?.code === GENERATION_CLOSE_CODE) {
+        this.fence();
+        return;
+      }
+      down();
+    };
     ws.onerror = down;
   }
 
   private scheduleReconnect(): void {
-    if (this.closed || this.suspended || this.reconnectTimer !== undefined) return;
+    if (this.closed || this.suspended || this.isFenced || this.reconnectTimer !== undefined) return;
     // Same ladder the per-room provider used (100ms · 2^n, capped) — but ONE
     // ladder for the whole project instead of one per room.
     const delay = Math.min(100 * 2 ** this.attempts, MAX_BACKOFF_MS);
@@ -226,6 +330,10 @@ class GatewayConnection {
 
   /** Called by a registered facade once it knows its ch (post-construction). */
   announce(facade: GatewayDocFacade): void {
+    if (this.isFenced) {
+      facade.handleFenced();
+      return;
+    }
     if (this.open) {
       this.sendControl(facade.subMsg());
       facade.handleSocketOpen();
@@ -276,8 +384,11 @@ function acquireConnection(
   scopeId: string,
   projectId: string,
   token?: string,
+  copyId?: string | null,
 ): GatewayConnection {
-  const room = projectRoomName(scopeId, projectId);
+  // One socket per (project, working copy): a non-default copy has its own
+  // gateway (git-integration 0004), the default copy the legacy name.
+  const room = projectRoomName(scopeId, projectId, copyId);
   const key = `${endpoint}|${token ?? ""}|${room}`;
   let conn = connections.get(key);
   if (!conn) {
@@ -304,6 +415,12 @@ export interface GatewayFacadeOpts {
   projectId: string;
   docPath: string;
   token?: string;
+  /** Working-copy identity segment (git-integration 0004): null/absent for
+   *  the default copy. Selects the gateway socket this facade rides. */
+  copyId?: string | null;
+  /** The copy generation this session booted with; presented on `sub` so an
+   *  outdated tab is refused ({@link CollabFencedError}). Absent ⇒ omitted. */
+  gen?: number;
   /** Passive = register interest only (parked warm-pool sheet): no SyncStep1,
    *  no BoardRoom wake; `touched` hints + awareness still flow. */
   passive?: boolean;
@@ -328,6 +445,7 @@ export class GatewayDocFacade implements YjsProvider {
   private readonly isPresence: boolean;
   private mode: GatewaySubMode;
   private readonly passiveSync: boolean;
+  private readonly gen: number | undefined;
   private dead: CollabSubRejectedError | null = null;
   private destroyed = false;
   /** The doc holds server state (a Step2 arrived) — in EITHER mode. */
@@ -364,11 +482,13 @@ export class GatewayDocFacade implements YjsProvider {
     // No liveness clock on the gateway (0001 §A): the ProjectRoom's
     // tombstones handle departures; renewals would only wake DOs.
     this.awareness = createGatewayAwareness(doc);
+    this.gen = opts.gen;
     this.conn = acquireConnection(
       opts.endpoint,
       opts.scopeId,
       opts.projectId,
       opts.token,
+      opts.copyId,
     );
     this.ch = this.conn.register(this);
 
@@ -493,7 +613,17 @@ export class GatewayDocFacade implements YjsProvider {
   // --- wire (called by GatewayConnection) -----------------------------------
 
   subMsg(): GatewayClientMsg {
-    return { t: "sub", ch: this.ch, doc: this.docPath, mode: this.mode };
+    const msg: GatewayClientMsg = { t: "sub", ch: this.ch, doc: this.docPath, mode: this.mode };
+    if (this.gen !== undefined) msg.gen = this.gen;
+    return msg;
+  }
+
+  /** The connection was fenced: this channel is dead for good. */
+  handleFenced(): void {
+    if (this.destroyed || this.dead instanceof CollabFencedError) return;
+    this.dead = new CollabFencedError(this.docPath);
+    for (const w of this.syncWaiters.splice(0)) w.reject(this.dead);
+    for (const w of this.subWaiters.splice(0)) w.reject(this.dead);
   }
 
   handleSocketOpen(): void {
@@ -525,6 +655,11 @@ export class GatewayDocFacade implements YjsProvider {
   handleControl(msg: GatewayServerMsg): void {
     if (this.destroyed) return;
     if (msg.t === "suberr") {
+      if (isGenerationRefusal(msg.status, msg.message)) {
+        // Fences the WHOLE connection (every facade), not just this channel.
+        this.conn.fence();
+        return;
+      }
       this.dead = new CollabSubRejectedError(
         this.docPath,
         msg.status,

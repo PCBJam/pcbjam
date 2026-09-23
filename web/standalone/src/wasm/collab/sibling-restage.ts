@@ -1,4 +1,5 @@
 import { collabRoomId, docToFile, ydocHasState, ydocIsHollow, yToDoc } from "@pcbjam/shared";
+import { copySegment } from "@/lib/copy-context";
 import type * as Y from "yjs";
 import { restageFile } from "../kicad-runner";
 import { connectKicadDoc, type KicadDocSession } from "./index";
@@ -151,7 +152,7 @@ export async function startSiblingRestage(opts: {
   ): Promise<KicadDocSession | null> => {
     const session = await connectKicadDoc({
       provider: opts.provider,
-      room: collabRoomId(opts.scopeId, opts.projectId, sheetPath),
+      room: collabRoomId(opts.scopeId, opts.projectId, sheetPath, copySegment()),
       passive: true,
       passiveSync: true,
     });

@@ -36,6 +36,7 @@ import { EmojiPickerPopover } from "@/components/EmojiPicker";
 import { MentionInput } from "@/components/MentionInput";
 import { noteEmojiUsed, quickEmojis } from "@/lib/emoji-quick";
 import { cachedCollaborators, collaborators, mergeCandidates } from "@/lib/mentions";
+import { copyLabel, currentCopyRef } from "@/lib/copy-context";
 
 /**
  * DOM half of the hybrid comment pins (collab-presence 0005): the GAL overlay
@@ -1111,6 +1112,19 @@ function MessageReactions({
   );
 }
 
+/**
+ * The copy a thread was written on, when it is NOT the one this tab is bound
+ * to (design-comments C-D3 provenance, git-integration 0004): the label from
+ * the boot payload's copy list, else the id's first 8 chars.
+ */
+function writtenOn(thread: { provenance?: { workingCopyId?: string } }): string | null {
+  const id = thread.provenance?.workingCopyId;
+  if (!id) return null;
+  const mine = currentCopyRef();
+  if (mine && mine.id === id) return null;
+  return copyLabel(id);
+}
+
 function ThreadPopover({
   thread,
   css,
@@ -1157,6 +1171,9 @@ function ThreadPopover({
         <span className="text-xs text-neutral-500 dark:text-white/60">
           {thread.detached && "detached pin · "}
           {thread.resolved ? "resolved" : "open"}
+          {writtenOn(thread) && (
+            <span data-testid="comment-written-on"> · written on {writtenOn(thread)}</span>
+          )}
         </span>
         <div className="flex items-center gap-2">
           {controller.canManageThread(thread) && (

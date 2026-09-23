@@ -152,6 +152,13 @@ export const MODELS_3D_ENV_VARS = [
   "KICAD10_3DMODEL_DIR",
 ] as const;
 
+/**
+ * MEMFS is per tab (one wasm instance, one Emscripten filesystem) and a tab
+ * is bound to ONE working copy for its lifetime (git-integration 0004: the
+ * copy is fixed at boot; a switch reloads). So the staging directory needs no
+ * copy segment — isolation between copies is a property of the tab, and the
+ * project-relative path arithmetic (save-flow, tool-navigation) stays as is.
+ */
 export function memfsProjectDir(slug: string): string {
   return `${MEMFS_PROJECTS_DIR}/${slug}`;
 }

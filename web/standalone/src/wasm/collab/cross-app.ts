@@ -5,6 +5,7 @@ import {
   type PresenceState,
   type PresenceUser,
 } from "@pcbjam/shared";
+import { copySegment } from "@/lib/copy-context";
 import { connectProvider, type ProviderConfig, type YjsProvider } from "./provider";
 import { claimedPresenceColor } from "./presence";
 import { clog } from "./debug";
@@ -66,7 +67,9 @@ export async function startCrossAppPresence(opts: {
 }): Promise<CrossAppHandle | undefined> {
   if (opts.provider.kind === "none") return undefined;
 
-  const room = presenceRoomId(opts.scopeId, opts.projectId);
+  // Presence is per working copy (git-integration 0004): peers on another
+  // copy of the project are not in this tab's roster.
+  const room = presenceRoomId(opts.scopeId, opts.projectId, copySegment());
   const doc = new Y.Doc();
   let provider: YjsProvider;
   try {

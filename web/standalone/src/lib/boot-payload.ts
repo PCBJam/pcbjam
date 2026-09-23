@@ -6,6 +6,7 @@ import {
   type ProjectAccess,
 } from "@pcbjam/shared";
 import { API_BASE_URL, userSlug } from "./config";
+import { fileCacheProjectKey, setCopyContext, withCopyParam } from "./copy-context";
 import { fileCacheValidator, pruneProjectFileCache } from "./project-file-cache";
 
 /**
@@ -68,12 +69,17 @@ export async function fetchBootPayload(
 ): Promise<BootPayload | null> {
   try {
     const res = await fetch(
-      `${API_BASE_URL}/api/scopes/${encodeURIComponent(scope)}/projects/${encodeURIComponent(slug)}/boot`,
+      withCopyParam(
+        `${API_BASE_URL}/api/scopes/${encodeURIComponent(scope)}/projects/${encodeURIComponent(slug)}/boot`,
+      ),
       { credentials: "include", headers: { [USER_HEADER]: userSlug() } },
     );
     if (!res.ok) return null;
     const body = (await res.json()) as BootPayload;
     if (!body?.project || !Array.isArray(body.files)) return null;
+    // Bind the session to the copy the backend resolved (git-integration
+    // 0004) BEFORE the cache prune below keys itself by copy.
+    setCopyContext(body);
     // Fresh listing = fresh cache truth (same prune the remote source's
     // getProject performs) — the boot payload replaces that call.
     const valid = new Map<string, string>();
@@ -81,7 +87,7 @@ export async function fetchBootPayload(
       const v = fileCacheValidator(f);
       if (v) valid.set(f.path, v);
     }
-    void pruneProjectFileCache(body.project.id, valid);
+    void pruneProjectFileCache(fileCacheProjectKey(body.project.id), valid);
     return body;
   } catch {
     return null;

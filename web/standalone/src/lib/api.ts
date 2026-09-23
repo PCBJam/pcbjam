@@ -14,6 +14,7 @@ import {
 } from "./config";
 import { fetchBootPayload, type BootPayload } from "./boot-payload";
 import { client } from "./contract-client";
+import { setCopyContext } from "./copy-context";
 import type { LibInfo } from "@/wasm/libs/source";
 import { downloadBytes } from "./download";
 import {
@@ -105,6 +106,8 @@ export function useProjectBoot(slug: string) {
         const boot = await fetchBootPayload(currentScope(), slug);
         if (boot) return { data: boot, boot };
       }
+      // No boot ⇒ no copy descriptor: the session is the default copy.
+      setCopyContext(null);
       return { data: await projectSource().getProject(slug), boot: null };
     },
   });

@@ -18,6 +18,7 @@ import {
   currentScope,
 } from "./config";
 import { client } from "./contract-client";
+import { fileCacheProjectKey, withCopyParam } from "./copy-context";
 import { idbProjectStore, type LocalProjectStore } from "./idb-project-store";
 import {
   fileCacheValidator,
@@ -115,8 +116,11 @@ function remoteProjectSource(): ProjectSource {
   // call time so a single source instance serves whatever scope is open.
   const projectsBase = () =>
     `${API_BASE_URL}/api/scopes/${encodeURIComponent(currentScope())}/projects`;
+  // Every file request of the session names its working copy (`copy=`,
+  // git-integration 0004) so a tab opened on a non-default copy reads and
+  // writes THAT copy's rows; absent ⇒ the backend resolves the default.
   const fileUrl = (slug: string, relPath: string) =>
-    `${projectsBase()}/${encodeURIComponent(slug)}/files/${encodePath(relPath)}`;
+    withCopyParam(`${projectsBase()}/${encodeURIComponent(slug)}/files/${encodePath(relPath)}`);
   // CAS revision tracking (findings D-1): TWO maps because "revision I saw on
   // the server" and "revision my in-memory model was built from" are different
   // facts — conflating them let a fresh Ctrl+S after a conflict silently
@@ -175,7 +179,7 @@ function remoteProjectSource(): ProjectSource {
         const v = fileCacheValidator(f);
         if (v) valid.set(f.path, v);
       }
-      void pruneProjectFileCache(res.body.project.id, valid);
+      void pruneProjectFileCache(fileCacheProjectKey(res.body.project.id), valid);
       return res.body;
     },
     async fetchFileBytes(slug, relPath, meta) {
@@ -183,7 +187,7 @@ function remoteProjectSource(): ProjectSource {
       // vouches for it — a warm load then fetches only files that changed.
       const validator = meta ? fileCacheValidator(meta) : null;
       if (validator && meta) {
-        const hit = await readCachedFileBytes(meta.projectId, relPath, validator);
+        const hit = await readCachedFileBytes(fileCacheProjectKey(meta.projectId), relPath, validator);
         if (hit) {
           // The cached body IS the listed row's body — its revision is the
           // ancestry the model is about to be built from.
@@ -231,7 +235,7 @@ function remoteProjectSource(): ProjectSource {
         // Plain body: correct for either validator form — for a ydoc-form one
         // this is the server-materialized fallback of the same cold blob.
         if (validator && meta) {
-          void writeCachedFileBytes(meta.projectId, relPath, validator, bytes);
+          void writeCachedFileBytes(fileCacheProjectKey(meta.projectId), relPath, validator, bytes);
         }
         return bytes;
       }
@@ -242,7 +246,7 @@ function remoteProjectSource(): ProjectSource {
         // Cache the CONVERTED text: a warm load skips the download and the
         // (measured ~2s on big boards) ydoc→s-expr conversion both.
         if (cacheYdocBody && validator && meta) {
-          void writeCachedFileBytes(meta.projectId, relPath, validator, text);
+          void writeCachedFileBytes(fileCacheProjectKey(meta.projectId), relPath, validator, text);
         }
         return text;
       } catch (err) {
@@ -260,7 +264,7 @@ function remoteProjectSource(): ProjectSource {
         // Caching the fallback under the blob tag ends the double-fetch for
         // stale unconvertible ydocs — one per tag instead of two per load.
         if (cacheYdocBody && validator && meta && !isYdocResponse(plain)) {
-          void writeCachedFileBytes(meta.projectId, relPath, validator, materialized);
+          void writeCachedFileBytes(fileCacheProjectKey(meta.projectId), relPath, validator, materialized);
         }
         return materialized;
       }

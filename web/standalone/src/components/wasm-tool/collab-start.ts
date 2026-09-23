@@ -10,6 +10,7 @@ import {
   type Tool,
 } from "@pcbjam/shared";
 import { presenceUser, yjsProviderConfig, type DocSource } from "@/lib/config";
+import { copySegment } from "@/lib/copy-context";
 import { memfsFilePath } from "@/wasm/constants";
 import { readStagedFile, type ToolFile } from "@/wasm/kicad-runner";
 import { resolveSheetHierarchy } from "@/wasm/collab/sheet-hierarchy";
@@ -79,7 +80,7 @@ export async function maybeConnectDocSession(
   if (!opts.targetPath || !COLLAB_TOOLS.has(opts.tool)) return {};
 
   const { connectKicadDoc } = await import("@/wasm/collab");
-  const room = collabRoomId(opts.scopeId, opts.projectId, opts.targetPath);
+  const room = collabRoomId(opts.scopeId, opts.projectId, opts.targetPath, copySegment());
   const session = await connectKicadDoc({
     provider: yjsProviderConfig(),
     room,
@@ -188,7 +189,7 @@ export async function maybeStartCollab(
   // One room per (project, document). Two tabs of the same build compute the
   // same id, so cross-tab BroadcastChannel still works; network providers use it
   // verbatim to namespace + persist (see @pcbjam/shared collabRoomId).
-  const room = collabRoomId(opts.scopeId, opts.projectId, opts.targetPath ?? opts.tool);
+  const room = collabRoomId(opts.scopeId, opts.projectId, opts.targetPath ?? opts.tool, copySegment());
   clog("starting collab", provider.kind, "room", room, "seedDoc:", !!seedDoc);
   const handle = await startKicadCollab(mod, win as unknown as KicadItemsWindow, {
     provider,

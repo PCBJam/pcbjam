@@ -29,6 +29,7 @@ import {
   type ThreadFilter,
 } from "@pcbjam/shared";
 import { clog } from "./debug";
+import { currentCopyRef, withCopyParam } from "@/lib/copy-context";
 
 /**
  * Comments controller (collab-presence 0005): glues the MIT `kdoc_comments`
@@ -214,7 +215,7 @@ export function createComments(opts: {
       fail("comments unavailable (no backend)", 0);
       return;
     }
-    void fetch(`${r.apiBase}${projectCommentOpsUrl(r.scope, r.project)}`, {
+    void fetch(withCopyParam(`${r.apiBase}${projectCommentOpsUrl(r.scope, r.project)}`), {
       method: "POST",
       credentials: "include",
       headers: { "content-type": "application/json" },
@@ -229,6 +230,15 @@ export function createComments(opts: {
   };
   const threadOf = (threadId: string): CommentThread | undefined =>
     listThreads(doc, filter).find((t) => t.id === threadId);
+  /**
+   * Where a new thread is written (design-comments C-D3, git-integration
+   * 0004): the working copy and its document generation this session is
+   * bound to. Absent on copy-less backends (@local, the example backend).
+   */
+  const provenance = () => {
+    const ref = currentCopyRef();
+    return ref ? { workingCopyId: ref.id, docGeneration: ref.generation } : undefined;
+  };
   /** Stamp the bound document onto an anchor (create / move / anchorAt). */
   const stampDoc = (anchor: CommentAnchor): CommentAnchor =>
     filter
@@ -347,7 +357,7 @@ export function createComments(opts: {
         // lookup opens that room (git-integration 0001). Legacy single-doc
         // sessions (no filter) still name the file.
         const reportDoc = filter ? COMMENTS_DOC_PATH : r.docPath;
-        const res = await fetch(`${r.apiBase}${commentReportUrl(r.scope, r.project, reportDoc)}`, {
+        const res = await fetch(withCopyParam(`${r.apiBase}${commentReportUrl(r.scope, r.project, reportDoc)}`), {
           method: "POST",
           credentials: "include",
           headers: { "content-type": "application/json" },
@@ -404,7 +414,7 @@ export function createComments(opts: {
       if (mode === "comment") {
         // Pre-chosen id so the popover can open on the echo.
         const id = genId();
-        post({ type: "createThread", anchor, body, mentions, id });
+        post({ type: "createThread", anchor, body, mentions, id, provenance: provenance() });
         return id;
       }
       return createThread(doc, {
@@ -414,6 +424,7 @@ export function createComments(opts: {
         authorEmail: user.email,
         body,
         mentions,
+        provenance: provenance(),
       });
     },
     reply(threadId, body, mentions) {

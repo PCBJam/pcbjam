@@ -1,6 +1,7 @@
 import type { Tool } from "@pcbjam/shared";
 import { FILELESS_TOOLS, toolForFile } from "@pcbjam/shared";
 import { SyncStack } from "@pcbjam/sync-client";
+import { projectSyncNamespace, withCopyParam } from "../lib/copy-context";
 import { defaultKicadPro } from "../lib/new-file";
 import { memfsFilePath, memfsProjectDir } from "./constants";
 import { mark } from "./load-trace";
@@ -41,6 +42,12 @@ export interface ProjectSyncConfig {
    * makes project staging ZERO-request. Absent ⇒ one manifest GET, as before.
    */
   digest?: string;
+  /**
+   * Working-copy identity segment (git-integration 0004): null/absent for
+   * the default copy, the copy id otherwise. Keys the IDB namespace so two
+   * copies never share staged bodies; the HTTP side carries `copy=` itself.
+   */
+  copyId?: string | null;
   /** Test seams (default: credentialed global fetch / IndexedDB stores). */
   fetchImpl?: typeof fetch;
   storeFactory?: ConstructorParameters<typeof SyncStack>[0]["storeFactory"];
@@ -281,13 +288,18 @@ export async function stageViaProjectSync(
   if (eligible.length === 0) return rest;
 
   const baseFetch = sync.fetchImpl ?? fetch;
+  // The transport joins `/manifest`, `/bundle`, `/body/…` onto the base URL,
+  // so the session's `copy=` rides on each request here, not on the base.
   const credentialed: typeof fetch = (input, init) =>
-    baseFetch(input, { ...init, credentials: "include" });
+    baseFetch(typeof input === "string" ? withCopyParam(input) : input, {
+      ...init,
+      credentials: "include",
+    });
   const stack = new SyncStack({
     layers: [
       {
         // Ids (stable) key the IDB cache; slugs (renameable) only address HTTP.
-        namespace: `project:${sync.scopeId}:${sync.projectId}`,
+        namespace: projectSyncNamespace(sync.scopeId, sync.projectId, sync.copyId),
         kind: "static",
         url: `${sync.apiBase}/api/scopes/${encodeURIComponent(sync.scope)}/projects/${encodeURIComponent(opts.slug)}/sync`,
         digest: sync.digest,

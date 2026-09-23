@@ -18,6 +18,7 @@ import {
   type KicadItem,
   type PresenceUser,
 } from "@pcbjam/shared";
+import { copySegment } from "@/lib/copy-context";
 import { connectKicadDoc, type KicadDocSession } from "./index";
 import { publishSkeleton } from "./presence";
 import {
@@ -224,7 +225,7 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
     const pending = (async () => {
       const session = await connectKicadDoc({
         provider,
-        room: collabRoomId(scopeId, projectId, sheetPath),
+        room: collabRoomId(scopeId, projectId, sheetPath, copySegment()),
         passive: connectOpts?.passive,
       });
       if (destroyed) {

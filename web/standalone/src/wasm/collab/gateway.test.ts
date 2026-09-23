@@ -9,7 +9,14 @@ import {
   untagGatewayFrame,
   type GatewayClientMsg,
 } from "@pcbjam/shared";
-import { CollabSubRejectedError, GatewayDocFacade } from "./gateway";
+import {
+  CollabFencedError,
+  CollabSubRejectedError,
+  GatewayDocFacade,
+  isGatewayFenced,
+  onGatewayFenced,
+  resetGatewayFenceForTests,
+} from "./gateway";
 import { resetIdleMonitorForTests } from "./idle-policy";
 
 /**
@@ -30,7 +37,7 @@ class FakeWebSocket {
   sent: Array<string | ArrayBuffer | Uint8Array> = [];
   onopen: (() => void) | null = null;
   onmessage: ((e: { data: unknown }) => void) | null = null;
-  onclose: (() => void) | null = null;
+  onclose: ((e?: { code: number }) => void) | null = null;
   onerror: (() => void) | null = null;
   constructor(public url: string) {
     FakeWebSocket.instances.push(this);
@@ -59,6 +66,10 @@ class FakeWebSocket {
   drop(): void {
     this.readyState = FakeWebSocket.CLOSED;
     this.onclose?.();
+  }
+  closeWith(code: number): void {
+    this.readyState = FakeWebSocket.CLOSED;
+    this.onclose?.({ code });
   }
   controls(): GatewayClientMsg[] {
     return this.sent
@@ -120,6 +131,7 @@ const cleanups: Array<() => void> = [];
 afterEach(() => {
   for (const c of cleanups.splice(0)) c();
   FakeWebSocket.instances = [];
+  resetGatewayFenceForTests();
 });
 
 function track(facade: GatewayDocFacade, ...docs: Y.Doc[]): void {
@@ -543,5 +555,113 @@ describe("gateway connection — hidden-tab suspend/resume", () => {
     expect(FakeWebSocket.instances.length).toBe(sockets);
     fakeDoc.set("visible");
     expect(FakeWebSocket.instances.length).toBe(sockets + 1);
+  });
+});
+
+// --- generation fencing (git-integration 0004 §E) ----------------------------
+
+describe("gateway connection — generation fencing", () => {
+  it("presents the boot generation on every sub, and omits it when unknown", () => {
+    newProject();
+    const docA = new Y.Doc();
+    const docB = new Y.Doc();
+    const a = new GatewayDocFacade(docA, { ...facadeOpts("a.kicad_sch"), gen: 3 });
+    const b = new GatewayDocFacade(docB, facadeOpts("b.kicad_sch", true));
+    track(a, docA);
+    track(b, docB);
+    const ws = FakeWebSocket.instances.at(-1)!;
+    ws.open();
+    const subs = ws.controls().filter((m) => m.t === "sub");
+    expect(subs.find((m) => m.doc === "a.kicad_sch")).toMatchObject({ gen: 3 });
+    expect("gen" in subs.find((m) => m.doc === "b.kicad_sch")!).toBe(false);
+  });
+
+  it("a non-default copy rides its own gateway socket", () => {
+    newProject();
+    const copy = "99999999-8888-7777-6666-555555555555";
+    const docA = new Y.Doc();
+    const docB = new Y.Doc();
+    const a = new GatewayDocFacade(docA, facadeOpts("a.kicad_sch"));
+    const b = new GatewayDocFacade(docB, { ...facadeOpts("a.kicad_sch"), copyId: copy });
+    track(a, docA);
+    track(b, docB);
+    expect(FakeWebSocket.instances.length).toBe(2);
+    expect(decodeURIComponent(FakeWebSocket.instances[1]!.url)).toContain(`:${copy}?`);
+    expect(decodeURIComponent(FakeWebSocket.instances[0]!.url)).not.toContain(copy);
+  });
+
+  it("suberr 409 generation fences the whole connection: waiters reject, no reconnect, listener fires once", async () => {
+    newProject();
+    const docA = new Y.Doc();
+    const docB = new Y.Doc();
+    const a = new GatewayDocFacade(docA, { ...facadeOpts("a.kicad_sch"), gen: 1 });
+    const b = new GatewayDocFacade(docB, { ...facadeOpts("b.kicad_sch", true), gen: 1 });
+    track(a, docA);
+    track(b, docB);
+    let fired = 0;
+    cleanups.push(onGatewayFenced(() => fired++));
+    const ws = FakeWebSocket.instances.at(-1)!;
+    ws.open();
+    const chA = ws.controls().find((m) => m.t === "sub" && m.doc === "a.kicad_sch")!.ch;
+    const pendingA = a.whenSynced();
+    expect(isGatewayFenced()).toBe(false);
+
+    vi.useFakeTimers();
+    cleanups.push(() => vi.useRealTimers());
+    ws.receiveText(JSON.stringify({ t: "suberr", ch: chA, status: 409, message: "generation" }));
+
+    await expect(pendingA).rejects.toBeInstanceOf(CollabFencedError);
+    // The OTHER channel on the same socket is dead too (the fence is per tab).
+    await expect(b.activate()).rejects.toBeInstanceOf(CollabFencedError);
+    expect(isGatewayFenced()).toBe(true);
+    expect(fired).toBe(1);
+    expect(ws.readyState).toBe(FakeWebSocket.CLOSED);
+    // No reconnect ladder, however long we wait.
+    vi.advanceTimersByTime(60_000);
+    expect(FakeWebSocket.instances.length).toBe(1);
+    // A late subscriber is told immediately, once.
+    cleanups.push(onGatewayFenced(() => fired++));
+    expect(fired).toBe(2);
+  });
+
+  it("an ordinary 409 (file validation) stays a per-channel rejection, not a fence", async () => {
+    newProject();
+    const doc = new Y.Doc();
+    const facade = new GatewayDocFacade(doc, { ...facadeOpts("bad.kicad_sch"), gen: 1 });
+    track(facade, doc);
+    const ws = FakeWebSocket.instances.at(-1)!;
+    ws.open();
+    const ch = ws.controls()[0]!.ch;
+    const pending = facade.whenSynced();
+    ws.receiveText(
+      JSON.stringify({ t: "suberr", ch, status: 409, message: "file failed KiCad validation: x" }),
+    );
+    await expect(pending).rejects.toBeInstanceOf(CollabSubRejectedError);
+    await expect(pending).rejects.not.toBeInstanceOf(CollabFencedError);
+    expect(isGatewayFenced()).toBe(false);
+    expect(ws.readyState).toBe(FakeWebSocket.OPEN);
+  });
+
+  it("close code 4409 fences: no reconnect, later facades are born dead", async () => {
+    newProject();
+    const doc = new Y.Doc();
+    const facade = new GatewayDocFacade(doc, { ...facadeOpts("a.kicad_sch"), gen: 2 });
+    track(facade, doc);
+    const ws = FakeWebSocket.instances.at(-1)!;
+    ws.open();
+    const pending = facade.whenSynced();
+    vi.useFakeTimers();
+    cleanups.push(() => vi.useRealTimers());
+    ws.closeWith(4409);
+    expect(isGatewayFenced()).toBe(true);
+    await expect(pending).rejects.toBeInstanceOf(CollabFencedError);
+    vi.advanceTimersByTime(60_000);
+    expect(FakeWebSocket.instances.length).toBe(1);
+    // Same project, new facade after the fence: dead on arrival, no dial.
+    const doc2 = new Y.Doc();
+    const late = new GatewayDocFacade(doc2, { ...facadeOpts("b.kicad_sch"), gen: 2 });
+    track(late, doc2);
+    await expect(late.whenSynced()).rejects.toBeInstanceOf(CollabFencedError);
+    expect(FakeWebSocket.instances.length).toBe(1);
   });
 });
