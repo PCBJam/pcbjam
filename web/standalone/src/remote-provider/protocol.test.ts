@@ -169,3 +169,22 @@ describe("inline payloads", () => {
     expect(() => decodeBase64("a")).toThrow(/base64/);
   });
 });
+
+describe("busy host", () => {
+  it("refuses part commands without decoding them while an earlier part is pending; other commands still answer", () => {
+    const s = createProviderSession(options);
+    s.begin();
+    let id = 500;
+    const send = (command: string, extra: Record<string, unknown>, busy: boolean) =>
+      s.handleIncoming({ version: 1, session_id: s.sessionId, message_id: ++id, command, parameters: {}, ...extra }, { busy });
+    // Not even valid base64: a busy host must refuse before looking at it.
+    for (const command of ["DL_SYMBOL", "DL_COMPONENT", "PLACE_COMPONENT"]) {
+      const handled = send(command, { data: "%%%" }, true);
+      expect(handled.effect).toBeUndefined();
+      expect(handled.outbound[0]).toMatchObject({ status: "ERROR", error_code: "IMPORT_FAILED", error_message: expect.stringContaining("still handling"), response_to: id });
+    }
+    expect(send("CAPABILITIES", {}, true).outbound[0]).toMatchObject({ status: "OK", command: "CAPABILITIES" });
+    const free = send("DL_SYMBOL", { data: b64(SYMBOL), parameters: { name: "R" } }, false);
+    expect(free.effect).toMatchObject({ kind: "inline-part", command: "DL_SYMBOL" });
+  });
+});

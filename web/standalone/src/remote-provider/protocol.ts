@@ -60,6 +60,7 @@ const ERRORS = {
   SESSION_MISMATCH: "Session identifier did not match the active provider session.",
   LOGIN_FAILED: "Sign-in through a remote provider is not supported in PCBJam yet.",
   UNKNOWN_COMMAND: (c: string) => `Command '${c}' is not supported.`,
+  BUSY: "PCBJam is still handling the previous part. Try again when it has finished.",
 };
 
 export function createProviderSession(options: ProviderSessionOptions) {
@@ -106,7 +107,12 @@ export function createProviderSession(options: ProviderSessionOptions) {
     },
     reply,
     error,
-    handleIncoming(raw: unknown): Handled {
+    /**
+     * `busy`: the host is still working on an earlier part request. Part
+     * commands are then refused before their payload is decoded, so a page
+     * cannot pile up work (or memory) behind a pending confirmation.
+     */
+    handleIncoming(raw: unknown, { busy = false }: { busy?: boolean } = {}): Handled {
       let m: Envelope;
       try { m = validateEnvelope(raw); } catch (e) { return { outbound: [], dropped: (e as Error).message }; }
       if (m.version !== RPC_VERSION) return { outbound: [error(m.messageId, m.command, "UNSUPPORTED_VERSION", ERRORS.UNSUPPORTED_VERSION(m.version))] };
@@ -143,6 +149,7 @@ export function createProviderSession(options: ProviderSessionOptions) {
         case "DL_FOOTPRINT":
         case "DL_3DMODEL":
         case "DL_SPICE": {
+          if (busy) return { outbound: [error(m.messageId, m.command, "IMPORT_FAILED", ERRORS.BUSY)] };
           const place = m.command === "PLACE_COMPONENT" || String(p.mode ?? "").toUpperCase() === "PLACE";
           const isComponent = m.command === "PLACE_COMPONENT" || m.command === "DL_COMPONENT";
           try {

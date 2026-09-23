@@ -56,9 +56,12 @@ export interface RemoteProviderMountOptions {
   /** Injection points for tests. */
   fetchImpl?: typeof fetch;
   uuid?: () => string;
+  heartbeatMs?: number;
 }
 
 export const HEARTBEAT_MS = 40000;
+/** Server answers that mean the activation is over for good (revoked, removed, unapproved, expired). */
+const ENDED = new Set([401, 403, 404, 409]);
 const SAVER_CODES = new Set(["NOT_SIGNED_IN", "NO_TEAM_WRITE", "INVALID_SYMBOL", "INVALID_FOOTPRINT", "TOO_LARGE", "PLACEMENT_UNAVAILABLE", "LIB_WRITE_FAILED"]);
 const noop = () => {};
 
@@ -81,7 +84,7 @@ export function createPlatformClient(apiBase: string, fetchImpl: typeof fetch = 
   const failure = async (response: Response) => {
     let result: { error?: string; code?: string } = {};
     try { result = await response.json(); } catch { /* non-JSON error body */ }
-    return Object.assign(new Error(result.error ?? "Plugin operation failed"), typeof result.code === "string" ? { code: result.code } : {});
+    return Object.assign(new Error(result.error ?? "Plugin operation failed"), { status: response.status }, typeof result.code === "string" ? { code: result.code } : {});
   };
   return {
     async json<T>(path: string, method: string, data?: unknown, signal?: AbortSignal): Promise<T> {
@@ -110,10 +113,14 @@ export function mountRemoteProvider(container: HTMLElement, options: RemoteProvi
   let frame: HTMLIFrameElement | undefined;
   let handshakeTimer: ReturnType<typeof setInterval> | undefined;
   let heartbeat: ReturnType<typeof setInterval> | undefined;
-  let queue: Promise<unknown> = Promise.resolve();
+  // One part request at a time: later ones are refused (protocol BUSY) rather
+  // than queued behind a confirmation the user has not answered yet.
+  let working = false;
   let disposed = false;
+  // Access ended: the frame is gone and nothing the page sent earlier may still land.
+  let ended = false;
 
-  const status = (s: HostStatus) => { if (!disposed) options.onStatus(s); };
+  const status = (s: HostStatus) => { if (!disposed && !ended) options.onStatus(s); };
   const fail = (message: string) => {
     log("failed: " + message);
     status({ state: "failed", message, provider: activation?.provider });
@@ -124,6 +131,22 @@ export function mountRemoteProvider(container: HTMLElement, options: RemoteProvi
     if (heartbeat) clearInterval(heartbeat);
     handshakeTimer = heartbeat = undefined;
   };
+  const teardown = () => {
+    stopTimers();
+    abort.abort();
+    window.removeEventListener("message", onMessage);
+    frame?.removeEventListener("load", onLoad);
+    frame?.remove();
+    frame = undefined;
+  };
+  /** The server said this activation is over: show why, then close the panel. */
+  const end = (message: string) => {
+    if (ended || disposed) return;
+    fail(message);
+    ended = true;
+    teardown();
+  };
+  const denied = (error: unknown) => ENDED.has((error as { status?: number }).status ?? 0);
   const post = (envelope: object) => {
     if (!frame?.contentWindow || !activation) return;
     frame.contentWindow.postMessage(JSON.stringify(envelope), activation.provider.panelOrigin);
@@ -150,11 +173,14 @@ export function mountRemoteProvider(container: HTMLElement, options: RemoteProvi
     const raw = typeof event.data === "string" ? event.data : event.data && typeof event.data === "object" ? event.data : null;
     if (raw === null) return;
     if (typeof raw === "string" && raw.length > PROVIDER_LIMITS.messageBytes) { log("dropped: message too large"); return; }
-    const handled = session.handleIncoming(raw);
+    const handled = session.handleIncoming(raw, { busy: working });
     if (handled.dropped) log("dropped: " + handled.dropped);
     for (const out of handled.outbound) post(out);
     if (handled.ready) { if (handshakeTimer) clearInterval(handshakeTimer); handshakeTimer = undefined; status({ state: "ready", provider: activation.provider }); }
-    if (handled.effect) queue = queue.then(() => runEffect(handled.effect!)).catch(noop);
+    if (handled.effect) {
+      working = true;
+      void runEffect(handled.effect).finally(() => { working = false; });
+    }
   };
 
   async function runEffect(effect: Effect) {
@@ -182,6 +208,9 @@ export function mountRemoteProvider(container: HTMLElement, options: RemoteProvi
         status({ state: "ready", provider });
         return;
       }
+      // The confirmation may have waited a long time: re-check access right
+      // before anything is written, so a revoked provider cannot save a part.
+      await api.json(`activations/${activation.id}/check`, "POST", { method: "provider.asset" }, signal);
       status({ state: "busy", provider, message: `Saving ${request.pack.displayName}…` });
       // Reply as soon as the library write is done (onSaved, if the saver
       // supports it) so the page's RPC timeout never races the canvas click.
@@ -203,9 +232,10 @@ export function mountRemoteProvider(container: HTMLElement, options: RemoteProvi
         + (e.code && !SAVER_CODES.has(e.code) ? ` (${e.code})` : "")
         + (e.code === "LIB_WRITE_FAILED" ? " Click Place again to retry." : "");
       if (code === null) post(session.reply(requestId, command));
-      else post(session.error(requestId, command, code, message));
+      else post(session.error(requestId, command, denied(e) ? "ACCESS_DENIED" : code, message));
       log(`${command} failed: ${message}`);
-      if (!signal.aborted) status({ state: "ready", provider });
+      if (denied(e)) end("Provider access ended: " + e.message + ". Reopen the panel to continue.");
+      else if (!signal.aborted) status({ state: "ready", provider });
     }
   }
 
@@ -242,10 +272,14 @@ export function mountRemoteProvider(container: HTMLElement, options: RemoteProvi
       status({ state: "loading", provider });
       frame.src = provider.panelUrl;
       container.appendChild(frame);
+      // A refusal ends the panel; a network blip or 429/503 only skips a beat
+      // (two missed beats let the activation expire, which is a refusal).
       heartbeat = setInterval(() => {
-        api.json(`activations/${activation!.id}/check`, "POST", { method: "provider.asset" }, signal)
-          .catch((e: Error) => fail("Provider access ended: " + e.message + ". Reopen the panel to continue."));
-      }, HEARTBEAT_MS);
+        api.json(`activations/${activation!.id}/check`, "POST", { method: "provider.asset" }, signal).catch((e: Error) => {
+          if (denied(e)) end("Provider access ended: " + e.message + ". Reopen the panel to continue.");
+          else if (!signal.aborted) log("access check failed, retrying: " + e.message);
+        });
+      }, options.heartbeatMs ?? HEARTBEAT_MS);
     } catch (error) {
       if (!signal.aborted) fail((error as Error).message);
     }
@@ -254,12 +288,7 @@ export function mountRemoteProvider(container: HTMLElement, options: RemoteProvi
   const dispose = () => {
     if (disposed) return;
     disposed = true;
-    stopTimers();
-    abort.abort();
-    window.removeEventListener("message", onMessage);
-    frame?.removeEventListener("load", onLoad);
-    frame?.remove();
-    frame = undefined;
+    teardown();
     if (activation) void api.json(`activations/${activation.id}`, "DELETE").catch(noop);
   };
   options.signal.addEventListener("abort", dispose, { once: true });
