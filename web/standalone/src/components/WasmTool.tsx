@@ -1,8 +1,12 @@
 import * as React from "react";
 import {
   commentAuthorColors,
+  commentsLiftedMarker,
+  commentsRoomId,
   FILELESS_TOOLS,
   fileToDoc,
+  liftLegacyComments,
+  listThreads,
   projectPath,
   syncLayoutToY,
   type Tool,
@@ -71,6 +75,7 @@ import {
   type FollowTarget,
 } from "@/wasm/collab/follow-user";
 import { startCrossAppPresence, type CrossAppHandle } from "@/wasm/collab/cross-app";
+import { connectKicadDoc } from "@/wasm/collab";
 import {
   startSiblingRestage,
   type SiblingRestageHandle,
@@ -322,6 +327,11 @@ export function WasmTool({
   // Project-wide presence room (0006): joined once per session, survives
   // eeschema sheet rebinds — the bridge re-reads it on every startPresence.
   const crossAppRef = React.useRef<CrossAppHandle | null>(null);
+  // Project comments document (git-integration 0001): the `~comments` room
+  // every session of the project opens beside its file room(s). Joined once
+  // per session in the boot fan-out; the comments controller filters it by
+  // the bound file and is REBOUND (not recreated) on eeschema sheet switches.
+  const commentsDocRef = React.useRef<KicadDocSession | null>(null);
   const siblingRestageRef = React.useRef<SiblingRestageHandle | null>(null);
   const filesWatchRef = React.useRef<FilesWatchHandle | null>(null);
   // Set at the boot effect's cleanup; deferred starters bail on it (the
@@ -522,6 +532,16 @@ export function WasmTool({
     presenceRef.current = null;
     crossAppRef.current?.destroy();
     crossAppRef.current = null;
+    const commentsDoc = commentsDocRef.current;
+    commentsDocRef.current = null;
+    if (commentsDoc) {
+      try {
+        commentsDoc.provider.destroy();
+        commentsDoc.doc.destroy();
+      } catch {
+        /* teardown is best-effort */
+      }
+    }
     siblingRestageRef.current?.destroy();
     siblingRestageRef.current = null;
     filesWatchRef.current?.destroy();
@@ -824,7 +844,11 @@ export function WasmTool({
         ...(commenter ? { role: "commenter" as const } : {}),
         // Round-robin colors seeded by the doc's comment authors (0009 C):
         // claims avoid their slots, an author rejoining adopts their own.
-        ...(doc ? { seedColors: () => commentAuthorColors(doc) } : {}),
+        // The authors live in the project comments document (0001); the
+        // file doc only still carries them in legacy single-doc sessions.
+        ...(commentsDocRef.current || doc
+          ? { seedColors: () => commentAuthorColors(commentsDocRef.current?.doc ?? doc!) }
+          : {}),
       });
       presenceRef.current = presence;
       // Test/debug handle (mirrors __pcbjamComments): peers as this tab sees them.
@@ -868,9 +892,11 @@ export function WasmTool({
     // presence — eeschema rebinds per active sheet.
     const startComments = (doc: import("yjs").Doc | undefined, docPath: string) => {
       lastCommentsDocRef.current = { doc, docPath };
-      commentsRef.current?.destroy();
-      commentsRef.current = null;
-      setCommentsCtl(null);
+      const stop = () => {
+        commentsRef.current?.destroy();
+        commentsRef.current = null;
+        setCommentsCtl(null);
+      };
       // Comment capability (comments-ux 0003 §4.5): editors write into the
       // ydoc; commenters (read-only frame) through the REST comment-op route;
       // plain readers only behind the "Show comments" opt-in. A writer who
@@ -884,12 +910,39 @@ export function WasmTool({
           : access === "write"
             ? "write"
             : "read";
-      if (cmode === "read" && !readerCommentsRef.current) return;
+      if (cmode === "read" && !readerCommentsRef.current) return stop();
       if (!doc || (tool !== "pcbnew" && tool !== "eeschema") || !hasCommentsBridge(win.Module)) {
+        return stop();
+      }
+      // Project comments document (git-integration 0001): threads come from
+      // the project room, anchors resolve against the bound file doc. Without
+      // the project room (provider "none", connect failure) the controller
+      // falls back to the legacy single-doc shape so comments keep working.
+      const commentsDoc = commentsDocRef.current?.doc;
+      if (commentsDoc && cmode === "write") {
+        // Lazy lift (design-comments §8, C-D9): a file doc still carrying its
+        // pre-0001 threads moves them into the project document once. The
+        // closed backend lifts at boot too — the helper is idempotent by id
+        // and both converge. Read/comment sessions never write the file doc.
+        try {
+          if (!commentsLiftedMarker(doc) && listThreads(doc).length > 0) {
+            const r = liftLegacyComments(doc, commentsDoc, docPath);
+            append(`[comments] lifted ${r.moved} legacy thread(s) of ${docPath} into the project document`);
+          }
+        } catch (err) {
+          append(`[comments] legacy lift failed: ${String(err)}`);
+        }
+      }
+      const existing = commentsRef.current;
+      if (existing && commentsDoc && existing.mode() === cmode && existing.document()) {
+        // Sheet switch (eeschema): rebind items + filter, keep the controller.
+        existing.setDocument(doc, docPath);
         return;
       }
+      stop();
       const ctl = createComments({
-        doc,
+        doc: commentsDoc ?? doc,
+        ...(commentsDoc ? { itemsDoc: doc, filePath: docPath } : {}),
         mod: win.Module,
         user: commentAuthor(),
         tool,
@@ -1136,6 +1189,36 @@ export function WasmTool({
           if (presyncAbort.signal.aborted) h.destroy(); // unmounted mid-connect
           else crossAppRef.current = h;
         });
+        // Project comments document (git-integration 0001): the `~comments`
+        // room, same fan-out slot and opt-out as the presence room. Readers
+        // join too (they render pins behind the "Show comments" opt-in; the
+        // gateway drops any doc write from a read-only subscription). Never
+        // rejects: without it the controller falls back to the file doc.
+        const commentsDocReady: Promise<KicadDocSession | undefined> =
+          (tool === "pcbnew" || tool === "eeschema") && !collabOptOut
+            ? (async () => {
+                try {
+                  await identityReady;
+                  const session = await connectKicadDoc({
+                    provider: yjsProviderConfig(),
+                    room: commentsRoomId(scopeId, projectId),
+                    signal: presyncAbort.signal,
+                  });
+                  append(`[comments] project comments document joined (${listThreads(session.doc).length} thread(s))`);
+                  return session;
+                } catch (err) {
+                  append(`[comments] project comments document connect failed: ${String(err)}`);
+                  return undefined;
+                }
+              })()
+            : Promise.resolve(undefined);
+        void commentsDocReady.then((s) => {
+          if (!s) return;
+          if (presyncAbort.signal.aborted) {
+            s.provider.destroy();
+            s.doc.destroy();
+          } else commentsDocRef.current = s;
+        });
         await bootKicadTool({
           tool,
           base,
@@ -1330,13 +1413,22 @@ export function WasmTool({
         // (pure network + Y.Doc, no wasm) — only the handoff to the wasm-bound
         // presence below has to wait for the open. Settle it here.
         const crossAppHandle = (await crossAppReady) ?? null;
+        // The project comments document settles here too — the first
+        // startComments below must see it (0001), else it would bind the
+        // legacy single-doc shape for the whole session.
+        const commentsDocSession = (await commentsDocReady) ?? null;
         if (disposedRef.current) {
           // Unmounted while awaiting — cleanup already ran; adopting now would
           // leak a live socket behind a dead component (findings C-1).
           crossAppHandle?.destroy();
+          if (commentsDocSession) {
+            commentsDocSession.provider.destroy();
+            commentsDocSession.doc.destroy();
+          }
           return;
         }
         crossAppRef.current = crossAppHandle;
+        commentsDocRef.current = commentsDocSession;
         // Test/debug handle (mirrors __pcbjamComments): lets the e2e assert
         // the project-room peer view without driving pixels.
         (win as { __pcbjamCrossApp?: CrossAppHandle | null }).__pcbjamCrossApp =

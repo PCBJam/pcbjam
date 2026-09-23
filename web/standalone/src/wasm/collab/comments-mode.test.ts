@@ -37,14 +37,15 @@ describe("comment mode (REST writer)", () => {
 
   const lastOp = () => JSON.parse(fetchMock.mock.calls.at(-1)![1].body as string).op;
 
-  it("posts ops to the document's comment route with credentials, never writing the ydoc", () => {
+  it("posts ops to the project's comment route with credentials, never writing the ydoc", () => {
     const doc = new Y.Doc();
     const ctl = createComments({ doc, mod: stubMod(), user: { id: "guest" }, tool: "pcbnew", mode: "comment", rest });
     const id = ctl.create({ pos: { x: 5, y: 5 } }, "hello", ["owner"]);
     expect(id).toMatch(/^[A-Za-z0-9_-]{8,40}$/);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0]!;
-    expect(url).toBe("http://api.test/api/scopes/team/projects/board/files/a/b.kicad_pcb/comments");
+    // git-integration 0001: ops target the project comments document.
+    expect(url).toBe("http://api.test/api/scopes/team/projects/board/comments");
     expect(init.method).toBe("POST");
     expect(init.credentials).toBe("include");
     expect(lastOp()).toEqual({ type: "createThread", anchor: { pos: { x: 5, y: 5 } }, body: "hello", mentions: ["owner"], id });

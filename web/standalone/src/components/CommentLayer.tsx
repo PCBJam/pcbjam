@@ -103,6 +103,26 @@ const DRAG_SYNC_MS = 60;
 const PANEL_OPEN_KEY = "pcbjam:comments-panel-open";
 const PANEL_COLLAPSED_KEY = "pcbjam:comments-panel-collapsed";
 const PANEL_POS_KEY = "pcbjam:comments-panel-pos";
+// git-integration 0001 (design-comments C-D5/C-N4): the "Not on this
+// revision" section is collapsed and detached pins stay off the canvas by
+// default; both prefs persist per browser like the panel state.
+const DETACHED_OPEN_KEY = "pcbjam:comments-detached-open";
+const DETACHED_PINS_KEY = "pcbjam:comments-detached-pins";
+
+function readPref(key: string): boolean {
+  try {
+    return localStorage.getItem(key) === "1";
+  } catch {
+    return false;
+  }
+}
+function writePref(key: string, v: boolean): void {
+  try {
+    localStorage.setItem(key, v ? "1" : "0");
+  } catch {
+    /* private mode */
+  }
+}
 const PANEL_W = 288; // w-72
 const PANEL_HEADER_H = 36;
 
@@ -156,6 +176,13 @@ export function CommentLayer({
   };
   const [showResolved, setShowResolved] = React.useState(false);
   const [hidden, setHidden] = React.useState(!controller.pinsVisible());
+  // Detached pins on the canvas (0001): off by default, persisted.
+  const [detachedPins, setDetachedPinsState] = React.useState<boolean>(() => readPref(DETACHED_PINS_KEY));
+  const setDetachedPins = (v: boolean) => {
+    setDetachedPinsState(v);
+    writePref(DETACHED_PINS_KEY, v);
+    controller.setDetachedPinsVisible(v);
+  };
   const [draft, setDraft] = React.useState<{ anchor: CommentAnchor; css: { x: number; y: number } } | null>(null);
   // The GAL panel's CSS rect — re-measured on viewport pushes + window resize.
   const [glRect, setGlRect] = React.useState<CssRect | null>(null);
@@ -177,7 +204,19 @@ export function CommentLayer({
     setOpenId(null);
     setDraft(null);
     setHidden(!controller.pinsVisible());
-    return controller.subscribe(setThreads);
+    controller.setDetachedPinsVisible(readPref(DETACHED_PINS_KEY));
+    const offThreads = controller.subscribe(setThreads);
+    // A rebind to another document (eeschema sheet switch, 0001) keeps the
+    // controller but changes the thread set — close what was open on the old
+    // sheet, exactly as the old controller swap did.
+    const offDoc = controller.subscribeDocument(() => {
+      setOpenId(null);
+      setDraft(null);
+    });
+    return () => {
+      offThreads();
+      offDoc();
+    };
   }, [controller]);
 
   // Viewing an open thread marks it seen — including replies that arrive
@@ -348,7 +387,11 @@ export function CommentLayer({
     ? (openAnchorCss ? toBodyCss(openAnchorCss) : { x: window.innerWidth / 2 - 150, y: 120 })
     : null;
   const visibleThreads = threads.filter((t) => showResolved || !t.resolved);
-  const pinThreads = hidden ? [] : visibleThreads;
+  // Detached threads (item gone, design-comments §6.1) leave the canvas and
+  // the main list; the panel lists them under "Not on this revision" and the
+  // toggle draws their pins at the stored position. The DOM hit targets
+  // mirror the GAL dots the controller pushes.
+  const pinThreads = hidden ? [] : visibleThreads.filter((t) => detachedPins || !t.detached);
 
   // Comment toolbar + list panel: portaled into the overlay menu's comments
   // slot (0010) while the menu is open — in-flow there, not absolute.
@@ -461,8 +504,13 @@ export function CommentLayer({
           }}
           pinsHidden={hidden}
           onTogglePins={toggleHidden}
+          detachedPins={detachedPins}
+          onDetachedPins={setDetachedPins}
           onJump={(t) => {
             if (hidden) toggleHidden();
+            // Jumping to a detached thread shows its pin, else there is
+            // nothing at the destination to look at.
+            if (t.detached && !detachedPins) setDetachedPins(true);
             controller.jumpTo(t.id);
             setOpenId(t.id);
           }}
@@ -559,7 +607,7 @@ export function CommentLayer({
       )}
 
       {/* Thread popover next to its pin. */}
-      {open && openCss && !hidden && (
+      {open && openCss && !hidden && (!open.detached || detachedPins) && (
         <ThreadPopover
           thread={open}
           css={openCss}
@@ -593,6 +641,8 @@ function CommentsPanel({
   onToggleMode,
   pinsHidden,
   onTogglePins,
+  detachedPins,
+  onDetachedPins,
   onJump,
   onClose,
 }: {
@@ -606,6 +656,9 @@ function CommentsPanel({
   onToggleMode: () => void;
   pinsHidden: boolean;
   onTogglePins: () => void;
+  /** Draw detached pins at their stored position (0001, default off). */
+  detachedPins: boolean;
+  onDetachedPins: (v: boolean) => void;
   onJump: (t: ResolvedThread) => void;
   onClose: () => void;
 }) {
@@ -640,7 +693,53 @@ function CommentsPanel({
 
   const lastActivity = (t: ResolvedThread) =>
     t.messages[t.messages.length - 1]?.createdAt ?? t.createdAt;
-  const sorted = [...threads].sort((a, b) => lastActivity(b) - lastActivity(a));
+  const byActivity = (a: ResolvedThread, b: ResolvedThread) => lastActivity(b) - lastActivity(a);
+  // Main list = anchored threads; detached ones (their item is gone from
+  // this document, design-comments §6.1) sit in their own collapsed section.
+  const sorted = threads.filter((t) => !t.detached).sort(byActivity);
+  const detached = threads.filter((t) => t.detached).sort(byActivity);
+  const [detachedOpen, setDetachedOpenState] = React.useState<boolean>(() => readPref(DETACHED_OPEN_KEY));
+  const setDetachedOpen = (v: boolean) => {
+    setDetachedOpenState(v);
+    writePref(DETACHED_OPEN_KEY, v);
+  };
+
+  const row = (t: ResolvedThread, testId: string) => (
+    <button
+      key={t.id}
+      data-testid={testId}
+      data-thread-id={t.id}
+      onClick={() => onJump(t)}
+      className="block w-full border-t border-black/10 px-3 py-2 text-left text-xs hover:bg-black/5 dark:border-white/10 dark:hover:bg-white/10"
+    >
+      <span className="flex items-center gap-1">
+        <span
+          className="font-semibold"
+          style={{ color: controller.colorFor(t.createdBy) }}
+          title={authorLabel(t).title}
+        >
+          {authorLabel(t).text}
+        </span>{" "}
+        <span className="text-neutral-500 dark:text-white/50">
+          {timeAgo(lastActivity(t))} ago
+          {t.resolved ? " · resolved" : ""}
+          {t.messages.length > 1 ? ` · ${t.messages.length - 1} repl${t.messages.length === 2 ? "y" : "ies"}` : ""}
+        </span>
+        {threadUnreadCount(t, currentUser) > 0 && (
+          <span
+            data-testid="comment-unread-dot"
+            title={threadMentionsUnread(t, currentUser) ? "Unread — you were mentioned" : "Unread"}
+            className={`ml-auto h-2 w-2 shrink-0 rounded-full ${
+              threadMentionsUnread(t, currentUser) ? "bg-rose-400" : "bg-amber-400"
+            }`}
+          />
+        )}
+      </span>
+      <span className="mt-0.5 block truncate text-neutral-800 dark:text-white/90">
+        {t.messages[0]?.body ?? ""}
+      </span>
+    </button>
+  );
 
   return (
     <div
@@ -737,46 +836,43 @@ function CommentsPanel({
 
       {!collapsed && (
       <div data-testid="comments-panel-list" className="max-h-[60vh] overflow-y-auto">
-        {sorted.length === 0 && (
+        {sorted.length === 0 && detached.length === 0 && (
           <p className="px-3 pb-3 text-xs text-neutral-500 dark:text-white/50">
             {total === 0 ? "No comments yet." : "Nothing to show — check the resolved filter."}
           </p>
         )}
-        {sorted.map((t) => (
-          <button
-            key={t.id}
-            data-testid="comment-panel-item"
-            onClick={() => onJump(t)}
-            className="block w-full border-t border-black/10 px-3 py-2 text-left text-xs hover:bg-black/5 dark:border-white/10 dark:hover:bg-white/10"
-          >
-            <span className="flex items-center gap-1">
-              <span
-                className="font-semibold"
-                style={{ color: controller.colorFor(t.createdBy) }}
-                title={authorLabel(t).title}
-              >
-                {authorLabel(t).text}
-              </span>{" "}
-              <span className="text-neutral-500 dark:text-white/50">
-                {timeAgo(lastActivity(t))} ago
-                {t.resolved ? " · resolved" : ""}
-                {t.messages.length > 1 ? ` · ${t.messages.length - 1} repl${t.messages.length === 2 ? "y" : "ies"}` : ""}
-              </span>
-              {threadUnreadCount(t, currentUser) > 0 && (
-                <span
-                  data-testid="comment-unread-dot"
-                  title={threadMentionsUnread(t, currentUser) ? "Unread — you were mentioned" : "Unread"}
-                  className={`ml-auto h-2 w-2 shrink-0 rounded-full ${
-                    threadMentionsUnread(t, currentUser) ? "bg-rose-400" : "bg-amber-400"
-                  }`}
-                />
-              )}
-            </span>
-            <span className="mt-0.5 block truncate text-neutral-800 dark:text-white/90">
-              {t.messages[0]?.body ?? ""}
-            </span>
-          </button>
-        ))}
+        {sorted.map((t) => row(t, "comment-panel-item"))}
+        {detached.length > 0 && (
+          <div data-testid="comments-detached-section" className="border-t border-black/10 dark:border-white/10">
+            <button
+              data-testid="comments-detached-summary"
+              aria-expanded={detachedOpen}
+              onClick={() => setDetachedOpen(!detachedOpen)}
+              title="Threads whose anchor item is gone from this document — they stay here until moved or resolved"
+              className="flex w-full items-center gap-1 px-3 py-1.5 text-left text-[11px] text-neutral-600 hover:bg-black/5 dark:text-white/70 dark:hover:bg-white/10"
+            >
+              {detachedOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+              <span>Not on this revision ({detached.length})</span>
+            </button>
+            {detachedOpen && (
+              <>
+                <label
+                  className="flex items-center gap-1.5 px-3 pb-1.5 text-[11px] font-normal text-neutral-600 dark:text-white/70"
+                  onPointerDown={(e) => e.stopPropagation()}
+                >
+                  <input
+                    data-testid="comments-detached-toggle"
+                    type="checkbox"
+                    checked={detachedPins}
+                    onChange={(e) => onDetachedPins(e.target.checked)}
+                  />
+                  show detached pins
+                </label>
+                {detached.map((t) => row(t, "comment-panel-detached-item"))}
+              </>
+            )}
+          </div>
+        )}
       </div>
       )}
     </div>

@@ -4,6 +4,7 @@ import {
   args,
   colorForUser,
   commentAuthorColors,
+  COMMENTS_DOC_PATH,
   createThread,
   deleteThread,
   editMessage,
@@ -19,12 +20,13 @@ import {
   threadUnreadCount,
   toggleReaction,
   yToItemUnchecked,
-  commentOpsUrl,
+  projectCommentOpsUrl,
   commentReportUrl,
   type CommentAnchor,
   type CommentReportReason,
   type CommentOp,
   type CommentThread,
+  type ThreadFilter,
 } from "@pcbjam/shared";
 import { clog } from "./debug";
 
@@ -36,8 +38,14 @@ import { clog } from "./debug";
  *   - feeds the GAL pin dots (`Module.kicadCollabSetPins`, throttled snapshot,
  *     same idempotent contract as the presence overlay),
  *   - exposes the threads + CRUD to the React layer (CommentLayer).
- * One controller per bound doc; eeschema rebinds it per sheet, exactly like
- * presence.
+ *
+ * git-integration 0001 (design-comments §5/§6.1): threads live in the PROJECT
+ * comments document (`doc`), shared by every editor session of the project;
+ * the ITEMS the pins track live in the bound file/sheet doc (`itemsDoc`).
+ * The controller filters the project doc by the bound document (`filePath`
+ * + optional `sheetPath`) and is rebound with `setDocument` on an eeschema
+ * sheet switch instead of being recreated — one controller per SESSION.
+ * Detached pins (item gone) leave the canvas unless `setDetachedPinsVisible`.
  */
 
 /** File-mm → editor-IU factor per tool (anchors store IU; item slots store mm). */
@@ -89,7 +97,11 @@ export function screenToWorld(vp: ViewportState, p: { x: number; y: number }) {
 /** A thread with its anchor resolved to the current world position. */
 export interface ResolvedThread extends CommentThread {
   world: { x: number; y: number };
+  /** The anchor item is gone from the bound document (design-comments §6.1
+   *  "detached"); `absent` never arises inside one session — a thread on
+   *  another file is simply not listed. */
   detached: boolean;
+  state: "anchored" | "detached";
 }
 
 /**
@@ -135,6 +147,15 @@ export interface CommentsController {
    *  layer's own state). */
   setPinsVisible(visible: boolean): void;
   pinsVisible(): boolean;
+  /** Draw detached pins at their stored position (default off, C-N4). */
+  setDetachedPinsVisible(visible: boolean): void;
+  detachedPinsVisible(): boolean;
+  /** The bound document (thread filter) — `undefined` in legacy single-doc mode. */
+  document(): ThreadFilter | undefined;
+  /** Rebind the items doc + filter (eeschema sheet switch) without losing the
+   *  project doc, subscribers or the UI state. Notifies `subscribeDocument`. */
+  setDocument(itemsDoc: Y.Doc, filePath: string, sheetPath?: string): void;
+  subscribeDocument(cb: (filter: ThreadFilter | undefined) => void): () => void;
   /** Presence-aware author color (nth-in-room when online, hash fallback). */
   colorFor(userId: string): string;
   /** Pan the editor to a thread's pin (comment panel "jump to"). */
@@ -145,7 +166,15 @@ export interface CommentsController {
 const PUSH_THROTTLE_MS = 30;
 
 export function createComments(opts: {
+  /** The PROJECT comments document (threads). */
   doc: Y.Doc;
+  /** The bound file/sheet doc holding `kdoc_items` (anchors resolve against
+   *  it). Defaults to `doc` — the legacy single-doc shape (@local without a
+   *  project room, unit tests). */
+  itemsDoc?: Y.Doc;
+  /** The bound document, as the thread filter; omit for "every thread" (legacy). */
+  filePath?: string;
+  sheetPath?: string;
   mod: CommentPinsModule;
   /**
    * Author for new messages. `id` is the slug (identity key); `name`/`email`
@@ -158,10 +187,16 @@ export function createComments(opts: {
   colorFor?: (userId: string) => string | undefined;
   /** Comment capability (default "write"). */
   mode?: CommentsMode;
-  /** REST target for "comment" mode: the backend origin + the doc's address. */
+  /** REST target for "comment" mode: the backend origin + the project's
+   *  address (`docPath` is informational — ops and reports go to the project
+   *  comments document since git-integration 0001). */
   rest?: { apiBase: string; scope: string; project: string; docPath: string };
 }): CommentsController {
   const { doc, mod, user } = opts;
+  let itemsDoc: Y.Doc = opts.itemsDoc ?? doc;
+  let filter: ThreadFilter | undefined = opts.filePath
+    ? { filePath: opts.filePath, ...(opts.sheetPath ? { sheetPath: opts.sheetPath } : {}) }
+    : undefined;
   const mode: CommentsMode = opts.mode ?? "write";
   const errorSubscribers = new Set<(message: string, status: number) => void>();
   const fail = (message: string, status: number) => {
@@ -179,7 +214,7 @@ export function createComments(opts: {
       fail("comments unavailable (no backend)", 0);
       return;
     }
-    void fetch(`${r.apiBase}${commentOpsUrl(r.scope, r.project, r.docPath)}`, {
+    void fetch(`${r.apiBase}${projectCommentOpsUrl(r.scope, r.project)}`, {
       method: "POST",
       credentials: "include",
       headers: { "content-type": "application/json" },
@@ -193,7 +228,16 @@ export function createComments(opts: {
       .catch((e: unknown) => fail(e instanceof Error ? e.message : String(e), 0));
   };
   const threadOf = (threadId: string): CommentThread | undefined =>
-    listThreads(doc).find((t) => t.id === threadId);
+    listThreads(doc, filter).find((t) => t.id === threadId);
+  /** Stamp the bound document onto an anchor (create / move / anchorAt). */
+  const stampDoc = (anchor: CommentAnchor): CommentAnchor =>
+    filter
+      ? {
+          ...anchor,
+          filePath: anchor.filePath ?? filter.filePath,
+          ...(filter.sheetPath && anchor.sheetPath === undefined ? { sheetPath: filter.sheetPath } : {}),
+        }
+      : anchor;
   const canEditMessage = (thread: CommentThread, messageId: string): boolean => {
     if (mode === "read") return false;
     const msg = thread.messages.find((m) => m.id === messageId);
@@ -217,12 +261,14 @@ export function createComments(opts: {
 
   let cache: ResolvedThread[] = [];
   let visible = true;
+  let detachedVisible = false;
   const subscribers = new Set<(threads: ResolvedThread[]) => void>();
+  const docSubscribers = new Set<(filter: ThreadFilter | undefined) => void>();
 
   const recompute = (): ResolvedThread[] => {
-    cache = listThreads(doc).map((t) => {
-      const { x, y, detached } = resolveAnchor(doc, t.anchor, iuPerMm);
-      return { ...t, world: { x, y }, detached };
+    cache = listThreads(doc, filter).map((t) => {
+      const { x, y, detached } = resolveAnchor(itemsDoc, t.anchor, iuPerMm);
+      return { ...t, world: { x, y }, detached, state: detached ? "detached" : "anchored" };
     });
     return cache;
   };
@@ -239,7 +285,12 @@ export function createComments(opts: {
               // Findings W-1: never hand the wasm a non-finite coordinate
               // (JSON null → nlohmann type_error across embind).
               .filter(
-                (t) => !t.resolved && Number.isFinite(t.world.x) && Number.isFinite(t.world.y),
+                (t) =>
+                  !t.resolved &&
+                  // Detached pins stay off the canvas unless asked for (C-D5).
+                  (detachedVisible || !t.detached) &&
+                  Number.isFinite(t.world.x) &&
+                  Number.isFinite(t.world.y),
               )
               .map((t) => ({
                 id: t.id,
@@ -269,13 +320,13 @@ export function createComments(opts: {
 
   // Threads change → re-render; anchored ITEMS change (moves) → pins follow.
   const offComments = observeComments(doc, schedule);
-  const items = kicadItemsMap(doc);
+  let items = kicadItemsMap(itemsDoc);
   const onItems = () => schedule();
   items.observeDeep(onItems);
 
   recompute();
   pushPins();
-  clog("comments: controller bound,", cache.length, "thread(s)");
+  clog("comments: controller bound,", cache.length, "thread(s)", filter ? `on ${filter.filePath}` : "");
 
   return {
     mode: () => mode,
@@ -292,7 +343,11 @@ export function createComments(opts: {
         return false;
       }
       try {
-        const res = await fetch(`${r.apiBase}${commentReportUrl(r.scope, r.project, r.docPath)}`, {
+        // The thread lives in the project comments document; the moderation
+        // lookup opens that room (git-integration 0001). Legacy single-doc
+        // sessions (no filter) still name the file.
+        const reportDoc = filter ? COMMENTS_DOC_PATH : r.docPath;
+        const res = await fetch(`${r.apiBase}${commentReportUrl(r.scope, r.project, reportDoc)}`, {
           method: "POST",
           credentials: "include",
           headers: { "content-type": "application/json" },
@@ -334,17 +389,18 @@ export function createComments(opts: {
       }
 
       if (best) {
-        return {
+        return stampDoc({
           itemUuid: best.uuid,
           pos: { x: world.x, y: world.y },
           offset: { x: world.x - best.pos.x, y: world.y - best.pos.y },
-        };
+        });
       }
 
-      return { pos: { x: world.x, y: world.y } };
+      return stampDoc({ pos: { x: world.x, y: world.y } });
     },
-    create(anchor, body, mentions) {
+    create(rawAnchor, body, mentions) {
       if (mode === "read") return "";
+      const anchor = stampDoc(rawAnchor);
       if (mode === "comment") {
         // Pre-chosen id so the popover can open on the echo.
         const id = genId();
@@ -439,9 +495,16 @@ export function createComments(opts: {
       }
       deleteThread(doc, threadId);
     },
-    moveThread(threadId, anchor) {
+    moveThread(threadId, rawAnchor) {
       const thread = threadOf(threadId);
       if (!thread || !canManageThread(thread)) return;
+      // A move never changes which document the thread belongs to: keep the
+      // thread's own filePath/sheetPath (a drag hands back a bare anchor).
+      const anchor: CommentAnchor = {
+        ...rawAnchor,
+        ...(thread.anchor.filePath !== undefined ? { filePath: thread.anchor.filePath } : {}),
+        ...(thread.anchor.sheetPath !== undefined ? { sheetPath: thread.anchor.sheetPath } : {}),
+      };
       if (mode === "comment") {
         post({ type: "setAnchor", threadId, anchor });
         return;
@@ -453,6 +516,36 @@ export function createComments(opts: {
       pushPins();
     },
     pinsVisible: () => visible,
+    setDetachedPinsVisible(v) {
+      detachedVisible = v;
+      pushPins();
+    },
+    detachedPinsVisible: () => detachedVisible,
+    document: () => filter,
+    setDocument(nextItems, filePath, sheetPath) {
+      const next: ThreadFilter = { filePath, ...(sheetPath ? { sheetPath } : {}) };
+      const same =
+        nextItems === itemsDoc &&
+        filter?.filePath === next.filePath &&
+        filter?.sheetPath === next.sheetPath;
+      if (same) return;
+      items.unobserveDeep(onItems);
+      itemsDoc = nextItems;
+      items = kicadItemsMap(itemsDoc);
+      items.observeDeep(onItems);
+      filter = next;
+      if (timer) clearTimeout(timer);
+      timer = undefined;
+      recompute();
+      pushPins();
+      clog("comments: rebound to", filePath, "—", cache.length, "thread(s)");
+      for (const cb of docSubscribers) cb(filter);
+      for (const cb of subscribers) cb(cache);
+    },
+    subscribeDocument(cb) {
+      docSubscribers.add(cb);
+      return () => docSubscribers.delete(cb);
+    },
     colorFor,
     jumpTo(threadId) {
       const t = cache.find((x) => x.id === threadId);
@@ -462,6 +555,7 @@ export function createComments(opts: {
       offComments();
       items.unobserveDeep(onItems);
       subscribers.clear();
+      docSubscribers.clear();
       if (timer) clearTimeout(timer);
       timer = undefined;
       try {
