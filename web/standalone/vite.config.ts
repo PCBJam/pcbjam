@@ -101,6 +101,7 @@ function pluginRuntimeAssets(): Plugin {
           '/plugin-guide': 'index.html',
           '/plugin-guide/api': 'api/index.html',
           '/plugin-guide/architecture': 'architecture/index.html',
+          '/plugin-guide/remote-symbols': 'remote-symbols/index.html',
           '/plugin-guide/security': 'security/index.html',
         };
         const downloads = ['external-symbol-import.zip', 'external-symbol-import-source.zip', 'sample-symbols.kicad_sym', 'sdk.d.ts'];
