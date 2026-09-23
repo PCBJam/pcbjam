@@ -11,9 +11,12 @@ export interface Descriptor {
   installed?: boolean;
   enabled?: boolean;
   fileMetadata?: Record<string, { sha256: string; bytes: number }>;
-  backends?: Array<{endpoint:string;origin:string;paths:string[];methods:('GET'|'POST')[];auth:'none'|'pcbjam-user';registrationId?:string;policyDigest:string;status:string;ready:boolean;audience?:string;issuer?:string}>;
+  backends?: Array<{endpoint:string;origin:string;paths?:string[];methods?:('GET'|'POST')[];auth?:'none'|'pcbjam-user';kind?:'remote-provider';registrationId?:string;policyDigest:string;status:string;ready:boolean;audience?:string;issuer?:string}>;
+  /** Snapshot of a remote provider's /.well-known document (kind: "remote-provider" only). */
+  providerMetadata?: { providerName: string; providerVersion: string; panelUrl: string; originSet: string[]; maxDownloadBytes: number; supportedAssetTypes: string[]; authType: string };
   digest: string;
   manifest: {
+    kind?: 'plugin' | 'remote-provider';
     id: string;
     name: string;
     version: string;
@@ -22,6 +25,7 @@ export interface Descriptor {
     permissions: string[];
     uiSize?: { width: number; height: number };
     endpoints?: Record<string,{origin:string;paths:string[];methods:('GET'|'POST')[];auth:'none'|'pcbjam-user'}>;
+    provider?: { origin: string };
   };
 }
 export interface PackageHost {

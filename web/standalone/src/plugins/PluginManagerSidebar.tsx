@@ -13,6 +13,10 @@ import { sessionIdentity } from '@/lib/session-identity';
 import { API_BASE_URL } from '@/lib/config';
 import { downloadBytes } from '@/lib/download';
 import { verifyPluginAccount } from './verify-account';
+import { mountRemoteProvider, type PartRequest } from '@/remote-provider/host';
+import { savePartAndPlace } from '@/libs/save-part';
+import { providerPermissions } from '@pcbjam/plugin-platform/remote-provider-contract.mjs';
+import { KICAD_VERSION_DIR } from '@/wasm/constants';
 
 interface InspectorHost {
   mountEditorPlugin(container: HTMLElement, options: {
@@ -24,7 +28,11 @@ interface InspectorHost {
 const SAVE_METHODS = { text: 'files.save', html: 'files.saveHtml', image: 'files.saveImage' } as const;
 type Prompt = {kind:'download';name:string;content:'text'|'html'|'image';bytes:Uint8Array;finish(value:{status:'download-requested'|'cancelled'}):void;signal:AbortSignal;authorize():Promise<void>}
   | { kind: 'file'; extensions: string[]; finish(file: File | null): void }
-  | { kind: 'placement'; label: string; sexpr: string; finish(value: { status: string }): void;fail(error:Error):void;signal:AbortSignal;authorize():Promise<void> };
+  | { kind: 'placement'; label: string; sexpr: string; finish(value: { status: string }): void;fail(error:Error):void;signal:AbortSignal;authorize():Promise<void> }
+  // A remote provider's part: the bytes are already verified; the user confirms the library write.
+  | { kind: 'part'; request: PartRequest; finish(accept: boolean): void };
+const isProvider = (plugin?: Descriptor | null) => plugin?.manifest.kind === 'remote-provider';
+const PROVIDER_PANEL_SIZE = { width: 520, height: 680 };
 
 /** Trusted install/permission/file/placement controls stay outside publisher UI. */
 export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectFiles, view, onViewChange, catalog }: {
@@ -88,6 +96,20 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
           signal: abort.signal, snapshot: scope => inspectorSnapshot(doc, getLocalSelection().uuids, scope, revision),
           onDisconnected: () => fail('Plugin stopped. Restart to reconnect.'),
         });
+      } else if (active && isProvider(active)) {
+        // The provider's own page is the UI; no runtime, no ticket, one iframe.
+        if (!project) throw new Error('Open a saved project to use this provider');
+        if (tool !== 'eeschema') throw new Error('Remote providers place symbols: open the schematic');
+        instance = mountRemoteProvider(target, {
+          plugin: active, projectId: project.id, document: fileName, apiBase: API_BASE_URL,
+          runtimeVersion: import.meta.env.VITE_PLUGIN_RUNTIME_BASE!.split('/')[2]!, clientVersion: KICAD_VERSION_DIR, signal: abort.signal,
+          savePart: savePartAndPlace,
+          confirmPart: (request, signal) => requestUser<boolean>(signal, finish => ({ kind: 'part', request, finish })),
+          // Outcomes after the confirmation belong in PCBJam's chrome, not only in the provider's page.
+          onLog: line => { if (/failed|cancelled/.test(line)) setNotice(line); else if (/placed|saved/.test(line)) setNotice(''); },
+          onStatus: s => setStatus(s.state === 'failed' ? s.message : s.state === 'ready' ? `${s.provider.providerName} · ${new URL(s.provider.panelUrl).host}` : s.state === 'busy' ? s.message : s.state === 'connecting' ? `Connecting to ${s.provider.providerName}… (${s.attempt})` : s.state === 'loading' ? `Loading ${s.provider.providerName}…` : 'Starting provider…'),
+        });
+        return;
       } else if (active) {
         const host = await packageHost(); if (abort.signal.aborted) return;
         const account = sessionIdentity()?.slug ?? null;
@@ -191,15 +213,28 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
           <h3 className="font-semibold">Install {candidate.manifest.name} {candidate.manifest.version}?</h3>
           <p className="mt-2">{candidate.manifest.description}</p>
           <p className="mt-2 text-amber-700 dark:text-amber-200">{hostedPlugins ? "Private upload · Publisher not verified" : "Local package · Publisher not verified"}</p>
-          <ul className="my-2 list-disc space-y-1 pl-4">{candidate.manifest.permissions.map(permission => <li key={permission}>{permissions[permission] ?? permission}</li>)}</ul>
-          <p className="mb-3 text-neutral-500 dark:text-white/60">Install only code you trust. Custom UI receives the data returned by its plugin logic.</p>
-          {candidate.backends?.map(backend=><div key={backend.endpoint} className="my-3 rounded border border-amber-500/40 p-2">
+          <ul className="my-2 list-disc space-y-1 pl-4">{candidate.manifest.permissions.map(permission => <li key={permission}>{{ ...permissions, ...(isProvider(candidate) ? providerPermissions(candidate.manifest.provider!.origin) : {}) }[permission] ?? permission}</li>)}</ul>
+          {isProvider(candidate)
+            ? <p className="mb-3 text-neutral-500 dark:text-white/60">This is a parts provider: its own website opens inside PCBJam. It cannot read your project; parts you pick are downloaded through PCBJam, checked, and saved to a team library named after the provider.</p>
+            : <p className="mb-3 text-neutral-500 dark:text-white/60">Install only code you trust. Custom UI receives the data returned by its plugin logic.</p>}
+          {isProvider(candidate) && candidate.providerMetadata && <div className="my-3 rounded border border-amber-500/40 p-2">
+            <p className="break-all font-semibold">{candidate.providerMetadata.providerName} {candidate.providerMetadata.providerVersion}</p>
+            <p className="break-all">Panel: {candidate.providerMetadata.panelUrl}</p>
+            {candidate.providerMetadata.originSet.length > 1 && <p className="break-all">Downloads from: {candidate.providerMetadata.originSet.join(', ')}</p>}
+            <p>Parts: {candidate.providerMetadata.supportedAssetTypes.join(', ')} · up to {Math.round(candidate.providerMetadata.maxDownloadBytes / 1048576)} MiB per part · no sign-in</p>
+          </div>}
+          {candidate.backends?.filter(b => b.kind !== 'remote-provider').map(backend=><div key={backend.endpoint} className="my-3 rounded border border-amber-500/40 p-2">
             <p className="break-all font-semibold">{backend.origin}</p>
-            <p>{backend.methods.join(', ')}: {backend.paths.join(', ')}</p>
+            <p>{backend.methods?.join(', ')}: {backend.paths?.join(', ')}</p>
             <p>This plugin can send data it is allowed to read to this backend.</p>
             <p>{backend.auth==='pcbjam-user'?'The backend can recognize you using a stable ID unique to this plugin. Your email and PCBJam account ID are not shared.':'No PCBJam identity is attached.'}</p>
             <p>{backend.ready?'Approved by PCBJam':backend.status==='approved'?'Awaiting PCBJam setup or renewed domain verification.':'Not ready: '+backend.status+' — ask PCBJam to review this backend.'}</p>
             <p className="mt-1 break-all text-[10px]">Plugin: {candidate.pluginId}</p>
+          </div>)}
+          {candidate.backends?.filter(b => b.kind === 'remote-provider').map(backend=><div key={backend.endpoint} className="my-3 rounded border border-amber-500/40 p-2">
+            <p className="break-all font-semibold">{backend.origin}</p>
+            <p>{backend.ready?'Approved by PCBJam':backend.status==='approved'?'Awaiting PCBJam setup.':'Not ready: '+backend.status+' — ask PCBJam to review this provider.'}</p>
+            <p className="mt-1 break-all text-[10px]">Package: {candidate.pluginId}</p>
           </div>)}
           <button className={button} disabled={busy || candidate.backends?.some(b=>!b.ready)} onClick={() => void install()}>Install plugin</button>{' '}<button className={button} disabled={busy} onClick={() => setCandidate(null)}>Cancel</button>
         </section>}
@@ -222,7 +257,7 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
         {(notice || catalog.error) && <p role="alert" className="mt-3 text-amber-700 dark:text-amber-200">{notice || catalog.error}</p>}
       </div>
     </aside>}
-    {selected && <PluginFloatingPanel key={panelStorageKey} storageKey={panelStorageKey} preferredSize={active?.manifest.uiSize} title={title} forceExpanded={!!prompt} onRestart={restart} onClose={onClose}>
+    {selected && <PluginFloatingPanel key={panelStorageKey} storageKey={panelStorageKey} preferredSize={isProvider(active) ? PROVIDER_PANEL_SIZE : active?.manifest.uiSize} title={title} forceExpanded={!!prompt} onRestart={restart} onClose={onClose}>
       <div className="max-h-[55%] shrink-0 overflow-y-auto border-b border-black/10 px-3 py-2 text-xs dark:border-white/10">
         <p className="truncate text-neutral-500 dark:text-white/60" title={fileName}>{fileName} · {selection.uuids.length} selected</p>
       {prompt?.kind === 'file' && <section aria-label="Plugin file request" className="mt-3 rounded border border-sky-500/40 p-3">
@@ -241,6 +276,16 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
           }catch(error){setNotice((error as Error).message);}finally{placing.current=false;setPlacementBusy(false);}
         }}>Download file</button>{' '}
         <button className={button} disabled={placementBusy} onClick={()=>prompt.finish({status:'cancelled'})}>Cancel download</button>
+      </section>}
+      {prompt?.kind === 'part' && <section aria-label="Confirm remote part" className="mt-3 rounded border border-sky-500/40 p-3">
+        <p>{active?.manifest.name} offers <strong>{prompt.request.pack.displayName}</strong>{prompt.request.place ? ' to place on the schematic' : ' to save'}.</p>
+        <p className="my-2 text-neutral-500 dark:text-white/60">
+          {[prompt.request.pack.symbol && `symbol ${prompt.request.pack.symbol.name}`, prompt.request.pack.footprint && `footprint ${prompt.request.pack.footprint.name}`].filter(Boolean).join(' + ')}
+          {' · '}{prompt.request.totalBytes.toLocaleString()} bytes from {new URL(prompt.request.pack.providerOrigin).host}. Saved to your team library; {prompt.request.place ? 'you then click the canvas to place it.' : 'nothing is placed.'}
+          {(prompt.request.pack.model3d || prompt.request.pack.spice) && ' 3D models and SPICE files are not kept yet.'}
+          {prompt.request.skipped.length > 0 && ` Not kept: ${prompt.request.skipped.join(', ')}.`}
+        </p>
+        <button className={button} onClick={() => prompt.finish(true)}>{prompt.request.place ? 'Save and place' : 'Save to library'}</button>{' '}<button className={button} onClick={() => prompt.finish(false)}>Cancel</button>
       </section>}
       {prompt?.kind === 'placement' && <section aria-label="Confirm plugin placement" className="mt-3 rounded border border-sky-500/40 p-3">
         <p>{active?.manifest.name} requests placement of <strong>{prompt.label}</strong>.</p>
