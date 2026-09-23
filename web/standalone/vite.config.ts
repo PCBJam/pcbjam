@@ -104,7 +104,7 @@ function pluginRuntimeAssets(): Plugin {
           '/plugin-guide/remote-symbols': 'remote-symbols/index.html',
           '/plugin-guide/security': 'security/index.html',
         };
-        const downloads = ['external-symbol-import.zip', 'external-symbol-import-source.zip', 'sample-symbols.kicad_sym', 'sdk.d.ts'];
+        const downloads = ['external-symbol-import.zip', 'external-symbol-import-source.zip', 'sample-symbols.kicad_sym', 'sdk.d.ts', 'remote-provider-starter.zip'];
         const download = downloads.find(name => pathname === '/plugin-guide/download/' + name);
         const relative = pages[pathname] ?? (pathname === '/plugin-guide/guide.css' ? 'guide.css' : download ? 'download/' + download : undefined);
         if (!relative || !['GET', 'HEAD'].includes(req.method ?? 'GET')) {
