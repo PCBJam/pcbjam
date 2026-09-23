@@ -72,7 +72,7 @@ describe('savePart', () => {
     const { deps, calls, saved } = fakeDeps();
     const result = await savePart(pack({ model3d: { name: 'm', bytes: bytes('x'), contentType: 'model/step' } }), opts(), deps);
     expect(result).toEqual({ libId: 'lib-1', libNickname: 'eda_cn', symbolLibId: 'eda_cn:R', footprintLibId: 'eda_cn:R_0603', placement: 'placed', skipped: ['model3d'] });
-    expect(calls).toEqual(['create', 'list', 'validate:symbol', 'validate:footprint', 'room:symbol', 'room:footprint', 'put:symbol', 'put:footprint', 'addLib', 'place']);
+    expect(calls).toEqual(['validate:symbol', 'validate:footprint', 'create', 'list', 'room:symbol', 'room:footprint', 'put:symbol', 'put:footprint', 'addLib', 'place']);
     expect(saved.map((s) => [s.libId, s.kind, s.name])).toEqual([['lib-1', 'symbol', 'R'], ['lib-1', 'footprint', 'R_0603']]);
     expect(saved[1]!.body).toBe(SANITIZED);
     // The saved symbol carries the rewritten Footprint, and so does the clipboard that was placed.
@@ -168,9 +168,12 @@ describe('savePart', () => {
     const badSym = fakeDeps({ validate: vi.fn(async (req) => { if (!req.kind) throw new Error('Unsupported import: extends'); return { text: SANITIZED }; }) });
     expect(await code(savePart(pack(), opts(), badSym.deps))).toBe('INVALID_SYMBOL');
     expect(badSym.saved).toEqual([]);
+    // A refused part never creates the provider library (no empty lib left behind).
+    expect(badSym.deps.createLib).not.toHaveBeenCalled();
     const badFp = fakeDeps({ validate: vi.fn(async (req) => { if (req.kind === 'footprint') throw new Error('Unsupported footprint: net is not supported in pad'); return { text: req.text }; }) });
     expect(await code(savePart(pack(), opts(), badFp.deps))).toBe('INVALID_FOOTPRINT');
     expect(badFp.saved).toEqual([]);
+    expect(badFp.deps.createLib).not.toHaveBeenCalled();
     const bigFp = fakeDeps({ validate: vi.fn(async (req) => { if (req.kind === 'footprint') throw new Error('Unsupported footprint: too large after removing embedded files'); return { text: req.text }; }) });
     expect(await code(savePart(pack(), opts(), bigFp.deps))).toBe('TOO_LARGE');
     const unresolvable = fakeDeps();
@@ -181,5 +184,30 @@ describe('savePart', () => {
     const { deps, saved } = fakeDeps({ validate: vi.fn(async (req) => { abort.abort(); return { text: req.kind === 'footprint' ? SANITIZED : req.text }; }) });
     await expect(savePart(pack(), { place: true, signal: abort.signal }, deps)).rejects.toThrow();
     expect(saved).toEqual([]);
+  });
+  it('a collision-suffixed nickname rebuilds and re-validates the symbol under the mounted name', async () => {
+    const { deps, calls, saved } = fakeDeps({ createStatus: 409, libs: [{ id: 'lib-2', name: 'eda_cn--2', type: 'org' }] });
+    const result = await savePart(pack(), opts(), deps);
+    expect(result).toMatchObject({ libId: 'lib-2', libNickname: 'eda_cn--2', symbolLibId: 'eda_cn--2:R', footprintLibId: 'eda_cn--2:R_0603' });
+    expect(calls.slice(0, 5)).toEqual(['validate:symbol', 'validate:footprint', 'create', 'list', 'validate:symbol']);
+    expect(saved[0]!.body).toContain('(property "Footprint" "eda_cn--2:R_0603"');
+    expect((deps.place as ReturnType<typeof vi.fn>).mock.calls[0]![0]).toContain('(lib_id "eda_cn--2:R")');
+  });
+  it('onSaved fires once the part is stored, before the placement click, without the placement key', async () => {
+    const seen: string[] = [];
+    const { deps, calls } = fakeDeps({ place: vi.fn(async () => { seen.push('place'); calls.push('place'); return { status: 'placed' as const }; }) });
+    const onSaved = vi.fn((r) => { seen.push('saved'); expect('placement' in r).toBe(false); });
+    const result = await savePart(pack(), { ...opts(), onSaved }, deps);
+    expect(onSaved).toHaveBeenCalledTimes(1);
+    expect(onSaved.mock.calls[0]![0]).toMatchObject({ libId: 'lib-1', symbolLibId: 'eda_cn:R' });
+    expect(seen).toEqual(['saved', 'place']);
+    expect(result.placement).toBe('placed');
+    // A throwing callback is logged and does not fail the save; a refused part never calls it.
+    const throwing = fakeDeps();
+    await expect(savePart(pack(), { ...opts(), onSaved: () => { throw new Error('boom'); } }, throwing.deps)).resolves.toMatchObject({ placement: 'placed' });
+    const refused = fakeDeps({ saveOk: false });
+    const never = vi.fn();
+    expect(await code(savePart(pack(), { ...opts(), onSaved: never }, refused.deps))).toBe('LIB_WRITE_FAILED');
+    expect(never).not.toHaveBeenCalled();
   });
 });

@@ -78,11 +78,19 @@ inline void reloadLibrary( std::string aKind, std::string aNickname )
 }
 
 /**
- * Cheap counterpart of reloadLibrary (libs 0019): drop the lib's LIB_DATA
- * entry (plugin instance + parsed cache) so the NEXT access re-reads the
- * provider — no eager LoadLibraryEntry fat-load, no tree mail. A remote edit
- * calls this; the fat-load happens lazily when the user looks at the lib,
- * or explicitly through reloadLibrary from "Update from library".
+ * Cheaper counterpart of reloadLibrary (libs 0019): drop the lib's LIB_DATA
+ * entry (plugin instance + parsed cache) so the next access re-reads the
+ * provider, bring the fresh entry back to LOADED, and re-sync an open library
+ * editor's tree. A remote edit and a provider part save call this; "Update
+ * from library" uses reloadLibrary (same steps, kept as its own entry point).
+ *
+ * The LoadLibraryEntry is required, not an optimisation: ReloadLibraryEntry
+ * re-creates the entry in LOADING and nothing ever finishes it (AsyncLoad
+ * skips LOADING rows; the symbol chooser, GetLibraryNames and HasLibrary only
+ * see LOADED ones), so without it the lib vanishes from the chooser until a
+ * page reload — the trap desktop KiCad documents in panel_remote_symbol.cpp.
+ * Cost: a symbol lib enumerates names only (one "list" crossing); a footprint
+ * lib fat-loads its bodies from the already-fresh IDB, no network.
  * (pcbnew's FOOTPRINT_LIBRARY_ADAPTER::PreloadedFootprints is invalidated by
  * the pcbnew-side caller — this header stays common-code only.)
  */
@@ -97,10 +105,20 @@ inline void invalidateLibrary( std::string aKind, std::string aNickname )
     const bool     fp = aKind == "footprint";
     const wxString nick = wxString::FromUTF8( aNickname.c_str() );
 
-    pcbjam_collab::runOnCoroutine( top, [fp, nick]()
+    pcbjam_collab::runOnCoroutine( top, [top, fp, nick]()
     {
-        Pgm().GetLibraryManager().ReloadLibraryEntry(
-                fp ? LIBRARY_TABLE_TYPE::FOOTPRINT : LIBRARY_TABLE_TYPE::SYMBOL, nick );
+        LIBRARY_MANAGER&         mgr = Pgm().GetLibraryManager();
+        const LIBRARY_TABLE_TYPE type =
+                fp ? LIBRARY_TABLE_TYPE::FOOTPRINT : LIBRARY_TABLE_TYPE::SYMBOL;
+
+        mgr.ReloadLibraryEntry( type, nick );
+        mgr.LoadLibraryEntry( type, nick );
+
+        // An OPEN library editor re-syncs that lib's node (cheap: the entry is
+        // LOADED again, and ExpressMail reaches existing frames only).
+        std::string payload( nick.utf8_str() );
+        top->Kiway().ExpressMail( fp ? FRAME_FOOTPRINT_EDITOR : FRAME_SCH_SYMBOL_EDITOR,
+                                  MAIL_RELOAD_LIB, payload );
     } );
 }
 

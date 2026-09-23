@@ -439,9 +439,10 @@ static int libsSymbolUsage( std::string aLib, std::string aName )
     return schEditorActive() ? schLibsSymbolUsage( aLib, aName ) : 0;
 }
 
-// libs 0019 F2: a remote lib edit only INVALIDATES (cheap: drop the plugin
-// entry + pcbnew's preloaded footprint cache); the fat re-load runs lazily on
-// the next access or explicitly via kicadLibsReload from "Update from library".
+// libs 0019 F2: a remote lib edit INVALIDATES (drop the plugin entry +
+// pcbnew's preloaded footprint cache, then re-load that one entry so it is not
+// stuck LOADING — see pcbjam_libs::invalidateLibrary) and re-sync an open
+// library editor tree. kicadLibsReload stays the "Update from library" entry.
 static void libsInvalidate( std::string aKind, std::string aNick )
 {
     if( aKind == "footprint" && pcbEditorActive() )

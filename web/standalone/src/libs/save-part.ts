@@ -56,6 +56,12 @@ export interface SavePartOptions {
   /** Place the symbol in the open schematic after saving. Only meaningful in eeschema. */
   place: boolean;
   signal: AbortSignal;
+  /**
+   * Called once, with the result minus `placement`, as soon as the part is stored — before
+   * the placement waits for the user's canvas click — so the provider can be answered early.
+   * A throw from it is logged and ignored.
+   */
+  onSaved?: (result: SavePartResult) => void;
 }
 
 export interface SavePartResult {
@@ -187,29 +193,33 @@ export async function savePart(pack: PartPack, opts: SavePartOptions, deps: Save
   const libName = providerLibName(pack.providerOrigin);
   signal.throwIfAborted();
 
-  const lib = await ensureProviderLib(deps, editor.scope, editor.projectId, libName);
-  const footprintLibId = pack.footprint ? lib.nickname + ":" + pack.footprint.name : undefined;
-
-  // Build, then validate everything BEFORE the first write.
-  let def: Form | null = null;
-  let clipboard: { label: string; sexpr: string } | null = null;
+  // Build and validate everything BEFORE the library exists or anything is written, so a
+  // refused part leaves no empty library behind. The nickname is the derived name; a
+  // mount-time collision suffix (rare) is applied after the lib is known, and re-validated.
+  let resolved: Form | null = null;
   if (symbolText && pack.symbol) {
     try {
-      def = resolveSymbolDefinition(symbolText, pack.symbol.name);
+      resolved = resolveSymbolDefinition(symbolText, pack.symbol.name);
     } catch (error) {
       throw new SavePartError("INVALID_SYMBOL", error instanceof Error ? error.message : "Invalid symbol");
     }
-    if (footprintLibId) def = withFootprintProperty(def, footprintLibId);
-    clipboard = buildSymbolClipboard(def, lib.nickname, pack.symbol.name, deps.uuid());
   }
-  signal.throwIfAborted();
-  if (clipboard) {
+  const buildSymbol = (nickname: string) => {
+    if (!resolved || !pack.symbol) return { def: null, clipboard: null };
+    const def = pack.footprint ? withFootprintProperty(resolved, nickname + ":" + pack.footprint.name) : resolved;
+    return { def, clipboard: buildSymbolClipboard(def, nickname, pack.symbol.name, deps.uuid()) };
+  };
+  const validateSymbol = async (clip: { sexpr: string } | null) => {
+    if (!clip) return;
     try {
-      await deps.validate({ text: clipboard.sexpr, tool: "eeschema" }, signal);
+      await deps.validate({ text: clip.sexpr, tool: "eeschema" }, signal);
     } catch (error) {
       throw new SavePartError("INVALID_SYMBOL", error instanceof Error ? error.message : "Invalid symbol");
     }
-  }
+  };
+  let { def, clipboard } = buildSymbol(libName);
+  signal.throwIfAborted();
+  await validateSymbol(clipboard);
   let footprintBody: string | null = null;
   if (footprintText && pack.footprint) {
     try {
@@ -218,6 +228,14 @@ export async function savePart(pack: PartPack, opts: SavePartOptions, deps: Save
       const message = error instanceof Error ? error.message : "Invalid footprint";
       throw new SavePartError(/too large/i.test(message) ? "TOO_LARGE" : "INVALID_FOOTPRINT", message);
     }
+  }
+  signal.throwIfAborted();
+
+  const lib = await ensureProviderLib(deps, editor.scope, editor.projectId, libName);
+  const footprintLibId = pack.footprint ? lib.nickname + ":" + pack.footprint.name : undefined;
+  if (lib.nickname !== libName) {
+    ({ def, clipboard } = buildSymbol(lib.nickname));
+    await validateSymbol(clipboard);
   }
   signal.throwIfAborted();
 
@@ -273,6 +291,11 @@ export async function savePart(pack: PartPack, opts: SavePartOptions, deps: Save
     ...(footprintLibId ? { footprintLibId } : {}),
     skipped: [...(pack.model3d ? ["model3d" as const] : []), ...(pack.spice ? ["spice" as const] : [])],
   };
+  try {
+    opts.onSaved?.({ ...result, skipped: [...result.skipped] });
+  } catch (error) {
+    deps.log(`[save-part] onSaved threw: ${String(error)}`);
+  }
   if (opts.place && clipboard && editor.tool === "eeschema") {
     signal.throwIfAborted();
     try {
