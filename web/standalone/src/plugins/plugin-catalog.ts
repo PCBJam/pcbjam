@@ -10,6 +10,8 @@ export interface Descriptor {
   grants?: string[];
   installed?: boolean;
   enabled?: boolean;
+  /** Installed from the marketplace (published by PCBJam) or a private upload. */
+  source?: 'marketplace' | 'upload';
   fileMetadata?: Record<string, { sha256: string; bytes: number }>;
   backends?: Array<{endpoint:string;origin:string;paths?:string[];methods?:('GET'|'POST')[];auth?:'none'|'pcbjam-user';kind?:'remote-provider';registrationId?:string;policyDigest:string;status:string;ready:boolean;audience?:string;issuer?:string}>;
   /** Snapshot of a remote provider's /.well-known document (kind: "remote-provider" only). */
@@ -42,6 +44,8 @@ export interface PackageHost {
     permissions: Record<string, string>;
     userId?: string;
     runtimeVersion?: string;
+    /** Account may upload private plugins (hosted platform only). */
+    developer?: boolean;
   }>;
   preparePlugin(files: File[], zip: boolean): Promise<Descriptor>;
   installPlugin(plugin: Descriptor | string): Promise<Descriptor>;
@@ -107,6 +111,8 @@ export function usePluginCatalog(enabled: boolean) {
   );
   const [error, setError] = React.useState("");
   const [loaded, setLoaded] = React.useState(false);
+  // Local development always uploads; hosted accounts need developer access.
+  const [developer, setDeveloper] = React.useState(!hostedPlugins);
   const generation = React.useRef(0);
   const refresh = React.useCallback(async () => {
     if (!enabled) return;
@@ -123,15 +129,17 @@ export function usePluginCatalog(enabled: boolean) {
       if (current !== generation.current) return;
       setPlugins(result.plugins.filter((p) => p.installed !== false));
       setPermissions(result.permissions);
+      setDeveloper(!hostedPlugins || result.developer === true);
       setError("");
     } catch {
       if (current === generation.current) {
         // An old account's catalog must not survive a failed fresh identity check.
         setPlugins([]);
         setPermissions({});
+        setDeveloper(!hostedPlugins);
         setError(
           hostedPlugins
-            ? "Plugins unavailable. Sign in with an account enabled for the plugin preview."
+            ? "Plugins unavailable. Sign in to PCBJam and try again."
             : "Plugin list unavailable. Check the plugin development server and try again."
         );
       }
@@ -148,6 +156,12 @@ export function usePluginCatalog(enabled: boolean) {
       window.removeEventListener("focus", refresh);
     };
   }, [enabled, refresh]);
-  return { plugins, permissions, error, loaded, refresh };
+  return { plugins, permissions, developer, error, loaded, refresh };
 }
 export type PluginCatalog = ReturnType<typeof usePluginCatalog>;
+/**
+ * Identity of an installed plugin in the editor. The server's plugin id, since
+ * one account may have a private upload and a marketplace plugin with the same
+ * manifest id; local development packages only have the manifest id.
+ */
+export const pluginKey = (plugin: Descriptor) => plugin.pluginId ?? plugin.manifest.id;

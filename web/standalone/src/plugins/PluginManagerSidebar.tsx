@@ -1,7 +1,7 @@
 import * as React from 'react';
 import type * as Y from 'yjs';
 import { Puzzle, X, Trash2, BookOpen, ExternalLink } from 'lucide-react';
-import { BUILTIN, hostedPlugins, packageHost, type Descriptor, type PluginCatalog, type PluginView } from './plugin-catalog';
+import { BUILTIN, hostedPlugins, packageHost, pluginKey, type Descriptor, type PluginCatalog, type PluginView } from './plugin-catalog';
 import { PluginFloatingPanel } from './PluginFloatingPanel';
 import { getLocalSelection, subscribeLocalSelection } from '@/wasm/collab/local-selection';
 import { inspectorSnapshot, type InspectorSnapshot } from './board-inspector-projection';
@@ -59,7 +59,7 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
   const [placementBusy, setPlacementBusy] = React.useState(false);
   const [prompt, setPrompt] = React.useState<Prompt | null>(null);
   const promptRef = React.useRef<Prompt | null>(null);
-  const active = plugins.find(plugin => plugin.manifest.id === selected);
+  const active = plugins.find(plugin => pluginKey(plugin) === selected);
   const compatible = (plugin: Descriptor) => plugin.manifest.surfaces.includes('editor:' + tool);
   React.useEffect(() => { if (open) void refresh(); }, [open, refresh]);
   React.useEffect(() => { folderInput.current?.setAttribute('webkitdirectory', ''); }, [open]);
@@ -137,7 +137,7 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
         });
       }
       if (abort.signal.aborted) instance?.dispose();
-      else setStatus(selected === BUILTIN ? 'Read only · Current board' : hostedPlugins ? 'Private plugin · Signed in' : 'Local development plugin');
+      else setStatus(selected === BUILTIN ? 'Read only · Current board' : hostedPlugins ? (active?.source === 'marketplace' ? 'Published by PCBJam · Signed in' : 'Private plugin · Signed in') : 'Local development plugin');
     })().catch(error => fail(error instanceof Error ? error.message : 'Plugin could not start'));
     return () => { abort.abort(); instance?.dispose(); doc.off('update', changed); };
   }, [doc, fileName, tool, readOnly, attempt, selected, active?.digest, active?.generation, active?.enabled, project?.id, project?.scope, project?.name, projectFiles]);
@@ -154,7 +154,7 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
     try {
       await (await packageHost()).installPlugin(candidate); await refresh();
       if (viewRef.current === installationView) {
-        if (compatible(candidate)) { openPlugin(candidate.manifest.id); restart(); }
+        if (compatible(candidate)) { openPlugin(pluginKey(candidate)); restart(); }
         else setNotice('Installed. Open a compatible editor to use this plugin.');
       }
       setCandidate(null);
@@ -201,6 +201,7 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 text-xs">
         <a href="/plugin-guide/" target="_blank" rel="noopener noreferrer" className="mb-4 flex w-fit items-center gap-1.5 rounded text-sky-600 hover:underline dark:text-sky-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4"><BookOpen size={14} /> Developer guide <ExternalLink size={12} aria-hidden="true" /></a>
+        {catalog.developer && <>
         <h3 className="text-sm font-semibold">Add a plugin</h3>
         <p className="mt-1 text-neutral-500 dark:text-white/60">Choose a built plugin ZIP or folder. Review its permissions before installing.</p>
         <div className="mt-3 flex gap-2">
@@ -209,6 +210,7 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
           <input ref={zipInput} type="file" accept=".zip" aria-label="Plugin ZIP" className="hidden" onChange={event => { const files = Array.from(event.target.files ?? []); event.target.value = ''; if (files.length) void prepare(files, true); }} />
           <input ref={folderInput} type="file" multiple aria-label="Plugin folder" className="hidden" onChange={event => { const files = Array.from(event.target.files ?? []); event.target.value = ''; if (files.length) void prepare(files, false); }} />
         </div>
+        </>}
         {candidate && <section aria-label="Review plugin permissions" className="mt-4 rounded-lg border border-sky-500/40 bg-sky-500/5 p-3">
           <h3 className="font-semibold">Install {candidate.manifest.name} {candidate.manifest.version}?</h3>
           <p className="mt-2">{candidate.manifest.description}</p>
@@ -246,9 +248,9 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
         <section aria-label="Installed plugins" className="mt-6 border-t border-black/10 pt-4 dark:border-white/10">
           <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-white/50">Installed plugins</h3>
           {!plugins.length && <p className="text-neutral-500 dark:text-white/60">{catalog.loaded ? 'No added plugins yet.' : 'Loading plugins…'}</p>}
-          {plugins.map(plugin => <div key={plugin.manifest.id} className="flex items-center gap-2 border-b border-black/5 py-3 last:border-0 dark:border-white/5">
-            <div className="min-w-0 flex-1"><p className="truncate font-medium" title={plugin.manifest.name}>{plugin.manifest.name}</p><p className="mt-1 text-neutral-500 dark:text-white/50">{plugin.manifest.version}{compatible(plugin) ? '' : ' · Available in another editor'}</p></div>
-            <button className={button} disabled={busy || !compatible(plugin) || plugin.enabled===false} onClick={() => openPlugin(plugin.manifest.id)}>Open</button>
+          {plugins.map(plugin => <div key={pluginKey(plugin)} className="flex items-center gap-2 border-b border-black/5 py-3 last:border-0 dark:border-white/5">
+            <div className="min-w-0 flex-1"><p className="truncate font-medium" title={plugin.manifest.name}>{plugin.manifest.name}</p><p className="mt-1 text-neutral-500 dark:text-white/50">{plugin.manifest.version}{plugin.source === 'marketplace' ? ' · From the marketplace' : ''}{compatible(plugin) ? '' : ' · Available in another editor'}</p></div>
+            <button className={button} disabled={busy || !compatible(plugin) || plugin.enabled===false} onClick={() => openPlugin(pluginKey(plugin))}>Open</button>
             {hostedPlugins && <button className={button} disabled={busy} onClick={async()=>{setBusy(true);try{await (await packageHost()).setPluginEnabled(plugin,plugin.enabled===false);await refresh();}catch(error){setNotice((error as Error).message);}finally{setBusy(false);}}}>{plugin.enabled===false?'Enable':'Disable'}</button>}
             {hostedPlugins && <button className={button} disabled={busy} onClick={()=>setResetCandidate(plugin)}>Reset data</button>}
             <button className={button} disabled={busy} onClick={() => void remove(plugin)} title={'Remove ' + plugin.manifest.name} aria-label={'Remove ' + plugin.manifest.name}><Trash2 size={14} /></button>
