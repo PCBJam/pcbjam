@@ -78,9 +78,13 @@ export interface PackageHost {
       onAuthorizationReady?(check: (method: string) => Promise<void>): void;
       selectItems?(ids: string[], signal: AbortSignal): Promise<{ selected: string[]; held: string[]; missing: string[] }>;
       saveFile?(
-        proposal: { name: string; text?: string; kind: "text" | "html" | "image"; bytes: Uint8Array; method: string },
+        proposal: { name: string; text?: string; kind: "text" | "html" | "image" | "archive"; bytes: Uint8Array; method: string },
         signal: AbortSignal
       ): Promise<{ status: "download-requested" | "cancelled" }>;
+      openExternal?(
+        proposal: { url: string; site: string },
+        signal: AbortSignal
+      ): Promise<{ status: "opened" | "cancelled" }>;
     }
   ): Promise<{ dispose(): void }>;
 }

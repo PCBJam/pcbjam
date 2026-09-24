@@ -26,7 +26,8 @@ interface InspectorHost {
 // The confirmation authorizes the operation that matches what is being saved, from a closed table,
 // never a method name carried in the request.
 const SAVE_METHODS = { text: 'files.save', html: 'files.saveHtml', image: 'files.saveImage', archive: 'files.saveBundle' } as const;
-type Prompt = {kind:'download';name:string;content:'text'|'html'|'image'|'archive';bytes:Uint8Array;finish(value:{status:'download-requested'|'cancelled'}):void;signal:AbortSignal;authorize():Promise<void>}
+type Prompt = {kind:'external';url:string;site:string;finish(value:{status:'opened'|'cancelled'}):void;signal:AbortSignal;authorize():Promise<void>}
+  | {kind:'download';name:string;content:'text'|'html'|'image'|'archive';bytes:Uint8Array;finish(value:{status:'download-requested'|'cancelled'}):void;signal:AbortSignal;authorize():Promise<void>}
   | { kind: 'file'; extensions: string[]; finish(file: File | null): void }
   | { kind: 'placement'; label: string; sexpr: string; finish(value: { status: string }): void;fail(error:Error):void;signal:AbortSignal;authorize():Promise<void> }
   // A remote provider's part: the bytes are already verified; the user confirms the library write.
@@ -124,6 +125,7 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
             const user=sessionIdentity()?.slug;
             return user && project ? JSON.stringify([API_BASE_URL,user,project.scope,project.id]) : null;
           },
+          openExternal: (proposal, signal) => requestUser<{status:'opened'|'cancelled'}>(signal,finish=>({kind:'external',url:proposal.url,site:proposal.site,finish,signal,authorize:()=>authorizeOperation('ui.openExternal')})),
           saveFile: (proposal, signal) => requestUser<{status:'download-requested'|'cancelled'}>(signal,finish=>({kind:'download',name:proposal.name,content:proposal.kind,bytes:proposal.bytes,finish,signal,authorize:()=>authorizeOperation(SAVE_METHODS[proposal.kind])})),
           context: () => ({ tool, fileName, readOnly, canSelectItems: !!selectModule(), canReadGeometry: tool === 'pcbnew' && !!geometryModule(), canPlaceItems: !readOnly && !!placementModule() && (!hostedPlugins || tool==='eeschema' && placementModule()?.kicadPluginPlacementVersion?.()===1) }),
           selectItems: ids => selectItems(ids),
@@ -266,6 +268,18 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
         <p className="mb-2">{active?.manifest.name} wants a file you choose.</p>
         <input type="file" aria-label="Choose file for plugin" accept={prompt.extensions.join(',')} className="max-w-full text-xs" onChange={event => { const file = event.target.files?.[0]; if (file) prompt.finish(file); }} />
         <button className={button + ' mt-2'} onClick={() => prompt.finish(null)}>Cancel file request</button>
+      </section>}
+      {prompt?.kind === 'external' && <section aria-label="Confirm opening a website" className="mt-3 rounded border border-sky-500/40 p-3">
+        <p>{active?.manifest.name} wants to open <strong>{prompt.site}</strong> in a new tab.</p>
+        <p className="my-2 break-all text-neutral-500 dark:text-white/60">{prompt.url}</p>
+        <button className={button} disabled={placementBusy} onClick={async () => {
+          if(placing.current)return;placing.current=true;setPlacementBusy(true);
+          try {await prompt.authorize();prompt.signal.throwIfAborted();if(promptRef.current!==prompt)return;
+            // A new tab without a handle back to the editor.
+            window.open(prompt.url,'_blank','noopener,noreferrer');prompt.finish({status:'opened'});
+          }catch(error){setNotice((error as Error).message);}finally{placing.current=false;setPlacementBusy(false);}
+        }}>Open {prompt.site}</button>{' '}
+        <button className={button} disabled={placementBusy} onClick={()=>prompt.finish({status:'cancelled'})}>Cancel</button>
       </section>}
       {prompt?.kind === 'download' && <section aria-label="Confirm plugin download" className="mt-3 rounded border border-sky-500/40 p-3">
         <p>{active?.manifest.name} requests a download of <strong>{prompt.name}</strong>.</p>
