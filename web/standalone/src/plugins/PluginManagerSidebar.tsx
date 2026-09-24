@@ -25,8 +25,8 @@ interface InspectorHost {
 }
 // The confirmation authorizes the operation that matches what is being saved, from a closed table,
 // never a method name carried in the request.
-const SAVE_METHODS = { text: 'files.save', html: 'files.saveHtml', image: 'files.saveImage' } as const;
-type Prompt = {kind:'download';name:string;content:'text'|'html'|'image';bytes:Uint8Array;finish(value:{status:'download-requested'|'cancelled'}):void;signal:AbortSignal;authorize():Promise<void>}
+const SAVE_METHODS = { text: 'files.save', html: 'files.saveHtml', image: 'files.saveImage', archive: 'files.saveBundle' } as const;
+type Prompt = {kind:'download';name:string;content:'text'|'html'|'image'|'archive';bytes:Uint8Array;finish(value:{status:'download-requested'|'cancelled'}):void;signal:AbortSignal;authorize():Promise<void>}
   | { kind: 'file'; extensions: string[]; finish(file: File | null): void }
   | { kind: 'placement'; label: string; sexpr: string; finish(value: { status: string }): void;fail(error:Error):void;signal:AbortSignal;authorize():Promise<void> }
   // A remote provider's part: the bytes are already verified; the user confirms the library write.
@@ -270,6 +270,7 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
       {prompt?.kind === 'download' && <section aria-label="Confirm plugin download" className="mt-3 rounded border border-sky-500/40 p-3">
         <p>{active?.manifest.name} requests a download of <strong>{prompt.name}</strong>.</p>
         <p className="my-2 text-neutral-500 dark:text-white/60">{prompt.bytes.length.toLocaleString()} bytes. This downloads a file; it does not save changes to your project.</p>
+        {prompt.content === 'archive' && <p className="my-2 text-neutral-500 dark:text-white/60">A ZIP archive PCBJam built on its servers from this plugin's exports of your design.</p>}
         {prompt.content === 'html' && <p className="my-2 text-neutral-500 dark:text-white/60">This is a web page containing code from this plugin and data from your design. The code runs when you open the file. PCBJam blocks the page from loading or sending anything over the network.</p>}
         <button className={button} disabled={placementBusy} onClick={async () => {
           if(placing.current)return;placing.current=true;setPlacementBusy(true);
