@@ -78,6 +78,7 @@ import { startCrossAppPresence, type CrossAppHandle } from "@/wasm/collab/cross-
 import { connectKicadDoc } from "@/wasm/collab";
 import { isGatewayFenced, onGatewayFenced } from "@/wasm/collab/gateway";
 import { copySegment, currentCopyRef } from "@/lib/copy-context";
+import { refreshChangedPaths } from "@/lib/git-provenance";
 import { fenceReloadsSilently } from "@/lib/git-view";
 import {
   startSiblingRestage,
@@ -1643,6 +1644,9 @@ export function WasmTool({
               unstageFile(win, slug, c.path, append);
             },
             isOpenPath: (p) => sheetManagerRef.current?.active()?.sheetPath === p,
+            // Connected copies (git-integration 0006): keep the uncommitted-
+            // files list fresh for new threads' `dirtyAtWrite`.
+            onHint: () => void refreshChangedPaths(),
             // On screen: keep MEMFS (the frame is on it) and say what happened.
             onTargetRemoved: (c) =>
               setFileGone({

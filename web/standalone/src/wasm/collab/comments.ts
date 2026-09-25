@@ -30,6 +30,7 @@ import {
 } from "@pcbjam/shared";
 import { clog } from "./debug";
 import { currentCopyRef, withCopyParam } from "@/lib/copy-context";
+import { dirtyAtWrite, markEditedInSession } from "@/lib/git-provenance";
 
 /**
  * Comments controller (collab-presence 0005): glues the MIT `kdoc_comments`
@@ -239,13 +240,16 @@ export function createComments(opts: {
     const ref = currentCopyRef();
     // git-integration 0005: a connected copy also records the commit its
     // content is based on ("introduced at <sha>").
-    return ref
-      ? {
-          workingCopyId: ref.id,
-          docGeneration: ref.generation,
-          ...(ref.headCommit ? { headCommit: ref.headCommit } : {}),
-        }
-      : undefined;
+    if (!ref) return undefined;
+    // git-integration 0006 (design-comments C-N2): the anchor may sit on
+    // uncommitted work — the file has changes in this copy or was edited here.
+    const dirty = ref.headCommit ? dirtyAtWrite(filter?.filePath) : undefined;
+    return {
+      workingCopyId: ref.id,
+      docGeneration: ref.generation,
+      ...(ref.headCommit ? { headCommit: ref.headCommit } : {}),
+      ...(dirty !== undefined ? { dirtyAtWrite: dirty } : {}),
+    };
   };
   /** Stamp the bound document onto an anchor (create / move / anchorAt). */
   const stampDoc = (anchor: CommentAnchor): CommentAnchor =>
@@ -339,6 +343,12 @@ export function createComments(opts: {
   // Threads change → re-render; anchored ITEMS change (moves) → pins follow.
   const offComments = observeComments(doc, schedule);
   let items = kicadItemsMap(itemsDoc);
+  // git-integration 0006: a LOCAL edit of the bound document makes new
+  // threads on it `dirtyAtWrite` (the anchor may be uncommitted work).
+  const onLocalEdit = (tr: Y.Transaction) => {
+    if (tr.local && tr.changed.size > 0 && filter?.filePath) markEditedInSession(filter.filePath);
+  };
+  itemsDoc.on("afterTransaction", onLocalEdit);
   const onItems = () => schedule();
   items.observeDeep(onItems);
 
@@ -497,7 +507,15 @@ export function createComments(opts: {
         post({ type: "setResolved", threadId, resolved });
         return;
       }
-      setThreadResolved(doc, threadId, resolved);
+      // Write mode records where it was resolved (design-comments C-D8); in
+      // comment mode the backend stamps it from the request's copy.
+      const ref = currentCopyRef();
+      setThreadResolved(
+        doc,
+        threadId,
+        resolved,
+        ref ? { workingCopyId: ref.id, ...(ref.headCommit ? { headCommit: ref.headCommit } : {}) } : undefined,
+      );
     },
     deleteThread(threadId) {
       const thread = threadOf(threadId);
@@ -549,7 +567,10 @@ export function createComments(opts: {
         filter?.sheetPath === next.sheetPath;
       if (same) return;
       items.unobserveDeep(onItems);
+      itemsDoc.off("afterTransaction", onLocalEdit);
+      itemsDoc.off("afterTransaction", onLocalEdit);
       itemsDoc = nextItems;
+      itemsDoc.on("afterTransaction", onLocalEdit);
       items = kicadItemsMap(itemsDoc);
       items.observeDeep(onItems);
       filter = next;

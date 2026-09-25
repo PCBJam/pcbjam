@@ -77,6 +77,9 @@ export interface FilesWatchOptions {
   /** A file op removed / moved the document this editor has open. */
   onTargetRemoved?: (change: GatewayFileChange) => void;
   onListingStale?: () => void;
+  /** Every hint batch, before routing (git-integration 0006: the editor
+   *  re-reads the copy's uncommitted-files list). */
+  onHint?: (changes: GatewayFileChange[]) => void;
   log: (m: string) => void;
   /** Test seam: replace the gateway connect. */
   connect?: () => Promise<FilesHintSource>;
@@ -119,6 +122,7 @@ export function createFilesHintRouter(opts: FilesWatchOptions) {
       opts.onListingStale?.();
     }
     lastSeq = seq;
+    opts.onHint?.(changes);
     for (const change of changes) {
       // Own echo: our PUT ack already recorded exactly this revision.
       if (

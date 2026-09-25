@@ -37,6 +37,7 @@ import { MentionInput } from "@/components/MentionInput";
 import { noteEmojiUsed, quickEmojis } from "@/lib/emoji-quick";
 import { cachedCollaborators, collaborators, mergeCandidates } from "@/lib/mentions";
 import { copyLabel, currentCopyRef } from "@/lib/copy-context";
+import { ancestryLabel, ancestryStore } from "@/lib/git-provenance";
 
 /**
  * DOM half of the hybrid comment pins (collab-presence 0005): the GAL overlay
@@ -1125,6 +1126,34 @@ function writtenOn(thread: { provenance?: { workingCopyId?: string } }): string 
   return copyLabel(id);
 }
 
+/**
+ * "introduced at <sha7> (before this copy)" — the thread's commit related to
+ * this copy's head by Git ancestry (git-integration 0006, design-comments
+ * §6.2); "written on uncommitted changes based at <sha7>" with dirtyAtWrite.
+ */
+function ProvenanceLine({ provenance }: { provenance: { headCommit?: string; dirtyAtWrite?: boolean } }) {
+  const store = ancestryStore();
+  const sha = provenance.headCommit!;
+  const rel = React.useSyncExternalStore(
+    (cb) => store?.subscribe(cb) ?? (() => undefined),
+    () => store?.get(sha) ?? null,
+  );
+  const label = ancestryLabel(rel);
+  return (
+    <span data-testid="comment-introduced-at" title={sha}>
+      {" · "}
+      {provenance.dirtyAtWrite ? "written on uncommitted changes based at " : "introduced at "}
+      <span className="font-mono">{sha.slice(0, 7)}</span>
+      {label && (
+        <span data-testid="comment-ancestry" data-relation={rel ?? undefined}>
+          {" "}
+          ({label})
+        </span>
+      )}
+    </span>
+  );
+}
+
 function ThreadPopover({
   thread,
   css,
@@ -1174,12 +1203,7 @@ function ThreadPopover({
           {writtenOn(thread) && (
             <span data-testid="comment-written-on"> · written on {writtenOn(thread)}</span>
           )}
-          {thread.provenance?.headCommit && (
-            <span data-testid="comment-introduced-at" title={thread.provenance.headCommit}>
-              {" "}
-              · introduced at <span className="font-mono">{thread.provenance.headCommit.slice(0, 7)}</span>
-            </span>
-          )}
+          {thread.provenance?.headCommit && <ProvenanceLine provenance={thread.provenance} />}
         </span>
         <div className="flex items-center gap-2">
           {controller.canManageThread(thread) && (

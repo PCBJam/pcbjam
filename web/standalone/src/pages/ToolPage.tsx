@@ -23,6 +23,7 @@ import {
   refBadgeText,
   startGitTouchLoop,
 } from "@/lib/git-view";
+import { configureGitProvenance, refreshChangedPaths } from "@/lib/git-provenance";
 import { decodeRoutePath } from "@/lib/route-path";
 import { isMobileMode } from "@/lib/mobile-mode";
 import { rememberMobileMode } from "@/lib/mobile-mode-choice";
@@ -79,14 +80,28 @@ export function ToolPage() {
       `${API_BASE_URL.replace(/\/$/, "")}/api/scopes/${encodeURIComponent(currentScope())}/projects/${encodeURIComponent(slug)}/git/touch`,
     );
     return startGitTouchLoop(() =>
-      fetch(url, {
-        method: "POST",
-        credentials: "include",
-        headers: { "content-type": "application/json" },
-        body: "{}",
-      }),
+      Promise.all([
+        fetch(url, {
+          method: "POST",
+          credentials: "include",
+          headers: { "content-type": "application/json" },
+          body: "{}",
+        }),
+        // Peers' room edits send no file hint; re-read the uncommitted list
+        // on the same visible-only cadence (0006 dirtyAtWrite).
+        refreshChangedPaths(),
+      ]),
     );
   }, [connected, slug]);
+  // Thread provenance against this copy (git-integration 0006): ancestry
+  // labels and dirtyAtWrite, bound to the connected copy of this tab.
+  const provenanceCopyId = connected && data?.copy?.status !== "materializing" ? data?.copy?.id ?? null : null;
+  useEffect(() => {
+    if (!provenanceCopyId) return;
+    configureGitProvenance({ apiBase: API_BASE_URL, scope: currentScope(), project: slug, copyId: provenanceCopyId });
+    void refreshChangedPaths();
+    return () => configureGitProvenance(null);
+  }, [provenanceCopyId, slug]);
 
   if (!tool) {
     return (
