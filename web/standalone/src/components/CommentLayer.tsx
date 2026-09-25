@@ -1174,6 +1174,12 @@ function ThreadPopover({
           {writtenOn(thread) && (
             <span data-testid="comment-written-on"> · written on {writtenOn(thread)}</span>
           )}
+          {thread.provenance?.headCommit && (
+            <span data-testid="comment-introduced-at" title={thread.provenance.headCommit}>
+              {" "}
+              · introduced at <span className="font-mono">{thread.provenance.headCommit.slice(0, 7)}</span>
+            </span>
+          )}
         </span>
         <div className="flex items-center gap-2">
           {controller.canManageThread(thread) && (

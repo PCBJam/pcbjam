@@ -237,7 +237,15 @@ export function createComments(opts: {
    */
   const provenance = () => {
     const ref = currentCopyRef();
-    return ref ? { workingCopyId: ref.id, docGeneration: ref.generation } : undefined;
+    // git-integration 0005: a connected copy also records the commit its
+    // content is based on ("introduced at <sha>").
+    return ref
+      ? {
+          workingCopyId: ref.id,
+          docGeneration: ref.generation,
+          ...(ref.headCommit ? { headCommit: ref.headCommit } : {}),
+        }
+      : undefined;
   };
   /** Stamp the bound document onto an anchor (create / move / anchorAt). */
   const stampDoc = (anchor: CommentAnchor): CommentAnchor =>

@@ -1,4 +1,5 @@
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useParams, useSearchParams } from "react-router-dom";
 import { parseToolParam, toolForFile, type Tool } from "@pcbjam/shared";
 import { Loader2 } from "lucide-react";
@@ -13,7 +14,15 @@ import {
   useSourceDescriptor,
 } from "@/lib/api";
 import { narrowBootForViewer } from "@/lib/boot-payload";
-import { docSourceConfig } from "@/lib/config";
+import { API_BASE_URL, currentScope, docSourceConfig } from "@/lib/config";
+import { withCopyParam } from "@/lib/copy-context";
+import {
+  copyForcesReadOnly,
+  copyNotReady,
+  isConnectedCopy,
+  refBadgeText,
+  startGitTouchLoop,
+} from "@/lib/git-view";
 import { decodeRoutePath } from "@/lib/route-path";
 import { isMobileMode } from "@/lib/mobile-mode";
 import { rememberMobileMode } from "@/lib/mobile-mode-choice";
@@ -52,6 +61,32 @@ export function ToolPage() {
     () => new Map((data?.files ?? []).map((f) => [f.path, f])),
     [data],
   );
+  // git-integration 0005: a copy still being checked out never boots the
+  // editor — poll the boot until it is ready (or failed).
+  const qc = useQueryClient();
+  const pending = copyNotReady(data?.copy);
+  useEffect(() => {
+    if (pending !== "materializing") return;
+    const t = setInterval(() => void qc.invalidateQueries({ queryKey: ["project-boot", slug] }), 2000);
+    return () => clearInterval(t);
+  }, [pending, qc, slug]);
+  // Activity-driven remote checks (R-§9): while this tab is visible, tell
+  // the backend someone is looking at the connected project.
+  const connected = isConnectedCopy(data?.copy);
+  useEffect(() => {
+    if (!connected) return;
+    const url = withCopyParam(
+      `${API_BASE_URL.replace(/\/$/, "")}/api/scopes/${encodeURIComponent(currentScope())}/projects/${encodeURIComponent(slug)}/git/touch`,
+    );
+    return startGitTouchLoop(() =>
+      fetch(url, {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      }),
+    );
+  }, [connected, slug]);
 
   if (!tool) {
     return (
@@ -80,6 +115,26 @@ export function ToolPage() {
     );
   }
 
+  if (pending) {
+    return (
+      <div
+        className="fixed inset-0 flex flex-col items-center justify-center gap-3 bg-[#1a1a2e] text-white"
+        data-testid="git-checking-out"
+      >
+        {pending === "materializing" ? (
+          <>
+            <Loader2 className="animate-spin" size={32} />
+            <p className="font-mono text-sm text-white/80">Checking out {data.copy?.label ?? "working copy"}…</p>
+          </>
+        ) : (
+          <p className="font-mono text-sm text-red-300">
+            This working copy could not be checked out. Pick another copy on the project page.
+          </p>
+        )}
+      </div>
+    );
+  }
+
   // Env-selected document source (same /p/ URLs either way): with "ydoc" the collab
   // room is the live source of truth (materialized client-side on load), with "api" the
   // REST file is. EITHER WAY a save is uploaded to the backend — the backend owns the
@@ -96,10 +151,20 @@ export function ToolPage() {
   // Resolved from the router's search params (not window.location) so the
   // MobileModeGate's `?mode=` write re-renders us with the new answer.
   const modeWin = { location: { search: `?${search.toString()}` } };
-  const readOnly = resolveReadOnly(data.access, modeWin);
+  // A repository view (git-integration 0005: Inspect / View latest) is an
+  // immutable pinned copy — always a viewer, whatever the caller's role.
+  const pinnedView = copyForcesReadOnly(data.copy);
+  const readOnly = pinnedView || resolveReadOnly(data.access, modeWin);
   // Comment capability (comments-ux 0003): writers comment into the ydoc,
-  // commenters through the REST comment-op route, readers only look.
-  const commentAccess = resolveCommentAccess(data.access, readOnly, modeWin);
+  // commenters through the REST comment-op route, readers only look. On a
+  // view, a writer still comments — threads are project-scoped (C-D1) — but
+  // through the comment-op route, like a commenter.
+  const resolvedComments = resolveCommentAccess(data.access, readOnly, modeWin);
+  const commentAccess =
+    pinnedView && resolvedComments === "none" && (data.access === undefined || data.access === "write")
+      ? "comment"
+      : resolvedComments;
+  const badge = refBadgeText(data.copy);
   // A read-only session boots with the VIEWER's catalog (3D-model origins
   // only). The server already does this for readers/commenters; a writer who
   // locked themselves (mobile 0002) got the full catalog in the payload, so
@@ -166,6 +231,14 @@ export function ToolPage() {
         onChangeMobileMode={onChangeMobileMode}
         boot={boot}
       />
+      {badge && (
+        <div
+          className="pointer-events-none fixed left-1/2 top-1 z-50 -translate-x-1/2 rounded-full bg-sky-900/90 px-3 py-0.5 font-mono text-xs text-white"
+          data-testid="git-ref-badge"
+        >
+          {badge} · read-only
+        </div>
+      )}
     </PreflightGate>
     </MobileModeGate>
   );

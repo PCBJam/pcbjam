@@ -77,7 +77,8 @@ import {
 import { startCrossAppPresence, type CrossAppHandle } from "@/wasm/collab/cross-app";
 import { connectKicadDoc } from "@/wasm/collab";
 import { isGatewayFenced, onGatewayFenced } from "@/wasm/collab/gateway";
-import { copySegment } from "@/lib/copy-context";
+import { copySegment, currentCopyRef } from "@/lib/copy-context";
+import { fenceReloadsSilently } from "@/lib/git-view";
 import {
   startSiblingRestage,
   type SiblingRestageHandle,
@@ -363,7 +364,19 @@ export function WasmTool({
   // Generation fence (git-integration 0004 §E): the gateway refused this
   // tab's working-copy generation. Terminal — the banner stays until reload.
   const [fenced, setFenced] = React.useState(() => isGatewayFenced());
-  React.useEffect(() => onGatewayFenced(() => setFenced(true)), []);
+  React.useEffect(
+    () =>
+      onGatewayFenced(() => {
+        // A branch-following view (git-integration 0005) advanced to a newer
+        // commit: nothing of the viewer's can be lost — reload onto it.
+        if (fenceReloadsSilently(currentCopyRef())) {
+          window.location.reload();
+          return;
+        }
+        setFenced(true);
+      }),
+    [],
+  );
   // Every save sink of the session goes through this guard: once fenced, a
   // save is refused HERE (a clear not-committed outcome, counted for tests)
   // instead of a CAS PUT that could land in the copy's new generation.
