@@ -153,6 +153,7 @@ target_include_directories(scene3d_native_test PRIVATE
     ${KICAD_ROOT}/thirdparty/rtree            # geometry/rtree.h (shape_poly_set.cpp)
     ${KICAD_ROOT}/thirdparty/magic_enum/magic_enum # magic_enum.hpp (layer_id.cpp)
     ${KICAD_ROOT}/thirdparty/expected/include # tl/expected.hpp (library_table.h)
+    ${KICAD_ROOT}/thirdparty/thread-pool      # bs_thread_pool.hpp (thread_pool.h via sharded_cache.h)
     ${KICAD_ROOT}/thirdparty
 
     # Homebrew (glm)

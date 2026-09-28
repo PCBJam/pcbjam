@@ -46,6 +46,7 @@ KICAD_INCLUDES = -I../native \
                  -I$(KICAD_ROOT)/thirdparty/magic_enum/magic_enum \
                  -I$(KICAD_ROOT)/thirdparty/expected/include \
                  -I$(KICAD_ROOT)/thirdparty/nlohmann_json \
+                 -I$(KICAD_ROOT)/thirdparty/thread-pool \
                  -I$(KICAD_ROOT)/thirdparty \
                  -I$(PROJECT_ROOT)/wasm/stubs \
                  -I$(PROJECT_ROOT)/wasm/gl1/include \
