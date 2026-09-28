@@ -142,6 +142,16 @@ test.describe('Eeschema WASM', () => {
 
     test('loads Eeschema with sane canvas + toolbar metrics', async ({ page }) => {
         await waitForEditorReady(page);
+
+        // The GL viewport only matches the canvas once a frame has been painted at the canvas's
+        // final size; editor-ready can land between the resize and that paint (seen intermittently
+        // under a loaded parallel run as viewport width 20 vs canvas 905). Wait for the paint
+        // instead of sampling it; a viewport that never matches still fails here.
+        await expect.poll(async () => {
+            const gl = (await getCanvasMetrics(page)).glCanvas;
+            return !!gl?.viewport && gl.viewport[2] === gl.width && gl.viewport[3] === gl.height;
+        }, { timeout: 30000, intervals: [200] }).toBe(true);
+
         const metrics = await getCanvasMetrics(page);
 
         const toolbarCount = await page.evaluate(() => {

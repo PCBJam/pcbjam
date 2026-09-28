@@ -109,6 +109,9 @@ test.describe('3D viewer close and reopen', () => {
         // settings the frame opens display-sized at (0,0), where "restored" and
         // "re-centred" coincide and a position regression is invisible. The drag makes
         // the two outcomes distinguishable. (Same machinery as the titlebar spec.)
+        // Drag straight down: the display-sized frame already spans the viewport width, so any
+        // rightward move pushes the titlebar × off-screen, and Playwright's click would then
+        // scroll the page to reach it (a user cannot click an off-screen button).
         const posInitial = await windowPos(page, winId);
         expect(posInitial, 'the 3D viewer window should have a position').not.toBeNull();
         const bar = page.locator(`#${winId} .window-titlebar`);
@@ -118,7 +121,7 @@ test.describe('3D viewer close and reopen', () => {
         const cy = barBox!.y + barBox!.height / 2;
         await page.mouse.move(cx, cy);
         await page.mouse.down();
-        await page.mouse.move(cx + 40, cy + 90, { steps: 10 });
+        await page.mouse.move(cx, cy + 90, { steps: 10 });
         await page.mouse.up();
         // DOM style updates first; poll it as the observable...
         await expect.poll(async () => (await windowPos(page, winId))?.top,
