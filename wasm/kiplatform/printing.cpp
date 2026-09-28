@@ -18,5 +18,10 @@ PRINT_RESULT PrintPDF( const std::string& aFile )
     return PRINT_RESULT::UNSUPPORTED;
 }
 
+void ResetPrintToFilePath( wxPrintData& )
+{
+    // Only the GTK portal backend leaves a spool path behind; nothing to reset here.
+}
+
 } // namespace PRINTING
 } // namespace KIPLATFORM

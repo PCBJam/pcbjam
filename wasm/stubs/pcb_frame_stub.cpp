@@ -49,10 +49,11 @@ void PCB_BASE_FRAME::setFPWatcher( FOOTPRINT* aFootprint )
 
 // Scripting helper functions stub
 // These are in pcbnew_scripting_helpers.cpp which is only compiled with KICAD_SCRIPTING
-BOARD* LoadBoard( const wxString& aFileName, bool aSetActive )
+BOARD* LoadBoard( const wxString& aFileName, bool aSetActive, wxString* aReason )
 {
     (void)aFileName;
     (void)aSetActive;
+    (void)aReason;
     // Scripting not available in WASM
     return nullptr;
 }
