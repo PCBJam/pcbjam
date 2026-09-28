@@ -157,7 +157,8 @@ assertOccurrences(simFrame, simMap, "generation = m_pendingRunGeneration.exchang
   { total: 2, insideEm: 1 }, "E-12 IDLE pending fallback");
 
 // --- E-13: a failed launch withdraws its token and resets the busy state ----
-assertOccurrences(simFrame, simMap, "m_reporter->SetRunGeneration( 0 )",
+// (KiCad 10.0.6 moved state changes from the reporter to SIM_FRAME_STATE_LISTENER.)
+assertOccurrences(simFrame, simMap, "m_stateListener->SetRunGeneration( 0 )",
   { total: 1, insideEm: 1 }, "E-13 failed-launch reset");
 
 // --- E-11: get_vec clamps v_length to the transferred arrays + frees on fail -
