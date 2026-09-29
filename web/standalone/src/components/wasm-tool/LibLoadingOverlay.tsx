@@ -1,6 +1,7 @@
 // Extracted from WasmTool.tsx (2026-08-25 split) — behavior unchanged.
 import { Loader2 } from "lucide-react";
 import type { LibLoadingState } from "./useLibNotices";
+import { useTrustedPrompt } from "@/overlay/trusted-prompts";
 
 /**
  * Eager library load overlay — the first chooser/editor open hydrates the
@@ -10,6 +11,8 @@ import type { LibLoadingState } from "./useLibNotices";
  * the boot overlay already covers it.
  */
 export function LibLoadingOverlay({ libLoading }: { libLoading: LibLoadingState }) {
+  // The editor underneath is frozen and covered: the guide overlay pauses too.
+  useTrustedPrompt(true);
   return (
     <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-3 bg-[#1a1a2e]/95 text-white">
       <Loader2 className="animate-spin" size={32} />

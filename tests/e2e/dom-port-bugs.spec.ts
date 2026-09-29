@@ -189,4 +189,34 @@ test.describe('wx DOM-port bug reproductions', () => {
       })
       .toBe('TOOLTIP_B');
   });
+
+  test('wxAuiToolBar: registry tool entries carry the tool id (userId)', async ({ page, testLogger }) => {
+    // The guide overlay maps toolbar buttons to KiCad actions through the
+    // tool id (docs/features/overlay-system 0002 M2); auibar.cpp passes it to
+    // wxWasmTrackElement, wx.js stores it as `userId`.
+    await page.goto('/standalone/tooltip-toolbar/tooltip-toolbar_test.html');
+    expect(await tryLoadApp(page, 30000), 'repro app should load').toBe(true);
+    await expect
+      .poll(() => testLogger.consoleLogs.some((l) => l.includes('[REPRO] tooltip-toolbar ready')), {
+        timeout: 30000,
+        message: 'repro app should finish setup',
+      })
+      .toBe(true);
+
+    const ids = () =>
+      page.evaluate(() =>
+        (window as any).wxElementRegistry
+          .findAllRendered({ elementType: 'tool' })
+          .map((t: { tooltip: string; userId?: number }) => [t.tooltip, t.userId])
+          .sort(),
+      );
+    // ID_TOOL_A = wxID_HIGHEST + 1 (wxID_HIGHEST is 5999).
+    await expect
+      .poll(ids, { timeout: 30000, message: 'all three tools registered with their ids' })
+      .toEqual([
+        ['TOOLTIP_A', 6000],
+        ['TOOLTIP_B', 6001],
+        ['TOOLTIP_C', 6002],
+      ]);
+  });
 });

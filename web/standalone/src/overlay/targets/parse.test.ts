@@ -50,3 +50,11 @@ describe("normalizeUiLabel", () => {
     expect(normalizeUiLabel("Fish && Chips")).toBe("fish & chips");
   });
 });
+
+describe("dialog targets", () => {
+  it("accepts a class name only", () => {
+    expect(parseTarget("dialog:DIALOG_SYMBOL_CHOOSER")).toEqual({ ns: "dialog", cls: "DIALOG_SYMBOL_CHOOSER" });
+    expect(parseTarget("dialog:DIALOG_SYMBOL_CHOOSER/control:searchctrl")).toBeNull();
+    expect(parseTarget("dialog:1BAD")).toBeNull();
+  });
+});

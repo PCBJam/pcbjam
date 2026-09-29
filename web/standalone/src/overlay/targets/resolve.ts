@@ -7,7 +7,9 @@ import { glCanvasRect, worldToCss, type CssRect } from "@/wasm/canvas-coords";
 import type { ViewportState } from "@/wasm/collab/comments";
 import { getViewport } from "@/wasm/viewport-store";
 import type { ResolvedTarget } from "../types";
+import { openDialog } from "../editor-events";
 import { normalizeUiLabel, parseTarget, type ParsedTarget } from "./parse";
+import { pickToolByAction, toolActionsFor } from "./tool-actions";
 
 /** Registry coords are `#canvas`-relative (wxScreenBase in wx.js). */
 export function wxRectToPage(
@@ -83,6 +85,21 @@ function resolveTooltip(text: string): ResolvedTarget | null {
   return hit ? { rect: wxRectToPage(hit, canvasOrigin()), surface: "ui" } : null;
 }
 
+function resolveTool(action: string): ResolvedTarget | null {
+  const reg = window.wxElementRegistry;
+  const tools = reg?.findAllRendered?.({ elementType: "tool" }) ?? [];
+  const actions = toolActionsFor(tools, reg?.renderedVersion ?? 0);
+  const hit = pickToolByAction(tools, reg?.elements, actions, action);
+  return hit ? { rect: wxRectToPage(hit, canvasOrigin()), surface: "ui" } : null;
+}
+
+function resolveDialog(cls: string): ResolvedTarget | null {
+  const open = openDialog(cls);
+  const win = open ? window.wxElementRegistry?.elements?.get(open.ptr) : undefined;
+  if (!win || !win.visible || win.width <= 0 || win.height <= 0) return null;
+  return { rect: wxRectToPage(win, canvasOrigin()), surface: "ui" };
+}
+
 function resolveMenu(title: string, item: string | undefined): ResolvedTarget | null {
   if (item) {
     const want = normalizeUiLabel(item);
@@ -120,7 +137,9 @@ function resolveCanvas(r: { x: number; y: number; w: number; h: number }): Resol
 export function resolveParsed(t: ParsedTarget): ResolvedTarget | null {
   switch (t.ns) {
     case "tool":
-      return null; // needs the engine's toolId → action map (0002 M2)
+      return resolveTool(t.action);
+    case "dialog":
+      return resolveDialog(t.cls);
     case "tooltip":
       return resolveTooltip(t.text);
     case "menu":
@@ -144,6 +163,7 @@ export function targetDependsOn(t: ParsedTarget): { registry: boolean; viewport:
   switch (t.ns) {
     case "tool":
     case "tooltip":
+    case "dialog":
       return { registry: true, viewport: false, dom: false };
     case "area":
     case "point":

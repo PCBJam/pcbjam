@@ -164,7 +164,16 @@ test.describe('guide overlay (eeschema)', () => {
     await expect(page.getByTestId('overlay-root')).toHaveCount(0);
 
     const events = await page.evaluate(() => (window as unknown as { __overlayEvents: string[] }).__overlayEvents);
-    expect(events).toEqual(['shown', 'targetFound', 'button', 'paused', 'resumed', 'cleared']);
+    // Activating Place Symbols may hydrate the libraries under the loading
+    // cover, which pauses/resumes the overlay too — only the trusted-prompt
+    // pair at the end is ours to pin.
+    expect(events.filter((e) => e !== 'paused' && e !== 'resumed')).toEqual([
+      'shown',
+      'targetFound',
+      'button',
+      'cleared',
+    ]);
+    expect(events.slice(-3)).toEqual(['paused', 'resumed', 'cleared']);
   });
 
   test('unknown and missing targets show an unanchored card with the lost text', async ({ page }) => {

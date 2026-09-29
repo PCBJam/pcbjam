@@ -31,6 +31,7 @@
 #include <wx/app.h>
 #include <wx/string.h>
 #include <wx/window.h>
+#include <wx/toplevel.h>
 #include <wx/frame.h>
 #include <wx/menu.h>
 #include <wx/statusbr.h>
@@ -38,6 +39,9 @@
 #include <kiway.h>
 #include <kiway_player.h>
 #include <pcbjam_read_only.h>
+#include <tool/action_toolbar.h>
+#include <tool/tool_action.h>
+#include <nlohmann/json.hpp>
 #include <project.h>
 
 #include "pcbjam_libs_reload.h"
@@ -593,6 +597,42 @@ static std::string collabGetViewport()
     return pcbEditorActive() ? pcbCollabGetViewport() : schCollabGetViewport();
 }
 
+/**
+ * overlay-system 0002 M2: every ACTION_TOOLBAR tool in every top-level
+ * window as [{toolbar, toolId, action}] JSON. `toolbar` is the toolbar's
+ * pointer as a decimal string — the `parentId` of its tools in
+ * wxElementRegistry, whose entries carry `userId` = toolId — so the page can
+ * resolve `tool:<action name>` to a rendered button. Frame-agnostic: covers
+ * the schematic/PCB editors and any other open frame.
+ */
+static void collectToolbarActions( wxWindow* aWindow, nlohmann::json& aOut )
+{
+    if( auto* toolbar = dynamic_cast<ACTION_TOOLBAR*>( aWindow ) )
+    {
+        const std::string id =
+                std::to_string( reinterpret_cast<uintptr_t>( static_cast<wxWindow*>( toolbar ) ) );
+
+        for( const auto& [toolId, action] : toolbar->GetToolActions() )
+        {
+            if( action )
+                aOut.push_back( { { "toolbar", id }, { "toolId", toolId }, { "action", action->GetName() } } );
+        }
+    }
+
+    for( wxWindow* child : aWindow->GetChildren() )
+        collectToolbarActions( child, aOut );
+}
+
+static std::string toolbarActions()
+{
+    nlohmann::json out = nlohmann::json::array();
+
+    for( wxWindow* top : wxTopLevelWindows )
+        collectToolbarActions( top, out );
+
+    return out.dump();
+}
+
 static std::string collabGetSelection()
 {
     return pcbEditorActive() ? pcbCollabGetSelection() : schCollabGetSelection();
@@ -725,6 +765,8 @@ EMSCRIPTEN_BINDINGS(kicad_editor) {
     function("kicadCollabTestDemoSet", &collabTestDemoSet);
     function("kicadCollabGetViewport", &collabGetViewport);
     function("kicadCollabGetSelection", &collabGetSelection);
+    // Guide overlay (overlay-system 0002 M2): toolbar tool id → action name.
+    function("kicadToolbarActions", &toolbarActions);
     // Cross-app selection (collab-presence 0006).
     function("kicadCollabGetSelectionFull", &collabGetSelectionFull);
     function("kicadCollabTestGetCrossMapped", &collabTestGetCrossMapped);

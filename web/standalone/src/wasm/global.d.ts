@@ -48,6 +48,8 @@ declare global {
     centerY: number;
     enabled: boolean;
     index: number;
+    /** The item's own id when the paint site passed one (toolbar tool id). */
+    userId?: number;
   }
 
   interface WxRenderedFilter {

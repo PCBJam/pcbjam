@@ -5,6 +5,7 @@
  * plugins get their own, permissioned wrapper (0003).
  */
 import { overlay } from "./api";
+import { onEditorEvent, openDialog } from "./editor-events";
 import { openTrustedPrompt } from "./trusted-prompts";
 import { resolveTarget } from "./targets/resolve";
 
@@ -17,6 +18,9 @@ export interface OverlayDemoHandle {
   resolve: typeof resolveTarget;
   /** Simulate a trusted prompt (pause test); returns the release function. */
   openTrustedPrompt: typeof openTrustedPrompt;
+  /** Engine events (actions, dialogs) as the overlay sees them. */
+  onEditorEvent: typeof onEditorEvent;
+  openDialog: typeof openDialog;
 }
 
 declare global {
@@ -39,6 +43,8 @@ export function installOverlayDemo(): () => void {
     getState: overlay.getState,
     resolve: resolveTarget,
     openTrustedPrompt,
+    onEditorEvent,
+    openDialog,
   };
   return () => {
     delete window.__pcbjamOverlay;

@@ -4,6 +4,7 @@ import { cn } from "@/lib/utils";
 import { getOverlayState, overlay, pressButton, subscribeOverlay } from "./api";
 import { layoutCard, spotlightPath, spotlightRect } from "./geometry";
 import { installOverlayDemo } from "./demo";
+import { installEditorEvents } from "./editor-events";
 import { startOverlayTracking } from "./tracker";
 import type { OverlayButton } from "./types";
 
@@ -36,6 +37,7 @@ export function OverlayHost() {
   const cardRef = React.useRef<HTMLDivElement>(null);
   const [card, setCard] = React.useState<{ w: number; h: number } | null>(null);
 
+  React.useEffect(() => installEditorEvents(), []);
   React.useEffect(() => startOverlayTracking(), []);
   React.useEffect(() => installOverlayDemo(), []);
   // The page navigates away on an editor switch; clear on unmount so owners

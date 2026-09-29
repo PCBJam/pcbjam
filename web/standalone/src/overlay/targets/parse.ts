@@ -1,7 +1,8 @@
 /**
  * Target ids — the only way content refers to UI. Never pixels.
  *
- *   tool:<action.name>        toolbar button by KiCad action (M2, engine hook)
+ *   tool:<action.name>        toolbar button by KiCad action name
+ *   dialog:<CLASS>            an open KiCad dialog, e.g. DIALOG_SYMBOL_CHOOSER
  *   tooltip:<text>            toolbar button by the first tooltip line
  *                             (friendly name, hotkey stripped) — language-
  *                             dependent fallback until `tool:` resolves
@@ -14,6 +15,7 @@
 
 export type ParsedTarget =
   | { ns: "tool"; action: string }
+  | { ns: "dialog"; cls: string }
   | { ns: "tooltip"; text: string }
   | { ns: "menu"; title: string; item?: string }
   | { ns: "panel"; id: string }
@@ -38,6 +40,9 @@ export function parseTarget(target: string): ParsedTarget | null {
       return { ns, action: rest };
     case "tooltip":
       return { ns, text: rest };
+    case "dialog":
+      // Controls inside a dialog (`dialog:<CLASS>/control:…`) are 0002 M3.
+      return /^[A-Za-z_][A-Za-z0-9_]*$/.test(rest) ? { ns, cls: rest } : null;
     case "menu": {
       const slash = rest.indexOf("/");
       if (slash < 0) return { ns, title: rest };

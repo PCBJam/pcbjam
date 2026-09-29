@@ -2,7 +2,8 @@ import * as React from "react";
 
 /**
  * Trusted prompts (plugin consent/file/download/placement, blocking dialogs,
- * Radix dialogs, download consent) register here while open; the overlay
+ * Radix dialogs, download consent) and blocking covers (the library-loading
+ * overlay over a frozen editor) register here while open; the overlay
  * hides while any is up and resumes afterwards (overlay-system 0002 D5).
  * Hiding rather than z-ordering also covers prompts that live inside z-40
  * panels below the overlay.
