@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { parseSexpr } from '@pcbjam/shared';
-import { ensureProviderLib, resetSavePartState, savePart, SavePartError, type PartPack, type SavePartDeps } from './save-part';
+import { ensureProviderLib, pluginLibName, resetSavePartState, savePart, SavePartError, type PartPack, type SavePartDeps } from './save-part';
 import type { LibInfo, LibsSource } from '@/wasm/libs/source';
 
 const SYMBOL = `(kicad_symbol_lib (version 20241209) (generator "t")
@@ -66,8 +66,24 @@ describe('ensureProviderLib', () => {
   });
 });
 
+describe('pluginLibName', () => {
+  it('is plugin_<id>, lib-name safe and bounded', () => {
+    expect(pluginLibName('usb-stick-tutorial')).toBe('plugin_usb_stick_tutorial');
+    expect(pluginLibName('Acme.Parts--Helper')).toBe('plugin_acme_parts_helper');
+    expect(pluginLibName('x'.repeat(100))).toHaveLength(64);
+    expect(() => pluginLibName('---')).toThrow(/Invalid plugin id/);
+  });
+});
+
 describe('savePart', () => {
   beforeEach(() => resetSavePartState());
+  it('a host-chosen libraryName wins over the origin-derived name (plugin parts)', async () => {
+    const { deps, saved } = fakeDeps({ libs: [{ id: 'lib-1', name: 'plugin_usb', type: 'org' }] });
+    const result = await savePart(pack({ providerOrigin: '', libraryName: 'plugin_usb' }), opts(), deps);
+    expect((deps.createLib as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual(['team', 'plugin_usb']);
+    expect(result).toMatchObject({ libNickname: 'plugin_usb', symbolLibId: 'plugin_usb:R', footprintLibId: 'plugin_usb:R_0603' });
+    expect(saved[0]!.body).toContain('(property "Footprint" "plugin_usb:R_0603"');
+  });
   it('validates, writes symbol then footprint to the live source, indexes, mounts, places — in that order', async () => {
     const { deps, calls, saved } = fakeDeps();
     const result = await savePart(pack({ model3d: { name: 'm', bytes: bytes('x'), contentType: 'model/step' } }), opts(), deps);

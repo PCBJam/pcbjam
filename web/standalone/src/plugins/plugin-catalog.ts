@@ -86,6 +86,11 @@ export interface PackageHost {
         proposal: { url: string; site: string },
         signal: AbortSignal
       ): Promise<{ status: "opened" | "cancelled" }>;
+      /** Parts the plugin ships, into its own team library (overlay-system 0003). */
+      savePart?(
+        request: import("./plugin-parts").PluginPartRequest,
+        signal: AbortSignal
+      ): Promise<import("./plugin-parts").PluginPartResult>;
       /** Guided tours + pointers (overlay-system 0003). */
       tours?: PluginTourAdapter;
       /** The shown schematic sheet (overlay-system 0003). */

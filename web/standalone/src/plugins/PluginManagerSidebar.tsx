@@ -19,6 +19,7 @@ import { providerPermissions } from '@pcbjam/plugin-platform/remote-provider-con
 import { KICAD_VERSION_DIR } from '@/wasm/constants';
 import { useTrustedPrompt } from '@/overlay/trusted-prompts';
 import { pluginSheetAdapter, pluginTourAdapter } from '@/overlay/plugin-tours';
+import { pluginPartSaver, type PluginPartSummary } from './plugin-parts';
 
 interface InspectorHost {
   mountEditorPlugin(container: HTMLElement, options: {
@@ -33,7 +34,9 @@ type Prompt = {kind:'external';url:string;site:string;finish(value:{status:'open
   | { kind: 'file'; extensions: string[]; finish(file: File | null): void }
   | { kind: 'placement'; label: string; sexpr: string; finish(value: { status: string }): void;fail(error:Error):void;signal:AbortSignal;authorize():Promise<void> }
   // A remote provider's part: the bytes are already verified; the user confirms the library write.
-  | { kind: 'part'; request: PartRequest; finish(accept: boolean): void };
+  | { kind: 'part'; request: PartRequest; finish(accept: boolean): void }
+  // A QuickJS plugin's own part (parts.save): the user confirms the write into the plugin's team library.
+  | { kind: 'pluginPart'; part: PluginPartSummary; finish(accept: boolean): void };
 const isProvider = (plugin?: Descriptor | null) => plugin?.manifest.kind === 'remote-provider';
 const PROVIDER_PANEL_SIZE = { width: 520, height: 680 };
 
@@ -138,6 +141,14 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
           tours: pluginTourAdapter({ pluginKey: pluginKey(active), pluginName: active.manifest.name, tool: () => tool, signal: abort.signal }),
           // The shown schematic sheet, on engines that have the reads.
           sheet: tool === 'eeschema' && typeof (window as unknown as { Module?: { kicadSheetNets?: unknown } }).Module?.kicadSheetNets === 'function' ? pluginSheetAdapter() : undefined,
+          // Parts the plugin ships (overlay-system 0003): confirmed, then saved into plugin_<id> only.
+          savePart: pluginPartSaver({
+            pluginId: active.manifest.id,
+            confirm: (part, signal) => requestUser<boolean>(signal, finish => ({ kind: 'pluginPart', part, finish })),
+            authorize: () => authorizeOperation('parts.save'),
+            save: savePartAndPlace,
+            onPlacementIssue: message => setNotice(message),
+          }),
           chooseFile: (extensions, signal) => requestUser<File | null>(signal, finish => ({ kind: 'file', extensions, finish })),
           requestPlacement: (proposal, signal) => {
             if (readOnly) throw new Error('This document is read-only');
@@ -312,6 +323,14 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
           {prompt.request.skipped.length > 0 && ` Not kept: ${prompt.request.skipped.join(', ')}.`}
         </p>
         <button className={button} onClick={() => prompt.finish(true)}>{prompt.request.place ? 'Save and place' : 'Save to library'}</button>{' '}<button className={button} onClick={() => prompt.finish(false)}>Cancel</button>
+      </section>}
+      {prompt?.kind === 'pluginPart' && <section aria-label="Confirm plugin part" className="mt-3 rounded border border-sky-500/40 p-3">
+        <p>{active?.manifest.name} adds <strong>{prompt.part.displayName}</strong> to your team library{prompt.part.place ? ' and places it on the schematic' : ''}.</p>
+        <p className="my-2 text-neutral-500 dark:text-white/60">
+          {[prompt.part.symbol && `symbol ${prompt.part.symbol}`, prompt.part.footprint && `footprint ${prompt.part.footprint}`].filter(Boolean).join(' + ')}
+          {' · '}{prompt.part.bytes.toLocaleString()} bytes, saved to <code>{prompt.part.library}</code>{prompt.part.place ? '; you then click the canvas to place it.' : '; nothing is placed.'}
+        </p>
+        <button className={button} onClick={() => prompt.finish(true)}>{prompt.part.place ? 'Save and place' : 'Save to library'}</button>{' '}<button className={button} onClick={() => prompt.finish(false)}>Cancel</button>
       </section>}
       {prompt?.kind === 'placement' && <section aria-label="Confirm plugin placement" className="mt-3 rounded border border-sky-500/40 p-3">
         <p>{active?.manifest.name} requests placement of <strong>{prompt.label}</strong>.</p>

@@ -40,6 +40,11 @@ import type { LibInfo, LibsSource } from "@/wasm/libs/source";
 export interface PartPack {
   /** Provider's origin, e.g. "https://www.eda.cn" — the lib name is derived from it, never sent by the provider. */
   providerOrigin: string;
+  /**
+   * Host-chosen library name, used instead of the origin-derived one: a QuickJS plugin's parts
+   * (`parts.save`, overlay-system 0003) go to `pluginLibName(manifest id)`. Never plugin-supplied.
+   */
+  libraryName?: string;
   /** Manifest id of the remote-provider package, for logs/attribution only. */
   providerId: string;
   partId: string;
@@ -104,6 +109,13 @@ export interface SavePartDeps {
   libsMode(): "synced" | "other";
   uuid(): string;
   log(message: string): void;
+}
+
+/** The team library a QuickJS plugin's parts are saved to: `plugin_<id>`, lib-name safe. */
+export function pluginLibName(manifestId: string): string {
+  const id = manifestId.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  if (!id) throw new Error("Invalid plugin id");
+  return ("plugin_" + id).slice(0, 64);
 }
 
 export const SYMBOL_MAX_BYTES = 512 * 1024;
@@ -190,7 +202,7 @@ export async function savePart(pack: PartPack, opts: SavePartOptions, deps: Save
   if (pack.footprint && pack.footprint.bytes.byteLength > FOOTPRINT_MAX_BYTES) throw new SavePartError("TOO_LARGE", "The footprint is larger than 8 MiB");
   const symbolText = pack.symbol ? decode(pack.symbol.bytes, "INVALID_SYMBOL") : null;
   const footprintText = pack.footprint ? decode(pack.footprint.bytes, "INVALID_FOOTPRINT") : null;
-  const libName = providerLibName(pack.providerOrigin);
+  const libName = pack.libraryName ?? providerLibName(pack.providerOrigin);
   signal.throwIfAborted();
 
   // Build and validate everything BEFORE the library exists or anything is written, so a
