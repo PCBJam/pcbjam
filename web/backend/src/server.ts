@@ -174,6 +174,15 @@ export async function buildApp(): Promise<import("fastify").FastifyInstance> {
   });
   app.get("/health", async () => ({ ok: true }));
 
+  // Local manual testing only: the reference backend has no login, so the editor has no
+  // session user and signed-in-only flows (e.g. a plugin saving a part to a team library)
+  // refuse. DEV_SESSION_USER=<slug> answers /api/me as that user. Off unless set.
+  const devSessionUser = process.env.DEV_SESSION_USER;
+  if (devSessionUser) {
+    app.log.warn(`DEV_SESSION_USER set: /api/me answers "${devSessionUser}" to every caller`);
+    app.get("/api/me", async () => ({ user: { slug: devSessionUser, name: devSessionUser } }));
+  }
+
   const libs: LibsConfig = libsConfig();
   const userLibs: UserLibsConfig = userLibsConfig();
 
