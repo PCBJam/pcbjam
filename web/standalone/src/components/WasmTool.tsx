@@ -2081,7 +2081,7 @@ export function WasmTool({
       {ready && tunerMod && <PresenceTuner mod={tunerMod} tool={tool} />}
 
       {/* Guided-tour overlay (overlay-system 0002): coachmarks over the editor. */}
-      {ready && <OverlayHost />}
+      {ready && !fatal && <OverlayHost tool={tool} />}
 
       <NoticeStack
         ready={ready}

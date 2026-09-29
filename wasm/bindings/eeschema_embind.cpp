@@ -1872,6 +1872,28 @@ std::string schItemBBox( std::string aId )
 }
 
 
+// Guide overlay (overlay-system 0002 M4): the symbols placed on the CURRENT
+// sheet as [{"uuid","libId"}]. A pure read — unlike kicadCollabSnapshotItems,
+// which formats every item and rebaselines the collab differ, so it must not
+// be polled by anything but the collab bridge.
+std::string schSheetSymbols()
+{
+    json out = json::array();
+
+    if( SCH_SCREEN* screen = currentScreen( schFrame() ) )
+    {
+        for( SCH_ITEM* item : screen->Items().OfType( SCH_SYMBOL_T ) )
+        {
+            auto* sym = static_cast<SCH_SYMBOL*>( item );
+            out.push_back( { { "uuid", toUtf8( sym->m_Uuid.AsString() ) },
+                             { "libId", toUtf8( sym->GetLibId().Format().wx_str() ) } } );
+        }
+    }
+
+    return out.dump();
+}
+
+
 // ── ysync-review repro hooks ─────────────────────────────────────────────────
 // Local-edit test hooks for the ysync-review repro e2e (docs/features/
 // ysync-review on the ysync-review branch): each drives a REAL SCH_COMMIT via
@@ -2872,6 +2894,7 @@ EMSCRIPTEN_BINDINGS(eeschema) {
     function("kicadCollabTestMoveFirst", &schCollabTestMoveFirst);
     function("kicadCollabGetPos", &schCollabGetPos);
     function("kicadItemBBox", &schItemBBox);
+    function("kicadSheetSymbols", &schSheetSymbols);
     // ysync-review repro hooks shared with pcbnew (dispatched when merged).
     function("kicadCollabTestRemoveItem", &schCollabTestRemoveItem);
     function("kicadCollabTestRotateItem", &schCollabTestRotateItem);

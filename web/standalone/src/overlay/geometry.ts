@@ -9,6 +9,8 @@ export const VIEW_MARGIN = 12;
 export const TARGET_GAP = 12;
 export const SPOT_PAD = 6;
 export const SPOT_RADIUS = 8;
+/** Unanchored card: distance from the viewport bottom (clears the status bar). */
+export const UNANCHORED_BOTTOM = 72;
 /** Below this viewport width the card docks to the bottom edge, arrowless. */
 export const DOCK_BELOW_WIDTH = 480;
 
@@ -88,9 +90,11 @@ export function layoutCard(opts: {
     };
   }
   if (!target) {
+    // Unanchored cards sit bottom-centre, above the editor's status bar: the
+    // middle of the canvas is where a step asks the user to click.
     return {
       x: clamp((view.w - card.w) / 2, VIEW_MARGIN, maxX),
-      y: clamp((view.h - card.h) / 2, VIEW_MARGIN, maxY),
+      y: clamp(view.h - card.h - UNANCHORED_BOTTOM, VIEW_MARGIN, maxY),
       side: null,
       docked: false,
       arrow: null,

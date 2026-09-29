@@ -31,7 +31,7 @@ function useViewSize(): { w: number; h: number } {
   return size;
 }
 
-export function OverlayHost() {
+export function OverlayHost({ tool }: { tool: string }) {
   const state = React.useSyncExternalStore(subscribeOverlay, getOverlayState);
   const view = useViewSize();
   const cardRef = React.useRef<HTMLDivElement>(null);
@@ -39,7 +39,8 @@ export function OverlayHost() {
 
   React.useEffect(() => installEditorEvents(), []);
   React.useEffect(() => startOverlayTracking(), []);
-  React.useEffect(() => installOverlayDemo(), []);
+  // After tracking + events: a demo tour shows its first step immediately.
+  React.useEffect(() => installOverlayDemo(tool), [tool]);
   // The page navigates away on an editor switch; clear on unmount so owners
   // hear about it (their progress lives with them, not here).
   React.useEffect(() => () => void overlay.clear(undefined, "unmount"), []);

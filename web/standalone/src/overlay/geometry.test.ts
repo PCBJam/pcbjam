@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DOCK_BELOW_WIDTH, TARGET_GAP, VIEW_MARGIN, chooseSide, layoutCard, spotlightPath } from "./geometry";
+import { DOCK_BELOW_WIDTH, TARGET_GAP, UNANCHORED_BOTTOM, VIEW_MARGIN, chooseSide, layoutCard, spotlightPath } from "./geometry";
 
 const view = { w: 1280, h: 800 };
 const card = { w: 320, h: 140 };
@@ -52,9 +52,9 @@ describe("layoutCard", () => {
     expect(l.arrow).toEqual({ x: l.x + card.w, y: 312 });
   });
 
-  it("centres an unanchored card", () => {
+  it("puts an unanchored card bottom-centre, off the canvas middle", () => {
     const l = layoutCard({ target: null, card, view });
-    expect(l).toMatchObject({ x: 480, y: 330, side: null, docked: false, arrow: null });
+    expect(l).toMatchObject({ x: 480, y: 800 - 140 - UNANCHORED_BOTTOM, side: null, docked: false, arrow: null });
   });
 
   it("docks to the bottom on phone widths", () => {
