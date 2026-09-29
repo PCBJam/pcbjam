@@ -18,6 +18,7 @@ import { savePartAndPlace } from '@/libs/save-part';
 import { providerPermissions } from '@pcbjam/plugin-platform/remote-provider-contract.mjs';
 import { KICAD_VERSION_DIR } from '@/wasm/constants';
 import { useTrustedPrompt } from '@/overlay/trusted-prompts';
+import { pluginSheetAdapter, pluginTourAdapter } from '@/overlay/plugin-tours';
 
 interface InspectorHost {
   mountEditorPlugin(container: HTMLElement, options: {
@@ -132,6 +133,11 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
           saveFile: (proposal, signal) => requestUser<{status:'download-requested'|'cancelled'}>(signal,finish=>({kind:'download',name:proposal.name,content:proposal.kind,bytes:proposal.bytes,finish,signal,authorize:()=>authorizeOperation(SAVE_METHODS[proposal.kind])})),
           context: () => ({ tool, fileName, readOnly, canSelectItems: !!selectModule(), canReadGeometry: tool === 'pcbnew' && !!geometryModule(), canPlaceItems: !readOnly && !!placementModule() && (!hostedPlugins || tool==='eeschema' && placementModule()?.kicadPluginPlacementVersion?.()===1) }),
           selectItems: ids => selectItems(ids),
+          // Guided tours + pointers (overlay-system 0003): drawn by the host with the plugin's name,
+          // cleared when this instance stops (abort.signal).
+          tours: pluginTourAdapter({ pluginKey: pluginKey(active), pluginName: active.manifest.name, tool: () => tool, signal: abort.signal }),
+          // The shown schematic sheet, on engines that have the reads.
+          sheet: tool === 'eeschema' && typeof (window as unknown as { Module?: { kicadSheetNets?: unknown } }).Module?.kicadSheetNets === 'function' ? pluginSheetAdapter() : undefined,
           chooseFile: (extensions, signal) => requestUser<File | null>(signal, finish => ({ kind: 'file', extensions, finish })),
           requestPlacement: (proposal, signal) => {
             if (readOnly) throw new Error('This document is read-only');

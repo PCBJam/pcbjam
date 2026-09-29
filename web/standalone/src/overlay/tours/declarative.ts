@@ -160,6 +160,8 @@ export interface SheetPin {
   ref: string;
   libId: string;
   pin: string;
+  /** Pin name as shown ("" for KiCad's unnamed "~"). */
+  name: string;
   noConnect: boolean;
 }
 export interface SheetNet {
@@ -208,7 +210,7 @@ export function parseSheetNets(raw: unknown): SheetNet[] | null {
       const uuid = str(p?.uuid);
       const pin = str(p?.pin);
       if (!uuid || pin === null) continue;
-      pins.push({ uuid: uuid.toLowerCase(), ref: str(p.ref) ?? "", libId: str(p.libId) ?? "", pin, noConnect: p.noConnect === true });
+      pins.push({ uuid: uuid.toLowerCase(), ref: str(p.ref) ?? "", libId: str(p.libId) ?? "", pin, name: str(p.name) ?? "", noConnect: p.noConnect === true });
     }
     out.push({ net, pins });
   }

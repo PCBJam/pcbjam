@@ -1,5 +1,6 @@
 import * as React from "react";
 import type { createDocumentAPI } from "./document-api";
+import type { PluginTourAdapter } from "@/overlay/plugin-tours";
 import { API_BASE_URL } from "@/lib/config";
 
 export interface Descriptor {
@@ -85,6 +86,10 @@ export interface PackageHost {
         proposal: { url: string; site: string },
         signal: AbortSignal
       ): Promise<{ status: "opened" | "cancelled" }>;
+      /** Guided tours + pointers (overlay-system 0003). */
+      tours?: PluginTourAdapter;
+      /** The shown schematic sheet (overlay-system 0003). */
+      sheet?: { symbols(): unknown[]; connectivity(): unknown[] };
     }
   ): Promise<{ dispose(): void }>;
 }

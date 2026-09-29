@@ -67,17 +67,44 @@ export interface TourRunner {
   tick(): void;
   stop(status?: TourStatus): void;
   currentStep(): string | null;
+  /** The shown step's 1-based position and the tour's length; null before the first step. */
+  progress(): { step: number; of: number } | null;
+}
+
+export interface TourOptions {
+  poll?: boolean;
+  /** Overlay owner (default `builtin:<tour id>`; plugins: `plugin:<key>`). */
+  owner?: string;
+  /** Host-drawn "from …" label; wins over the tour's own title (plugins can't choose it). */
+  attribution?: string;
+  /** sessionStorage identity (default the tour id); plugins namespace theirs. */
+  storageId?: string;
 }
 
 const POLL_MS = 500;
 
-export function startTour<S>(tour: Tour<S>, opts: { poll?: boolean } = {}): TourRunner {
-  const owner = `builtin:${tour.id}`;
+/** Tours running on this page, by overlay owner — one guide is on screen at a time. */
+const running = new Map<string, { tourId: string; runner: TourRunner }>();
+
+export function runningTours(): { owner: string; tourId: string }[] {
+  return [...running].map(([owner, { tourId }]) => ({ owner, tourId }));
+}
+
+/** Tests: stop every running tour (no status change). */
+export function __stopAllToursForTests(): void {
+  for (const { runner } of [...running.values()]) runner.stop();
+}
+
+export function startTour<S>(tour: Tour<S>, opts: TourOptions = {}): TourRunner {
+  const owner = opts.owner ?? `builtin:${tour.id}`;
+  const storageId = opts.storageId ?? tour.id;
+  const length = Math.max(...tour.steps.map((s, i) => s.position ?? i + 1));
   let pending: TourEvent[] = [];
   let current: string | null = null;
   let shownKey = "";
   let stopped = false;
-  writeTourStatus(tour.id, "active");
+  running.get(owner)?.runner.stop();
+  writeTourStatus(storageId, "active");
 
   const tick = () => {
     if (stopped) return;
@@ -103,9 +130,9 @@ export function startTour<S>(tour: Tour<S>, opts: { poll?: boolean } = {}): Tour
     overlay.show({
       ...content,
       owner,
-      attribution: content.attribution ?? tour.title,
+      attribution: opts.attribution ?? content.attribution ?? tour.title,
       buttons: step.final ? ["next"] : content.buttons,
-      progress: { step: step.position ?? idx + 1, of: Math.max(...tour.steps.map((s, i) => s.position ?? i + 1)) },
+      progress: { step: step.position ?? idx + 1, of: length },
     });
   };
 
@@ -145,10 +172,21 @@ export function startTour<S>(tour: Tour<S>, opts: { poll?: boolean } = {}): Tour
     offButton();
     offCleared();
     if (timer) clearInterval(timer);
-    if (status) writeTourStatus(tour.id, status);
+    if (running.get(owner)?.runner === runner) running.delete(owner);
+    if (status) writeTourStatus(storageId, status);
     overlay.clear(owner);
   }
 
+  const runner: TourRunner = {
+    tick,
+    stop,
+    currentStep: () => current,
+    progress: () => {
+      const idx = tour.steps.findIndex((s) => s.id === current);
+      return idx < 0 ? null : { step: tour.steps[idx]!.position ?? idx + 1, of: length };
+    },
+  };
+  running.set(owner, { tourId: tour.id, runner });
   tick();
-  return { tick, stop, currentStep: () => current };
+  return runner;
 }

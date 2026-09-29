@@ -152,8 +152,9 @@ function resolvePanel(id: string): ResolvedTarget | null {
 
 function resolveCanvas(r: { x: number; y: number; w: number; h: number }): ResolvedTarget | null {
   const vp = getViewport();
+  if (!vp) return null; // no viewport yet: no canvas to measure either
   const canvas = glCanvasRect();
-  if (!vp || !canvas) return null;
+  if (!canvas) return null;
   const rect = worldRectToPage(vp, canvas, r);
   return rect ? { rect, surface: "canvas" } : null;
 }

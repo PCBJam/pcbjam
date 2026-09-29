@@ -18,7 +18,7 @@ import {
 import type { TourEvent } from "./runner";
 
 const S = (libId: string, uuid: string, ref: string, footprint = ""): SheetSymbol => ({ uuid, libId, ref, value: "", footprint });
-const P = (ref: string, uuid: string, libId: string, pin: string, noConnect = false) => ({ uuid, ref, libId, pin, noConnect });
+const P = (ref: string, uuid: string, libId: string, pin: string, noConnect = false) => ({ uuid, ref, libId, pin, name: "", noConnect });
 
 // The USB-stick circuit: J1 (edge plug) VBUS → R1 → D1..D3 anodes; cathodes → GND.
 const J1 = S("Tutorial:USB_A_PCB_Edge", "j1", "J1", "Tutorial:USB_A_PCB_Edge");
@@ -89,7 +89,7 @@ describe("engine payloads", () => {
     expect(parseSheetSymbols("{")).toBeNull();
     expect(parseSheetSymbols(undefined)).toBeNull();
     expect(parseSheetNets(JSON.stringify([{ net: "+5V", pins: [{ uuid: "A", pin: "1", ref: "R1", noConnect: 1 }, { pin: "2" }] }, { pins: [] }]))).toEqual([
-      { net: "+5V", pins: [{ uuid: "a", ref: "R1", libId: "", pin: "1", noConnect: false }] },
+      { net: "+5V", pins: [{ uuid: "a", ref: "R1", libId: "", pin: "1", name: "", noConnect: false }] },
     ]);
   });
 });
