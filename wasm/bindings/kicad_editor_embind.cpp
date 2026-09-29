@@ -126,6 +126,7 @@ std::string schCollabTestMoveFirst( int aDx, int aDy );
 std::string schCollabGetPos( std::string aId );
 std::string schItemBBox( std::string aId );
 std::string schSheetSymbols();
+std::string schSheetNets();
 bool        schCollabTestRemoveItem( std::string aId );
 bool        schCollabTestRotateItem( std::string aId, double aDeg );
 // Collab-aware undo (ysync miss 09).
@@ -427,6 +428,12 @@ static std::string itemBBox( std::string aId )
 static std::string sheetSymbols()
 {
     return pcbEditorActive() ? std::string( "[]" ) : schSheetSymbols();
+}
+
+// Schematic-only: "[]" while the PCB editor is the active frame.
+static std::string sheetNets()
+{
+    return pcbEditorActive() ? std::string( "[]" ) : schSheetNets();
 }
 
 static bool collabTestRemoveItem( std::string aId )
@@ -783,6 +790,7 @@ EMSCRIPTEN_BINDINGS(kicad_editor) {
     function("kicadToolbarActions", &toolbarActions);
     function("kicadItemBBox", &itemBBox);
     function("kicadSheetSymbols", &sheetSymbols);
+    function("kicadSheetNets", &sheetNets);
     // Cross-app selection (collab-presence 0006).
     function("kicadCollabGetSelectionFull", &collabGetSelectionFull);
     function("kicadCollabTestGetCrossMapped", &collabTestGetCrossMapped);

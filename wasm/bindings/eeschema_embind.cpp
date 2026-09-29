@@ -49,6 +49,9 @@
 #include <sch_text.h>
 #include <sch_label.h>
 #include <sch_symbol.h>
+#include <sch_pin.h>
+#include <connection_graph.h>
+#include <string_utils.h>
 #include <sch_field.h>
 #include <sch_shape.h>
 #include <eda_shape.h>
@@ -1872,22 +1875,95 @@ std::string schItemBBox( std::string aId )
 }
 
 
-// Guide overlay (overlay-system 0002 M4): the symbols placed on the CURRENT
-// sheet as [{"uuid","libId"}]. A pure read — unlike kicadCollabSnapshotItems,
-// which formats every item and rebaselines the collab differ, so it must not
-// be polled by anything but the collab bridge.
+// Guide overlay (overlay-system 0002 M4, 0003 phase 1): the symbols placed on
+// the CURRENT sheet as [{"uuid","libId","ref","value","footprint"}] — ref,
+// value and footprint as shown on this sheet instance. A pure read — unlike
+// kicadCollabSnapshotItems, which formats every item and rebaselines the
+// collab differ, so it must not be polled by anything but the collab bridge.
 std::string schSheetSymbols()
 {
     json out = json::array();
 
-    if( SCH_SCREEN* screen = currentScreen( schFrame() ) )
+    SCH_EDIT_FRAME* fr = schFrame();
+    SCH_SCREEN*     screen = currentScreen( fr );
+
+    if( !screen )
+        return out.dump();
+
+    const SCH_SHEET_PATH& path = fr->GetCurrentSheet();
+
+    for( SCH_ITEM* item : screen->Items().OfType( SCH_SYMBOL_T ) )
     {
-        for( SCH_ITEM* item : screen->Items().OfType( SCH_SYMBOL_T ) )
+        auto* sym = static_cast<SCH_SYMBOL*>( item );
+        out.push_back( { { "uuid", toUtf8( sym->m_Uuid.AsString() ) },
+                         { "libId", toUtf8( sym->GetLibId().Format().wx_str() ) },
+                         { "ref", toUtf8( sym->GetRef( &path ) ) },
+                         { "value", toUtf8( sym->GetValue( false, &path, false ) ) },
+                         { "footprint", toUtf8( sym->GetFootprintFieldText( false, &path, false ) ) } } );
+    }
+
+    return out.dump();
+}
+
+
+// 0003 phase 1: the schematic's connectivity as seen from the CURRENT sheet —
+// [{"net", "pins":[{"uuid","ref","libId","pin","name","noConnect"}]}] for
+// every net with at least one symbol pin on this sheet. Modelled on
+// NETLIST_EXPORTER_XML::makeListOfNets: the connection graph's net map, one
+// entry per net name, subgraphs filtered to the shown sheet. Power symbols
+// name their net ("+5V") but their own pins (refs "#PWR…") are left out.
+// `noConnect`: the pin's subgraph carries a no-connect marker. A pure read —
+// every commit (local or collab apply) already ran RecalculateConnections.
+std::string schSheetNets()
+{
+    json out = json::array();
+
+    SCH_EDIT_FRAME* fr = schFrame();
+
+    if( !fr || !currentScreen( fr ) )
+        return out.dump();
+
+    const SCH_SHEET_PATH& shown = fr->GetCurrentSheet();
+
+    for( const auto& [key, subgraphs] : fr->Schematic().ConnectionGraph()->GetNetMap() )
+    {
+        json pins = json::array();
+
+        for( CONNECTION_SUBGRAPH* subgraph : subgraphs )
         {
-            auto* sym = static_cast<SCH_SYMBOL*>( item );
-            out.push_back( { { "uuid", toUtf8( sym->m_Uuid.AsString() ) },
-                             { "libId", toUtf8( sym->GetLibId().Format().wx_str() ) } } );
+            if( !subgraph || subgraph->GetSheet() != shown )
+                continue;
+
+            const bool nc = subgraph->GetNoConnect()
+                            && subgraph->GetNoConnect()->Type() == SCH_NO_CONNECT_T;
+
+            for( SCH_ITEM* item : subgraph->GetItems() )
+            {
+                if( item->Type() != SCH_PIN_T )
+                    continue;
+
+                auto* pin = static_cast<SCH_PIN*>( item );
+                auto* sym = dynamic_cast<SCH_SYMBOL*>( pin->GetParentSymbol() );
+
+                if( !sym )
+                    continue;
+
+                wxString ref = sym->GetRef( &shown );
+
+                if( ref.StartsWith( wxT( "#" ) ) )
+                    continue;
+
+                pins.push_back( { { "uuid", toUtf8( sym->m_Uuid.AsString() ) },
+                                  { "ref", toUtf8( ref ) },
+                                  { "libId", toUtf8( sym->GetLibId().Format().wx_str() ) },
+                                  { "pin", toUtf8( pin->GetShownNumber() ) },
+                                  { "name", toUtf8( pin->GetShownName() ) },
+                                  { "noConnect", nc } } );
+            }
         }
+
+        if( !pins.empty() )
+            out.push_back( { { "net", toUtf8( UnescapeString( key.Name ) ) }, { "pins", pins } } );
     }
 
     return out.dump();
@@ -2895,6 +2971,7 @@ EMSCRIPTEN_BINDINGS(eeschema) {
     function("kicadCollabGetPos", &schCollabGetPos);
     function("kicadItemBBox", &schItemBBox);
     function("kicadSheetSymbols", &schSheetSymbols);
+    function("kicadSheetNets", &schSheetNets);
     // ysync-review repro hooks shared with pcbnew (dispatched when merged).
     function("kicadCollabTestRemoveItem", &schCollabTestRemoveItem);
     function("kicadCollabTestRotateItem", &schCollabTestRotateItem);
