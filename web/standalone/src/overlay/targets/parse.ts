@@ -3,6 +3,12 @@
  *
  *   tool:<action.name>        toolbar button by KiCad action name
  *   dialog:<CLASS>            an open KiCad dialog, e.g. DIALOG_SYMBOL_CHOOSER
+ *   dialog:<CLASS>/control:<type>[:<label>]
+ *                             a control inside it: <type> is the wx class
+ *                             without "wx" (button, textctrl, choice…) or an
+ *                             owner-drawn item type (searchctrl, tool…);
+ *                             <label> narrows by its label/name
+ *   item:<uuid>               a schematic/board item on the canvas
  *   tooltip:<text>            toolbar button by the first tooltip line
  *                             (friendly name, hotkey stripped) — language-
  *                             dependent fallback until `tool:` resolves
@@ -15,7 +21,8 @@
 
 export type ParsedTarget =
   | { ns: "tool"; action: string }
-  | { ns: "dialog"; cls: string }
+  | { ns: "dialog"; cls: string; control?: { type: string; label?: string } }
+  | { ns: "item"; uuid: string }
   | { ns: "tooltip"; text: string }
   | { ns: "menu"; title: string; item?: string }
   | { ns: "panel"; id: string }
@@ -40,9 +47,14 @@ export function parseTarget(target: string): ParsedTarget | null {
       return { ns, action: rest };
     case "tooltip":
       return { ns, text: rest };
-    case "dialog":
-      // Controls inside a dialog (`dialog:<CLASS>/control:…`) are 0002 M3.
-      return /^[A-Za-z_][A-Za-z0-9_]*$/.test(rest) ? { ns, cls: rest } : null;
+    case "dialog": {
+      const m = /^([A-Za-z_][A-Za-z0-9_]*)(?:\/control:([A-Za-z_][A-Za-z0-9_]*)(?::(.+))?)?$/.exec(rest);
+      if (!m) return null;
+      const [, cls, type, label] = m;
+      return type ? { ns, cls: cls!, control: label ? { type, label } : { type } } : { ns, cls: cls! };
+    }
+    case "item":
+      return /^[0-9a-fA-F-]{8,}$/.test(rest) ? { ns, uuid: rest.toLowerCase() } : null;
     case "menu": {
       const slash = rest.indexOf("/");
       if (slash < 0) return { ns, title: rest };

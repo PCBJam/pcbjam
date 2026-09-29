@@ -1716,6 +1716,28 @@ std::string pcbCollabGetPos( std::string aId )
 }
 
 
+// Guide overlay (overlay-system 0002 M3): an item's bounding box as
+// {"x","y","w","h"} in IU; "" when the uuid does not resolve.
+std::string pcbItemBBox( std::string aId )
+{
+    PCB_EDIT_FRAME* fr = pcbFrame();
+
+    if( !fr )
+        return "";
+
+    KIID id( wxString::FromUTF8( aId.c_str() ) );
+
+    if( BOARD_ITEM* item = fr->GetBoard()->ResolveItem( id, /*allowNullptr*/ true ) )
+    {
+        BOX2I bb = item->GetBoundingBox();
+        return "{\"x\":" + std::to_string( bb.GetX() ) + ",\"y\":" + std::to_string( bb.GetY() )
+               + ",\"w\":" + std::to_string( bb.GetWidth() ) + ",\"h\":" + std::to_string( bb.GetHeight() ) + "}";
+    }
+
+    return "";
+}
+
+
 // ── presence entry points (collab-presence 0002) ────────────────────────────────────────────
 
 // Install the presence input hooks on the GAL canvas (idempotent). Called by the JS
@@ -3056,6 +3078,7 @@ EMSCRIPTEN_BINDINGS(pcbnew) {
     function("kicadCollabSnapshotItems", &pcbCollabSnapshotItems);
     function("kicadCollabTestMoveFirst", &pcbCollabTestMoveFirst);
     function("kicadCollabGetPos", &pcbCollabGetPos);
+    function("kicadItemBBox", &pcbItemBBox);
     // ysync-review repro hooks shared with eeschema (dispatched when merged).
     function("kicadCollabTestRemoveItem", &pcbCollabTestRemoveItem);
     function("kicadCollabTestUndo", &pcbCollabTestUndo);

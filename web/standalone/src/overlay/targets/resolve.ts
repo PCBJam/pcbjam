@@ -9,6 +9,7 @@ import { getViewport } from "@/wasm/viewport-store";
 import type { ResolvedTarget } from "../types";
 import { openDialog } from "../editor-events";
 import { normalizeUiLabel, parseTarget, type ParsedTarget } from "./parse";
+import { findDialogControl } from "./dialog-controls";
 import { pickToolByAction, toolActionsFor } from "./tool-actions";
 
 /** Registry coords are `#canvas`-relative (wxScreenBase in wx.js). */
@@ -93,11 +94,34 @@ function resolveTool(action: string): ResolvedTarget | null {
   return hit ? { rect: wxRectToPage(hit, canvasOrigin()), surface: "ui" } : null;
 }
 
-function resolveDialog(cls: string): ResolvedTarget | null {
+function resolveDialog(cls: string, control?: { type: string; label?: string }): ResolvedTarget | null {
   const open = openDialog(cls);
-  const win = open ? window.wxElementRegistry?.elements?.get(open.ptr) : undefined;
-  if (!win || !win.visible || win.width <= 0 || win.height <= 0) return null;
-  return { rect: wxRectToPage(win, canvasOrigin()), surface: "ui" };
+  const reg = window.wxElementRegistry;
+  const windows = reg?.elements;
+  const win = open ? windows?.get(open.ptr) : undefined;
+  if (!open || !windows || !win || !win.visible || win.width <= 0 || win.height <= 0) return null;
+  if (!control) return { rect: wxRectToPage(win, canvasOrigin()), surface: "ui" };
+  const hit = findDialogControl(open.ptr, control, windows, reg?.findAllRendered?.() ?? []);
+  return hit ? { rect: wxRectToPage(hit, canvasOrigin()), surface: "ui" } : null;
+}
+
+/** `Module.kicadItemBBox(uuid)` → world rect; null when absent/off-sheet. */
+export function parseItemBBox(raw: unknown): { x: number; y: number; w: number; h: number } | null {
+  if (typeof raw !== "string" || !raw) return null;
+  try {
+    const b = JSON.parse(raw) as Record<string, unknown>;
+    const { x, y, w, h } = b;
+    if (![x, y, w, h].every((n) => typeof n === "number" && Number.isFinite(n))) return null;
+    return { x: x as number, y: y as number, w: w as number, h: h as number };
+  } catch {
+    return null;
+  }
+}
+
+function resolveItem(uuid: string): ResolvedTarget | null {
+  const mod = (window as { Module?: { kicadItemBBox?: (id: string) => unknown } }).Module;
+  const box = parseItemBBox(mod?.kicadItemBBox?.(uuid));
+  return box ? resolveCanvas(box) : null;
 }
 
 function resolveMenu(title: string, item: string | undefined): ResolvedTarget | null {
@@ -139,7 +163,9 @@ export function resolveParsed(t: ParsedTarget): ResolvedTarget | null {
     case "tool":
       return resolveTool(t.action);
     case "dialog":
-      return resolveDialog(t.cls);
+      return resolveDialog(t.cls, t.control);
+    case "item":
+      return resolveItem(t.uuid);
     case "tooltip":
       return resolveTooltip(t.text);
     case "menu":
@@ -167,6 +193,7 @@ export function targetDependsOn(t: ParsedTarget): { registry: boolean; viewport:
       return { registry: true, viewport: false, dom: false };
     case "area":
     case "point":
+    case "item": // item moves without a viewport change are caught by the tracker's safety tick
       return { registry: false, viewport: true, dom: false };
     case "menu":
     case "panel":

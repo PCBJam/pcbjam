@@ -1846,6 +1846,32 @@ std::string schCollabGetPos( std::string aId )
 }
 
 
+// Guide overlay (overlay-system 0002 M3): the bounding box of an item on the
+// CURRENT sheet, as {"x","y","w","h"} in IU; "" when it is not on this sheet
+// (an `item:<uuid>` target elsewhere in the hierarchy is simply not visible).
+std::string schItemBBox( std::string aId )
+{
+    SCH_SCREEN* screen = currentScreen( schFrame() );
+
+    if( !screen )
+        return "";
+
+    KIID id( wxString::FromUTF8( aId.c_str() ) );
+
+    for( SCH_ITEM* item : screen->Items() )
+    {
+        if( item->m_Uuid != id )
+            continue;
+
+        BOX2I bb = item->GetBoundingBox();
+        json  out = { { "x", bb.GetX() }, { "y", bb.GetY() }, { "w", bb.GetWidth() }, { "h", bb.GetHeight() } };
+        return out.dump();
+    }
+
+    return "";
+}
+
+
 // ── ysync-review repro hooks ─────────────────────────────────────────────────
 // Local-edit test hooks for the ysync-review repro e2e (docs/features/
 // ysync-review on the ysync-review branch): each drives a REAL SCH_COMMIT via
@@ -2845,6 +2871,7 @@ EMSCRIPTEN_BINDINGS(eeschema) {
     function("kicadCollabSnapshotItems", &schCollabSnapshotItems);
     function("kicadCollabTestMoveFirst", &schCollabTestMoveFirst);
     function("kicadCollabGetPos", &schCollabGetPos);
+    function("kicadItemBBox", &schItemBBox);
     // ysync-review repro hooks shared with pcbnew (dispatched when merged).
     function("kicadCollabTestRemoveItem", &schCollabTestRemoveItem);
     function("kicadCollabTestRotateItem", &schCollabTestRotateItem);

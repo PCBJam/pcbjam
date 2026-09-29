@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { pickToolByText, worldRectToPage, wxRectToPage } from "./resolve";
+import { parseItemBBox, pickToolByText, worldRectToPage, wxRectToPage } from "./resolve";
 
 const tool = (over: Partial<WxRenderedElementInfo>): WxRenderedElementInfo => ({
   id: "1:tool:0",
@@ -80,5 +80,16 @@ describe("worldRectToPage", () => {
 
   it("keeps partially visible rects", () => {
     expect(worldRectToPage(vp, canvas, { x: 190, y: 0, w: 50, h: 10 })).not.toBeNull();
+  });
+});
+
+describe("parseItemBBox", () => {
+  it("accepts the engine's JSON and rejects the rest", () => {
+    expect(parseItemBBox('{"x":1,"y":2,"w":3,"h":4}')).toEqual({ x: 1, y: 2, w: 3, h: 4 });
+    expect(parseItemBBox("")).toBeNull();
+    expect(parseItemBBox('{"x":1}')).toBeNull();
+    expect(parseItemBBox("{")).toBeNull();
+    expect(parseItemBBox(undefined)).toBeNull();
+    expect(parseItemBBox(Promise.resolve("x"))).toBeNull();
   });
 });

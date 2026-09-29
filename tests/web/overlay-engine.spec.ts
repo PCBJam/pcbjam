@@ -25,6 +25,8 @@ declare global {
   interface Window {
     __pcbjamOverlay?: OverlayHandle;
     __editorEvents?: EditorEvent[];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    Module: any;
   }
 }
 
@@ -121,6 +123,7 @@ test.describe('guide overlay engine hooks', () => {
         { timeout: 120000, intervals: [500], message: 'Cancel button uncovered (libraries loaded)' },
       )
       .toBe(true);
+
     // dialog: target resolves to the chooser window; a step anchors to it.
     await expect.poll(() => resolved(page, 'dialog:DIALOG_SYMBOL_CHOOSER'), { timeout: 20000 }).not.toBeNull();
     await page.evaluate(() =>
@@ -129,9 +132,50 @@ test.describe('guide overlay engine hooks', () => {
     await expect(page.getByTestId('overlay-card')).toHaveAttribute('data-target-state', 'found');
     await page.screenshot({ path: shotPath(page, 'overlay-engine-01-chooser.png') });
 
+    // M3: a control inside the dialog — the chooser's search field — lies
+    // within the dialog and is what a step anchors to.
+    const SEARCH = 'dialog:DIALOG_SYMBOL_CHOOSER/control:searchctrl';
+    const dlg = (await resolved(page, 'dialog:DIALOG_SYMBOL_CHOOSER'))!;
+    const search = await resolved(page, SEARCH);
+    expect(search, 'search field resolves').not.toBeNull();
+    expect(search!.x).toBeGreaterThanOrEqual(dlg.x);
+    expect(search!.y).toBeGreaterThanOrEqual(dlg.y);
+    expect(search!.x + search!.width).toBeLessThanOrEqual(dlg.x + dlg.width);
+    expect(search!.y + search!.height).toBeLessThanOrEqual(dlg.y + dlg.height);
+    expect(await resolved(page, 'dialog:DIALOG_SYMBOL_CHOOSER/control:button:Cancel')).not.toBeNull();
+    await page.evaluate((t) => window.__pcbjamOverlay!.show({ owner: 'e2e', target: t, text: 'Type R', pulse: true }), SEARCH);
+    await expect(page.getByTestId('overlay-card')).toHaveAttribute('data-target-state', 'found');
+    await page.screenshot({ path: shotPath(page, 'overlay-engine-02-search.png') });
+
+    // Drag the dialog by its caption: the control target follows.
+    // (wx.js window chrome: `.window-titlebar-text`, dragged via wx_window_move)
+    const caption = page.locator('.window-titlebar-text', { hasText: /Choose Symbol/ });
+    await expect(caption).toBeVisible();
+    const captionBox = (await caption.boundingBox())!;
+    const grab = { x: captionBox.x + captionBox.width / 2, y: captionBox.y + captionBox.height / 2 };
+    await page.mouse.move(grab.x, grab.y);
+    await page.mouse.down();
+    // Up-left: down/right would slide Cancel under the version badge (z-20).
+    await page.mouse.move(grab.x - 40, grab.y - 30, { steps: 8 });
+    await page.mouse.up();
+    await expect
+      .poll(async () => {
+        const r = await resolved(page, SEARCH);
+        return r ? [Math.round(r.x - search!.x), Math.round(r.y - search!.y)] : null;
+      }, { timeout: 20000, message: 'search target moved with the dialog' })
+      .toEqual([-40, -30]);
+    await expect
+      .poll(async () => {
+        const ring = await page.getByTestId('overlay-ring').boundingBox();
+        const r = await resolved(page, SEARCH);
+        return ring && r ? Math.abs(ring.x + 4 - r.x) + Math.abs(ring.y + 4 - r.y) : Infinity;
+      })
+      .toBeLessThanOrEqual(2);
+
     // Cancel the chooser → dialogClosed, the target goes away. (Esc would
     // need keyboard focus inside the dialog; the Cancel button does not.)
-    await page.mouse.click(cancel!.x, cancel!.y);
+    const cancelNow = (await resolved(page, 'dialog:DIALOG_SYMBOL_CHOOSER/control:button:Cancel'))!;
+    await page.mouse.click(cancelNow.x + cancelNow.width / 2, cancelNow.y + cancelNow.height / 2);
     await expect
       .poll(
         async () => {
@@ -159,6 +203,38 @@ test.describe('guide overlay engine hooks', () => {
         { timeout: 30000, intervals: [1000] },
       )
       .toBeGreaterThan(before);
+  });
+
+  test('eeschema: an item target outlines a symbol and follows zoom', async ({ page }) => {
+    await boot(page, 'demo.kicad_sch', /Schematic Editor/i);
+    // The first item on the sheet with a real extent.
+    const uuid = await page.evaluate(() => {
+      const ids = JSON.parse(window.Module.kicadCollabTestListItems(200)) as string[];
+      return (
+        ids.find((id) => {
+          const raw = window.Module.kicadItemBBox(id);
+          if (!raw) return false;
+          const b = JSON.parse(raw);
+          return b.w > 0 && b.h > 0;
+        }) ?? null
+      );
+    });
+    expect(uuid, 'an item with a bounding box on the sheet').not.toBeNull();
+    await page.evaluate((t) => window.__pcbjamOverlay!.show({ owner: 'e2e', target: t, text: 'This one' }), `item:${uuid}`);
+    await expect(page.getByTestId('overlay-card')).toHaveAttribute('data-target-state', 'found');
+    await expect(page.getByTestId('overlay-spotlight')).toHaveCount(0); // canvas targets never dim
+    const before = (await page.getByTestId('overlay-ring').boundingBox())!;
+    await page.screenshot({ path: shotPath(page, 'overlay-engine-03-item.png') });
+
+    const canvas = (await page.locator('#canvas').boundingBox())!;
+    await page.mouse.move(canvas.x + canvas.width / 2, canvas.y + canvas.height / 2);
+    await page.mouse.wheel(0, -400);
+    await expect
+      .poll(async () => (await page.getByTestId('overlay-ring').boundingBox())?.width ?? before.width, { timeout: 20000 })
+      .not.toBe(before.width);
+
+    // Unknown uuids never resolve.
+    expect(await resolved(page, 'item:00000000-0000-0000-0000-000000000000')).toBeNull();
   });
 
   test('pcbnew: tutorial tool targets resolve', async ({ page }) => {

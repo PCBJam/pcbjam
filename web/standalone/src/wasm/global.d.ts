@@ -25,6 +25,9 @@ declare global {
     height: number;
     /** Parent window id (its pointer as a string), null for top-level. */
     parentId?: string | null;
+    /** The owning frame/dialog's id (wxGetTopLevelParent). Container panels
+     *  are not registered, so `parentId` chains can stop short of it. */
+    topLevelId?: string | null;
   }
 
   /**

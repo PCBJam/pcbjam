@@ -116,4 +116,42 @@ test.describe('secondary frame over main-frame DOM controls', () => {
             return sel.classList.contains('wx-inert');
         }), { message: 're-covered select must be input-inert again', timeout: 5000 }).toBe(true);
     });
+
+    test('registry follows a dragged frame: children move with it and know their top-level window', async ({ page }) => {
+        // Descendants never get their own DoMoveWindow when only their frame
+        // moves; the registry used to keep their old screen coordinates (the
+        // guide overlay then pointed where a dragged dialog's controls USED to
+        // be — docs/features/overlay-system 0002 M3).
+        await bootApp(page);
+        const snapshot = () => page.evaluate(() => {
+            const all = window.wxElementRegistry!.findAll({});
+            // The secondary frame is the wxFrame with a parent (frames register without a label).
+            const frame = all.find((e) => e.typeName === 'wxFrame' && e.parentId)!;
+            const bar = all.find((e) => e.typeName === 'wxAuiToolBar' && e.parentId === frame.id)!;
+            return {
+                frame: [frame.screenX, frame.screenY],
+                bar: [bar.screenX, bar.screenY],
+                barTop: (bar as { topLevelId?: string }).topLevelId === frame.id,
+            };
+        });
+        const before = await snapshot();
+        expect(before.barTop, 'toolbar records the secondary frame as its top-level window').toBe(true);
+
+        const bar = await page.evaluate(() => {
+            const el = document.querySelector('#window-container .window.toplevel .window-titlebar')!;
+            const r = el.getBoundingClientRect();
+            return { x: r.left + 60, y: r.top + r.height / 2 };
+        });
+        await page.mouse.move(bar.x, bar.y);
+        await page.mouse.down();
+        await page.mouse.move(bar.x + 200, bar.y + 50, { steps: 6 });
+        await page.mouse.up();
+
+        await expect.poll(async () => {
+            const after = await snapshot();
+            const dx = after.frame[0]! - before.frame[0]!;
+            const dy = after.frame[1]! - before.frame[1]!;
+            return { frameMoved: dx !== 0 || dy !== 0, barDelta: [after.bar[0]! - before.bar[0]! - dx, after.bar[1]! - before.bar[1]! - dy] };
+        }, { message: 'toolbar entry moved by exactly the frame delta', timeout: 5000 }).toEqual({ frameMoved: true, barDelta: [0, 0] });
+    });
 });

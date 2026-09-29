@@ -54,7 +54,32 @@ describe("normalizeUiLabel", () => {
 describe("dialog targets", () => {
   it("accepts a class name only", () => {
     expect(parseTarget("dialog:DIALOG_SYMBOL_CHOOSER")).toEqual({ ns: "dialog", cls: "DIALOG_SYMBOL_CHOOSER" });
-    expect(parseTarget("dialog:DIALOG_SYMBOL_CHOOSER/control:searchctrl")).toBeNull();
     expect(parseTarget("dialog:1BAD")).toBeNull();
+  });
+
+  it("parses controls with optional labels", () => {
+    expect(parseTarget("dialog:DIALOG_SYMBOL_CHOOSER/control:searchctrl")).toEqual({
+      ns: "dialog",
+      cls: "DIALOG_SYMBOL_CHOOSER",
+      control: { type: "searchctrl" },
+    });
+    expect(parseTarget("dialog:DIALOG_SYMBOL_CHOOSER/control:button:Cancel / Quit")).toEqual({
+      ns: "dialog",
+      cls: "DIALOG_SYMBOL_CHOOSER",
+      control: { type: "button", label: "Cancel / Quit" },
+    });
+    expect(parseTarget("dialog:D/control:")).toBeNull();
+    expect(parseTarget("dialog:D/other:x")).toBeNull();
+  });
+});
+
+describe("item targets", () => {
+  it("accepts uuids, normalized to lower case", () => {
+    expect(parseTarget("item:3F2504E0-4F89-11D3-9A0C-0305E82C3301")).toEqual({
+      ns: "item",
+      uuid: "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+    });
+    expect(parseTarget("item:not a uuid")).toBeNull();
+    expect(parseTarget("item:abc")).toBeNull();
   });
 });

@@ -71,6 +71,7 @@ std::string pcbCollabSnapshot();
 std::string pcbCollabSnapshotItems();
 std::string pcbCollabTestMoveFirst( int aDx, int aDy );
 std::string pcbCollabGetPos( std::string aId );
+std::string pcbItemBBox( std::string aId );
 bool        pcbCollabTestRemoveItem( std::string aId );
 bool        pcbCollabTestRotateItem( std::string aId, double aDeg );
 // Collab-aware undo (ysync miss 09).
@@ -123,6 +124,7 @@ std::string schCollabSnapshot();
 std::string schCollabSnapshotItems();
 std::string schCollabTestMoveFirst( int aDx, int aDy );
 std::string schCollabGetPos( std::string aId );
+std::string schItemBBox( std::string aId );
 bool        schCollabTestRemoveItem( std::string aId );
 bool        schCollabTestRotateItem( std::string aId, double aDeg );
 // Collab-aware undo (ysync miss 09).
@@ -413,6 +415,11 @@ static std::string collabTestMoveFirst( int aDx, int aDy )
 static std::string collabGetPos( std::string aId )
 {
     return pcbEditorActive() ? pcbCollabGetPos( aId ) : schCollabGetPos( aId );
+}
+
+static std::string itemBBox( std::string aId )
+{
+    return pcbEditorActive() ? pcbItemBBox( aId ) : schItemBBox( aId );
 }
 
 static bool collabTestRemoveItem( std::string aId )
@@ -767,6 +774,7 @@ EMSCRIPTEN_BINDINGS(kicad_editor) {
     function("kicadCollabGetSelection", &collabGetSelection);
     // Guide overlay (overlay-system 0002 M2): toolbar tool id → action name.
     function("kicadToolbarActions", &toolbarActions);
+    function("kicadItemBBox", &itemBBox);
     // Cross-app selection (collab-presence 0006).
     function("kicadCollabGetSelectionFull", &collabGetSelectionFull);
     function("kicadCollabTestGetCrossMapped", &collabTestGetCrossMapped);
