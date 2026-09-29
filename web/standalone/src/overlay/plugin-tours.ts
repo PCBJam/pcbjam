@@ -31,6 +31,8 @@ export interface PluginPointer {
 
 export interface PluginTourAdapter {
   start(tour: unknown, resume: boolean): { status: "started" | "not-active" | "busy" };
+  /** True while this plugin's tour runs (the sidebar keeps a hidden panel alive for it). */
+  isRunning(): boolean;
   stop(): void;
   status(): { id: string | null; step: number; of: number; state: TourStatus | "none" };
   showPointer(step: PluginPointer): "shown" | "not-found";
@@ -48,6 +50,10 @@ export function pluginTourAdapter(opts: {
   tool: () => string;
   signal: AbortSignal;
   deps?: TourDeps;
+  /** The plugin's tour started — the sidebar collapses the plugin's panel out of the way. */
+  onTourStart?(): void;
+  /** The plugin's tour stopped (done, dismissed, or stopped without a status). */
+  onTourEnd?(status?: TourStatus): void;
 }): PluginTourAdapter {
   const owner = `plugin:${opts.pluginKey}`;
   const storageId = (id: string) => `plugin:${opts.pluginKey}:${id}`;
@@ -86,13 +92,17 @@ export function pluginTourAdapter(opts: {
         owner,
         attribution: opts.pluginName,
         storageId: storageId(parsed.id),
+        onStop: (status) => opts.onTourEnd?.(status),
       });
+      opts.onTourStart?.();
       return { status: "started" };
     },
 
     stop() {
       stopOwn();
     },
+
+    isRunning: ownTourRunning,
 
     status() {
       if (!def) return { id: null, step: 0, of: 0, state: "none" };

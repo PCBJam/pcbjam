@@ -7,6 +7,7 @@ import { installOverlayDemo } from "./demo";
 import { installEditorEvents } from "./editor-events";
 import { startOverlayTracking } from "./tracker";
 import type { OverlayButton } from "./types";
+import type { CssRect } from "@/wasm/canvas-coords";
 
 /**
  * The overlay layer (overlay-system 0002 M1): spotlight, target ring and the
@@ -20,6 +21,37 @@ import type { OverlayButton } from "./types";
  */
 
 const BUTTON_LABEL: Record<OverlayButton, string> = { back: "Back", skip: "Skip", next: "Next" };
+
+/**
+ * Rects of host UI the card should not cover (`[data-overlay-obstacle]`, e.g. floating plugin
+ * panels), re-measured per frame while a step is shown — panels are dragged, collapsed, hidden.
+ */
+function useObstacles(active: boolean): CssRect[] {
+  const [rects, setRects] = React.useState<CssRect[]>([]);
+  React.useEffect(() => {
+    if (!active) {
+      setRects([]);
+      return;
+    }
+    let raf = 0;
+    let last = "";
+    const frame = () => {
+      const next = Array.from(document.querySelectorAll("[data-overlay-obstacle]"))
+        .map((el) => el.getBoundingClientRect())
+        .filter((r) => r.width > 0 && r.height > 0)
+        .map((r) => ({ x: r.left, y: r.top, width: r.width, height: r.height }));
+      const key = JSON.stringify(next);
+      if (key !== last) {
+        last = key;
+        setRects(next);
+      }
+      raf = requestAnimationFrame(frame);
+    };
+    raf = requestAnimationFrame(frame);
+    return () => cancelAnimationFrame(raf);
+  }, [active]);
+  return rects;
+}
 
 function useViewSize(): { w: number; h: number } {
   const [size, setSize] = React.useState(() => ({ w: window.innerWidth, h: window.innerHeight }));
@@ -46,6 +78,7 @@ export function OverlayHost({ tool }: { tool: string }) {
   React.useEffect(() => () => void overlay.clear(undefined, "unmount"), []);
 
   const { step, target, targetState, paused } = state;
+  const obstacles = useObstacles(!!step && !paused);
 
   React.useLayoutEffect(() => {
     const el = cardRef.current;
@@ -66,7 +99,7 @@ export function OverlayHost({ tool }: { tool: string }) {
   if (!step || paused) return null;
 
   const anchored = targetState === "found" && target ? target : null;
-  const layout = card ? layoutCard({ target: anchored?.rect ?? null, card, view, placement: step.placement }) : null;
+  const layout = card ? layoutCard({ target: anchored?.rect ?? null, card, view, placement: step.placement, obstacles }) : null;
   const spot = anchored && anchored.surface === "ui" && step.spotlight ? spotlightRect(anchored.rect) : null;
   const ring = anchored && (step.pulse || anchored.surface === "canvas") ? spotlightRect(anchored.rect, 4) : null;
   const text = targetState === "lost" && step.lostText ? step.lostText : step.text;

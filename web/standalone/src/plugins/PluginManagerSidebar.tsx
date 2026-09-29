@@ -56,6 +56,16 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
   const open = view?.kind === 'manager';
   const selected = view?.kind === 'plugin' ? view.id : '';
   const onClose = () => onViewChange(null);
+  // While the open plugin runs a guided tour, closing its panel only hides it: the tour (and the
+  // plugin it may call back into) keeps going. Reopening from the menu shows it again; when the
+  // tour ends with the panel still hidden, the plugin is closed for real.
+  const toursRef = React.useRef<ReturnType<typeof pluginTourAdapter> | null>(null);
+  const [panelHidden, setPanelHidden] = React.useState(false);
+  const panelHiddenRef = React.useRef(false);
+  panelHiddenRef.current = panelHidden;
+  const [collapseSignal, setCollapseSignal] = React.useState(0);
+  React.useEffect(() => { setPanelHidden(false); }, [view]);
+  const closePanel = () => { if (toursRef.current?.isRunning()) setPanelHidden(true); else onClose(); };
   const openPlugin = (id: string) => { setNotice(''); onViewChange({ kind: 'plugin', id }); };
   const [candidate, setCandidate] = React.useState<Descriptor | null>(null);
   const [notice, setNotice] = React.useState('');
@@ -140,7 +150,9 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
           selectItems: ids => selectItems(ids),
           // Guided tours + pointers (overlay-system 0003): drawn by the host with the plugin's name,
           // cleared when this instance stops (abort.signal).
-          tours: pluginTourAdapter({ pluginKey: pluginKey(active), pluginName: active.manifest.name, tool: () => tool, signal: abort.signal }),
+          tours: toursRef.current = pluginTourAdapter({ pluginKey: pluginKey(active), pluginName: active.manifest.name, tool: () => tool, signal: abort.signal,
+            onTourStart: () => setCollapseSignal(n => n + 1),
+            onTourEnd: () => { if (panelHiddenRef.current && !abort.signal.aborted && viewRef.current?.kind === 'plugin') onViewChange(null); } }),
           // The shown schematic sheet, on engines that have the reads.
           sheet: tool === 'eeschema' && typeof (window as unknown as { Module?: { kicadSheetNets?: unknown } }).Module?.kicadSheetNets === 'function' ? pluginSheetAdapter() : undefined,
           // Parts the plugin ships (overlay-system 0003): confirmed, then saved into plugin_<id> only.
@@ -283,7 +295,7 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
         {(notice || catalog.error) && <p role="alert" className="mt-3 text-amber-700 dark:text-amber-200">{notice || catalog.error}</p>}
       </div>
     </aside>}
-    {selected && <PluginFloatingPanel key={panelStorageKey} storageKey={panelStorageKey} preferredSize={isProvider(active) ? PROVIDER_PANEL_SIZE : active?.manifest.uiSize} title={title} forceExpanded={!!prompt} onRestart={restart} onClose={onClose}>
+    {selected && <PluginFloatingPanel key={panelStorageKey} storageKey={panelStorageKey} preferredSize={isProvider(active) ? PROVIDER_PANEL_SIZE : active?.manifest.uiSize} title={title} forceExpanded={!!prompt} hidden={panelHidden && !prompt} collapseSignal={collapseSignal} onRestart={restart} onClose={closePanel}>
       <div className="max-h-[55%] shrink-0 overflow-y-auto border-b border-black/10 px-3 py-2 text-xs dark:border-white/10">
         <p className="truncate text-neutral-500 dark:text-white/60" title={fileName}>{fileName} · {selection.uuids.length} selected</p>
       {prompt?.kind === 'file' && <section aria-label="Plugin file request" className="mt-3 rounded border border-sky-500/40 p-3">

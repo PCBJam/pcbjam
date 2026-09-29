@@ -70,38 +70,20 @@ export function chooseSide(
   return sides.reduce<Side>((best, s) => (room(s, t, view) > room(best, t, view) ? s : best), "bottom");
 }
 
-export function layoutCard(opts: {
-  target: CssRect | null;
-  card: { w: number; h: number };
-  view: { w: number; h: number };
-  placement?: Placement;
-}): CardLayout {
-  const { target, card, view } = opts;
+/** Area of the intersection of two rects (0 when apart). */
+export function overlapArea(a: CssRect, b: CssRect): number {
+  const w = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
+  const h = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
+  return w > 0 && h > 0 ? w * h : 0;
+}
+
+const covered = (x: number, y: number, card: { w: number; h: number }, obstacles: readonly CssRect[]) =>
+  obstacles.reduce((sum, o) => sum + overlapArea({ x, y, width: card.w, height: card.h }, o), 0);
+
+/** The card beside the target on `side`, clamped into the view, with its arrow. */
+function placeOnSide(side: Side, target: CssRect, card: { w: number; h: number }, view: { w: number; h: number }): CardLayout {
   const maxX = view.w - card.w - VIEW_MARGIN;
   const maxY = view.h - card.h - VIEW_MARGIN;
-
-  if (view.w < DOCK_BELOW_WIDTH) {
-    return {
-      x: clamp((view.w - card.w) / 2, VIEW_MARGIN, maxX),
-      y: clamp(view.h - card.h - VIEW_MARGIN, VIEW_MARGIN, maxY),
-      side: null,
-      docked: true,
-      arrow: null,
-    };
-  }
-  if (!target) {
-    // Unanchored cards sit bottom-centre, above the editor's status bar: the
-    // middle of the canvas is where a step asks the user to click.
-    return {
-      x: clamp((view.w - card.w) / 2, VIEW_MARGIN, maxX),
-      y: clamp(view.h - card.h - UNANCHORED_BOTTOM, VIEW_MARGIN, maxY),
-      side: null,
-      docked: false,
-      arrow: null,
-    };
-  }
-
-  const side = chooseSide(opts.placement ?? "auto", target, card, view);
   const cx = target.x + target.width / 2;
   const cy = target.y + target.height / 2;
   let x: number;
@@ -137,6 +119,66 @@ export function layoutCard(opts: {
     arrow = { x: side === "right" ? x : x + card.w, y: clamp(cy, y + inset, y + card.h - inset) };
   }
   return { x, y, side, docked: false, arrow };
+}
+
+export function layoutCard(opts: {
+  target: CssRect | null;
+  card: { w: number; h: number };
+  view: { w: number; h: number };
+  placement?: Placement;
+  /** Host UI the card must not cover when there is room elsewhere (floating plugin panels). */
+  obstacles?: readonly CssRect[];
+}): CardLayout {
+  const { target, card, view } = opts;
+  const obstacles = opts.obstacles ?? [];
+  const maxX = view.w - card.w - VIEW_MARGIN;
+  const maxY = view.h - card.h - VIEW_MARGIN;
+
+  if (view.w < DOCK_BELOW_WIDTH) {
+    return {
+      x: clamp((view.w - card.w) / 2, VIEW_MARGIN, maxX),
+      y: clamp(view.h - card.h - VIEW_MARGIN, VIEW_MARGIN, maxY),
+      side: null,
+      docked: true,
+      arrow: null,
+    };
+  }
+  if (!target) {
+    // Unanchored cards sit bottom-centre, above the editor's status bar: the
+    // middle of the canvas is where a step asks the user to click. With an
+    // obstacle there, slide along the bottom to the least covered spot.
+    const y = clamp(view.h - card.h - UNANCHORED_BOTTOM, VIEW_MARGIN, maxY);
+    const xs = [clamp((view.w - card.w) / 2, VIEW_MARGIN, maxX), VIEW_MARGIN, maxX];
+    const x = xs.reduce((best, cand) => (covered(cand, y, card, obstacles) < covered(best, y, card, obstacles) ? cand : best), xs[0]!);
+    return { x, y, side: null, docked: false, arrow: null };
+  }
+
+  const preferred = chooseSide(opts.placement ?? "auto", target, card, view);
+  if (!obstacles.length) return placeOnSide(preferred, target, card, view);
+
+  // Try the preferred side first, then the rest: the first that fits without covering an
+  // obstacle wins; otherwise the one covering the least (fitting sides before the others).
+  const order: Side[] = [preferred, ...(["bottom", "right", "top", "left"] as const).filter((s) => s !== preferred)];
+  const scored = order.map((side) => {
+    const layout = placeOnSide(side, target, card, view);
+    return { layout, fits: fits(side, target, card, view), cover: covered(layout.x, layout.y, card, obstacles) };
+  });
+  // A target at a panel's edge (a toolbar beside a docked plugin panel) has no clear side next
+  // to it: also try the left side pushed past the obstacles it would cover, arrow still aimed
+  // at the target across them.
+  const left = scored.find((c) => c.layout.side === "left")!.layout;
+  const hit = obstacles.filter((o) => overlapArea({ x: left.x, y: left.y, width: card.w, height: card.h }, o) > 0);
+  if (hit.length) {
+    const x = Math.min(...hit.map((o) => o.x)) - TARGET_GAP - card.w;
+    if (x >= VIEW_MARGIN) {
+      const pushed: CardLayout = { ...left, x, arrow: left.arrow && { x: x + card.w, y: left.arrow.y } };
+      scored.push({ layout: pushed, fits: true, cover: covered(x, pushed.y, card, obstacles) });
+    }
+  }
+  const clear = scored.find((c) => c.fits && c.cover === 0);
+  if (clear) return clear.layout;
+  const best = scored.reduce((a, b) => (b.fits !== a.fits ? (b.fits ? b : a) : b.cover < a.cover ? b : a));
+  return best.layout;
 }
 
 /** Target rect grown by the spotlight padding. */

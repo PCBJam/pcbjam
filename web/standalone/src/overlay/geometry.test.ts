@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DOCK_BELOW_WIDTH, TARGET_GAP, UNANCHORED_BOTTOM, VIEW_MARGIN, chooseSide, layoutCard, spotlightPath } from "./geometry";
+import { DOCK_BELOW_WIDTH, TARGET_GAP, UNANCHORED_BOTTOM, VIEW_MARGIN, chooseSide, layoutCard, overlapArea, spotlightPath } from "./geometry";
 
 const view = { w: 1280, h: 800 };
 const card = { w: 320, h: 140 };
@@ -80,5 +80,45 @@ describe("spotlightPath", () => {
   it("caps the radius at half the hole", () => {
     const d = spotlightPath({ w: 100, h: 50 }, { x: 0, y: 0, width: 6, height: 4 }, 8);
     expect(d).toContain("A2 2");
+  });
+});
+
+describe("layoutCard with obstacles", () => {
+  // A plugin panel docked top-right, under the right-hand toolbar's tool.
+  const panel = { x: 900, y: 70, width: 360, height: 560 };
+  const tool = { x: 1250, y: 130, width: 24, height: 24 };
+
+  it("moves off the panel when another side is clear", () => {
+    const plain = layoutCard({ target: tool, card, view });
+    expect(overlapArea({ x: plain.x, y: plain.y, width: card.w, height: card.h }, panel)).toBeGreaterThan(0);
+    const l = layoutCard({ target: tool, card, view, obstacles: [panel] });
+    expect(overlapArea({ x: l.x, y: l.y, width: card.w, height: card.h }, panel)).toBe(0);
+    // Pushed past the panel on the left, arrow on its right edge, aimed at the tool's row.
+    expect(l).toMatchObject({ side: "left", x: panel.x - TARGET_GAP - card.w });
+    expect(l.arrow).toEqual({ x: panel.x - TARGET_GAP, y: 142 });
+  });
+
+  it("a collapsed panel (header only) no longer pushes the card away", () => {
+    const header = { x: 900, y: 70, width: 360, height: 40 };
+    const l = layoutCard({ target: tool, card, view, obstacles: [header] });
+    expect(l.side).toBe("bottom");
+    expect(overlapArea({ x: l.x, y: l.y, width: card.w, height: card.h }, header)).toBe(0);
+  });
+
+  it("keeps the preferred side when it is already clear", () => {
+    const t = { x: 300, y: 300, width: 24, height: 24 };
+    expect(layoutCard({ target: t, card, view, obstacles: [panel] })).toEqual(layoutCard({ target: t, card, view }));
+  });
+
+  it("covers as little as possible when nothing is clear", () => {
+    const everywhere = [{ x: 0, y: 0, width: 1280, height: 800 }];
+    const l = layoutCard({ target: tool, card, view, obstacles: everywhere });
+    expect(l.side).not.toBeNull(); // still anchored, just unavoidable
+  });
+
+  it("slides an unanchored card along the bottom away from a panel", () => {
+    const bottomPanel = { x: 400, y: 500, width: 500, height: 300 };
+    const l = layoutCard({ target: null, card, view, obstacles: [bottomPanel] });
+    expect(overlapArea({ x: l.x, y: l.y, width: card.w, height: card.h }, bottomPanel)).toBe(0);
   });
 });

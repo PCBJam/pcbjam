@@ -115,6 +115,33 @@ describe("pluginTourAdapter", () => {
   });
 });
 
+describe("pluginTourAdapter lifecycle hooks", () => {
+  it("reports start, running and end so the sidebar can collapse or keep a hidden panel", () => {
+    store.clear();
+    __resetOverlayForTests();
+    const abort = new AbortController();
+    const events: string[] = [];
+    const a = pluginTourAdapter({
+      pluginKey: "p9",
+      pluginName: "Blinky Guide",
+      tool: () => "eeschema",
+      signal: abort.signal,
+      deps: deps(),
+      onTourStart: () => events.push("start"),
+      onTourEnd: (status) => events.push("end:" + (status ?? "none")),
+    });
+    expect(a.isRunning()).toBe(false);
+    a.start(TOUR, false);
+    expect(a.isRunning()).toBe(true);
+    pressButton("close"); // the user dismisses the card
+    expect(a.isRunning()).toBe(false);
+    a.start(TOUR, false);
+    abort.abort(); // the plugin stops
+    expect(events).toEqual(["start", "end:dismissed", "start", "end:none"]);
+    __stopAllToursForTests();
+  });
+});
+
 describe("pluginSheetAdapter", () => {
   it("returns parsed engine reads and refuses while busy", () => {
     const sheet = pluginSheetAdapter(

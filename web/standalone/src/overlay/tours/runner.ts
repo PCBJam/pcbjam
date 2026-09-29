@@ -79,6 +79,8 @@ export interface TourOptions {
   attribution?: string;
   /** sessionStorage identity (default the tour id); plugins namespace theirs. */
   storageId?: string;
+  /** Called once when the tour stops, with the status it ended in (none: stopped by its owner). */
+  onStop?(status?: TourStatus): void;
 }
 
 const POLL_MS = 500;
@@ -175,6 +177,11 @@ export function startTour<S>(tour: Tour<S>, opts: TourOptions = {}): TourRunner 
     if (running.get(owner)?.runner === runner) running.delete(owner);
     if (status) writeTourStatus(storageId, status);
     overlay.clear(owner);
+    try {
+      opts.onStop?.(status);
+    } catch (err) {
+      console.error(`[tour:${tour.id}] onStop failed:`, err);
+    }
   }
 
   const runner: TourRunner = {
