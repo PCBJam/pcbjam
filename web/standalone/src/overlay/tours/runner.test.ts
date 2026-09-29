@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { __resetOverlayForTests, overlay, pressButton } from "../api";
 import { EDITOR_EVENT, __resetEditorEventsForTests, installEditorEvents } from "../editor-events";
-import { addResistorTour, placedSymbolUuids } from "./add-resistor";
+import { addResistorTour } from "./add-resistor";
+import type { TourDeps } from "./declarative";
+import { anyDialogOpen, openDialog } from "../editor-events";
 import { startTour, type Tour } from "./runner";
 
 // sessionStorage for the node test environment.
@@ -11,17 +13,19 @@ const store = new Map<string, string>();
   setItem: (k, v) => void store.set(k, v),
 };
 
-const sym = (libId: string, uuid: string) => ({ uuid, libId });
-const snap = (...rows: { uuid: string; libId: string }[]) => JSON.stringify(rows);
+const sym = (libId: string, uuid: string, ref = "R?") => ({ uuid, libId, ref, value: "", footprint: "" });
+const snap = (...rows: ReturnType<typeof sym>[]) => JSON.stringify(rows);
 
-describe("placedSymbolUuids", () => {
-  it("returns the uuids of matching lib ids only", () => {
-    const raw = JSON.stringify([sym("Device:R", "AAA"), sym("Device:C", "bbb"), { uuid: 5 }, null, sym("Device:R", "ccc")]);
-    expect(placedSymbolUuids(raw, "Device:R")).toEqual(["aaa", "ccc"]);
-    expect(placedSymbolUuids("{", "Device:R")).toEqual([]);
-    expect(placedSymbolUuids('{"a":1}', "Device:R")).toEqual([]);
-  });
-});
+/** Engine deps over a mutable sheet + the (test-installed) editor events. */
+function fakeDeps(sheet: { raw: string; busy?: boolean }): TourDeps {
+  return {
+    symbols: () => sheet.raw,
+    nets: () => "[]",
+    openBusy: () => !!sheet.busy,
+    dialogOpen: (cls) => !!openDialog(cls),
+    anyDialogOpen,
+  };
+}
 
 describe("tour runner", () => {
   let target: EventTarget;
@@ -35,43 +39,51 @@ describe("tour runner", () => {
   });
   afterEach(() => __resetEditorEventsForTests());
 
-  it("walks add-resistor by state, not by script", () => {
-    let raw: string | undefined = snap(sym("Device:R", "old"));
-    const runner = startTour(addResistorTour(() => raw), { poll: false });
+  it("walks the declarative add-resistor by state, not by script", async () => {
+    const sheet = { raw: snap(sym("Device:R", "old", "R1")), busy: false };
+    const runner = startTour(addResistorTour(fakeDeps(sheet)), { poll: false });
     expect(runner.currentStep()).toBe("tool");
     expect(overlay.getState().step).toMatchObject({ owner: "builtin:add-resistor", progress: { step: 1, of: 4 } });
 
     fire({ type: "dialogShown", cls: "DIALOG_SYMBOL_CHOOSER", ptr: "9", title: "Choose Symbol" });
-    runner.tick();
+    runner.tick(); // the event reaches the sampler through the next tick
     expect(runner.currentStep()).toBe("search");
-    expect(overlay.getState().step?.target).toBe("dialog:DIALOG_SYMBOL_CHOOSER/control:searchctrl");
+    expect(overlay.getState().step).toMatchObject({
+      target: "dialog:DIALOG_SYMBOL_CHOOSER/control:searchctrl",
+      placement: "right",
+    });
 
     fire({ type: "dialogClosed", cls: "DIALOG_SYMBOL_CHOOSER", ptr: "9", title: "" });
     runner.tick();
     expect(runner.currentStep()).toBe("place");
 
-    // A busy engine (undefined) must not count; the pre-existing R never does.
-    raw = undefined;
+    // A busy engine (file open) must not count; the pre-existing R never does.
+    sheet.busy = true;
+    sheet.raw = snap();
     runner.tick();
     expect(runner.currentStep()).toBe("place");
-    raw = snap(sym("Device:R", "old"), sym("Device:R", "new"));
+    sheet.busy = false;
+    sheet.raw = snap(sym("Device:R", "old", "R1"), sym("Device:R", "new", "R2"));
     runner.tick();
     expect(runner.currentStep()).toBe("done");
-    expect(overlay.getState().step).toMatchObject({ target: "item:new", buttons: ["next"] });
+    expect(overlay.getState().step).toMatchObject({ target: "item:new", buttons: ["next"], progress: { step: 4, of: 4 } });
 
     pressButton("next");
     expect(overlay.getState().step).toBeNull();
     expect(store.get("pcbjam:tour:add-resistor")).toBe("done");
   });
 
-  it("goes back when the user cancels out of the tool", () => {
-    const runner = startTour(addResistorTour(() => snap()), { poll: false });
+  it("re-shows the search step whenever the chooser reopens", () => {
+    const sheet = { raw: snap() };
+    const runner = startTour(addResistorTour(fakeDeps(sheet)), { poll: false });
+    fire({ type: "dialogShown", cls: "DIALOG_SYMBOL_CHOOSER", ptr: "9", title: "" });
+    runner.tick();
     fire({ type: "dialogClosed", cls: "DIALOG_SYMBOL_CHOOSER", ptr: "9", title: "" });
     runner.tick();
     expect(runner.currentStep()).toBe("place");
-    fire({ type: "action", name: "eeschema.InteractiveDrawing.placeSymbol", depth: 0 });
+    fire({ type: "dialogShown", cls: "DIALOG_SYMBOL_CHOOSER", ptr: "10", title: "" });
     runner.tick();
-    expect(runner.currentStep()).toBe("tool");
+    expect(runner.currentStep()).toBe("search");
   });
 
   it("does not re-show an unchanged step and stops when the user closes it", () => {

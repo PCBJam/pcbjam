@@ -74,6 +74,11 @@ export function onEditorEvent(cb: (e: EditorEvent) => void): () => void {
   return () => listeners.delete(cb);
 }
 
+/** True while any KiCad dialog is open (its modal loop may be running). */
+export function anyDialogOpen(): boolean {
+  return openDialogs.size > 0;
+}
+
 /** The most recently shown open dialog of this class. */
 export function openDialog(cls: string): { ptr: string; title: string } | null {
   const list = openDialogs.get(cls);

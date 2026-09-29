@@ -12,7 +12,10 @@
  */
 import { overlay } from "../api";
 import { onEditorEvent, type EditorEvent } from "../editor-events";
-import type { OverlayStep } from "../types";
+import type { OverlayButton, OverlayStep } from "../types";
+
+/** What a tour's sampler sees: engine events plus the card's own buttons. */
+export type TourEvent = EditorEvent | { type: "button"; button: OverlayButton };
 
 export type TourStepContent = Omit<OverlayStep, "owner" | "progress">;
 
@@ -32,8 +35,9 @@ export interface Tour<S> {
   /** Editor the tour runs in ("eeschema" | "pcbnew"). */
   editor: string;
   title: string;
-  /** Read the editor state; `events` is every engine event since the last sample. */
-  sample(events: EditorEvent[]): S;
+  /** Read the editor state; `events` is every engine event and card-button
+   *  press since the last sample. */
+  sample(events: TourEvent[]): S;
   steps: TourStep<S>[];
 }
 
@@ -69,7 +73,7 @@ const POLL_MS = 500;
 
 export function startTour<S>(tour: Tour<S>, opts: { poll?: boolean } = {}): TourRunner {
   const owner = `builtin:${tour.id}`;
-  let pending: EditorEvent[] = [];
+  let pending: TourEvent[] = [];
   let current: string | null = null;
   let shownKey = "";
   let stopped = false;
@@ -121,7 +125,10 @@ export function startTour<S>(tour: Tour<S>, opts: { poll?: boolean } = {}): Tour
     if (e.owner !== owner) return;
     const step = tour.steps.find((s) => s.id === current);
     if (step?.final && e.button === "next") stop("done");
-    else tick();
+    else {
+      pending.push({ type: "button", button: e.button });
+      tick();
+    }
   });
   const offCleared = overlay.on("cleared", (e) => {
     if (e.owner !== owner) return;
