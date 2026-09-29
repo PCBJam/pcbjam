@@ -127,6 +127,8 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
           selection:()=>getLocalSelection().uuids,subscribeSelection:subscribeLocalSelection,geometry:openGeometry}) : undefined;
         instance = await host.mountPackagePlugin(target, {
           plugin: active, signal: abort.signal, documents, authorize,
+          // Dev only: the local plugin lab's UI origin when it is not on the default :4318.
+          ...(import.meta.env.DEV && import.meta.env.VITE_PLUGIN_UI_ORIGIN ? { uiOrigin: import.meta.env.VITE_PLUGIN_UI_ORIGIN as string } : {}),
           onAuthorizationReady:check=>{authorizeOperation=check;},
           storageBinding: () => {
             const user=sessionIdentity()?.slug;

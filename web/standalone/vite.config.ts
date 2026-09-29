@@ -201,7 +201,9 @@ return {
     dedupe: ["yjs"],
   },
   server: {
-    proxy: { '/plugin-dev/': { target: 'http://127.0.0.1:4317', changeOrigin: false } },
+    // The local plugin lab (tools/plugin-runtime-poc `node scripts/serve.mjs`); PLUGIN_DEV_URL
+    // points at a lab on another port (a second checkout beside one on :4317).
+    proxy: { '/plugin-dev/': { target: process.env.PLUGIN_DEV_URL || 'http://127.0.0.1:4317', changeOrigin: false } },
     // Default :3048. The closed `pnpm dev:gpl` runs a second editor instance on
     // :3049 (alongside the closed stack) via STANDALONE_PORT. strictPort so a
     // busy port fails loudly instead of drifting onto another service's port.

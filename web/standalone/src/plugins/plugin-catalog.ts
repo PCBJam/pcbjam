@@ -86,6 +86,8 @@ export interface PackageHost {
         proposal: { url: string; site: string },
         signal: AbortSignal
       ): Promise<{ status: "opened" | "cancelled" }>;
+      /** Dev/test only: where the local plugin lab serves plugin UIs (default :4318). */
+      uiOrigin?: string;
       /** Parts the plugin ships, into its own team library (overlay-system 0003). */
       savePart?(
         request: import("./plugin-parts").PluginPartRequest,
