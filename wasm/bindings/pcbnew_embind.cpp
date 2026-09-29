@@ -69,6 +69,8 @@
 #include "collab_presence_style.h"
 #include "pcbjam_theme.h"
 #include "pcbjam_libs_reload.h"
+#include <page_info.h>
+#include <title_block.h>
 #include <algorithm>
 #include <chrono>
 #include <map>
@@ -2334,6 +2336,55 @@ bool pcbCollabTestMoveEndpoint( std::string aId, int aDx, int aDy )
     return true;
 }
 
+// 2026-09-29 sync audit: deterministic native edits, deliberately no sync fixes.
+// These use the same model setters/BOARD_COMMIT as the UI. Coordinates are IU.
+bool pcbCollabTestAuditPolygon( std::string aId, std::string aPoints )
+{
+    PCB_EDIT_FRAME* fr = pcbFrame();
+    BOARD_ITEM* item = testResolve( fr, aId );
+    json points = json::parse( aPoints, nullptr, false );
+    if( !item || item->Type() != PCB_SHAPE_T || !points.is_array() || points.size() < 3 )
+        return false;
+    std::vector<VECTOR2I> vertices;
+    for( const auto& p : points )
+    {
+        if( !p.is_array() || p.size() != 2 || !p[0].is_number_integer() || !p[1].is_number_integer() )
+            return false;
+        vertices.emplace_back( p[0].get<int>(), p[1].get<int>() );
+    }
+    pcbjam_collab::runOnCoroutine( fr, [fr, item, vertices]() {
+        BOARD_COMMIT commit( fr );
+        commit.Modify( item );
+        static_cast<PCB_SHAPE*>( item )->SetPolyPoints( vertices );
+        commit.Push( wxT( "Sync audit polygon edit" ) );
+    } );
+    return true;
+}
+
+bool pcbCollabTestAuditSettings( std::string aJson )
+{
+    PCB_EDIT_FRAME* fr = pcbFrame();
+    json settings = json::parse( aJson, nullptr, false );
+    if( !fr || !settings.is_object() )
+        return false;
+    pcbjam_collab::runOnCoroutine( fr, [fr, settings]() {
+        if( settings.contains( "paper" ) )
+        {
+            PAGE_INFO page = fr->GetPageSettings();
+            page.SetType( wxString::FromUTF8( settings["paper"].get<std::string>().c_str() ) );
+            fr->SetPageSettings( page );
+        }
+        TITLE_BLOCK title = fr->GetTitleBlock();
+        if( settings.contains( "title" ) )
+            title.SetTitle( wxString::FromUTF8( settings["title"].get<std::string>().c_str() ) );
+        if( settings.contains( "revision" ) )
+            title.SetRevision( wxString::FromUTF8( settings["revision"].get<std::string>().c_str() ) );
+        fr->SetTitleBlock( title );
+        fr->OnModify();
+    } );
+    return true;
+}
+
 // ── drift-trio phase B action hooks (standalone-hardening 0008 §5) ───────────
 // Creation/mutation primitives for the trio harness's action catalog. Each
 // drives a REAL BOARD_COMMIT on the apply coroutine, so the BOARD_LISTENER →
@@ -3024,6 +3075,8 @@ EMSCRIPTEN_BINDINGS(pcbnew) {
     // pcbnew-only ysync-review repro hooks (names not shared with eeschema).
     function("kicadCollabTestSetPadSize", &pcbCollabTestSetPadSize);
     function("kicadCollabTestMoveEndpoint", &pcbCollabTestMoveEndpoint);
+    function("kicadCollabTestAuditPolygon", &pcbCollabTestAuditPolygon);
+    function("kicadCollabTestAuditSettings", &pcbCollabTestAuditSettings);
     // drift-trio phase B action hooks (tool-unique names, merged-image safe).
     function("kicadCollabTestAddTrack", &pcbCollabTestAddTrack);
     function("kicadCollabTestAddVia", &pcbCollabTestAddVia);

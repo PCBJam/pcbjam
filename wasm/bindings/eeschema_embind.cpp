@@ -1956,6 +1956,106 @@ bool schCollabTestSetFieldText( std::string aId, std::string aText )
 }
 
 
+// 2026-09-29 sync audit: one real commit over explicitly named screens.
+// Resolving by (filename, uuid) lets the test exercise copied-sheet collisions
+// in the production dirty collector without reproducing that bug in the driver.
+int schCollabTestAuditFields( std::string aJson )
+{
+    SCH_EDIT_FRAME* fr = schFrame();
+    json edits = json::parse( aJson, nullptr, false );
+    if( !fr || !edits.is_array() )
+        return -1;
+    struct Edit { SCH_SYMBOL* symbol; SCH_SCREEN* screen; wxString value; };
+    std::vector<Edit> targets;
+    SCH_SCREENS screens( fr->Schematic().Root() );
+    for( const auto& edit : edits )
+    {
+        if( !edit.is_object() || !edit.contains( "sheet" ) || !edit.contains( "uuid" )
+            || !edit.contains( "value" ) )
+            return -1;
+        const std::string file = edit["sheet"].get<std::string>();
+        const std::string id = edit["uuid"].get<std::string>();
+        bool found = false;
+        for( SCH_SCREEN* screen = screens.GetFirst(); screen; screen = screens.GetNext() )
+        {
+            if( toUtf8( screen->GetFileName() ) != file )
+                continue;
+            for( SCH_ITEM* item : screen->Items() )
+            {
+                if( item->Type() == SCH_SYMBOL_T && toUtf8( item->m_Uuid.AsString() ) == id )
+                {
+                    targets.push_back( { static_cast<SCH_SYMBOL*>( item ), screen,
+                        wxString::FromUTF8( edit["value"].get<std::string>().c_str() ) } );
+                    found = true;
+                    break;
+                }
+            }
+        }
+        if( !found )
+            return -1; // No partial commit when the setup missed a target.
+    }
+    pcbjam_collab::runOnCoroutine( fr, [fr, targets]() {
+        SCH_COMMIT commit( fr );
+        for( const auto& edit : targets )
+        {
+            commit.Modify( edit.symbol, edit.screen );
+            edit.symbol->SetValueFieldText( edit.value );
+        }
+        commit.Push( wxT( "Sync audit global field edit" ) );
+    } );
+    return static_cast<int>( targets.size() );
+}
+
+// Read a parked screen through the native selection writer, without rebaselining.
+std::string schCollabTestAuditSheetItems( std::string aFile )
+{
+    SCH_EDIT_FRAME* fr = schFrame();
+    json added = json::array();
+    if( !fr )
+        return "";
+    SCH_SCREENS screens( fr->Schematic().Root() );
+    for( SCH_SCREEN* screen = screens.GetFirst(); screen; screen = screens.GetNext() )
+    {
+        if( toUtf8( screen->GetFileName() ) != aFile )
+            continue;
+        for( SCH_ITEM* item : screen->Items() )
+        {
+            if( item->Type() != SCH_MARKER_T )
+                added.push_back( { { "sexpr", itemBlob( fr, item, screen ) }, { "parent", nullptr } } );
+        }
+        return json{ { "added", added }, { "changed", json::array() },
+                     { "removed", json::array() } }.dump();
+    }
+    return "";
+}
+
+bool schCollabTestAuditLibrary( std::string aId, std::string aDescription )
+{
+    SCH_EDIT_FRAME* fr = schFrame();
+    if( !fr )
+        return false;
+    SCH_ITEM* item = resolveOnShown( fr, KIID( wxString::FromUTF8( aId.c_str() ) ) );
+    if( !item || item->Type() != SCH_SYMBOL_T )
+        return false;
+    auto* sym = static_cast<SCH_SYMBOL*>( item );
+    SCH_SCREEN* screen = fr->GetScreen();
+    wxString name = sym->UseLibIdLookup() ? wxString( sym->GetLibId().Format() )
+                                         : sym->GetSchSymbolLibraryName();
+    auto entry = screen->GetLibSymbols().find( name );
+    if( entry == screen->GetLibSymbols().end() )
+        return false;
+    LIB_SYMBOL* lib = entry->second;
+    pcbjam_collab::runOnCoroutine( fr, [fr, sym, screen, lib, aDescription]() {
+        SCH_COMMIT commit( fr );
+        commit.Modify( sym, screen );
+        lib->SetDescription( wxString::FromUTF8( aDescription.c_str() ) );
+        if( sym->GetLibSymbolRef() && sym->GetLibSymbolRef().get() != lib )
+            sym->GetLibSymbolRef()->SetDescription( wxString::FromUTF8( aDescription.c_str() ) );
+        commit.Push( wxT( "Sync audit library definition edit" ) );
+    } );
+    return true;
+}
+
 // ── drift-trio phase B action hooks (standalone-hardening 0008 §5) ───────────
 // Creation/mutation primitives for the trio harness's action catalog. Each
 // drives a REAL SCH_COMMIT on the apply coroutine, so the SCHEMATIC_LISTENER →
@@ -2810,6 +2910,9 @@ EMSCRIPTEN_BINDINGS(eeschema) {
     function("kicadSaveSchematic", &kicadSaveSchematic);
     // eeschema-only ysync-review repro hook (name not shared with pcbnew).
     function("kicadCollabTestSetFieldText", &schCollabTestSetFieldText);
+    function("kicadCollabTestAuditFields", &schCollabTestAuditFields);
+    function("kicadCollabTestAuditSheetItems", &schCollabTestAuditSheetItems);
+    function("kicadCollabTestAuditLibrary", &schCollabTestAuditLibrary);
     // drift-trio phase B action hooks (tool-unique names, merged-image safe).
     function("kicadCollabTestAddWire", &schCollabTestAddWire);
     function("kicadCollabTestAddJunction", &schCollabTestAddJunction);
