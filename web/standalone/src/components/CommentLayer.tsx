@@ -20,8 +20,6 @@ import {
   X,
 } from "lucide-react";
 import {
-  screenToWorld,
-  worldToScreen,
   type CommentsController,
   type ResolvedThread,
   type ViewportState,
@@ -31,6 +29,13 @@ import {
   pinRadiusPx,
   subscribePinRadius,
 } from "@/wasm/collab/pin-geometry";
+import {
+  cssRatio as canvasCssRatio,
+  cssToWorld as canvasCssToWorld,
+  glCanvasRect,
+  worldToCss,
+  type CssRect,
+} from "@/wasm/canvas-coords";
 import { useDraggablePanel } from "@/components/useDraggablePanel";
 import { EmojiPickerPopover } from "@/components/EmojiPicker";
 import { MentionInput } from "@/components/MentionInput";
@@ -51,12 +56,6 @@ import { ancestryLabel, ancestryStore } from "@/lib/git-provenance";
  * then canvas-px→CSS via the GAL panel's bounding rect (`#glcanvas-*`).
  */
 
-interface CssRect {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
 
 
 /**
@@ -78,17 +77,6 @@ function authorLabel(a: { author?: string; createdBy?: string; authorName?: stri
   // more identifying than the label itself.
   const title = a.authorEmail ? `${text} <${a.authorEmail}>` : slug;
   return { text, title };
-}
-
-function glCanvasRect(): CssRect | null {
-  const el = Array.from(document.querySelectorAll('[id^="glcanvas-"]')).find((c) => {
-    const r = (c as HTMLElement).getBoundingClientRect();
-    return getComputedStyle(c as HTMLElement).display !== "none" && r.width > 0;
-  }) as HTMLElement | undefined;
-
-  if (!el) return null;
-  const r = el.getBoundingClientRect();
-  return { x: r.x, y: r.y, width: r.width, height: r.height };
 }
 
 function timeAgo(ms: number): string {
@@ -288,25 +276,13 @@ export function CommentLayer({
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const cssRatio = viewport && glRect ? glRect.width / viewport.w : 1;
+  const cssRatio = viewport && glRect ? canvasCssRatio(viewport, glRect) : 1;
 
-  const toCss = (world: { x: number; y: number }) => {
-    if (!viewport || !glRect) return null;
-    const px = worldToScreen(viewport, world);
-    const x = glRect.x + px.x * cssRatio;
-    const y = glRect.y + px.y * cssRatio;
-    if (x < glRect.x - 20 || x > glRect.x + glRect.width + 20) return null;
-    if (y < glRect.y - 20 || y > glRect.y + glRect.height + 20) return null;
-    return { x, y };
-  };
+  const toCss = (world: { x: number; y: number }) =>
+    viewport && glRect ? worldToCss(viewport, glRect, world, 20) : null;
 
-  const cssToWorld = (css: { x: number; y: number }) => {
-    if (!viewport || !glRect) return null;
-    return screenToWorld(viewport, {
-      x: (css.x - glRect.x) / cssRatio,
-      y: (css.y - glRect.y) / cssRatio,
-    });
-  };
+  const cssToWorld = (css: { x: number; y: number }) =>
+    viewport && glRect ? canvasCssToWorld(viewport, glRect, css) : null;
 
   const snapRadiusIu = () =>
     viewport ? 14 / (viewport.scale * cssRatio) : 0;

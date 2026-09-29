@@ -6,6 +6,7 @@ import { TOOL_BUNDLE } from "@/wasm/constants";
 import { fetchWasmStoredSize, hasAnyWasmDownload, type WasmMeta } from "@/wasm/wasm-assets";
 import type { LibsSource, LibsSyncState } from "@/wasm/libs/source";
 import { LIB_KIND_FOR_TOOL } from "./ui-helpers";
+import { useTrustedPrompt } from "@/overlay/trusted-prompts";
 
 /** What the download-consent dialog quotes (standalone-load-ux 0001). */
 export interface ConsentInfo {
@@ -173,6 +174,7 @@ export function DownloadConsent({
   onAccept: (always: boolean) => void;
 }) {
   const [always, setAlways] = React.useState(false);
+  useTrustedPrompt(true);
   const kindTitle = (k: "symbol" | "footprint") =>
     k === "symbol" ? "Symbol libraries" : "Footprint libraries";
   const row = (

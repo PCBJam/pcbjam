@@ -142,6 +142,8 @@ import { runDeferredModelPrescan } from "@/wasm/libs/models-bridge";
 import { chooseToolFile, installToolNavigationHook } from "@/components/wasm-tool/tool-navigation";
 import { markDeliberateNavigation } from "@/components/wasm-tool/quit-hook";
 import { setActiveEditor } from "@/wasm/active-editor";
+import { publishViewport } from "@/wasm/viewport-store";
+import { OverlayHost } from "@/overlay/OverlayHost";
 import { savePartAndPlace } from "@/libs/save-part";
 import {
   chromeSetter,
@@ -919,6 +921,7 @@ export function WasmTool({
           // the follow controller's echo/break detection (0008).
           onViewport: (vp) => {
             setViewportState(vp);
+            publishViewport(vp);
             followRef.current?.noteLocalViewport(vp);
           },
         });
@@ -998,7 +1001,10 @@ export function WasmTool({
       // Seed the transform (pushes only happen on input events after this).
       try {
         const vp = JSON.parse(win.Module.kicadCollabGetViewport() || "null");
-        if (vp && vp.w > 0) setViewportState(vp);
+        if (vp && vp.w > 0) {
+          setViewportState(vp);
+          publishViewport(vp);
+        }
       } catch {
         /* frame not up yet — the first input push seeds it */
       }
@@ -2073,6 +2079,9 @@ export function WasmTool({
 
       {/* DEV: presence style tuner (VITE_PRESENCE_TUNER=1). */}
       {ready && tunerMod && <PresenceTuner mod={tunerMod} tool={tool} />}
+
+      {/* Guided-tour overlay (overlay-system 0002): coachmarks over the editor. */}
+      {ready && <OverlayHost />}
 
       <NoticeStack
         ready={ready}

@@ -14,6 +14,9 @@
  * This file builds those blobs. Pure string work, unit-tested.
  */
 import { parseKicadSymLib } from "./libs/kicad-sym-parse";
+import { cssToWorld, type CssRect } from "./canvas-coords";
+
+export { glCanvasRect, type CssRect } from "./canvas-coords";
 
 /** Bridge surface the panel needs; every export is in the merged bundle. */
 export interface ImportModule {
@@ -82,14 +85,6 @@ export function worldToPlacementMm(
   return { x: snap(world.x / IU_PER_MM[kind]), y: snap(world.y / IU_PER_MM[kind]) };
 }
 
-/** A CSS-pixel rect of the GAL canvas element (getBoundingClientRect). */
-export interface CssRect {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
 /**
  * Where the user clicked, in mm: CSS px → canvas px (the GAL panel reports its
  * own pixel size, which differs from the CSS size on HiDPI) → world IU via the
@@ -101,13 +96,7 @@ export function placementAtCssPx(
   css: { x: number; y: number },
   kind: ImportKind,
 ): { x: number; y: number } {
-  const cssRatio = rect.width > 0 && vp.w > 0 ? rect.width / vp.w : 1;
-  const px = { x: (css.x - rect.x) / cssRatio, y: (css.y - rect.y) / cssRatio };
-  const world = {
-    x: (px.x - vp.w / 2) / vp.scale + vp.cx,
-    y: (px.y - vp.h / 2) / vp.scale + vp.cy,
-  };
-  return worldToPlacementMm(world, kind);
+  return worldToPlacementMm(cssToWorld(vp, rect, css), kind);
 }
 
 /** Fallback drop point: the viewport centre, or a fixed spot if the viewport
@@ -115,17 +104,6 @@ export function placementAtCssPx(
 export function placementMm(mod: ImportModule, kind: ImportKind): { x: number; y: number } {
   const vp = readViewport(mod);
   return vp ? worldToPlacementMm({ x: vp.cx, y: vp.cy }, kind) : { x: 100, y: 100 };
-}
-
-/** The visible GAL canvas element's CSS rect, or null before the tool has one. */
-export function glCanvasRect(): CssRect | null {
-  const el = Array.from(document.querySelectorAll('[id^="glcanvas-"]')).find((c) => {
-    const r = (c as HTMLElement).getBoundingClientRect();
-    return getComputedStyle(c as HTMLElement).display !== "none" && r.width > 0;
-  }) as HTMLElement | undefined;
-  if (!el) return null;
-  const r = el.getBoundingClientRect();
-  return { x: r.x, y: r.y, width: r.width, height: r.height };
 }
 
 const fmt = (n: number): string => String(Number(n.toFixed(4)));

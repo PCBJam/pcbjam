@@ -17,6 +17,7 @@ import { mountRemoteProvider, type PartRequest } from '@/remote-provider/host';
 import { savePartAndPlace } from '@/libs/save-part';
 import { providerPermissions } from '@pcbjam/plugin-platform/remote-provider-contract.mjs';
 import { KICAD_VERSION_DIR } from '@/wasm/constants';
+import { useTrustedPrompt } from '@/overlay/trusted-prompts';
 
 interface InspectorHost {
   mountEditorPlugin(container: HTMLElement, options: {
@@ -60,6 +61,8 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
   const [placementBusy, setPlacementBusy] = React.useState(false);
   const [prompt, setPrompt] = React.useState<Prompt | null>(null);
   const promptRef = React.useRef<Prompt | null>(null);
+  // A pending host prompt (file, link, download, part, placement) pauses the guide overlay.
+  useTrustedPrompt(!!prompt);
   const active = plugins.find(plugin => pluginKey(plugin) === selected);
   const compatible = (plugin: Descriptor) => plugin.manifest.surfaces.includes('editor:' + tool);
   React.useEffect(() => { if (open) void refresh(); }, [open, refresh]);

@@ -23,9 +23,50 @@ declare global {
     centerY: number;
     width: number;
     height: number;
+    /** Parent window id (its pointer as a string), null for top-level. */
+    parentId?: string | null;
+  }
+
+  /**
+   * An owner-drawn item (toolbar tool, AUI part, grid cell, tab…) registered by
+   * `wxWasmTrackElement`. Coordinates are relative to `#canvas` in CSS px (add
+   * `#canvas.getBoundingClientRect()` for page coordinates, as wx.js does).
+   */
+  interface WxRenderedElementInfo {
+    id: string;
+    /** Owning window id — a key of the window registry (`elements`). */
+    parentId: string;
+    elementType: string;
+    subType: string;
+    label: string;
+    tooltip: string;
+    screenX: number;
+    screenY: number;
+    width: number;
+    height: number;
+    centerX: number;
+    centerY: number;
+    enabled: boolean;
+    index: number;
+  }
+
+  interface WxRenderedFilter {
+    enabled?: boolean;
+    elementType?: string;
+    subType?: string;
+    parentId?: string;
+    label?: string;
   }
 
   interface WxElementRegistry {
+    /** Window registry, keyed by window id. */
+    elements?: Map<string, WxElementInfo>;
+    /** Bumped on every window register/update/unregister. */
+    version?: number;
+    /** Bumped on every rendered-element change. */
+    renderedVersion?: number;
+    findAllRendered?(filter?: WxRenderedFilter): WxRenderedElementInfo[];
+    findRenderedByParent?(parentId: string, options?: WxRenderedFilter): WxRenderedElementInfo[];
     findAll(filter?: {
       visible?: boolean;
       enabled?: boolean;

@@ -1,5 +1,6 @@
 import * as React from "react";
 import { Button, type ButtonProps } from "@/components/ui/button";
+import { useTrustedPrompt } from "@/overlay/trusted-prompts";
 
 /**
  * A self-contained, modal blocking overlay — intentionally NOT the radix
@@ -34,6 +35,7 @@ export function BlockingDialog({
   /** Left-of-primary button. */
   secondary?: BlockingAction;
 }) {
+  useTrustedPrompt(true);
   return (
     <div
       role="dialog"
