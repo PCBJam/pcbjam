@@ -64,6 +64,9 @@ export function newFileTemplate(tool: Tool, uuid: string): string {
 )
 `;
     case "pcbnew":
+      // KiCad's own new-board layer set (2 copper + every technical layer). A board without
+      // F.Mask/F.Paste has no mask openings — fab outputs and the 3D view cover every pad — and
+      // hides whatever footprints draw on the disabled layers (Fab, courtyard, User.*).
       return `(kicad_pcb
 \t(version 20241229)
 \t(generator "pcbnew")
@@ -73,8 +76,24 @@ export function newFileTemplate(tool: Tool, uuid: string): string {
 \t(layers
 \t\t(0 "F.Cu" signal)
 \t\t(2 "B.Cu" signal)
-\t\t(37 "F.SilkS" user)
+\t\t(9 "F.Adhes" user "F.Adhesive")
+\t\t(11 "B.Adhes" user "B.Adhesive")
+\t\t(13 "F.Paste" user)
+\t\t(15 "B.Paste" user)
+\t\t(5 "F.SilkS" user "F.Silkscreen")
+\t\t(7 "B.SilkS" user "B.Silkscreen")
+\t\t(1 "F.Mask" user)
+\t\t(3 "B.Mask" user)
+\t\t(17 "Dwgs.User" user "User.Drawings")
+\t\t(19 "Cmts.User" user "User.Comments")
+\t\t(21 "Eco1.User" user "User.Eco1")
+\t\t(23 "Eco2.User" user "User.Eco2")
 \t\t(25 "Edge.Cuts" user)
+\t\t(27 "Margin" user)
+\t\t(31 "F.CrtYd" user "F.Courtyard")
+\t\t(29 "B.CrtYd" user "B.Courtyard")
+\t\t(35 "F.Fab" user)
+\t\t(33 "B.Fab" user)
 \t)
 \t(setup)
 \t(net 0 "")
