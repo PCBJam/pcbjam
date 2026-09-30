@@ -4,8 +4,9 @@ import { cn } from "@/lib/utils";
 import { getOverlayState, overlay, pressButton, subscribeOverlay } from "./api";
 import { layoutCard, spotlightPath, spotlightRect } from "./geometry";
 import { installOverlayDemo } from "./demo";
-import { installEditorEvents, openDialogPtrs } from "./editor-events";
+import { installEditorEvents, onEditorEvent, openDialogPtrs } from "./editor-events";
 import { dialogRects } from "./obstacles";
+import { isTargetAction, pointInRect, stepUseKey } from "./target-use";
 import { startOverlayTracking } from "./tracker";
 import type { OverlayButton } from "./types";
 import type { CssRect } from "@/wasm/canvas-coords";
@@ -26,35 +27,68 @@ const BUTTON_LABEL: Record<OverlayButton, string> = { back: "Back", skip: "Skip"
 /**
  * Rects the card should not cover — host UI marked `[data-overlay-obstacle]` (floating plugin
  * panels) and open KiCad dialogs — re-measured per frame while a step is shown: panels are
- * dragged, collapsed, hidden; dialogs open, close and move.
+ * dragged, collapsed, hidden; dialogs open, close and move. `dialog` tells whether any
+ * KiCad dialog is among them.
  */
-function useObstacles(active: boolean): CssRect[] {
-  const [rects, setRects] = React.useState<CssRect[]>([]);
+function useObstacles(active: boolean): { rects: CssRect[]; dialog: boolean } {
+  const [obstacles, setObstacles] = React.useState<{ rects: CssRect[]; dialog: boolean }>(NO_OBSTACLES);
   React.useEffect(() => {
     if (!active) {
-      setRects([]);
+      setObstacles(NO_OBSTACLES);
       return;
     }
     let raf = 0;
     let last = "";
     const frame = () => {
       const canvas = document.getElementById("canvas")?.getBoundingClientRect();
-      const next = Array.from(document.querySelectorAll("[data-overlay-obstacle]"))
+      const panels = Array.from(document.querySelectorAll("[data-overlay-obstacle]"))
         .map((el) => el.getBoundingClientRect())
         .filter((r) => r.width > 0 && r.height > 0)
-        .map((r) => ({ x: r.left, y: r.top, width: r.width, height: r.height }))
-        .concat(canvas ? dialogRects(openDialogPtrs(), window.wxElementRegistry?.elements, { x: canvas.left, y: canvas.top }) : []);
+        .map((r) => ({ x: r.left, y: r.top, width: r.width, height: r.height }));
+      const dialogs = canvas ? dialogRects(openDialogPtrs(), window.wxElementRegistry?.elements, { x: canvas.left, y: canvas.top }) : [];
+      const next = { rects: panels.concat(dialogs), dialog: dialogs.length > 0 };
       const key = JSON.stringify(next);
       if (key !== last) {
         last = key;
-        setRects(next);
+        setObstacles(next);
       }
       raf = requestAnimationFrame(frame);
     };
     raf = requestAnimationFrame(frame);
     return () => cancelAnimationFrame(raf);
   }, [active]);
-  return rects;
+  return obstacles;
+}
+
+const NO_OBSTACLES = { rects: [] as CssRect[], dialog: false };
+
+/**
+ * True once the user used this step's target: clicked inside it, or ran its
+ * tool's action (hotkey). Keyed by the step (target-use.ts), so the dim comes
+ * back only for a new request.
+ */
+function useTargetUsed(key: string | null, target: string | undefined, rect: CssRect | null): boolean {
+  const [usedKey, setUsedKey] = React.useState<string | null>(null);
+  const rectRef = React.useRef(rect);
+  rectRef.current = rect;
+  React.useEffect(() => {
+    if (!key || !target) return;
+    const mark = () => setUsedKey(key);
+    const offAction = onEditorEvent((e) => {
+      if (isTargetAction(e, target)) mark();
+    });
+    // Capture phase: the engine's canvas handlers must not hide the click from us.
+    const onDown = (ev: PointerEvent) => {
+      const r = rectRef.current;
+      if (r && pointInRect(ev.clientX, ev.clientY, r)) mark();
+    };
+    window.addEventListener("pointerdown", onDown, true);
+    return () => {
+      offAction();
+      window.removeEventListener("pointerdown", onDown, true);
+    };
+  }, [key, target]);
+  return key !== null && usedKey === key;
 }
 
 function useViewSize(): { w: number; h: number } {
@@ -83,6 +117,11 @@ export function OverlayHost({ tool }: { tool: string }) {
 
   const { step, target, targetState, paused } = state;
   const obstacles = useObstacles(!!step && !paused);
+  const used = useTargetUsed(
+    step ? stepUseKey(step) : null,
+    step?.target,
+    targetState === "found" && target ? target.rect : null,
+  );
 
   React.useLayoutEffect(() => {
     const el = cardRef.current;
@@ -103,9 +142,13 @@ export function OverlayHost({ tool }: { tool: string }) {
   if (!step || paused) return null;
 
   const anchored = targetState === "found" && target ? target : null;
-  const layout = card ? layoutCard({ target: anchored?.rect ?? null, card, view, placement: step.placement, obstacles }) : null;
-  const spot = anchored && anchored.surface === "ui" && step.spotlight ? spotlightRect(anchored.rect) : null;
-  const ring = anchored && (step.pulse || anchored.surface === "canvas") ? spotlightRect(anchored.rect, 4) : null;
+  const layout = card ? layoutCard({ target: anchored?.rect ?? null, card, view, placement: step.placement, obstacles: obstacles.rects }) : null;
+  // The dim and the ring point at where to click. Once the user used the target — or a dialog
+  // it opened is where they work now — they would only grey out the work (target-use.ts).
+  const dialogCovered = obstacles.dialog && !step.target?.startsWith("dialog:");
+  const spot =
+    anchored && anchored.surface === "ui" && step.spotlight && !dialogCovered && !used ? spotlightRect(anchored.rect) : null;
+  const ring = anchored && !used && (step.pulse || anchored.surface === "canvas") ? spotlightRect(anchored.rect, 4) : null;
   const text = targetState === "lost" && step.lostText ? step.lostText : step.text;
   const buttons = step.buttons ?? [];
 

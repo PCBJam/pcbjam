@@ -133,8 +133,22 @@ test.describe('guide overlay (eeschema)', () => {
     expect(await toolChecked(page, TOOL)).toBe(false);
     await page.mouse.click(target.x + target.width / 2, target.y + target.height / 2);
     await expect.poll(() => toolChecked(page, TOOL), { timeout: 20000 }).toBe(true);
+    // The tool opens the symbol chooser. Its first open loads libraries under a cover that
+    // pauses the overlay; once the chooser is usable (Cancel actionable) the card is back and
+    // the dim has stepped aside so the dialog does not look disabled.
+    const cancel = page.locator('button', { hasText: /^Cancel$/ });
+    await cancel.click({ trial: true, timeout: 120000 });
+    await expect(card).toBeVisible();
+    await expect(page.getByTestId('overlay-spotlight')).toHaveCount(0);
+    await page.screenshot({ path: shotPath(page, 'overlay-01b-dialog-undimmed.png') });
+    await cancel.click();
+    // The target was used (clicked): for the rest of this step the dim and the ring stay away,
+    // so the canvas the user now works on is not greyed out.
+    await expect(page.getByTestId('overlay-spotlight')).toHaveCount(0);
+    await expect(page.getByTestId('overlay-ring')).toHaveCount(0);
     await page.keyboard.press('Escape'); // KiCad: leave the placer (Esc on the canvas is not ours)
     await expect(card).toBeVisible();
+    await expect(page.getByTestId('overlay-spotlight')).toHaveCount(0);
 
     // Card buttons reach the owner.
     await page.getByTestId('overlay-next').click();
@@ -174,6 +188,36 @@ test.describe('guide overlay (eeschema)', () => {
       'cleared',
     ]);
     expect(events.slice(-3)).toEqual(['paused', 'resumed', 'cleared']);
+  });
+
+  test('the tool hotkey counts as using the target; a new request dims again', async ({ page }) => {
+    await bootEeschema(page);
+    const WIRES = 'tool:eeschema.InteractiveDrawingLineWireBus.drawWires';
+    const show = (text: string) =>
+      page.evaluate(
+        ({ target, text }) =>
+          window.__pcbjamOverlay!.show({ owner: 'e2e', target, title: 'Wire it', text, spotlight: true, pulse: true }),
+        { target: WIRES, text },
+      );
+    await show('Click Draw Wires (or press W).');
+    const card = page.getByTestId('overlay-card');
+    await expect(card).toHaveAttribute('data-target-state', 'found', { timeout: 20000 });
+    await expect(page.getByTestId('overlay-spotlight')).toBeVisible();
+
+    // W over the sheet runs the tool's action — no click on the button, no dialog.
+    const canvas = (await page.locator('#canvas').boundingBox())!;
+    await page.mouse.click(canvas.x + canvas.width * 0.4, canvas.y + canvas.height * 0.5);
+    await page.keyboard.press('w');
+    await expect(page.getByTestId('overlay-spotlight')).toHaveCount(0, { timeout: 20000 });
+    await expect(page.getByTestId('overlay-ring')).toHaveCount(0);
+    await page.screenshot({ path: shotPath(page, 'overlay-05-hotkey-used.png') });
+    await page.keyboard.press('Escape');
+    await expect(page.getByTestId('overlay-spotlight')).toHaveCount(0);
+
+    // Another step on the same tool is a new request: the dim is back.
+    await show('Now draw the next wire: click Draw Wires again.');
+    await expect(page.getByTestId('overlay-spotlight')).toBeVisible({ timeout: 20000 });
+    await page.getByTestId('overlay-close').click();
   });
 
   test('unknown and missing targets show an unanchored card with the lost text', async ({ page }) => {
