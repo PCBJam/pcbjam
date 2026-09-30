@@ -246,6 +246,21 @@ test('SYNC-08: undoing a local move after a peer field edit converges everywhere
   expect(native.includes('PEER-KEPT')).toBe((await item(page, FP)).includes('PEER-KEPT'));
 });
 
+test('SYNC-08 sch: undoing a local move after a peer field edit converges everywhere', async ({ page, context }, info) => {
+  const peer = await context.newPage(); await pair(page, peer, 'sch');
+  const x0 = position(await item(page, SYM, true))![0]!;
+  await call(page, 'kicadCollabTestMoveSchItem', SYM, 30_000, 0);
+  await expect.poll(async () => position(await item(peer, SYM, true))?.[0]).toBe(x0 + 3);
+  await call(peer, 'kicadCollabTestSetFieldText', SYM, 'PEER-KEPT');
+  await expect.poll(() => item(page, SYM, true)).toContain('PEER-KEPT');
+  await call(page, 'kicadCollabTestUndo');
+  await expect.poll(async () => position(await item(page, SYM, true))?.[0]).toBe(x0);
+  await expect.poll(async () => position(await item(page, SYM))?.[0], { timeout: 10_000 }).toBe(x0);
+  await expect.poll(async () => position(await item(peer, SYM, true))?.[0], { timeout: 10_000 }).toBe(x0);
+  await fence(page, peer); await evidence(info, [page, peer]);
+  expect(await item(page, SYM)).toBe(await item(peer, SYM));
+});
+
 // Separate child FILES intentionally share an item UUID, as a copied sheet does.
 const ROOT = '11111111-1111-1111-1111-111111111111';
 function hierarchy() {

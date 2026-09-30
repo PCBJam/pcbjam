@@ -1802,7 +1802,52 @@ void doApplyItems( SCH_EDIT_FRAME* aFrame, const json& aPayload )
             if( item->Type() == SCH_GROUP_T )
                 g_groupDecl[toUtf8( item->m_Uuid.AsString() )] = pcbjam_collab::sexprGroupMembers( sexpr );
 
-            if( SCH_ITEM* existing = resolveOnShown( aFrame, item->m_Uuid ) )
+            if( item->Type() == SCH_SYMBOL_T )
+            {
+                auto* sym = static_cast<SCH_SYMBOL*>( item );
+
+                if( LIB_SYMBOL* lib = findLib( sym ) )
+                    sym->SetLibSymbol( lib );
+            }
+
+            SCH_ITEM* existing = resolveOnShown( aFrame, item->m_Uuid );
+
+            // Update IN PLACE when the kinds match (pcbnew twin, sync audit SYNC-08):
+            // the live object keeps its identity, so the local undo stack's pickers —
+            // which point at it — stay valid; replacing it freed what they pointed at.
+            // Same sequence as SCH_COMMIT::Revert's CHT_MODIFY (view out, swap, R-tree
+            // update, symbol pins + connection graph, view back in). Groups keep the
+            // replace + relink path: a swap would move their member sets.
+            if( existing && existing->Type() == item->Type() && item->Type() != SCH_GROUP_T )
+            {
+                SCH_SCREEN*  screen = currentScreen( aFrame );
+                KIGFX::VIEW* view   = aFrame->GetCanvas()->GetView();
+
+                commit.Modify( existing, screen );
+                view->Remove( existing );
+                existing->SwapItemData( item );     // `item` now holds the OLD data
+                screen->Update( existing );
+
+                if( existing->Type() == SCH_SYMBOL_T )
+                {
+                    static_cast<SCH_SYMBOL*>( existing )->UpdatePins();
+
+                    CONNECTION_GRAPH* graph = sch.ConnectionGraph();
+                    auto*             old   = static_cast<SCH_SYMBOL*>( item );
+                    graph->RemoveItem( old );
+
+                    for( SCH_PIN* pin : old->GetPins() )
+                        graph->RemoveItem( pin );
+                }
+
+                view->Add( existing );
+                removedItems.push_back( item );     // freed after Push
+                touched.push_back( toUtf8( existing->m_Uuid.AsString() ) );
+                staged = true;
+                continue;
+            }
+
+            if( existing )
             {
                 // SYNC-04: the replacement rejoins its predecessor's group after Push.
                 if( EDA_GROUP* group = existing->GetParentGroup() )
@@ -1812,14 +1857,6 @@ void doApplyItems( SCH_EDIT_FRAME* aFrame, const json& aPayload )
 
                 if( existing->Type() != SCH_FIELD_T )
                     removedItems.push_back( existing );
-            }
-
-            if( item->Type() == SCH_SYMBOL_T )
-            {
-                auto* sym = static_cast<SCH_SYMBOL*>( item );
-
-                if( LIB_SYMBOL* lib = findLib( sym ) )
-                    sym->SetLibSymbol( lib );
             }
 
             item->SetParent( &sch );

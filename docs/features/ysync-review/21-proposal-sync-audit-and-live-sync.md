@@ -551,6 +551,9 @@ green on chromium) and the collab/ysync/drift-trio regression set; unit tests in
   `SwapItemData` (the sequence `BOARD_COMMIT::Revert` uses: out of view and connectivity, swap, back in), so
   undo entries stay valid and undo emits. Groups and generators keep replace + relink (a swap would move
   their member sets). The audit's SYNC-08 check is adjusted per decision 1: converge, whole-item undo.
+  eeschema got the same fix (review round 2): its remote apply now swaps into the live object too, with
+  `SCH_COMMIT::Revert`'s sequence (view out, swap, R-tree update, symbol pins + connection graph, view in);
+  groups keep replace + relink. Covered by `SYNC-08 sch`.
 - **WP5 change detection.** `FormatAsString()` on the project file leaves out the nested settings (net
   classes, design rules, ERC); the fingerprint adds every nested settings object of the editor.
 - **WP5 first write.** A sidecar room is created by the first save into it (not at open), and saves of a
@@ -558,13 +561,11 @@ green on chromium) and the collab/ysync/drift-trio regression set; unit tests in
   unchanged.
 
 **Open items:**
-- **Same-instant header writes.** Two peers writing the same header section in the same instant, each
-  without having seen the other, stay last-writer-wins per section (the layout repair keeps one copy). Stale
-  writers merge per field. Fix: header sections as per-field Y structures ("Later").
-- **eeschema remote apply still replaces objects.** Its undo re-anchor reads the uuid through a possibly-freed
-  pointer, the same hazard SYNC-08 fixed in pcbnew. Follow-up: the same in-place update in eeschema.
+- **Same-instant header writes** (accepted, review round 2). Two peers writing the same header section in
+  the same instant, each without having seen the other, stay last-writer-wins per section. Stale writers
+  merge per field.
 - **S2** (board-level `embedded_files`) is not in the live header slice yet; still synced on save.
-- **Text sidecar first seed.** Two tabs whose FIRST save into an empty `.kicad_dru` room lands in the same
-  instant duplicate the text (JSON seeds are per-key LWW and safe).
+- **Text sidecar first seed** (accepted, review round 2). Two tabs whose FIRST save into an empty
+  `.kicad_dru` room lands in the same instant duplicate the text (JSON seeds are per-key LWW and safe).
 - **Activity attribution** for sidecar edits (`apps/sync/src/activity-tracker.ts` observes kdoc roots only).
 - **Firefox** was not part of the audit's original run; the recreated spec runs in both kicad CI projects.
