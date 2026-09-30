@@ -8,7 +8,7 @@ import {
   liftLegacyComments,
   listThreads,
   projectPath,
-  syncLayoutToY,
+  sidecarKind,
   type Tool,
 } from "@pcbjam/shared";
 import { Download } from "lucide-react";
@@ -105,6 +105,8 @@ import { bindLocalSelectionFeed } from "@/wasm/collab/local-selection";
 import {
   type SheetCollabManager,
 } from "@/wasm/collab/sheet-manager";
+import { sidecarPathsFor, startSidecarRooms, type SidecarRooms } from "@/wasm/collab/sidecar-rooms";
+import { boardSidecarPaths, createSidecarSweep, type SidecarSweep } from "@/wasm/collab/sidecar-sweep";
 import type * as Y from "yjs";
 import { createOomWatch, respawnInNewTab } from "@/recovery/oom-watch";
 import { MemoryExhaustedDialog } from "@/recovery/MemoryExhaustedDialog";
@@ -133,7 +135,6 @@ import {
 import {
   maybeConnectDocSession,
   maybeStartCollab,
-  seedDocFromMemfs,
   startSheetCollab,
   waitForWxUi,
 } from "@/components/wasm-tool/collab-start";
@@ -173,6 +174,7 @@ export function WasmTool({
   files,
   targetPath,
   fetchBytes,
+  fetchSiblingBytes,
   onStagedRevision,
   observedRevision,
   rememberObservedRevision,
@@ -213,6 +215,13 @@ export function WasmTool({
   boot?: import("@/lib/boot-payload").BootPayload | null;
   /** Fetch one project-relative file's bytes (contract loader or local folder). */
   fetchBytes: (relPath: string) => Promise<Uint8Array>;
+  /**
+   * Fetch a sibling's bytes for a RESTAGE (a peer's write landing in MEMFS)
+   * WITHOUT adopting its revision as the save base: the native editor does not
+   * reload restaged files, so its next save must still CAS against what it
+   * actually holds (proposal 21 S5a). Absent ⇒ `fetchBytes`.
+   */
+  fetchSiblingBytes?: (relPath: string) => Promise<Uint8Array>;
   /**
    * Files staged from the project sync namespace bundle never pass through
    * `fetchBytes`; this reports their listing revision so the source can record
@@ -345,12 +354,10 @@ export function WasmTool({
   // sibling-restage idle stagger can fire after unmount).
   const disposedRef = React.useRef(false);
   const sheetManagerRef = React.useRef<SheetCollabManager | null>(null);
-  // The single-room collab doc (pcbnew/pl_editor), for the layout save-sync
-  // (miss 08B); eeschema routes per sheet through the manager instead.
-  const collabDocRef = React.useRef<import("yjs").Doc | null>(null);
-  // The layout the editor last agreed on (opened file, then each save) — the
-  // save-sync reconciles only what changed relative to it (syncLayoutToY).
-  const layoutBaselineRef = React.useRef<import("@pcbjam/shared").KicadDoc | undefined>(undefined);
+  // Board sidecars KiCad writes outside the save chokepoints (proposal 21 S6).
+  const sidecarSweepRef = React.useRef<SidecarSweep | null>(null);
+  // The project's .kicad_pro / .kicad_dru as live rooms (proposal 21 WP5).
+  const sidecarRoomsRef = React.useRef<SidecarRooms | null>(null);
   // Its owning handle, so unmount tears the room socket + doc down — eeschema's
   // equivalent lives inside sheetManagerRef.
   const collabHandleRef = React.useRef<KicadCollabHandle | null>(null);
@@ -584,6 +591,8 @@ export function WasmTool({
     }
     siblingRestageRef.current?.destroy();
     siblingRestageRef.current = null;
+    sidecarRoomsRef.current?.destroy();
+    sidecarRoomsRef.current = null;
     filesWatchRef.current?.destroy();
     filesWatchRef.current = null;
     driftRef.current?.stop();
@@ -597,8 +606,6 @@ export function WasmTool({
     // doc. Without this the board room's socket survived navigation.
     collabHandleRef.current?.destroy();
     collabHandleRef.current = null;
-    collabDocRef.current = null;
-    layoutBaselineRef.current = undefined;
     const pending = pendingDocSessionRef.current;
     pendingDocSessionRef.current = null;
     if (pending) {
@@ -1201,7 +1208,9 @@ export function WasmTool({
         // Read-only viewers skip the room entirely — the server rejects their
         // connection anyway (presence requires write).
         const crossAppReady: Promise<CrossAppHandle | undefined> =
-          (tool === "pcbnew" || tool === "eeschema") &&
+          // pl_editor joins too (proposal 21 S8): its announced .kicad_wks is
+          // what a board/schematic tab's drawing-sheet mirror scopes to.
+          (tool === "pcbnew" || tool === "eeschema" || tool === "pl_editor") &&
           !collabOptOut &&
           (!readOnly || commentAccess === "comment")
             ? (async () => {
@@ -1317,7 +1326,16 @@ export function WasmTool({
         const saveHookHandle = registerSaveHook(win, {
           slug,
           saveBytes: readOnly ? undefined : saveBytes,
-          uploadPolicy: (relPath) => (roomBacked.has(relPath) ? "room" : "upload"),
+          // Sidecars go through their room only while it is connected (WP5);
+          // before that — or if it failed — they keep the plain upload.
+          uploadPolicy: (relPath) =>
+            sidecarKind(relPath)
+              ? sidecarRoomsRef.current?.isRoomPath(relPath)
+                ? "room"
+                : "upload"
+              : roomBacked.has(relPath)
+                ? "room"
+                : "upload",
           log: append,
           onStatus: setStatus,
           ...(readOnly
@@ -1331,24 +1349,26 @@ export function WasmTool({
                 onSaved: (relPath: string) => {
                   if (relPath.endsWith(".kicad_sch"))
                     void sheetManagerRef.current?.onboard(relPath);
+                  // A board save — or a live project-settings save after Board
+                  // Setup (WP5) — is when the rules file may have changed too:
+                  // carry the sidecars KiCad doesn't route itself (S6).
+                  if (relPath === targetPath || relPath.endsWith(".kicad_pro"))
+                    sidecarSweepRef.current?.sweep("board/project save");
                 },
                 // Non-item document state (title block, paper, setup…) only reaches the
                 // room at seed time; reconcile it from every save (miss 08B).
                 onSavedText: (relPath: string, text: string) => {
+                  // Project sidecars patch their own room (WP5).
+                  if (sidecarRoomsRef.current?.onSaved(relPath, text)) return;
                   if (sheetManagerRef.current) {
                     sheetManagerRef.current.syncLayoutFromSave(relPath, text);
                     return;
                   }
-                  if (collabDocRef.current && relPath === targetPath) {
+                  if (collabHandleRef.current && relPath === targetPath) {
                     try {
-                      const fileDoc = fileToDoc(text);
-                      syncLayoutToY(
-                        fileDoc,
-                        collabDocRef.current,
-                        "layout-save",
-                        layoutBaselineRef.current,
-                      );
-                      layoutBaselineRef.current = fileDoc;
+                      // The handle owns the layout baseline — shared with the
+                      // live header sync (proposal 21 WP4), merged per field (WP1).
+                      collabHandleRef.current.layout.syncFromSave(fileToDoc(text));
                     } catch (err) {
                       append(`[save] layout sync failed: ${String(err)}`);
                     }
@@ -1404,6 +1424,48 @@ export function WasmTool({
           onFileProgress: (done, total) =>
             setFileSync(done >= total ? null : { done, total }),
         });
+        // Staged: remember the sidecars' bytes so a later sweep uploads only
+        // what the editor changed (proposal 21 S6).
+        if (!readOnly && saveBytes && tool === "pcbnew" && targetPath) {
+          sidecarSweepRef.current = createSidecarSweep({
+            win: win as unknown as Parameters<typeof createSidecarSweep>[0]["win"],
+            slug,
+            paths: boardSidecarPaths(targetPath),
+            log: append,
+          });
+        }
+        // Project settings + custom rules as live rooms (proposal 21 WP5): a
+        // peer's Board/Schematic Setup change reloads here without a save.
+        if (!readOnly && !collabOptOut && yjsProviderConfig().kind !== "none") {
+          const paths = sidecarPathsFor(tool, targetPath);
+          if (paths.length) {
+            type ReloadModule = {
+              kicadReloadDesignRules?: () => boolean;
+              kicadPcbReloadProjectSettings?: () => boolean;
+              kicadSchReloadProjectSettings?: () => boolean;
+            };
+            void startSidecarRooms({
+              win: win as unknown as Parameters<typeof startSidecarRooms>[0]["win"],
+              slug,
+              scopeId,
+              projectId,
+              paths,
+              provider: yjsProviderConfig(),
+              log: append,
+              onRestaged: (p, text) => {
+                sidecarSweepRef.current?.noteRestaged(p, new TextEncoder().encode(text));
+                const m = win.Module as ReloadModule | undefined;
+                if (p.endsWith(".kicad_dru")) m?.kicadReloadDesignRules?.();
+                else if (tool === "pcbnew") m?.kicadPcbReloadProjectSettings?.();
+                else m?.kicadSchReloadProjectSettings?.();
+                append(`[sidecar-room] ${p}: peer change applied`);
+              },
+            }).then((handle) => {
+              if (disposedRef.current) handle.destroy();
+              else sidecarRoomsRef.current = handle;
+            });
+          }
+        }
         // Read-only viewer (read-only-viewer): lock the wasm frame BEFORE the
         // boot overlay drops — the file is open, so the frame exists; poll the
         // export like the chrome toggle does. Fails CLOSED (boot error overlay):
@@ -1531,6 +1593,33 @@ export function WasmTool({
             sheetManagerRef.current = null;
             return;
           }
+          // The project drawing sheet is read once at open: mirror a pl_editor
+          // peer's live edits of it and reload (proposal 21 S8). Presence-scoped
+          // like the pcbnew sibling mirror — zero sockets unless someone has it
+          // open in pl_editor.
+          if (sheetManagerRef.current && !readOnly) {
+            void startSiblingRestage({
+              win,
+              slug,
+              scopeId,
+              projectId,
+              files,
+              targetPath,
+              presence: crossAppRef.current ?? undefined,
+              provider: yjsProviderConfig(),
+              log: append,
+              extensions: [".kicad_wks"],
+              onRestaged: () =>
+                (win.Module as { kicadSchReloadDrawingSheet?: () => boolean } | undefined)
+                  ?.kicadSchReloadDrawingSheet?.(),
+            }).then((handle) => {
+              if (disposedRef.current) {
+                handle?.destroy();
+                return;
+              }
+              siblingRestageRef.current = handle;
+            });
+          }
         } else {
           const collabHandle = await maybeStartCollab(win, {
             tool,
@@ -1555,11 +1644,6 @@ export function WasmTool({
             return;
           }
           collabHandleRef.current = collabHandle ?? null;
-          collabDocRef.current = collabHandle?.doc ?? null;
-          // Still the file as opened: nothing has saved over it yet.
-          layoutBaselineRef.current = collabHandle
-            ? seedDocFromMemfs(win, slug, targetPath)
-            : undefined;
           startPresence(collabHandle?.provider, undefined, collabHandle?.doc);
           startComments(collabHandle?.doc, targetPath ?? "");
           setPanelDoc(collabHandle?.doc ?? null);
@@ -1595,6 +1679,12 @@ export function WasmTool({
                 presence: crossAppRef.current ?? undefined,
                 provider: yjsProviderConfig(),
                 log: append,
+                extensions: [".kicad_sch", ".kicad_wks"],
+                onRestaged: (p) => {
+                  if (!p.endsWith(".kicad_wks")) return;
+                  (win.Module as { kicadPcbReloadDrawingSheet?: () => boolean } | undefined)
+                    ?.kicadPcbReloadDrawingSheet?.();
+                },
               }).then((handle) => {
                 if (disposedRef.current) {
                   handle?.destroy();
@@ -1630,6 +1720,8 @@ export function WasmTool({
         // restage into MEMFS; a hint for the open non-room target becomes a
         // reload/conflict notice. Rides the same gateway socket as presence.
         if ((tool === "pcbnew" || tool === "eeschema") && !readOnly && !collabOptOut) {
+          const reloadsNatively = (p: string): boolean =>
+            tool === "pcbnew" && !!targetPath && boardSidecarPaths(targetPath).includes(p);
           void startFilesWatch({
             scopeId,
             projectId,
@@ -1637,11 +1729,23 @@ export function WasmTool({
             targetPath,
             selfUser: presenceUser().id,
             knownPaths: files.map((f) => f.path),
-            isRoomBacked: (p) => roomBacked.has(p),
+            isRoomBacked: (p) => roomBacked.has(p) || !!sidecarRoomsRef.current?.isRoomPath(p),
             observedRevision: (p) => observedRevision?.(p),
             rememberObserved: (p, r) => rememberObservedRevision?.(p, r),
-            fetchBytes,
-            restage: (p, bytes) => restageFile(win, slug, p, bytes, append),
+            // A sidecar the editor reloads natively (the rules file) is
+            // adopted as the model's base; anything else only lands in MEMFS
+            // and must not move the CAS base (proposal 21 S5a).
+            fetchBytes: (p) =>
+              reloadsNatively(p) ? fetchBytes(p) : (fetchSiblingBytes ?? fetchBytes)(p),
+            restage: (p, bytes) => {
+              restageFile(win, slug, p, bytes, append);
+              if (reloadsNatively(p)) {
+                sidecarSweepRef.current?.noteRestaged(p, bytes);
+                const reload = (win.Module as { kicadReloadDesignRules?: () => boolean } | undefined)
+                  ?.kicadReloadDesignRules;
+                append(`[sidecar] ${p} restaged → ${reload?.() ? "rules reloaded" : "no native reload"}`);
+              }
+            },
             // A peer's file op (project-page 0003). Not on screen: drop it
             // from MEMFS + the sheet pool so nothing reads a file that is gone.
             onPathRemoved: (c) => {

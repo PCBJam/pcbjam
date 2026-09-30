@@ -16,6 +16,7 @@
 #include <emscripten/val.h>
 #include <functional>
 #include <string>
+#include <vector>
 #include <nlohmann/json.hpp>
 #include <wx/event.h>
 #include <wx/string.h>
@@ -27,6 +28,36 @@
 namespace pcbjam_collab {
 
 inline std::string toUtf8( const wxString& s ) { return std::string( s.utf8_str() ); }
+
+// The member uuids a group/generator blob DECLARES — its `(members "…" …)` list
+// (sync audit SYNC-04). A remote group is parsed in a throwaway board/screen that
+// holds none of its members, so the parser's group resolution comes back empty;
+// the apply relinks from this list against the live document instead. A wire
+// blob carries exactly one root, so the first `(members` form is the group's.
+inline std::vector<std::string> sexprGroupMembers( const std::string& aSexpr )
+{
+    std::vector<std::string> out;
+    size_t                   at = aSexpr.find( "(members" );
+
+    if( at == std::string::npos )
+        return out;
+
+    for( size_t i = at + 8; i < aSexpr.size() && aSexpr[i] != ')'; ++i )
+    {
+        if( aSexpr[i] != '"' )
+            continue;
+
+        size_t end = aSexpr.find( '"', i + 1 );
+
+        if( end == std::string::npos )
+            break;
+
+        out.push_back( aSexpr.substr( i + 1, end - i - 1 ) );
+        i = end;
+    }
+
+    return out;
+}
 
 /**
  * Run a body on the editor's main loop AND inside a COROUTINE — the exact
@@ -252,6 +283,41 @@ inline nlohmann::json resolveItemsWire( const nlohmann::json& aWire )
     catch( ... )
     {
         return aWire;
+    }
+}
+
+/**
+ * Apply-time header resolution (proposal 21 WP4): a queued header apply was
+ * rendered when the room changed, but runs later — possibly after a LOCAL header
+ * edit that this very apply would overwrite before it was ever emitted. The
+ * caller first flushes its pending local header (so the room merges it), then
+ * asks the binding (window.kicadCollab.resolveHeader) for the room's LATEST
+ * payload. An empty answer means "nothing to apply". Without a resolver the
+ * payload applies as sent.
+ */
+inline std::string resolveHeaderPayload( const std::string& aPayload )
+{
+    using emscripten::val;
+
+    try
+    {
+        val win = val::global( "window" );
+
+        if( win.isUndefined() || win.isNull() )
+            return aPayload;
+
+        val kc = win["kicadCollab"];
+
+        if( kc.isUndefined() || kc.isNull() || kc["resolveHeader"].isUndefined() )
+            return aPayload;
+
+        val out = kc.call<val>( "resolveHeader" );
+
+        return out.isString() ? out.as<std::string>() : aPayload;
+    }
+    catch( ... )
+    {
+        return aPayload;
     }
 }
 

@@ -39,14 +39,14 @@ describe("fileCacheValidator", () => {
 
   it("ydoc-backed + cold: the blob fingerprint is the validator", () => {
     const v = fileCacheValidator({ ...base, hasYdoc: true, ydocTag: "etag-1" });
-    expect(v).toBe("y1:etag-1");
+    expect(v).toBe("y2:etag-1");
     expect(isYdocValidator(v!)).toBe(true);
     expect(isYdocValidator(fileCacheValidator(base)!)).toBe(false);
     // Collab-only rows (revision 0 — never uploaded) are cacheable too: the
     // blob IS their only source of truth.
     expect(
       fileCacheValidator({ ...base, revision: 0, hasYdoc: true, ydocTag: "e2" }),
-    ).toBe("y1:e2");
+    ).toBe("y2:e2");
   });
 
   it("ydoc-backed but LIVE or untagged stays uncacheable", () => {

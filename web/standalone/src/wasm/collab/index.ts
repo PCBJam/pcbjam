@@ -1,5 +1,5 @@
 import * as Y from "yjs";
-import type { KicadDoc, KicadItem } from "@pcbjam/shared";
+import { Y_KDOC_META, type KicadDoc, type KicadItem } from "@pcbjam/shared";
 import { clog } from "./debug";
 import {
   connectProvider,
@@ -7,6 +7,17 @@ import {
   type YjsProvider,
 } from "./provider";
 import { createReconciler, type Reconciler } from "./reconciler";
+import {
+  PCB_HEADER_HEADS,
+  pcbHeaderAdapter,
+  SCH_HEADER_HEADS,
+  schHeaderAdapter,
+  startLayoutSync,
+  type HeaderModule,
+  type HeaderWindow,
+  type LayoutSync,
+  type SchHeaderModule,
+} from "./header-sync";
 import type { CollabBridge } from "./types";
 import {
   bindKicadCollab,
@@ -116,6 +127,13 @@ export interface KicadCollabHandle {
   doc: Y.Doc;
   binding: KicadBinding;
   provider: YjsProvider;
+  /**
+   * The document's non-item layout: the baseline the editor agreed on, the
+   * save-time reconcile (miss 08B, merged per field — proposal 21 WP1) and, on
+   * pcbnew, the live board-header sync (WP4). One owner, so the save path and
+   * the live path never disagree about the baseline.
+   */
+  layout: LayoutSync;
   destroy(): void;
 }
 
@@ -233,10 +251,16 @@ export async function connectKicadDoc(opts: {
  * instead of re-applying the full document.
  */
 export function attachKicadCollab(
-  mod: KicadItemsModule,
-  win: KicadItemsWindow,
+  mod: KicadItemsModule & HeaderModule & SchHeaderModule,
+  win: KicadItemsWindow & HeaderWindow,
   session: KicadDocSession,
-  opts?: { seedDoc?: KicadDoc; editorMatchesDoc?: boolean; readOnly?: boolean },
+  opts?: {
+    seedDoc?: KicadDoc;
+    editorMatchesDoc?: boolean;
+    readOnly?: boolean;
+    /** The layout the editor opened (default `seedDoc`) — see `KicadCollabHandle.layout`. */
+    layoutBaseline?: KicadDoc;
+  },
 ): KicadCollabHandle {
   if (opts?.readOnly) {
     // Invisible observer: drop the provider's initial empty awareness state so
@@ -260,12 +284,34 @@ export function attachKicadCollab(
     throw err;
   }
   clog("attachKicadCollab: ready; doc items =", binding.items.size);
+  // The live header's shape follows the DOCUMENT kind (a single-room schematic —
+  // the audit harness, a scratch sheet — uses eeschema's exports; drawing sheets
+  // have no live header yet). kicad_editor exposes every set; each no-ops for the
+  // frame that isn't live, so the doc root decides, not export presence.
+  const root =
+    opts?.seedDoc?.root ?? (session.doc.getMap(Y_KDOC_META).get("root") as string | undefined);
+  const layout = startLayoutSync({
+    doc: session.doc,
+    win,
+    header:
+      root === "kicad_pcb"
+        ? pcbHeaderAdapter(mod)
+        : root === "kicad_sch"
+          ? schHeaderAdapter(mod as SchHeaderModule)
+          : undefined,
+    heads: root === "kicad_sch" ? SCH_HEADER_HEADS : PCB_HEADER_HEADS,
+    root: root ?? "kicad_pcb",
+    baseline: opts?.layoutBaseline ?? opts?.seedDoc,
+    readOnly: opts?.readOnly,
+  });
 
   return {
     doc: session.doc,
     binding,
     provider: session.provider,
+    layout,
     destroy() {
+      layout.destroy();
       binding.destroy();
       session.provider.destroy();
       session.doc.destroy();

@@ -52,7 +52,7 @@ interface CacheRecord {
  * + `docToFile`) can produce different output for the same blob — cached
  * converted bodies are keyed under it.
  */
-const YDOC_CONVERT_EPOCH = 1;
+const YDOC_CONVERT_EPOCH = 2; // 2: project sidecar rooms (proposal 21 WP5)
 
 /**
  * The cache validator for a listed file, or null when the file is uncacheable:

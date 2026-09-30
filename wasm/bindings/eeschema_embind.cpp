@@ -24,11 +24,21 @@
 #include <layer_ids.h>
 #include <pcbjam_read_only.h>
 #include <project.h>
+#include <project/project_file.h>
+#include <project/net_settings.h>
+#include <project/component_class_settings.h>
+#include <erc/erc_settings.h>
+#include <schematic_settings.h>
+#include <settings/settings_manager.h>
 #include <schematic.h>
 #include <sch_edit_frame.h>
 #include <symbol_edit_frame.h>
 #include <sch_io/kicad_sexpr/sch_io_kicad_sexpr.h>
 #include <sch_sheet.h>
+#include <sch_group.h>
+#include <sch_file_versions.h>
+#include <page_info.h>
+#include <title_block.h>
 #include <richio.h>
 #include <lib_symbol.h>
 #include <tools/sch_selection.h>
@@ -72,6 +82,8 @@
 #include "pcbjam_libs_reload.h"
 #include "pcbjam_async_policy.h"
 #include <algorithm>
+#include <cstring>
+#include <typeinfo>
 
 using namespace emscripten;
 using json = nlohmann::json;
@@ -566,7 +578,10 @@ bool                        g_flushScheduled = false;
 // to THAT sheet's doc. nullptr = owner unknown → treated as the shown screen (legacy).
 // A removed item keeps its screen parent (SCH_SCREEN::Remove does not clear it), so
 // the owner of a deletion is known too even though the uuid no longer resolves.
-std::map<std::string, SCH_SCREEN*> g_dirty;
+// Keyed by the (uuid, screen) PAIR, not the uuid (sync audit SYNC-07): copied sheet
+// files repeat uuids, so one commit touching the same uuid on two screens must
+// emit into BOTH rooms — a uuid-keyed map kept only the last screen.
+std::set<std::pair<std::string, SCH_SCREEN*>> g_dirty;
 
 // The screen an item lives on, via its parent chain (SCH_SCREEN::Append parents every
 // screen item to the screen). Deliberately NOT SCHEMATIC::ResolveItem: a copied sheet
@@ -597,7 +612,7 @@ void noteDirty( SCH_ITEM* aItem )
         aItem = static_cast<SCH_ITEM*>( p );
     }
 
-    g_dirty[toUtf8( aItem->m_Uuid.AsString() )] = owningScreen( aItem );
+    g_dirty.insert( { toUtf8( aItem->m_Uuid.AsString() ), owningScreen( aItem ) } );
 }
 
 // Re-seed the diff baseline to the current model — after handing out a seed snapshot, or after
@@ -669,6 +684,148 @@ void rebaselineTouched( SCH_EDIT_FRAME* aFrame, const std::vector<std::string>& 
 }
 
 // Diff the current (settled, post-cleanup) model against the baseline and broadcast the change.
+// Proposal 21 S7: a sheet drawn with a NEW file ("Add Sheet") only existed in memory
+// until the author's first File→Save — peers saw the (sheet …) symbol but had nothing
+// to navigate into. Write just that screen's file to MEMFS and route it through the
+// save hook, exactly as a save of that one file would: the standalone onboards (seeds)
+// its room, uploads it (registering the file) and peers learn of it from the files
+// hint. Only sheets from LOCAL commits get here, and only when their file does not
+// exist yet — a peer's sheet, or a sheet reusing an existing file, is never written.
+extern "C" void kicadCollabOnSave( const char* aPath );
+
+void onboardNewSheetFiles( SCH_EDIT_FRAME* aFrame, const std::vector<SCH_SHEET*>& aSheets )
+{
+    for( SCH_SHEET* sheet : aSheets )
+    {
+        SCH_SCREEN* screen = sheet ? sheet->GetScreen() : nullptr;
+
+        if( !screen || screen->GetFileName().IsEmpty() )
+            continue;
+
+        wxFileName fn( screen->GetFileName() );
+
+        if( !fn.IsAbsolute() )
+            fn.MakeAbsolute( aFrame->Prj().GetProjectPath() );
+
+        if( fn.FileExists() )
+            continue;
+
+        try
+        {
+            SCH_IO_KICAD_SEXPR io;
+            io.SaveSchematicFile( fn.GetFullPath(), sheet, &aFrame->Schematic() );
+        }
+        catch( ... )
+        {
+            continue;
+        }
+
+        kicadCollabOnSave( fn.GetFullPath().utf8_str() );
+    }
+}
+
+// ── Sheet header sync (proposal 21 WP4 / S3) ───────────────────────────────────────────────
+//
+// A sheet's (paper …) and (title_block …) have no item events, so they only reached the
+// room on File→Save and never reached an open peer. The fork's SCH_EDIT_FRAME::OnModify
+// calls kicadCollabSchOnModify(); the next flush serializes the SHOWN screen's header and,
+// when it changed, hands it to JS (kicadCollab.onHeader) for a per-field merge into that
+// sheet's room. kicadSchApplyHeader is the other direction. Names are eeschema-only so the
+// merged image keeps pcbnew's kicadCollabHeader* exports distinct.
+std::string screenHeaderText( SCH_SCREEN* aScreen )
+{
+    if( !aScreen )
+        return "";
+
+    STRING_FORMATTER fmt;
+    fmt.Print( "(kicad_sch (version %d) (generator \"eeschema\")", SEXPR_SCHEMATIC_FILE_VERSION );
+    aScreen->GetPageSettings().Format( &fmt );
+    aScreen->GetTitleBlock().Format( &fmt );
+    fmt.Print( ")" );
+    return fmt.GetString();
+}
+
+// Live project settings (proposal 21 WP5) — see pcbnew's checkProject.
+// The project settings as KiCad would save them — the project file's own params PLUS
+// every nested settings object (net classes, board design rules, ERC / schematic
+// settings…): FormatAsString() on the project alone leaves the nested ones out, and a
+// Board Setup netclass edit lives entirely in them.
+inline std::string projectFingerprint( PROJECT& aProject )
+{
+    PROJECT_FILE& pf = aProject.GetProjectFile();
+    std::string   out = pf.FormatAsString();
+
+    auto add = [&]( JSON_SETTINGS* aNested )
+    {
+        if( aNested )
+            out += "\n" + aNested->FormatAsString();
+    };
+
+    add( pf.NetSettings().get() );
+    add( pf.ComponentClassSettings().get() );
+    add( pf.m_ErcSettings );
+    add( pf.m_SchematicSettings );
+    return out;
+}
+
+std::string g_schLastProject;
+
+std::string schProjectText( SCH_EDIT_FRAME* aFrame )
+{
+    if( !aFrame || aFrame->Prj().IsNullProject() )
+        return "";
+
+    return projectFingerprint( aFrame->Prj() );
+}
+
+void schCheckProject( SCH_EDIT_FRAME* aFrame )
+{
+    std::string p = schProjectText( aFrame );
+
+    if( p.empty() || p == g_schLastProject )
+        return;
+
+    g_schLastProject = p;
+
+    if( aFrame->GetSettingsManager()->SaveProject() )
+        kicadCollabOnSave( aFrame->Prj().GetProjectFullName().utf8_str() );
+}
+
+bool        g_schHeaderCheck = false;
+std::string g_schLastHeader;
+SCH_SCREEN* g_schLastHeaderScreen = nullptr;
+
+void schNoteHeader( SCH_EDIT_FRAME* aFrame )
+{
+    g_schLastHeaderScreen = currentScreen( aFrame );
+    g_schLastHeader       = screenHeaderText( g_schLastHeaderScreen );
+}
+
+void schCheckHeader( SCH_EDIT_FRAME* aFrame )
+{
+    SCH_SCREEN* shown = currentScreen( aFrame );
+
+    // A sheet switch is not an edit: re-baseline on the new screen (the sheet manager's
+    // bind snapshots it anyway).
+    if( shown != g_schLastHeaderScreen )
+    {
+        schNoteHeader( aFrame );
+        return;
+    }
+
+    std::string h = screenHeaderText( shown );
+
+    if( h == g_schLastHeader )
+        return;
+
+    g_schLastHeader = h;
+
+    EM_ASM( {
+        if( window.kicadCollab && window.kicadCollab.onHeader )
+            window.kicadCollab.onHeader( UTF8ToString( $0 ) );
+    }, h.c_str() );
+}
+
 void flushDiff()
 {
     g_flushScheduled = false;
@@ -677,6 +834,13 @@ void flushDiff()
 
     if( !fr )
         return;
+
+    if( g_schHeaderCheck )
+    {
+        g_schHeaderCheck = false;
+        schCheckHeader( fr );
+        schCheckProject( fr );
+    }
 
     std::map<std::string, json> cur = snapshotByUuid( fr );
 
@@ -834,6 +998,21 @@ void flushDiff()
             batch.removed.push_back( id );
     }
 
+    // Sheets this flush's LOCAL commits touched (remote applies never reach g_dirty) —
+    // a newly drawn sheet's file is onboarded below (proposal 21 S7).
+    std::vector<SCH_SHEET*> touchedSheets;
+
+    for( const auto& [id, owner] : g_dirty )
+    {
+        SCH_SCREEN* sc = owner ? owner : shown;
+
+        if( !sc || ( sc != shown && !liveScreens.count( sc ) ) )
+            continue;
+
+        if( SCH_ITEM* it = rootItemOn( sc, id ); it && it->Type() == SCH_SHEET_T )
+            touchedSheets.push_back( static_cast<SCH_SHEET*>( it ) );
+    }
+
     g_dirty.clear();
 
     g_baseline = std::move( cur );
@@ -853,6 +1032,8 @@ void flushDiff()
                                       { "changed", batch.changed },
                                       { "removed", batch.removed } } );
     }
+
+    onboardNewSheetFiles( fr, touchedSheets );
 }
 
 // Coalesce all the listener callbacks of one commit (and any other edits in the same loop
@@ -1010,6 +1191,135 @@ SCHEMATIC* ensureBridge()
 
     return &sch;
 }
+
+// Fork hook (sch_edit_frame.cpp OnModify, weak there) — see the sheet header sync above.
+extern "C" void kicadCollabSchOnModify()
+{
+    if( s_applyingRemote || !g_listener )
+        return;
+
+    g_schHeaderCheck = true;
+    scheduleFlush();
+}
+
+std::string schHeaderText()
+{
+    SCH_EDIT_FRAME* fr = schFrame();
+    return fr ? screenHeaderText( currentScreen( fr ) ) : std::string();
+}
+
+// Page Settings open ⇒ its OK would commit the state it loaded over a peer's change.
+bool schHeaderBlocked()
+{
+    for( wxWindow* w : wxTopLevelWindows )
+    {
+        // By RTTI name: the dialog headers pull generated *_base.h files the
+        // bindings' include path does not carry.
+        if( w && w->IsShown() && std::strstr( typeid( *w ).name(), "PAGE_SETTINGS" ) )
+            return true;
+    }
+
+    return false;
+}
+
+// The header arrives DECODED (JS parses the room's (paper …)/(title_block …) slots):
+// { paper: { type, w?, h?, portrait? }, title: { title?, date?, rev?, company?,
+//   comments?: [[n, text]…] } }. The schematic parser only accepts these heads in a
+// full-file parse, which would disturb the live schematic, so the setters are used
+// directly — the same ones the parser calls.
+void doApplySchHeader( SCH_EDIT_FRAME* aFrame, const json& aQueued )
+{
+    SCH_SCREEN* shown = currentScreen( aFrame );
+
+    if( !shown )
+        return;
+
+    // Same apply-time resolution as pcbnew's doApplyHeader.
+    if( g_schHeaderCheck )
+    {
+        g_schHeaderCheck = false;
+        schCheckHeader( aFrame );
+    }
+
+    const std::string latest = pcbjam_collab::resolveHeaderPayload( aQueued.dump() );
+
+    if( latest.empty() )
+        return;
+
+    const json aHeader = json::parse( latest, nullptr, /*allow_exceptions*/ false );
+
+    if( aHeader.is_discarded() || !aHeader.is_object() )
+        return;
+
+    auto str = []( const json& j, const char* k ) -> wxString
+    {
+        return j.contains( k ) && j[k].is_string()
+                       ? wxString::FromUTF8( j[k].get<std::string>().c_str() )
+                       : wxString();
+    };
+
+    s_applyingRemote = true;
+
+    if( aHeader.contains( "paper" ) && aHeader["paper"].is_object() )
+    {
+        const json& p = aHeader["paper"];
+        PAGE_INFO   page = shown->GetPageSettings();
+
+        if( page.SetType( str( p, "type" ) ) )
+        {
+            if( page.GetType() == PAGE_SIZE_TYPE::User && p.contains( "w" ) && p.contains( "h" ) )
+            {
+                page.SetWidthMM( p["w"].get<double>() );
+                page.SetHeightMM( p["h"].get<double>() );
+            }
+
+            page.SetPortrait( p.value( "portrait", false ) );
+            shown->SetPageSettings( page );
+        }
+    }
+
+    if( aHeader.contains( "title" ) && aHeader["title"].is_object() )
+    {
+        const json& t = aHeader["title"];
+        TITLE_BLOCK tb;
+        tb.SetTitle( str( t, "title" ) );
+        tb.SetDate( str( t, "date" ) );
+        tb.SetRevision( str( t, "rev" ) );
+        tb.SetCompany( str( t, "company" ) );
+
+        for( const json& c : t.value( "comments", json::array() ) )
+        {
+            if( c.is_array() && c.size() == 2 && c[0].is_number_integer() && c[1].is_string() )
+                tb.SetComment( c[0].get<int>() - 1,
+                               wxString::FromUTF8( c[1].get<std::string>().c_str() ) );
+        }
+
+        shown->SetTitleBlock( tb );
+    }
+
+    aFrame->HardRedraw();
+    schNoteHeader( aFrame );
+    s_applyingRemote = false;
+}
+
+void schApplyHeader( std::string aJson )
+{
+    if( pcbjam_open::busy() )
+        return;
+
+    json header = json::parse( aJson, nullptr, /*allow_exceptions*/ false );
+
+    if( header.is_discarded() || !header.is_object() )
+        return;
+
+    SCH_EDIT_FRAME* fr = schFrame();
+
+    if( !fr )
+        return;
+
+    pcbjam_collab::runOnCoroutine( fr, [fr, header]() { doApplySchHeader( fr, header ); } );
+}
+
 
 // ───────────────────────── collab presence (collab-presence 0003) ─────────────────────────
 //
@@ -1324,6 +1634,62 @@ static bool applyTargetsShownSheet( SCH_EDIT_FRAME* aFrame, const json& aWire )
 }
 
 
+// Group membership across remote applies (sync audit SYNC-04) — the schematic twin of
+// pcbnew's relinkGroups: a group parsed in the throwaway screen arrives with no members,
+// and replacing a member drops it from its group. After Push, each group's declared
+// members (from its last applied blob) are resolved on the SHOWN screen (a room is one
+// sheet — never hierarchy-wide, copied sheets repeat uuids), and a replaced member
+// rejoins its predecessor's group. Plain AddItem: SKIP_UNDO state, no listener echo.
+std::map<std::string, std::vector<std::string>> g_groupDecl;
+
+void relinkGroups( SCH_EDIT_FRAME* aFrame, const std::set<std::string>& aTouched,
+                   const std::vector<std::pair<std::string, KIID>>& aRejoin )
+{
+    SCH_SCREEN* shown = currentScreen( aFrame );
+
+    if( !shown )
+        return;
+
+    for( SCH_ITEM* item : shown->Items().OfType( SCH_GROUP_T ) )
+    {
+        auto* group = static_cast<SCH_GROUP*>( item );
+        auto  decl  = g_groupDecl.find( toUtf8( group->m_Uuid.AsString() ) );
+
+        if( decl == g_groupDecl.end() )
+            continue;
+
+        bool relevant = aTouched.count( decl->first ) > 0;
+
+        for( size_t i = 0; !relevant && i < decl->second.size(); ++i )
+            relevant = aTouched.count( decl->second[i] ) > 0;
+
+        if( !relevant )
+            continue;
+
+        for( const std::string& m : decl->second )
+        {
+            SCH_ITEM* member = resolveOnShown( aFrame, KIID( wxString::FromUTF8( m.c_str() ) ) );
+
+            if( !member || member == group || member->GetParentGroup() == group )
+                continue;
+
+            if( EDA_GROUP* old = member->GetParentGroup() )
+                old->RemoveItem( member );
+
+            group->AddItem( member );
+        }
+    }
+
+    for( const auto& [itemId, groupId] : aRejoin )
+    {
+        SCH_ITEM* member = resolveOnShown( aFrame, KIID( wxString::FromUTF8( itemId.c_str() ) ) );
+        SCH_ITEM* group  = resolveOnShown( aFrame, groupId );
+
+        if( member && group && group->Type() == SCH_GROUP_T && !member->GetParentGroup() )
+            static_cast<SCH_GROUP*>( group )->AddItem( member );
+    }
+}
+
 void doApplyItems( SCH_EDIT_FRAME* aFrame, const json& aPayload )
 {
     if( !applyTargetsShownSheet( aFrame, aPayload ) )
@@ -1352,6 +1718,9 @@ void doApplyItems( SCH_EDIT_FRAME* aFrame, const json& aPayload )
     // Owned by nobody once the SKIP_UNDO commit detaches them — freed after Push
     // (fields are hidden, not detached, so excluded). See doApply.
     std::vector<SCH_ITEM*> removedItems;
+
+    // (replacement uuid, group its predecessor belonged to) — SYNC-04.
+    std::vector<std::pair<std::string, KIID>> rejoin;
 
     for( const json& rid : aWire.value( "removed", json::array() ) )
     {
@@ -1430,8 +1799,15 @@ void doApplyItems( SCH_EDIT_FRAME* aFrame, const json& aPayload )
         {
             tempScreen->Remove( item );     // detach: tempSheet's dtor must not free it
 
+            if( item->Type() == SCH_GROUP_T )
+                g_groupDecl[toUtf8( item->m_Uuid.AsString() )] = pcbjam_collab::sexprGroupMembers( sexpr );
+
             if( SCH_ITEM* existing = resolveOnShown( aFrame, item->m_Uuid ) )
             {
+                // SYNC-04: the replacement rejoins its predecessor's group after Push.
+                if( EDA_GROUP* group = existing->GetParentGroup() )
+                    rejoin.emplace_back( toUtf8( item->m_Uuid.AsString() ), group->AsEdaItem()->m_Uuid );
+
                 commit.Remove( existing, currentScreen( aFrame ) );
 
                 if( existing->Type() != SCH_FIELD_T )
@@ -1464,6 +1840,8 @@ void doApplyItems( SCH_EDIT_FRAME* aFrame, const json& aPayload )
 
     for( SCH_ITEM* item : removedItems )
         delete item;
+
+    relinkGroups( aFrame, std::set<std::string>( touched.begin(), touched.end() ), rejoin );
 
     // Fold ONLY the applied uuids into the baseline (echo suppression), then flush:
     // anything else that now differs — a concurrent local edit, the connectivity
@@ -1600,6 +1978,8 @@ std::string schCollabSnapshotItems()
         }
 
         rebaseline();
+        schNoteHeader( fr ); // the header this snapshot agrees on (WP4 / S3)
+        g_schLastProject = schProjectText( fr ); // …and the project settings (WP5)
     }
 
     return json{ { "added", added }, { "changed", json::array() },
@@ -2079,6 +2459,179 @@ bool schCollabTestSetFieldText( std::string aId, std::string aText )
     return true;
 }
 
+
+// 2026-09-29 sync audit: one real commit over explicitly named screens.
+// Resolving by (filename, uuid) lets the test exercise copied-sheet collisions
+// in the production dirty collector without reproducing that bug in the driver.
+int schCollabTestAuditFields( std::string aJson )
+{
+    SCH_EDIT_FRAME* fr = schFrame();
+    json edits = json::parse( aJson, nullptr, false );
+    if( !fr || !edits.is_array() )
+        return -1;
+    struct Edit { SCH_SYMBOL* symbol; SCH_SCREEN* screen; wxString value; };
+    std::vector<Edit> targets;
+    SCH_SCREENS screens( fr->Schematic().Root() );
+    for( const auto& edit : edits )
+    {
+        if( !edit.is_object() || !edit.contains( "sheet" ) || !edit.contains( "uuid" )
+            || !edit.contains( "value" ) )
+            return -1;
+        const std::string file = edit["sheet"].get<std::string>();
+        const std::string id = edit["uuid"].get<std::string>();
+        bool found = false;
+        for( SCH_SCREEN* screen = screens.GetFirst(); screen; screen = screens.GetNext() )
+        {
+            if( toUtf8( screen->GetFileName() ) != file )
+                continue;
+            for( SCH_ITEM* item : screen->Items() )
+            {
+                if( item->Type() == SCH_SYMBOL_T && toUtf8( item->m_Uuid.AsString() ) == id )
+                {
+                    targets.push_back( { static_cast<SCH_SYMBOL*>( item ), screen,
+                        wxString::FromUTF8( edit["value"].get<std::string>().c_str() ) } );
+                    found = true;
+                    break;
+                }
+            }
+        }
+        if( !found )
+            return -1; // No partial commit when the setup missed a target.
+    }
+    pcbjam_collab::runOnCoroutine( fr, [fr, targets]() {
+        SCH_COMMIT commit( fr );
+        for( const auto& edit : targets )
+        {
+            commit.Modify( edit.symbol, edit.screen );
+            edit.symbol->SetValueFieldText( edit.value );
+        }
+        commit.Push( wxT( "Sync audit global field edit" ) );
+    } );
+    return static_cast<int>( targets.size() );
+}
+
+// Read a parked screen through the native selection writer, without rebaselining.
+std::string schCollabTestAuditSheetItems( std::string aFile )
+{
+    SCH_EDIT_FRAME* fr = schFrame();
+    json added = json::array();
+    if( !fr )
+        return "";
+    SCH_SCREENS screens( fr->Schematic().Root() );
+    for( SCH_SCREEN* screen = screens.GetFirst(); screen; screen = screens.GetNext() )
+    {
+        if( toUtf8( screen->GetFileName() ) != aFile )
+            continue;
+        for( SCH_ITEM* item : screen->Items() )
+        {
+            if( item->Type() != SCH_MARKER_T )
+                added.push_back( { { "sexpr", itemBlob( fr, item, screen ) }, { "parent", nullptr } } );
+        }
+        return json{ { "added", added }, { "changed", json::array() },
+                     { "removed", json::array() } }.dump();
+    }
+    return "";
+}
+
+bool schCollabTestAuditLibrary( std::string aId, std::string aDescription )
+{
+    SCH_EDIT_FRAME* fr = schFrame();
+    if( !fr )
+        return false;
+    SCH_ITEM* item = resolveOnShown( fr, KIID( wxString::FromUTF8( aId.c_str() ) ) );
+    if( !item || item->Type() != SCH_SYMBOL_T )
+        return false;
+    auto* sym = static_cast<SCH_SYMBOL*>( item );
+    SCH_SCREEN* screen = fr->GetScreen();
+    wxString name = sym->UseLibIdLookup() ? wxString( sym->GetLibId().Format() )
+                                         : sym->GetSchSymbolLibraryName();
+    auto entry = screen->GetLibSymbols().find( name );
+    if( entry == screen->GetLibSymbols().end() )
+        return false;
+    LIB_SYMBOL* lib = entry->second;
+    pcbjam_collab::runOnCoroutine( fr, [fr, sym, screen, lib, aDescription]() {
+        SCH_COMMIT commit( fr );
+        commit.Modify( sym, screen );
+        lib->SetDescription( wxString::FromUTF8( aDescription.c_str() ) );
+        if( sym->GetLibSymbolRef() && sym->GetLibSymbolRef().get() != lib )
+            sym->GetLibSymbolRef()->SetDescription( wxString::FromUTF8( aDescription.c_str() ) );
+        commit.Push( wxT( "Sync audit library definition edit" ) );
+    } );
+    return true;
+}
+
+// Proposal 21 WP4/S3 test hook: a Page Settings edit of the SHOWN sheet without the
+// dialog — { paper?, title? } — ending in OnModify() like the dialog's OK.
+bool schCollabTestAuditPage( std::string aJson )
+{
+    SCH_EDIT_FRAME* fr = schFrame();
+    json            edit = json::parse( aJson, nullptr, false );
+
+    if( !fr || !edit.is_object() )
+        return false;
+
+    pcbjam_collab::runOnCoroutine( fr, [fr, edit]()
+    {
+        SCH_SCREEN* screen = currentScreen( fr );
+
+        if( !screen )
+            return;
+
+        if( edit.contains( "paper" ) )
+        {
+            PAGE_INFO page = screen->GetPageSettings();
+            page.SetType( wxString::FromUTF8( edit["paper"].get<std::string>().c_str() ) );
+            screen->SetPageSettings( page );
+        }
+
+        if( edit.contains( "title" ) )
+        {
+            TITLE_BLOCK tb = screen->GetTitleBlock();
+            tb.SetTitle( wxString::FromUTF8( edit["title"].get<std::string>().c_str() ) );
+            screen->SetTitleBlock( tb );
+        }
+
+        fr->OnModify();
+    } );
+    return true;
+}
+
+// Proposal 21 WP5: a peer's .kicad_pro was restaged into MEMFS — re-read it and
+// refresh what the frame derives from it (ERC severities, net classes, defaults).
+bool schReloadProjectSettings()
+{
+    SCH_EDIT_FRAME* fr = schFrame();
+
+    if( !fr || fr->Prj().IsNullProject() )
+        return false;
+
+    pcbjam_collab::runOnCoroutine( fr, [fr]()
+    {
+        PROJECT& prj = fr->Prj();
+        prj.GetProjectFile().LoadFromFile( prj.GetProjectPath() );
+        fr->LoadProjectSettings();
+        g_schLastProject = schProjectText( fr );
+        fr->HardRedraw();
+    } );
+    return true;
+}
+
+// Proposal 21 S8: a peer's .kicad_wks edit (pl_editor room) was restaged into MEMFS —
+// re-read the project's drawing sheet the way the frame does on project load.
+bool schReloadDrawingSheet()
+{
+    SCH_EDIT_FRAME* fr = schFrame();
+
+    if( !fr )
+        return false;
+
+    pcbjam_collab::runOnCoroutine( fr, [fr]()
+    {
+        fr->LoadDrawingSheet();
+        fr->HardRedraw();
+    } );
+    return true;
+}
 
 // ── drift-trio phase B action hooks (standalone-hardening 0008 §5) ───────────
 // Creation/mutation primitives for the trio harness's action catalog. Each
@@ -2934,6 +3487,19 @@ EMSCRIPTEN_BINDINGS(eeschema) {
     function("kicadSaveSchematic", &kicadSaveSchematic);
     // eeschema-only ysync-review repro hook (name not shared with pcbnew).
     function("kicadCollabTestSetFieldText", &schCollabTestSetFieldText);
+    // Sync audit 2026-09-29 hooks (proposal 21; tool-unique names).
+    function("kicadCollabTestAuditFields", &schCollabTestAuditFields);
+    function("kicadCollabTestAuditSheetItems", &schCollabTestAuditSheetItems);
+    function("kicadCollabTestAuditLibrary", &schCollabTestAuditLibrary);
+    function("kicadCollabTestAuditPage", &schCollabTestAuditPage);
+    // Proposal 21 WP4 / S3: live sheet-header sync (eeschema-only names, merged-image safe).
+    function("kicadSchHeaderText", &schHeaderText);
+    function("kicadSchApplyHeader", &schApplyHeader);
+    function("kicadSchHeaderBlocked", &schHeaderBlocked);
+    // Proposal 21 S8: peer-edited drawing sheet → reload.
+    function("kicadSchReloadDrawingSheet", &schReloadDrawingSheet);
+    // Proposal 21 WP5: peer-edited project settings → reload.
+    function("kicadSchReloadProjectSettings", &schReloadProjectSettings);
     // drift-trio phase B action hooks (tool-unique names, merged-image safe).
     function("kicadCollabTestAddWire", &schCollabTestAddWire);
     function("kicadCollabTestAddJunction", &schCollabTestAddJunction);

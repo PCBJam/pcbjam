@@ -113,6 +113,26 @@ afterEach(() => {
 });
 
 describe("startSiblingRestage", () => {
+  it("mirrors the drawing sheet when asked, and reports each restage (proposal 21 S8)", async () => {
+    const onRestaged = vi.fn();
+    await startSiblingRestage({
+      win: {} as never,
+      slug: "proj",
+      scopeId: "S",
+      projectId: "P",
+      files: ["main.kicad_pcb", "main.kicad_sch", "page.kicad_wks"].map((path) => ({ path })),
+      provider: { kind: "none" } as never,
+      log: () => {},
+      extensions: [".kicad_wks"],
+      onRestaged,
+    });
+    expect(sessions.map((s) => s.room)).toEqual(["S:P:page.kicad_wks"]);
+    expect(onRestaged).toHaveBeenCalledWith("page.kicad_wks"); // the connect-time restage
+    sessions[0]!.doc.emitRemote();
+    await vi.runAllTimersAsync();
+    expect(onRestaged).toHaveBeenCalledTimes(2);
+  });
+
   it("subscribes only the .kicad_sch siblings, as an invisible observer", async () => {
     await start(["main.kicad_pcb", "main.kicad_sch", "sub.kicad_sch", "a.kicad_wks"]);
     expect(sessions.map((s) => s.room)).toEqual([

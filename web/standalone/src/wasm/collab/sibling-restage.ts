@@ -85,8 +85,18 @@ export async function startSiblingRestage(opts: {
   presence?: SiblingPresence;
   provider: ProviderConfig;
   log: (m: string) => void;
+  /**
+   * Room-backed file kinds to mirror (default: schematics, for pcbnew's
+   * "Update PCB from Schematic"). Proposal 21 S8 adds `.kicad_wks`: the
+   * project drawing sheet is read once at open, so a pl_editor peer's edit
+   * never showed in an open board/schematic.
+   */
+  extensions?: readonly string[];
+  /** A mirrored file was just restaged into MEMFS (native reload hook). */
+  onRestaged?: (relPath: string) => void;
 }): Promise<SiblingRestageHandle> {
   const { win, slug, log } = opts;
+  const extensions = opts.extensions ?? [".kicad_sch"];
   // Only the opened board's own KiCad project can be synced from: pcbnew's
   // "update from schematic" reads the sheets next to the .kicad_pcb (same
   // directory tree). A backend project holding SEVERAL KiCad projects (a
@@ -99,7 +109,7 @@ export async function startSiblingRestage(opts: {
     : "";
   const sheetPaths = opts.files
     .map((f) => f.path)
-    .filter((p) => p.endsWith(".kicad_sch") && p.startsWith(dir));
+    .filter((p) => extensions.some((ext) => p.endsWith(ext)) && p.startsWith(dir));
   const sheetSet = new Set(sheetPaths);
 
   const timers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -126,6 +136,7 @@ export async function startSiblingRestage(opts: {
         );
       }
       restageFile(win, slug, sheetPath, new TextEncoder().encode(text), log);
+      opts.onRestaged?.(sheetPath);
     } catch (err) {
       // Loud on purpose: a swallowed failure here leaves the sibling mirror
       // permanently stale with no visible symptom.

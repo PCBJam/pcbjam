@@ -23,6 +23,8 @@
 #include <pcb_shape.h>
 #include <pcb_text.h>
 #include <pcb_group.h>
+#include <pcb_generator.h>
+#include <pcb_point.h>
 #include <zone.h>
 #include <eda_text.h>
 #include <pcb_edit_frame.h>
@@ -35,6 +37,10 @@
 #include <richio.h>
 #include <tools/pcb_selection.h>
 #include <tools/pcb_selection_tool.h>
+#include <tools/drc_tool.h>
+#include <drc/drc_engine.h>
+#include <board_design_settings.h>
+#include <ki_exception.h>
 #include <settings/color_settings.h>
 #include <widgets/appearance_controls.h>
 #include <geometry/shape_poly_set.h>
@@ -56,6 +62,11 @@
 #include <pcbjam_remote_lock.h>
 #include <pcbjam_read_only.h>
 #include <project.h>
+#include <project/project_file.h>
+#include <project/component_class_settings.h>
+#include <project/net_settings.h>
+#include <netclass.h>
+#include <settings/settings_manager.h>
 #include <view/view.h>
 #include <view/view_overlay.h>
 #include <pcb_draw_panel_gal.h>
@@ -70,7 +81,11 @@
 #include "collab_presence_style.h"
 #include "pcbjam_theme.h"
 #include "pcbjam_libs_reload.h"
+#include <page_info.h>
+#include <title_block.h>
 #include <algorithm>
+#include <cstring>
+#include <typeinfo>
 #include <chrono>
 #include <map>
 #include <memory>
@@ -257,6 +272,9 @@ void forEachTopItem( BOARD& aBoard, Fn&& aFn )
     for( BOARD_ITEM* d : aBoard.Drawings() )    aFn( d );
     for( ZONE* z : aBoard.Zones() )             aFn( static_cast<BOARD_ITEM*>( z ) );
     for( PCB_GROUP* g : aBoard.Groups() )       aFn( static_cast<BOARD_ITEM*>( g ) );
+    // Separate BOARD collections the file writer serializes too (sync audit SYNC-05).
+    for( PCB_GENERATOR* g : aBoard.Generators() ) aFn( static_cast<BOARD_ITEM*>( g ) );
+    for( PCB_POINT* pt : aBoard.Points() )      aFn( static_cast<BOARD_ITEM*>( pt ) );
 }
 
 // The diff/wire unit for one board item: the fields apply() can act on. Tracks carry their two
@@ -520,6 +538,8 @@ BOARD_ITEM* makeFromBlob( BOARD& aBoard, const std::string& aBlobIn )
     else if( !clip->Zones().empty() )       found = clip->Zones().front();
     else if( !clip->Drawings().empty() )    found = clip->Drawings().front();    // shape / text / …
     else if( !clip->Footprints().empty() )  found = clip->Footprints().front();
+    else if( !clip->Points().empty() )      found = clip->Points().front();      // SYNC-05
+    else if( !clip->Generators().empty() )  found = clip->Generators().front();  // SYNC-05
     else if( !clip->Groups().empty() )      found = clip->Groups().front();
 
     if( found )
@@ -817,6 +837,140 @@ void rebaselineTouched( BOARD* aBoard, const std::vector<std::string>& aIds )
 }
 
 // Diff the current (settled, post-cleanup) model against the baseline and broadcast the change.
+// ── Board header sync (proposal 21 WP4 — sync audit SYNC-06a, layer drift) ────────────────
+//
+// Board-level state — (general …) (paper …) (title_block …) (layers …) (setup …) (property …)
+// (variants …) — has no item events, so it only reached the room on File→Save and never
+// reached an open peer. The fork's PCB_EDIT_FRAME::OnModify now calls
+// kicadCollabPcbOnModify(); the next flush serializes JUST the header (no items — cheap)
+// and, when it differs from what this tab last emitted or applied, hands it to JS
+// (kicadCollab.onHeader), which three-way merges it into the room. The other direction is
+// kicadCollabApplyHeader. Layout heads never ride the items wire.
+
+// A board writer that can emit only the header block (formatHeader is protected).
+class HEADER_BOARD_IO : public WIRE_BOARD_IO
+{
+public:
+    explicit HEADER_BOARD_IO( BOARD* aBoard ) : WIRE_BOARD_IO( aBoard ) {}
+
+    void FormatHeaderOnly() const { formatHeader( m_board ); }
+};
+
+std::string boardHeaderText( BOARD* aBoard )
+{
+    if( !aBoard )
+        return "";
+
+    HEADER_BOARD_IO  io( aBoard );
+    STRING_FORMATTER fmt;
+    io.SetOutputFormatter( &fmt );
+    fmt.Print( "(kicad_pcb (version %d) (generator \"pcbnew\")", SEXPR_BOARD_FILE_VERSION );
+    io.FormatHeaderOnly();
+    fmt.Print( ")" );
+
+    std::string out = fmt.GetString();
+    KICAD_FORMAT::Prettify( out, KICAD_FORMAT::FORMAT_MODE::COMPACT_TEXT_PROPERTIES );
+    return out;
+}
+
+bool        g_headerCheck = false;   // OnModify seen since the last flush
+std::string g_lastHeader;            // last header this tab emitted or applied
+LSET        g_lastLayers;            // enabled layers at that point (G2)
+bool        g_lastLayersKnown = false;
+
+// ── Live project settings (proposal 21 WP5) ───────────────────────────────
+// Board Setup edits netclasses, severities, text variables… in the in-memory
+// PROJECT_FILE; the .kicad_pro in MEMFS only changed on File→Save. Each flush
+// after an OnModify compares the serialized project with the last known one
+// and, when it moved, saves it and routes it through the save hook — the
+// standalone patches the project's sidecar room (per key) from that file.
+extern "C" void kicadCollabOnSave( const char* aPath );
+
+// The project settings as KiCad would save them — the project file's own params PLUS
+// every nested settings object (net classes, board design rules, ERC / schematic
+// settings…): FormatAsString() on the project alone leaves the nested ones out, and a
+// Board Setup netclass edit lives entirely in them.
+inline std::string projectFingerprint( PROJECT& aProject )
+{
+    PROJECT_FILE& pf = aProject.GetProjectFile();
+    std::string   out = pf.FormatAsString();
+
+    auto add = [&]( JSON_SETTINGS* aNested )
+    {
+        if( aNested )
+            out += "\n" + aNested->FormatAsString();
+    };
+
+    add( pf.NetSettings().get() );
+    add( pf.ComponentClassSettings().get() );
+    add( pf.m_BoardSettings );
+    return out;
+}
+
+std::string g_lastProject;
+
+std::string projectText( PCB_EDIT_FRAME* aFrame )
+{
+    if( !aFrame || aFrame->Prj().IsNullProject() )
+        return "";
+
+    return projectFingerprint( aFrame->Prj() );
+}
+
+void noteProjectBaseline( PCB_EDIT_FRAME* aFrame )
+{
+    g_lastProject = projectText( aFrame );
+}
+
+void checkProject( PCB_EDIT_FRAME* aFrame )
+{
+    std::string p = projectText( aFrame );
+
+    if( p.empty() || p == g_lastProject )
+        return;
+
+    g_lastProject = p;
+
+    if( aFrame->GetSettingsManager()->SaveProject() )
+        kicadCollabOnSave( aFrame->Prj().GetProjectFullName().utf8_str() );
+}
+
+void noteHeaderBaseline( BOARD& aBoard )
+{
+    g_lastHeader      = boardHeaderText( &aBoard );
+    g_lastLayers      = aBoard.GetEnabledLayers();
+    g_lastLayersKnown = true;
+}
+
+// Emit the header when it changed. Called at the top of flushDiff so G2's dirty marks
+// ride the same flush: BOARD::RemoveAllItemsOnLayer (Board Setup removing a layer)
+// narrows multi-layer items' layer sets with NO listener event — a zone that lost
+// In1.Cu would never emit. When enabled layers shrank, every zone re-emits once.
+void checkHeader( BOARD& aBoard )
+{
+    std::string h = boardHeaderText( &aBoard );
+
+    if( h == g_lastHeader )
+        return;
+
+    LSET now = aBoard.GetEnabledLayers();
+
+    if( g_lastLayersKnown && ( g_lastLayers & ~now ).any() )
+    {
+        for( ZONE* z : aBoard.Zones() )
+            noteDirty( z );
+    }
+
+    g_lastHeader      = h;
+    g_lastLayers      = now;
+    g_lastLayersKnown = true;
+
+    EM_ASM( {
+        if( window.kicadCollab && window.kicadCollab.onHeader )
+            window.kicadCollab.onHeader( UTF8ToString( $0 ) );
+    }, h.c_str() );
+}
+
 void flushDiff()
 {
     g_flushScheduled = false;
@@ -827,6 +981,14 @@ void flushDiff()
         return;
 
     BOARD*                      board = fr->GetBoard();
+
+    if( g_headerCheck )
+    {
+        g_headerCheck = false;
+        checkHeader( *board );
+        checkProject( fr );
+    }
+
     std::map<std::string, json> cur   = snapshotByUuid( *board );
 
     json added = json::array(), changed = json::array(), removed = json::array();
@@ -1085,6 +1247,160 @@ BOARD* ensureBridge()
     return board;
 }
 
+// Fork hook (pcb_edit_frame.cpp OnModify, weak there): any modification may have
+// touched the header — re-check it on the next flush. Remote applies don't count.
+extern "C" void kicadCollabPcbOnModify()
+{
+    if( s_applyingRemote || !g_listener )
+        return;
+
+    g_headerCheck = true;
+    scheduleFlush();
+}
+
+// Board Setup open ⇒ a remote header apply would be overwritten by the dialog's OK
+// (it commits the state it loaded). JS defers the apply until the dialog closes.
+bool pcbCollabHeaderBlocked()
+{
+    for( wxWindow* w : wxTopLevelWindows )
+    {
+        // By RTTI name: the dialog headers pull generated *_base.h files the
+        // bindings' include path does not carry.
+        if( w && w->IsShown() && std::strstr( typeid( *w ).name(), "BOARD_SETUP" ) )
+            return true;
+    }
+
+    return false;
+}
+
+std::string pcbCollabHeaderText()
+{
+    PCB_EDIT_FRAME* fr = pcbFrame();
+    return fr ? boardHeaderText( fr->GetBoard() ) : std::string();
+}
+
+// Apply a peer's header: parse it into a throwaway board and copy the board-FILE part of
+// the state across (never the .kicad_pro part of the design settings — that file syncs
+// on its own). Then refresh like ShowBoardSetupDialog does after OK. No commit, no undo
+// entry: this is document-level state the room owns (proposal 21 WP4 Part B).
+void doApplyHeader( PCB_EDIT_FRAME* aFrame, const std::string& aQueued )
+{
+    BOARD* board = aFrame->GetBoard();
+
+    if( !board )
+        return;
+
+    // Pending local header edit first (it reaches the room and merges there),
+    // then apply the room's LATEST header — never the one rendered at queue time.
+    if( g_headerCheck )
+    {
+        g_headerCheck = false;
+        checkHeader( *board );
+    }
+
+    const std::string aText = pcbjam_collab::resolveHeaderPayload( aQueued );
+
+    if( aText.empty() )
+        return;
+
+    BOARD* tmp = nullptr;
+
+    try
+    {
+        PCB_IO_KICAD_SEXPR io;
+        BOARD_ITEM*        parsed = io.PCB_IO_KICAD_SEXPR::Parse( wxString::FromUTF8( aText.c_str() ) );
+
+        if( parsed && parsed->Type() == PCB_T )
+            tmp = static_cast<BOARD*>( parsed );
+        else
+            delete parsed;
+    }
+    catch( const IO_ERROR& e )
+    {
+        EM_ASM( { console.log( "[collab] pcbnew applyHeader parse error: " + UTF8ToString( $0 ) ); },
+                std::string( e.What().utf8_str() ).c_str() );
+        return;
+    }
+    catch( ... )
+    {
+        EM_ASM( { console.log( "[collab] pcbnew applyHeader parse error: unknown exception" ); } );
+        return;
+    }
+
+    if( !tmp )
+        return;
+
+    s_applyingRemote = true;
+
+    const LSET before = board->GetEnabledLayers();
+    const LSET after  = tmp->GetEnabledLayers();
+
+    board->SetEnabledLayers( after );
+
+    for( PCB_LAYER_ID layer : after.Seq() )
+    {
+        board->SetLayerName( layer, tmp->GetLayerName( layer ) );
+        board->SetLayerType( layer, tmp->GetLayerType( layer ) );
+    }
+
+    BOARD_DESIGN_SETTINGS&       d = board->GetDesignSettings();
+    const BOARD_DESIGN_SETTINGS& s = tmp->GetDesignSettings();
+
+    d.SetBoardThickness( s.GetBoardThickness() );
+    d.m_HasStackup                 = s.m_HasStackup;
+    d.GetStackupDescriptor()       = s.GetStackupDescriptor();
+    d.m_SolderMaskExpansion        = s.m_SolderMaskExpansion;
+    d.m_SolderMaskMinWidth         = s.m_SolderMaskMinWidth;
+    d.m_SolderPasteMargin          = s.m_SolderPasteMargin;
+    d.m_SolderPasteMarginRatio     = s.m_SolderPasteMarginRatio;
+    d.m_AllowSoldermaskBridgesInFPs = s.m_AllowSoldermaskBridgesInFPs;
+    d.m_TentViasFront              = s.m_TentViasFront;
+    d.m_TentViasBack               = s.m_TentViasBack;
+    d.m_CoverViasFront             = s.m_CoverViasFront;
+    d.m_CoverViasBack              = s.m_CoverViasBack;
+    d.m_PlugViasFront              = s.m_PlugViasFront;
+    d.m_PlugViasBack               = s.m_PlugViasBack;
+    d.m_CapVias                    = s.m_CapVias;
+    d.m_FillVias                   = s.m_FillVias;
+    d.m_ZoneLayerProperties        = s.m_ZoneLayerProperties;
+    d.SetAuxOrigin( s.GetAuxOrigin() );
+    d.SetGridOrigin( s.GetGridOrigin() );
+
+    board->SetPlotOptions( tmp->GetPlotOptions() );
+    board->SetPageSettings( tmp->GetPageSettings() );
+    board->SetTitleBlock( tmp->GetTitleBlock() );
+    board->SetProperties( tmp->GetProperties() );
+
+    delete tmp;
+
+    // Newly enabled layers become visible (PANEL_SETUP_LAYERS does the same).
+    board->SetVisibleLayers( board->GetVisibleLayers() | ( after & ~before ) );
+
+    aFrame->ReCreateLayerBox();
+
+    if( APPEARANCE_CONTROLS* appearance = aFrame->GetAppearancePanel() )
+        appearance->OnBoardChanged();
+
+    aFrame->GetCanvas()->GetView()->UpdateAllItems( KIGFX::ALL );
+    aFrame->GetCanvas()->Refresh();
+
+    noteHeaderBaseline( *board );
+    s_applyingRemote = false;
+}
+
+void pcbCollabApplyHeader( std::string aText )
+{
+    if( pcbjam_open::busy() )
+        return;
+
+    PCB_EDIT_FRAME* fr = pcbFrame();
+
+    if( !fr )
+        return;
+
+    pcbjam_collab::runOnCoroutine( fr, [fr, aText]() { doApplyHeader( fr, aText ); } );
+}
+
 // The actual model mutation, via BOARD_COMMIT so connectivity + ratsnest recompute exactly as
 // for a UI edit (0004 §apply: never bypass the commit for remote ops). Runs inside the apply
 // COROUTINE (see kicadCollabApply).
@@ -1167,6 +1483,66 @@ void doApply( PCB_EDIT_FRAME* aFrame, const json& aDelta )
     s_applyingRemote = false;
 }
 
+// Group membership across remote applies (sync audit SYNC-04). A group/generator blob
+// is parsed in a throwaway board that holds none of its members, so it arrives empty;
+// and replacing a member removes the old object from its group. Both are repaired
+// after the apply's Push: each group's DECLARED member list (from its last applied
+// blob) is resolved against the live board, and a replaced member rejoins the group
+// its predecessor was in. Plain EDA_GROUP::AddItem — membership is not undo-tracked
+// state here (remote applies are SKIP_UNDO) and fires no listener, so it never echoes.
+std::map<std::string, std::vector<std::string>> g_groupDecl;
+
+void relinkGroups( BOARD& aBoard, const std::set<std::string>& aTouched,
+                   const std::vector<std::pair<std::string, KIID>>& aRejoin )
+{
+    auto relink = [&]( PCB_GROUP* aGroup )
+    {
+        auto decl = g_groupDecl.find( toUtf8( aGroup->m_Uuid.AsString() ) );
+
+        if( decl == g_groupDecl.end() )
+            return;
+
+        bool relevant = aTouched.count( decl->first ) > 0;
+
+        for( size_t i = 0; !relevant && i < decl->second.size(); ++i )
+            relevant = aTouched.count( decl->second[i] ) > 0;
+
+        if( !relevant )
+            return;
+
+        for( const std::string& m : decl->second )
+        {
+            BOARD_ITEM* item = aBoard.ResolveItem( KIID( wxString::FromUTF8( m.c_str() ) ), true );
+
+            if( !item || item == aGroup || item->GetParentGroup() == aGroup )
+                continue;
+
+            if( EDA_GROUP* old = item->GetParentGroup() )
+                old->RemoveItem( item );
+
+            aGroup->AddItem( item );
+        }
+    };
+
+    for( PCB_GROUP* g : aBoard.Groups() )
+        relink( g );
+
+    for( PCB_GENERATOR* g : aBoard.Generators() )
+        relink( g );
+
+    for( const auto& [itemId, groupId] : aRejoin )
+    {
+        BOARD_ITEM* item  = aBoard.ResolveItem( KIID( wxString::FromUTF8( itemId.c_str() ) ), true );
+        BOARD_ITEM* group = aBoard.ResolveItem( groupId, true );
+
+        if( !item || !group || item->GetParentGroup() )
+            continue;
+
+        if( group->Type() == PCB_GROUP_T || group->Type() == PCB_GENERATOR_T )
+            static_cast<PCB_GROUP*>( group )->AddItem( item );
+    }
+}
+
 // v2 items apply: removed by uuid; added/changed are an idempotent per-item upsert —
 // parse the blob (wrapping bare non-footprint payloads in a live-board envelope),
 // then replace any existing item sharing the parsed uuid. Runs inside the apply
@@ -1192,6 +1568,9 @@ void doApplyItems( PCB_EDIT_FRAME* aFrame, const json& aPayload )
 
     // Owned by nobody once the SKIP_UNDO commit detaches them — freed after Push.
     std::vector<BOARD_ITEM*> removedItems;
+
+    // (replacement uuid, group its predecessor belonged to) — SYNC-04.
+    std::vector<std::pair<std::string, KIID>> rejoin;
 
     std::set<std::string> removedIds;
 
@@ -1250,11 +1629,46 @@ void doApplyItems( PCB_EDIT_FRAME* aFrame, const json& aPayload )
             return;
         }
 
+        if( parsed->Type() == PCB_GROUP_T || parsed->Type() == PCB_GENERATOR_T )
+            g_groupDecl[toUtf8( parsed->m_Uuid.AsString() )] = pcbjam_collab::sexprGroupMembers( trimmed );
+
         if( BOARD_ITEM* existing = board->ResolveItem( parsed->m_Uuid, /*allowNullptr*/ true ) )
         {
             // Replacing by uuid; a (shouldn't-happen) child match replaces its parent.
             if( FOOTPRINT* fp = existing->GetParentFootprint() )
                 existing = fp;
+
+            // Update IN PLACE when the kinds match (sync audit SYNC-08): the live object
+            // keeps its identity, so the local undo stack's pickers — which point at it —
+            // stay valid. Replacing the object freed what those pickers pointed at: an
+            // undo after a peer's edit then swapped its image into freed memory and
+            // emitted nothing. SwapItemData is the undo system's own restore primitive
+            // (parent + group membership preserved). Groups/generators keep the
+            // replace+relink path: swapping would move their member sets.
+            if( existing->Type() == parsed->Type() && existing->Type() != PCB_GROUP_T
+                && existing->Type() != PCB_GENERATOR_T )
+            {
+                // Same sequence as BOARD_COMMIT::Revert's CHT_MODIFY: the view and the
+                // connectivity index hold pointers to the item's CHILDREN (a footprint's
+                // pads), which the swap moves to `parsed` — take the item out first,
+                // put it back after, so neither keeps a pointer into what gets freed.
+                KIGFX::VIEW* view = aFrame->GetCanvas()->GetView();
+                auto         connectivity = board->GetConnectivity();
+                commit.Modify( existing );
+                view->Remove( existing );
+                connectivity->Remove( existing );
+                existing->SwapItemData( parsed );
+                view->Add( existing );
+                connectivity->Add( existing );
+                removedItems.push_back( parsed );   // now holds the OLD data; freed after Push
+                touched.push_back( toUtf8( existing->m_Uuid.AsString() ) );
+                staged = true;
+                return;
+            }
+
+            // SYNC-04: the replacement rejoins its predecessor's group after Push.
+            if( EDA_GROUP* group = existing->GetParentGroup() )
+                rejoin.emplace_back( toUtf8( parsed->m_Uuid.AsString() ), group->AsEdaItem()->m_Uuid );
 
             commit.Remove( existing );
             removedItems.push_back( existing );
@@ -1277,6 +1691,11 @@ void doApplyItems( PCB_EDIT_FRAME* aFrame, const json& aPayload )
 
     for( BOARD_ITEM* item : removedItems )
         delete item;
+
+    for( const std::string& rid : removedIds )
+        g_groupDecl.erase( rid );
+
+    relinkGroups( *board, std::set<std::string>( touched.begin(), touched.end() ), rejoin );
 
     // Fold ONLY the applied uuids into the baseline (echo suppression), then flush:
     // anything else that now differs — a concurrent local edit, cleanup this apply's
@@ -1592,6 +2011,9 @@ std::string pcbCollabSnapshotItems()
 
     if( board )
     {
+        noteHeaderBaseline( *board ); // the header this snapshot agrees on (WP4)
+        noteProjectBaseline( pcbFrame() ); // …and the project settings (WP5)
+
         auto push = [&]( BOARD_ITEM* item )
         {
             std::string sexpr = blobForItem( board, item );
@@ -1604,6 +2026,11 @@ std::string pcbCollabSnapshotItems()
         for( PCB_TRACK* t : board->Tracks() )       push( t );
         for( ZONE* z : board->Zones() )             push( z );
         for( BOARD_ITEM* d : board->Drawings() )    push( d );
+        // Every other root collection the board writer serializes (sync audit
+        // SYNC-05): a root the snapshot skips never reaches the doc from a seed.
+        for( PCB_POINT* pt : board->Points() )      push( pt );
+        for( PCB_GENERATOR* g : board->Generators() ) push( g );
+        for( PCB_GROUP* g : board->Groups() )       push( g );
     }
 
     rebaseline();
@@ -2442,6 +2869,205 @@ bool pcbCollabTestMoveEndpoint( std::string aId, int aDx, int aDy )
     return true;
 }
 
+// 2026-09-29 sync audit: deterministic native edits, deliberately no sync fixes.
+// These use the same model setters/BOARD_COMMIT as the UI. Coordinates are IU.
+bool pcbCollabTestAuditPolygon( std::string aId, std::string aPoints )
+{
+    PCB_EDIT_FRAME* fr = pcbFrame();
+    BOARD_ITEM* item = testResolve( fr, aId );
+    json points = json::parse( aPoints, nullptr, false );
+    if( !item || item->Type() != PCB_SHAPE_T || !points.is_array() || points.size() < 3 )
+        return false;
+    std::vector<VECTOR2I> vertices;
+    for( const auto& p : points )
+    {
+        if( !p.is_array() || p.size() != 2 || !p[0].is_number_integer() || !p[1].is_number_integer() )
+            return false;
+        vertices.emplace_back( p[0].get<int>(), p[1].get<int>() );
+    }
+    pcbjam_collab::runOnCoroutine( fr, [fr, item, vertices]() {
+        BOARD_COMMIT commit( fr );
+        commit.Modify( item );
+        static_cast<PCB_SHAPE*>( item )->SetPolyPoints( vertices );
+        commit.Push( wxT( "Sync audit polygon edit" ) );
+    } );
+    return true;
+}
+
+bool pcbCollabTestAuditSettings( std::string aJson )
+{
+    PCB_EDIT_FRAME* fr = pcbFrame();
+    json settings = json::parse( aJson, nullptr, false );
+    if( !fr || !settings.is_object() )
+        return false;
+    pcbjam_collab::runOnCoroutine( fr, [fr, settings]() {
+        if( settings.contains( "paper" ) )
+        {
+            PAGE_INFO page = fr->GetPageSettings();
+            page.SetType( wxString::FromUTF8( settings["paper"].get<std::string>().c_str() ) );
+            fr->SetPageSettings( page );
+        }
+        TITLE_BLOCK title = fr->GetTitleBlock();
+        if( settings.contains( "title" ) )
+            title.SetTitle( wxString::FromUTF8( settings["title"].get<std::string>().c_str() ) );
+        if( settings.contains( "revision" ) )
+            title.SetRevision( wxString::FromUTF8( settings["revision"].get<std::string>().c_str() ) );
+        fr->SetTitleBlock( title );
+        fr->OnModify();
+    } );
+    return true;
+}
+
+// Proposal 21 WP4 test hook: a Board Setup → Layers edit without driving the dialog.
+// { "copper": N } sets the copper layer count (removing items on dropped layers the
+// way PANEL_SETUP_LAYERS does); { "rename": [layerName, userName] } renames a layer.
+// Ends in OnModify(), the same trigger the real dialog's OK reaches.
+bool pcbCollabTestAuditLayers( std::string aJson )
+{
+    PCB_EDIT_FRAME* fr = pcbFrame();
+    json            edit = json::parse( aJson, nullptr, false );
+
+    if( !fr || !edit.is_object() )
+        return false;
+
+    pcbjam_collab::runOnCoroutine( fr, [fr, edit]()
+    {
+        BOARD* board = fr->GetBoard();
+
+        if( edit.contains( "copper" ) && edit["copper"].is_number_integer() )
+        {
+            const int  n       = edit["copper"].get<int>();
+            const LSET before  = board->GetEnabledLayers();
+            const LSET after   = ( before & ~LSET::AllCuMask() ) | LSET::AllCuMask( n );
+
+            for( PCB_LAYER_ID layer : LSET( before & ~after ).Seq() )
+                board->RemoveAllItemsOnLayer( layer );
+
+            board->SetEnabledLayers( after );
+            board->SetVisibleLayers( board->GetVisibleLayers() | after );
+        }
+
+        if( edit.contains( "rename" ) && edit["rename"].is_array() && edit["rename"].size() == 2 )
+        {
+            PCB_LAYER_ID layer = board->GetLayerID(
+                    wxString::FromUTF8( edit["rename"][0].get<std::string>().c_str() ) );
+
+            if( layer != UNDEFINED_LAYER )
+                board->SetLayerName( layer, wxString::FromUTF8( edit["rename"][1].get<std::string>().c_str() ) );
+        }
+
+        fr->OnModify();
+    } );
+    return true;
+}
+
+// Proposal 21 WP5 test hooks: a Board Setup → Net Classes edit (the default
+// netclass clearance, in mm) ending in OnModify like the dialog's OK, and a read
+// of the in-memory project file (what a reload must have picked up).
+bool pcbCollabTestAuditNetclass( double aClearanceMm )
+{
+    PCB_EDIT_FRAME* fr = pcbFrame();
+
+    if( !fr )
+        return false;
+
+    pcbjam_collab::runOnCoroutine( fr, [fr, aClearanceMm]()
+    {
+        fr->GetBoard()->GetDesignSettings().m_NetSettings->GetDefaultNetclass()->SetClearance(
+                pcbIUScale.mmToIU( aClearanceMm ) );
+        fr->OnModify();
+    } );
+    return true;
+}
+
+std::string pcbCollabTestProjectText()
+{
+    PCB_EDIT_FRAME* fr = pcbFrame();
+    return fr ? projectText( fr ) : std::string();
+}
+
+// Proposal 21 S6: re-read the board's custom rules (<board>.kicad_dru) after a
+// peer's version was restaged into MEMFS — the same InitEngine call pcbnew makes
+// on board load and the Custom Rules panel makes on OK. A malformed rules file
+// is tolerated exactly as on load (the engine keeps running without it).
+bool pcbReloadDesignRules()
+{
+    PCB_EDIT_FRAME* fr = pcbFrame();
+
+    if( !fr || !fr->GetBoard() )
+        return false;
+
+    pcbjam_collab::runOnCoroutine( fr, [fr]()
+    {
+        wxFileName rules( fr->GetDesignRulesPath() );
+
+        try
+        {
+            if( DRC_TOOL* drcTool = fr->GetToolManager()->GetTool<DRC_TOOL>() )
+                drcTool->GetDRCEngine()->InitEngine( rules );
+
+            if( auto& engine = fr->GetBoard()->GetDesignSettings().m_DRCEngine )
+                engine->InitEngine( rules );
+        }
+        catch( PARSE_ERROR& )
+        {
+        }
+
+        fr->GetBoard()->InitializeClearanceCache();
+    } );
+    return true;
+}
+
+// Proposal 21 WP5: a peer's .kicad_pro (sidecar room) was restaged into MEMFS —
+// re-read it (JSON_SETTINGS reloads the nested design + net settings too) and
+// refresh what the frame derives from it, like a project load does.
+bool pcbReloadProjectSettings()
+{
+    PCB_EDIT_FRAME* fr = pcbFrame();
+
+    if( !fr || fr->Prj().IsNullProject() )
+        return false;
+
+    pcbjam_collab::runOnCoroutine( fr, [fr]()
+    {
+        PROJECT& prj = fr->Prj();
+        prj.GetProjectFile().LoadFromFile( prj.GetProjectPath() );
+        fr->GetBoard()->SynchronizeNetsAndNetClasses( true );
+        fr->LoadProjectSettings();
+
+        try
+        {
+            if( DRC_TOOL* drcTool = fr->GetToolManager()->GetTool<DRC_TOOL>() )
+                drcTool->GetDRCEngine()->InitEngine( wxFileName( fr->GetDesignRulesPath() ) );
+        }
+        catch( PARSE_ERROR& )
+        {
+        }
+
+        fr->GetBoard()->InitializeClearanceCache();
+        noteProjectBaseline( fr );
+        fr->GetCanvas()->Refresh();
+    } );
+    return true;
+}
+
+// Proposal 21 S8: a peer's .kicad_wks edit (pl_editor room) was restaged into MEMFS —
+// re-read the project's drawing sheet the way the frame does on project load.
+bool pcbReloadDrawingSheet()
+{
+    PCB_EDIT_FRAME* fr = pcbFrame();
+
+    if( !fr )
+        return false;
+
+    pcbjam_collab::runOnCoroutine( fr, [fr]()
+    {
+        fr->LoadDrawingSheet();
+        fr->HardRedraw();
+    } );
+    return true;
+}
+
 // ── drift-trio phase B action hooks (standalone-hardening 0008 §5) ───────────
 // Creation/mutation primitives for the trio harness's action catalog. Each
 // drives a REAL BOARD_COMMIT on the apply coroutine, so the BOARD_LISTENER →
@@ -3135,6 +3761,22 @@ EMSCRIPTEN_BINDINGS(pcbnew) {
     // pcbnew-only ysync-review repro hooks (names not shared with eeschema).
     function("kicadCollabTestSetPadSize", &pcbCollabTestSetPadSize);
     function("kicadCollabTestMoveEndpoint", &pcbCollabTestMoveEndpoint);
+    // Sync audit 2026-09-29 hooks (proposal 21; tool-unique names).
+    function("kicadCollabTestAuditPolygon", &pcbCollabTestAuditPolygon);
+    function("kicadCollabTestAuditSettings", &pcbCollabTestAuditSettings);
+    function("kicadCollabTestAuditLayers", &pcbCollabTestAuditLayers);
+    function("kicadCollabTestAuditNetclass", &pcbCollabTestAuditNetclass);
+    function("kicadCollabTestProjectText", &pcbCollabTestProjectText);
+    // Proposal 21 S6: peer-restaged custom rules → native DRC engine.
+    function("kicadReloadDesignRules", &pcbReloadDesignRules);
+    // Proposal 21 WP4: live board-header sync (pcbnew-only names, merged-image safe).
+    function("kicadCollabHeaderText", &pcbCollabHeaderText);
+    function("kicadCollabApplyHeader", &pcbCollabApplyHeader);
+    function("kicadCollabHeaderBlocked", &pcbCollabHeaderBlocked);
+    // Proposal 21 S8: peer-edited drawing sheet → reload.
+    function("kicadPcbReloadDrawingSheet", &pcbReloadDrawingSheet);
+    // Proposal 21 WP5: peer-edited project settings → reload.
+    function("kicadPcbReloadProjectSettings", &pcbReloadProjectSettings);
     // drift-trio phase B action hooks (tool-unique names, merged-image safe).
     function("kicadCollabTestAddTrack", &pcbCollabTestAddTrack);
     function("kicadCollabTestAddVia", &pcbCollabTestAddVia);

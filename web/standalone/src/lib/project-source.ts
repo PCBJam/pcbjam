@@ -7,6 +7,8 @@ import {
   type ProjectWithFiles,
   PROJECT_FILE_REVISION_HEADER,
   YDOC_CONTENT_TYPE,
+  sidecarKind,
+  sidecarUpdateToFile,
   ydocUpdateToKicadDoc,
 } from "@pcbjam/shared";
 import { SAVE_COMMITTED, type SaveOutcome } from "../wasm/save-flow";
@@ -62,6 +64,7 @@ export interface ProjectSource {
     slug: string,
     relPath: string,
     meta?: ProjectFile,
+    opts?: FetchFileOptions,
   ): Promise<Uint8Array>;
   /**
    * Present only on writable sources; absent ⇒ read-only (download on save).
@@ -100,6 +103,19 @@ export interface ProjectSource {
   observedRevision?(slug: string, relPath: string): number | undefined;
   /** Record an observed revision (e.g. from a `files` hint). Never rebases. */
   rememberObservedRevision?(slug: string, relPath: string, revision: number): void;
+}
+
+/** Options for one `fetchFileBytes` call. */
+export interface FetchFileOptions {
+  /**
+   * Whether the bytes become the in-memory model's CAS ancestry (default true).
+   * A sibling RESTAGE (files-watch: a peer's write lands in MEMFS) passes
+   * false: the native editor does not reload such a file, so its next save
+   * still publishes the OLD model — recording the peer's revision as the base
+   * would let that stale save pass CAS and overwrite the peer (proposal 21
+   * S5a). The revision is still recorded as observed.
+   */
+  adoptAsBase?: boolean;
 }
 
 // --- remote (REST backend over the shared contract) ---------------------------
@@ -182,7 +198,8 @@ function remoteProjectSource(): ProjectSource {
       void pruneProjectFileCache(fileCacheProjectKey(res.body.project.id), valid);
       return res.body;
     },
-    async fetchFileBytes(slug, relPath, meta) {
+    async fetchFileBytes(slug, relPath, meta, opts) {
+      const adopt = opts?.adoptAsBase !== false;
       // Serve from the browser-local body cache when the listing's version
       // vouches for it — a warm load then fetches only files that changed.
       const validator = meta ? fileCacheValidator(meta) : null;
@@ -193,7 +210,7 @@ function remoteProjectSource(): ProjectSource {
           // ancestry the model is about to be built from.
           const listed = meta.revision;
           rememberObservedRevision(slug, relPath, listed);
-          if (listed !== undefined && Number.isSafeInteger(listed) && listed >= 0) {
+          if (adopt && listed !== undefined && Number.isSafeInteger(listed) && listed >= 0) {
             baseRevisions.set(revisionKey(slug, relPath), listed);
           }
           return hit;
@@ -220,7 +237,7 @@ function remoteProjectSource(): ProjectSource {
       // observed). Holds for the ydoc-materialized form too: the header still
       // names the row the doc supersedes, which is the row CAS guards.
       const responseRevision = rememberResponseRevision(slug, relPath, res);
-      if (responseRevision !== undefined) {
+      if (adopt && responseRevision !== undefined) {
         baseRevisions.set(revisionKey(slug, relPath), responseRevision);
       }
       const bytes = new Uint8Array(await res.arrayBuffer());
@@ -240,8 +257,11 @@ function remoteProjectSource(): ProjectSource {
         return bytes;
       }
       try {
+        // A project sidecar room (proposal 21 WP5) renders through its codec.
+        const sidecarText = sidecarKind(relPath) ? sidecarUpdateToFile(relPath, bytes) : undefined;
+        if (sidecarText === null) throw new Error(`empty sidecar room: ${relPath}`);
         const text = new TextEncoder().encode(
-          docToFile(ydocUpdateToKicadDoc(bytes)),
+          sidecarText ?? docToFile(ydocUpdateToKicadDoc(bytes)),
         );
         // Cache the CONVERTED text: a warm load skips the download and the
         // (measured ~2s on big boards) ydoc→s-expr conversion both.
@@ -257,7 +277,7 @@ function remoteProjectSource(): ProjectSource {
           throw new Error(`download failed (${plain.status}): ${relPath} (${String(err)})`);
         }
         const plainRevision = rememberResponseRevision(slug, relPath, plain);
-        if (plainRevision !== undefined) {
+        if (adopt && plainRevision !== undefined) {
           baseRevisions.set(revisionKey(slug, relPath), plainRevision);
         }
         const materialized = new Uint8Array(await plain.arrayBuffer());
@@ -512,8 +532,8 @@ function compositeProjectSource(
       return [...a, ...b.filter((p) => !localSlugs.has(p.slug))];
     },
     getProject: (slug) => route(slug).then((s) => s.getProject(slug)),
-    fetchFileBytes: (slug, p, meta) =>
-      route(slug).then((s) => s.fetchFileBytes(slug, p, meta)),
+    fetchFileBytes: (slug, p, meta, opts) =>
+      route(slug).then((s) => s.fetchFileBytes(slug, p, meta, opts)),
     uploadFileBytes: async (slug, p, bytes, signal) => {
       const s = await route(slug);
       if (s.uploadFileBytes) return s.uploadFileBytes(slug, p, bytes, signal);

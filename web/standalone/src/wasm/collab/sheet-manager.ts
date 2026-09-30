@@ -27,8 +27,17 @@ import {
   type KicadBinding,
   type KicadItemsModule,
   type KicadItemsWindow,
+  type NativeBaseline,
 } from "./kicad-binding";
 import type { ProviderConfig, YjsProvider } from "./provider";
+import {
+  SCH_HEADER_HEADS,
+  schHeaderAdapter,
+  startLayoutSync,
+  type HeaderWindow,
+  type LayoutSync,
+  type SchHeaderModule,
+} from "./header-sync";
 import { clog, cwarn } from "./debug";
 
 /**
@@ -162,6 +171,17 @@ interface Room {
   dirtyLibs: Set<string>;
   /** Active only while parked: marks `dirty` on remote doc updates. */
   detachWatch?: () => void;
+  /**
+   * While parked: what the native SCREEN of this sheet last agreed with (the
+   * binding's baseline when it parked, advanced by every off-sheet write).
+   * Off-sheet writes diff against it so a peer's edit that landed in the doc
+   * after parking — invisible to the stale native screen — is not written back
+   * as a "change" (sync audit SYNC-02). Dropped on activation (the bind's
+   * adopt re-establishes the native state).
+   */
+  parkedBaseline?: NativeBaseline;
+  /** Live sheet-header sync (proposal 21 WP4 / S3) — only while this sheet is active. */
+  headerSync?: LayoutSync;
 }
 
 export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollabManager {
@@ -319,6 +339,9 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
     if (activePath) {
       const old = rooms.get(activePath);
       if (old?.binding) {
+        old.parkedBaseline = old.binding.nativeBaseline?.();
+        old.headerSync?.destroy();
+        old.headerSync = undefined;
         old.binding.destroy();
         old.binding = undefined;
         startWatch(old);
@@ -348,6 +371,21 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
 
     const binding = bindKicadCollab(room.doc, bridge, { readOnly: opts.readOnly, sheetPath });
     room.binding = binding;
+    room.parkedBaseline = undefined;
+    // The sheet's page settings / title block, live (WP4 / S3). The baseline is
+    // the room's own layoutBaseline — the same one the save-sync uses.
+    const schHeader = schHeaderAdapter(mod as SchHeaderModule);
+    if (schHeader) {
+      room.headerSync = startLayoutSync({
+        doc: room.doc,
+        win: win as HeaderWindow,
+        header: schHeader,
+        store: { get: () => room.layoutBaseline, set: (d) => void (room.layoutBaseline = d) },
+        heads: SCH_HEADER_HEADS,
+        root: "kicad_sch",
+        readOnly: opts.readOnly,
+      });
+    }
 
     if (!room.seeded) {
       // First activation: file-seed an empty room, else adopt peer/server state.
@@ -530,12 +568,30 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
     kicadItemsMap(room.doc).forEach((ym, uuid) => {
       view[uuid] = yToItemUnchecked(ym);
     });
-    // No native-view baseline exists for a parked sheet, so this diffs against
+    // Diff against the parked screen's native baseline when there is one (the
+    // sheet was bound before): only what the global edit changed on that screen
+    // is written, never a stale field a peer has moved on from (SYNC-02).
+    // Without one (never bound — its screen loaded from this doc) diff against
     // the doc: slots the editor's copy agrees on are not written.
-    const delta = itemsWireToDelta(wire, view, (w, err) =>
-      cwarn("[sheet] off-sheet wire entry skipped:", err, w.sexpr.slice(0, 200)),
+    const parked = room.parkedBaseline;
+    const resolved: Record<string, KicadItem> = {};
+    const delta = itemsWireToDelta(
+      wire,
+      view,
+      (w, err) => cwarn("[sheet] off-sheet wire entry skipped:", err, w.sexpr.slice(0, 200)),
+      parked ? { baseline: parked.view, resolved } : undefined,
     );
-    const defs = wireLibSymbols(wire);
+    const carried = wireLibSymbols(wire);
+    const defs: Record<string, string> = {};
+    for (const [id, def] of Object.entries(carried)) {
+      if (parked?.libDefs?.get(id) === def) continue; // SYNC-03 twin: unchanged natively
+      defs[id] = def;
+    }
+    if (parked) {
+      for (const [id, item] of Object.entries(resolved)) parked.view[id] = item;
+      for (const id of delta.removed) delete parked.view[id];
+      for (const [id, def] of Object.entries(carried)) parked.libDefs?.set(id, def);
+    }
     if (isEmptyKicadDelta(delta) && Object.keys(defs).length === 0) return;
     room.doc.transact(() => {
       applyDeltaToY(room.doc, delta, OFF_SHEET_ORIGIN);
@@ -585,6 +641,7 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
     for (const [path, room] of rooms) {
       try {
         room.detachWatch?.();
+        room.headerSync?.destroy();
         room.binding?.destroy();
         room.session.provider.destroy();
         room.doc.destroy();

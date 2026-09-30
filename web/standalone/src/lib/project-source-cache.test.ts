@@ -279,3 +279,55 @@ describe("remote source CAS ancestry for bundle-staged files", () => {
     expect(revisionHeader?.[1]).toBe("1");
   });
 });
+
+describe("remote source: a sibling restage never moves the CAS base (proposal 21 S5a)", () => {
+  const revHeader = (init: unknown) =>
+    Object.entries((init as { headers: Record<string, string> }).headers).find(([k]) =>
+      k.toLowerCase().includes("revision"),
+    )?.[1];
+
+  it("fetch with adoptAsBase:false records observed only; the next PUT still CASes the model's ancestry", async () => {
+    // The editor loaded .kicad_pro at revision 1; a peer saved revision 2 and
+    // files-watch restaged it into MEMFS. The native PROJECT_FILE was NOT
+    // reloaded, so this tab's next save carries the OLD settings — it must
+    // 409 against revision 2, never silently overwrite it.
+    const source = await loadRemote(cacheMock());
+    const relPath = "p/p.kicad_pro";
+    const fetchMock = vi.fn(async (_url: string, init?: { method?: string }) => ({
+      ok: true,
+      status: 200,
+      headers: {
+        get: (h: string) =>
+          h === "x-pcbjam-file-revision" ? (init?.method === "PUT" ? "3" : "2") : h === "content-type" ? "text/plain" : null,
+      },
+      arrayBuffer: async () => new Uint8Array([1]).buffer,
+      json: async () => ({ revision: 3 }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    source().rememberBaseRevision?.("p", relPath, 1);
+    await source().fetchFileBytes("p", relPath, undefined, { adoptAsBase: false });
+    expect(source().observedRevision?.("p", relPath)).toBe(2);
+    await source().uploadFileBytes!("p", relPath, new Uint8Array([1]));
+    expect(revHeader(fetchMock.mock.calls[1]![1])).toBe("1");
+  });
+
+  it("a default fetch still adopts its revision as the base (the model is built from it)", async () => {
+    const source = await loadRemote(cacheMock());
+    const relPath = "p/p.kicad_pro";
+    const fetchMock = vi.fn(async (_url: string, init?: { method?: string }) => ({
+      ok: true,
+      status: 200,
+      headers: {
+        get: (h: string) =>
+          h === "x-pcbjam-file-revision" ? (init?.method === "PUT" ? "3" : "2") : h === "content-type" ? "text/plain" : null,
+      },
+      arrayBuffer: async () => new Uint8Array([1]).buffer,
+      json: async () => ({ revision: 3 }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    source().rememberBaseRevision?.("p", relPath, 1);
+    await source().fetchFileBytes("p", relPath);
+    await source().uploadFileBytes!("p", relPath, new Uint8Array([1]));
+    expect(revHeader(fetchMock.mock.calls[1]![1])).toBe("2");
+  });
+});

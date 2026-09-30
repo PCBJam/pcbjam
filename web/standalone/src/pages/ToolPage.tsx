@@ -221,6 +221,9 @@ export function ToolPage() {
         fetchBytes={(relPath) =>
           fetchFileBytes(slug, relPath, filesByPath.get(relPath))
         }
+        fetchSiblingBytes={(relPath) =>
+          fetchFileBytes(slug, relPath, undefined, { adoptAsBase: false })
+        }
         onStagedRevision={(relPath, revision) =>
           rememberFileBaseRevision(slug, relPath, revision)
         }

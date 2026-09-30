@@ -102,8 +102,22 @@ export interface KicadBinding {
    */
   seed(seedDoc?: KicadDoc, opts?: SeedOptions): void;
   destroy(): void;
+  /**
+   * What the native editor last agreed the items and library definitions were
+   * (copies; undefined before seed). The sheet pool keeps it when a sheet
+   * PARKS: remote edits to a parked doc never reach its native screen, so this
+   * stays the right baseline for that screen's off-sheet writes (sync audit
+   * SYNC-02).
+   */
+  nativeBaseline(): NativeBaseline | undefined;
   /** The underlying kdoc items map (exposed for tests/inspection). */
   readonly items: KicadYItems;
+}
+
+/** See `KicadBinding.nativeBaseline`. */
+export interface NativeBaseline {
+  view: Record<string, KicadItem>;
+  libDefs?: Map<string, string>;
 }
 
 /**
@@ -220,6 +234,18 @@ export function bindKicadCollab(
   // user did not touch is never written, so a peer's concurrent edit to
   // another field of the same root survives the editor's full-subtree emit.
   let nativeView: Record<string, KicadItem> | undefined;
+  // The library definitions the NATIVE editor last agreed on (sync audit SYNC-03),
+  // lib id → `(symbol …)` text: the snapshot's at seed, then every definition a
+  // payload carried once the editor APPLIED it (resolve time — same rule as the
+  // native view), and every definition a local emit carried. A local emit writes a
+  // definition only when it differs from this: an unchanged definition riding a
+  // stale packet (the editor had not applied a peer's newer one yet) must not
+  // overwrite the newer doc copy. Undefined ⇒ no baseline yet (write as before).
+  let nativeLibDefs: Map<string, string> | undefined;
+  const foldLibDefs = (wire: ItemsWireDelta): void => {
+    if (!nativeLibDefs) return;
+    for (const [id, def] of Object.entries(wireLibSymbols(wire))) nativeLibDefs.set(id, def);
+  };
   // A payload handed to the editor is folded into the native view when the
   // editor actually applies it (its resolve callback), never when it is sent:
   // the apply runs deferred behind pending local flushes, and folding early
@@ -341,8 +367,15 @@ export function bindKicadCollab(
         for (const id of concurrentlyDeleted) delete resolved[id];
       }
       // Library definitions the blob carried (a placed symbol's lib_symbols
-      // context — miss 08): store them alongside the items, same transaction.
-      const defs = wireLibSymbols(wire);
+      // context — miss 08): store them alongside the items, same transaction —
+      // but only the ones the editor actually changed (SYNC-03, nativeLibDefs).
+      const carried = wireLibSymbols(wire);
+      const defs: Record<string, string> = {};
+      for (const [id, def] of Object.entries(carried)) {
+        if (nativeLibDefs && nativeLibDefs.get(id) === def) continue;
+        defs[id] = def;
+      }
+      if (nativeLibDefs) for (const [id, def] of Object.entries(carried)) nativeLibDefs.set(id, def);
       if (!isEmptyKicadDelta(delta) || Object.keys(defs).length > 0) {
         clog("⬇ onItems (local edit):", {
           added: delta.added.length,
@@ -369,7 +402,10 @@ export function bindKicadCollab(
     });
     try {
       bridge.applyItems(JSON.stringify(tagged(wire)));
-      if (!resolves) foldRootsFromView(wireRoots(wire), view, wire.removed);
+      if (!resolves) {
+        foldRootsFromView(wireRoots(wire), view, wire.removed);
+        foldLibDefs(wire);
+      }
     } catch (err) {
       // Symmetric with the DOWN hook's backstop above (findings C-7): a throw
       // here would otherwise unwind through Yjs's transaction cleanup inside
@@ -477,6 +513,7 @@ export function bindKicadCollab(
         removed,
       };
       foldRootsFromView(wireRoots(resolved), view, removed);
+      foldLibDefs(resolved);
       return JSON.stringify(resolved);
     } catch (err) {
       cwarn("resolveItems failed — applying the payload as sent", err);
@@ -559,6 +596,7 @@ export function bindKicadCollab(
     const resolved: Record<string, KicadItem> = {};
     const norm = itemsWireToDelta(wire, loaded, warnSkip, { resolved });
     nativeView = resolved;
+    nativeLibDefs = new Map(Object.entries(wireLibSymbols(wire)));
     if (!readOnly) {
       const untouched = (uuid: string, parent: string | null): boolean =>
         !changed.has(liftRoot(loaded, parent ?? uuid)) &&
@@ -636,6 +674,7 @@ export function bindKicadCollab(
         const resolved: Record<string, KicadItem> = {};
         const local = itemsWireToDelta(wire, itemsView(), warnSkip, { resolved });
         nativeView = resolved;
+        nativeLibDefs = new Map(Object.entries(wireLibSymbols(wire)));
         if (!readOnly && !isEmptyKicadDelta(local)) {
           clog(
             `seed: normalizing ${local.updated.length} server-serialized body(ies) to the editor's form`,
@@ -694,6 +733,7 @@ export function bindKicadCollab(
         const resolved: Record<string, KicadItem> = {};
         const local = itemsWireToDelta(wire, itemsView(), warnSkip, { resolved });
         nativeView = resolved;
+        nativeLibDefs = new Map(Object.entries(wireLibSymbols(wire)));
         if (!isEmptyKicadDelta(local)) applyDeltaToY(doc, local, ORIGIN);
       } catch (err) {
         cwarn("seed: post-file-seed baseline failed", err);
@@ -720,6 +760,7 @@ export function bindKicadCollab(
       const resolved: Record<string, KicadItem> = {};
       const local = itemsWireToDelta(wire, {}, warnSkip, { resolved });
       nativeView = resolved;
+      nativeLibDefs = new Map(Object.entries(wireLibSymbols(wire)));
       clog(`seed: doc empty → SEEDING from editor snapshot (${local.added.length} item(s))`);
       doc.transact(() => {
         applyDeltaToY(doc, local, ORIGIN);
@@ -744,6 +785,7 @@ export function bindKicadCollab(
     const resolved: Record<string, KicadItem> = {};
     const editorDelta = itemsWireToDelta(wire, view, warnSkip, { resolved }); // editor state vs doc view
     nativeView = resolved;
+    nativeLibDefs = new Map(Object.entries(wireLibSymbols(wire)));
     const editorUuids = wireItemUuids(wire, warnSkip);
 
     // Doc authority, inverted per class:
@@ -793,6 +835,10 @@ export function bindKicadCollab(
 
   return {
     seed,
+    nativeBaseline: () =>
+      nativeView
+        ? { view: { ...nativeView }, ...(nativeLibDefs ? { libDefs: new Map(nativeLibDefs) } : {}) }
+        : undefined,
     destroy: () => {
       destroyed = true; // gates the DOWN hook — see bug 07 note above
       layout.unobserve(onLayout);

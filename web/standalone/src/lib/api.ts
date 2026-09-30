@@ -18,6 +18,7 @@ import { setCopyContext } from "./copy-context";
 import type { LibInfo } from "@/wasm/libs/source";
 import { downloadBytes } from "./download";
 import {
+  type FetchFileOptions,
   ReadOnlyProjectError,
   descriptorForSlug,
   listPrimaryProjects,
@@ -123,8 +124,9 @@ export function fetchFileBytes(
   slug: string,
   relPath: string,
   meta?: ProjectFile,
+  opts?: FetchFileOptions,
 ): Promise<Uint8Array> {
-  return projectSource().fetchFileBytes(slug, relPath, meta);
+  return projectSource().fetchFileBytes(slug, relPath, meta, opts);
 }
 
 /**
