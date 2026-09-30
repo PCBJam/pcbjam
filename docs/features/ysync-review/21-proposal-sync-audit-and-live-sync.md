@@ -565,7 +565,9 @@ green on chromium) and the collab/ysync/drift-trio regression set; unit tests in
   the same instant, each without having seen the other, stay last-writer-wins per section. Stale writers
   merge per field.
 - **S2** (board-level `embedded_files`) is not in the live header slice yet; still synced on save.
+  Deferred by review (round 3).
 - **Text sidecar first seed** (accepted, review round 2). Two tabs whose FIRST save into an empty
   `.kicad_dru` room lands in the same instant duplicate the text (JSON seeds are per-key LWW and safe).
-- **Activity attribution** for sidecar edits (`apps/sync/src/activity-tracker.ts` observes kdoc roots only).
+- ~~Activity attribution for sidecar edits~~ — done (review round 3): the room's activity tracker counts a
+  `.kicad_pro` / `.kicad_dru` edit as `other` for its author; the room's first fill is a load, never an edit.
 - **Firefox** was not part of the audit's original run; the recreated spec runs in both kicad CI projects.
