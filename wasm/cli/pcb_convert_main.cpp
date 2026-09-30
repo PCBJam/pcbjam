@@ -2,14 +2,14 @@
  * pcb_convert — standalone KiCad board CLI, built as a WebAssembly module.
  * The pcbnew-side sibling of sym_convert (pcbjam-mcp 0001 tier 3a).
  *
- *   drc:      pcb_convert --drc [--json] [--strict] <file.kicad_pcb> [<out>]
+ *   drc:      pcb_convert --drc [--json] [--strict] [--refill-zones] <file.kicad_pcb> [<out>]
  *             Headless DRC. Replicates the scripting LoadBoard() path (the
  *             real one is Python-scripting code, stubbed to nullptr in WASM
  *             builds): PCB_IO_MGR::Load + DRC_ENGINE::InitEngine(.kicad_dru)
  *             + connectivity build, then runs DRC_ENGINE::RunTests the way
  *             kicad-cli's JobExportDrc does — no parity (needs the eeschema
- *             kiface over kiway), no zone refill (tools/ pruned; existing
- *             fills are checked as-is), no footprint-lib preload (the two
+ *             kiface over kiway), zones refilled only with --refill-zones
+ *             (else existing fills are checked as-is), no footprint-lib preload (the two
  *             library-parity tests are force-ignored).
  *             Writes a kicad-cli-compatible report (text, or JSON with
  *             --json) to <out> (default: <file>-drc.rpt/.json).
@@ -73,6 +73,7 @@
 #include <board.h>
 #include <board_design_settings.h>
 #include <drc/drc_engine.h>
+#include <zone_filler.h>
 #include <drc/drc_item.h>
 #include <drc/drc_report.h>
 #include <exporters/export_d356.h>
@@ -303,11 +304,13 @@ BOARD* loadBoardHeadless( const char* aInPath )
 
 // ── headless DRC ──────────────────────────────────────────────────────────────
 // Mirrors PCBNEW_JOBS_HANDLER::JobExportDrc with the headless deltas: no
-// parity (kiway/eeschema kiface), no zone refill (tool framework pruned), no
+// parity (kiway/eeschema kiface), zone refill only with --refill-zones (the
+// ZONE_FILLER itself, without the pruned tool framework; the refilled board
+// is never written back — git-integration 0014 §5), no
 // footprint-lib preload (the two library tests are force-ignored), markers
 // added straight to the board instead of through a BOARD_COMMIT.
 
-int runDrc( const char* aInPath, bool aJson, bool aStrict, const char* aOutPath )
+int runDrc( const char* aInPath, bool aJson, bool aStrict, const char* aOutPath, bool aRefill )
 {
     wxFileName fn( wxString::FromUTF8( aInPath ) );
     fn.MakeAbsolute();
@@ -334,6 +337,21 @@ int runDrc( const char* aInPath, bool aJson, bool aStrict, const char* aOutPath 
                 aPathGenerator( marker );
                 brd->Add( marker );
             } );
+
+    // Results must not depend on whether the file was saved with fills
+    // (unconnected counts and clearance checks read the filled copper).
+    if( aRefill )
+    {
+        trace( "runDrc: refilling zones" );
+        std::vector<ZONE*> zones;
+
+        for( ZONE* zone : brd->Zones() )
+            zones.push_back( zone );
+
+        ZONE_FILLER filler( brd, nullptr );
+        filler.Fill( zones );
+        brd->BuildConnectivity();
+    }
 
     trace( "runDrc: RunTests" );
     brd->RecordDRCExclusions();
@@ -389,9 +407,9 @@ int runDrc( const char* aInPath, bool aJson, bool aStrict, const char* aOutPath 
     // on warnings and unconnected items.
     const bool failed = errors > 0 || ( aStrict && ( warnings > 0 || unconnected > 0 ) );
 
-    std::fprintf( stderr, "%s: %s (%d errors, %d warnings, %d unconnected) -> %s\n", aInPath,
+    std::fprintf( stderr, "%s: %s (%d errors, %d warnings, %d unconnected%s) -> %s\n", aInPath,
                   failed ? "FAIL" : "OK", errors, warnings, unconnected,
-                  (const char*) outPath.ToUTF8() );
+                  aRefill ? ", zones refilled" : "", (const char*) outPath.ToUTF8() );
 
     return failed ? 1 : 0;
 }
@@ -1048,6 +1066,7 @@ int pcbConvertMain( int argc, char** argv )
 
         bool json = false;
         bool strict = false;
+        bool refill = false;
         int  arg = 2;
 
         while( arg < argc && std::strncmp( argv[arg], "--", 2 ) == 0 )
@@ -1056,6 +1075,8 @@ int pcbConvertMain( int argc, char** argv )
                 json = true;
             else if( std::strcmp( argv[arg], "--strict" ) == 0 )
                 strict = true;
+            else if( std::strcmp( argv[arg], "--refill-zones" ) == 0 )
+                refill = true;
             else
                 break;
 
@@ -1065,7 +1086,7 @@ int pcbConvertMain( int argc, char** argv )
         if( arg >= argc )
         {
             std::fprintf( stderr,
-                          "usage: pcb_convert --drc [--json] [--strict] <file.kicad_pcb> [<out>]\n" );
+                          "usage: pcb_convert --drc [--json] [--strict] [--refill-zones] <file.kicad_pcb> [<out>]\n" );
             return 2;
         }
 
@@ -1076,7 +1097,7 @@ int pcbConvertMain( int argc, char** argv )
 
         try
         {
-            rc = runDrc( inPath, json, strict, outPath );
+            rc = runDrc( inPath, json, strict, outPath, refill );
         }
         catch( const std::exception& e )
         {

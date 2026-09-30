@@ -6,7 +6,7 @@
  * with KICAD_TOOLS_COMBINED, which strips their standalone main()s):
  *
  *   pcbnew side   (pcb_convert_main.cpp):
- *     kicad_tools --drc [--json] [--strict] <file.kicad_pcb> [<out>]
+ *     kicad_tools --drc [--json] [--strict] [--refill-zones] <file.kicad_pcb> [<out>]
  *     kicad_tools --gerbers <file.kicad_pcb> [<outdir>]
  *     kicad_tools --drill <file.kicad_pcb> [<outdir>]
  *     kicad_tools --plot-board [--pdf] [--layers <a,b,...>] <file.kicad_pcb> [<out>]
