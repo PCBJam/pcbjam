@@ -4,7 +4,8 @@ import { cn } from "@/lib/utils";
 import { getOverlayState, overlay, pressButton, subscribeOverlay } from "./api";
 import { layoutCard, spotlightPath, spotlightRect } from "./geometry";
 import { installOverlayDemo } from "./demo";
-import { installEditorEvents } from "./editor-events";
+import { installEditorEvents, openDialogPtrs } from "./editor-events";
+import { dialogRects } from "./obstacles";
 import { startOverlayTracking } from "./tracker";
 import type { OverlayButton } from "./types";
 import type { CssRect } from "@/wasm/canvas-coords";
@@ -23,8 +24,9 @@ import type { CssRect } from "@/wasm/canvas-coords";
 const BUTTON_LABEL: Record<OverlayButton, string> = { back: "Back", skip: "Skip", next: "Next" };
 
 /**
- * Rects of host UI the card should not cover (`[data-overlay-obstacle]`, e.g. floating plugin
- * panels), re-measured per frame while a step is shown — panels are dragged, collapsed, hidden.
+ * Rects the card should not cover — host UI marked `[data-overlay-obstacle]` (floating plugin
+ * panels) and open KiCad dialogs — re-measured per frame while a step is shown: panels are
+ * dragged, collapsed, hidden; dialogs open, close and move.
  */
 function useObstacles(active: boolean): CssRect[] {
   const [rects, setRects] = React.useState<CssRect[]>([]);
@@ -36,10 +38,12 @@ function useObstacles(active: boolean): CssRect[] {
     let raf = 0;
     let last = "";
     const frame = () => {
+      const canvas = document.getElementById("canvas")?.getBoundingClientRect();
       const next = Array.from(document.querySelectorAll("[data-overlay-obstacle]"))
         .map((el) => el.getBoundingClientRect())
         .filter((r) => r.width > 0 && r.height > 0)
-        .map((r) => ({ x: r.left, y: r.top, width: r.width, height: r.height }));
+        .map((r) => ({ x: r.left, y: r.top, width: r.width, height: r.height }))
+        .concat(canvas ? dialogRects(openDialogPtrs(), window.wxElementRegistry?.elements, { x: canvas.left, y: canvas.top }) : []);
       const key = JSON.stringify(next);
       if (key !== last) {
         last = key;

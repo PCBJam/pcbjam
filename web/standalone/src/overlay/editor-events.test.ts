@@ -5,6 +5,7 @@ import {
   installEditorEvents,
   onEditorEvent,
   openDialog,
+  openDialogPtrs,
   parseEditorEvent,
   type EditorEvent,
 } from "./editor-events";
@@ -54,5 +55,13 @@ describe("editor-events", () => {
     dispose();
     fire(target, { type: "action", name: "y" });
     expect(seen).toHaveLength(1);
+  });
+  it("lists every open dialog's pointer, across classes", () => {
+    fire(target, { type: "dialogShown", cls: "A", ptr: "1", title: "" });
+    fire(target, { type: "dialogShown", cls: "B", ptr: "2", title: "" });
+    fire(target, { type: "dialogShown", cls: "A", ptr: "3", title: "" });
+    expect(openDialogPtrs().sort()).toEqual(["1", "2", "3"]);
+    fire(target, { type: "dialogClosed", cls: "A", ptr: "1", title: "" });
+    expect(openDialogPtrs().sort()).toEqual(["2", "3"]);
   });
 });

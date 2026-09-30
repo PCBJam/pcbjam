@@ -79,6 +79,11 @@ export function anyDialogOpen(): boolean {
   return openDialogs.size > 0;
 }
 
+/** Every open KiCad dialog (window pointer as the registry id). */
+export function openDialogPtrs(): string[] {
+  return [...openDialogs.values()].flatMap((list) => list.map((d) => d.ptr));
+}
+
 /** The most recently shown open dialog of this class. */
 export function openDialog(cls: string): { ptr: string; title: string } | null {
   const list = openDialogs.get(cls);
