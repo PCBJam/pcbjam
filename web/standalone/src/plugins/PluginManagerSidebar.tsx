@@ -20,6 +20,7 @@ import { KICAD_VERSION_DIR } from '@/wasm/constants';
 import { useTrustedPrompt } from '@/overlay/trusted-prompts';
 import { pluginSheetAdapter, pluginTourAdapter } from '@/overlay/plugin-tours';
 import { pluginPartSaver, type PluginPartSummary } from './plugin-parts';
+import { panelToReopen, readPluginPanel, rememberPluginPanel } from './panel-memory';
 
 interface InspectorHost {
   mountEditorPlugin(container: HTMLElement, options: {
@@ -79,6 +80,20 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
   useTrustedPrompt(!!prompt);
   const active = plugins.find(plugin => pluginKey(plugin) === selected);
   const compatible = (plugin: Descriptor) => plugin.manifest.surfaces.includes('editor:' + tool);
+  // An editor switch is a page navigation: the plugin that was open (a tutorial spanning both
+  // editors) comes back on the new page once the catalog is known. Read before the effect below
+  // forgets it for the page's initial empty view.
+  const rememberedPanel = React.useRef(readPluginPanel());
+  const projectKey = project?.id ?? null;
+  React.useEffect(() => { rememberPluginPanel(view, projectKey); }, [view, projectKey]);
+  React.useEffect(() => {
+    const remembered = rememberedPanel.current;
+    if (!remembered || !catalog.loaded) return;
+    rememberedPanel.current = null;
+    if (viewRef.current) return; // the user already opened something
+    const reopen = panelToReopen(remembered, plugins, tool, projectKey);
+    if (reopen) onViewChange(reopen);
+  }, [catalog.loaded, plugins, tool, projectKey, onViewChange]);
   React.useEffect(() => { if (open) void refresh(); }, [open, refresh]);
   React.useEffect(() => { folderInput.current?.setAttribute('webkitdirectory', ''); }, [open]);
   React.useEffect(() => { setNotice(''); }, [selected, open]);

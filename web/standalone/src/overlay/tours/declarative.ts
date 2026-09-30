@@ -7,8 +7,8 @@
  *
  * Step choice: the current step is the first whose `when` holds (default
  * true) and whose `until` is not met.
- *   - state conditions (`dialogOpen`, `symbols`, `footprint`, `net`,
- *     `noConnect`) are re-evaluated live — undoing the work re-opens the step;
+ *   - state conditions (`dialogOpen`, `symbols`, `footprint`, `value`,
+ *     `net`, `noConnect`) are re-evaluated live — undoing the work re-opens the step;
  *   - event conditions (`next`, `action`, `dialogOpened`, `dialogClosed`)
  *     only fire on the event, so a step whose `until` contains one LATCHES
  *     done once met while it is the current step.
@@ -51,6 +51,7 @@ export type Cond =
   | { dialogOpen: string }
   | { symbols: { libId: string; min: number; new?: boolean } }
   | { footprint: { libId?: string; ref?: string; set: true | string } }
+  | { value: { libId?: string; ref?: string; is: string } }
   | { net: PinSel[] }
   | { noConnect: PinSel }
   | { all: Cond[] }
@@ -75,6 +76,14 @@ export const condSchema: z.ZodType<Cond> = z.lazy(() =>
           .object({ libId: libId.optional(), ref: z.string().min(1).max(32).optional(), set: z.union([z.literal(true), z.string().min(1).max(256)]) })
           .strict()
           .refine((f) => (f.libId === undefined) !== (f.ref === undefined), { message: "exactly one of libId, ref" }),
+      })
+      .strict(),
+    z
+      .object({
+        value: z
+          .object({ libId: libId.optional(), ref: z.string().min(1).max(32).optional(), is: z.string().min(1).max(64) })
+          .strict()
+          .refine((v) => (v.libId === undefined) !== (v.ref === undefined), { message: "exactly one of libId, ref" }),
       })
       .strict(),
     z.object({ net: z.array(pinSelSchema).min(2).max(16) }).strict(),
@@ -249,6 +258,30 @@ function allPins(state: DeclState): SheetPin[] {
   return (state.nets ?? []).flatMap((n) => n.pins);
 }
 
+const SI: Record<string, number> = { p: 1e-12, n: 1e-9, u: 1e-6, "µ": 1e-6, m: 1e-3, R: 1, r: 1, k: 1e3, K: 1e3, M: 1e6, G: 1e9 };
+
+/**
+ * A component value as something comparable: a number when it reads as one
+ * (`39`, `39R`, `39Ω`, `39 ohm`, `0.039k`, RKM `4k7` = `4.7k`, `4R7` = 4.7;
+ * `m` is milli, `M` mega, as in KiCad), otherwise the lower-cased text
+ * (`white`).
+ */
+export function valueKey(raw: string): number | string {
+  let s = raw.trim().replace(/\s+/g, "").replace(/(ohms?|Ω|ω)$/i, "");
+  const rkm = /^(\d+)([pnuµmRrkKMG])(\d+)$/.exec(s);
+  if (rkm) s = `${rkm[1]}.${rkm[3]}${rkm[2]}`;
+  const m = /^(\d+(?:\.\d+)?|\.\d+)([pnuµmRrkKMG])?$/.exec(s);
+  if (m) return Number(m[1]) * (m[2] ? SI[m[2]]! : 1);
+  return raw.trim().toLowerCase();
+}
+
+export function sameValue(a: string, b: string): boolean {
+  const x = valueKey(a);
+  const y = valueKey(b);
+  if (typeof x === "number" && typeof y === "number") return Math.abs(x - y) <= 1e-9 * Math.max(Math.abs(x), Math.abs(y));
+  return x === y;
+}
+
 /** Evaluate `c`; event leaves are true only when a matching event is in `events`. */
 export function evalCond(c: Cond, state: DeclState, events: readonly TourEvent[]): boolean {
   if ("next" in c) return events.some((e) => e.type === "button" && e.button === "next");
@@ -267,6 +300,11 @@ export function evalCond(c: Cond, state: DeclState, events: readonly TourEvent[]
       (s) => placed(s) && (f.libId !== undefined ? s.libId === f.libId : s.ref === f.ref),
     );
     return hits.length > 0 && hits.every((s) => (f.set === true ? s.footprint !== "" : s.footprint === f.set));
+  }
+  if ("value" in c) {
+    const v = c.value;
+    const hits = state.symbols.filter((s) => placed(s) && (v.libId !== undefined ? s.libId === v.libId : s.ref === v.ref));
+    return hits.length > 0 && hits.every((s) => sameValue(s.value, v.is));
   }
   if ("net" in c) {
     const sels = c.net;

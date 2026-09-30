@@ -8,6 +8,7 @@ import {
   parseSheetSymbols,
   parseTourDef,
   resolveStepTarget,
+  sameValue,
   tourUsesNets,
   type Cond,
   type DeclState,
@@ -116,6 +117,26 @@ describe("evalCond", () => {
     expect(evalCond({ footprint: { libId: "Device:LED", set: true } }, s, [])).toBe(false); // D2 has none
     expect(evalCond({ footprint: { ref: "R1", set: "Resistor_SMD:R_1206_3216Metric" } }, s, [])).toBe(true);
     expect(evalCond({ footprint: { ref: "R9", set: true } }, s, [])).toBe(false);
+  });
+
+  it("value: every placed matching symbol, compared as a component value", () => {
+    const v = state({ symbols: [{ ...R1, value: "39R" }, { ...D1, value: "white" }, { ...D2, value: "White" }, { ...PWR, value: "+5V" }] });
+    expect(evalCond({ value: { ref: "R1", is: "39" } }, v, [])).toBe(true);
+    expect(evalCond({ value: { libId: "Device:R", is: "39Ω" } }, v, [])).toBe(true);
+    expect(evalCond({ value: { ref: "R1", is: "390" } }, v, [])).toBe(false);
+    expect(evalCond({ value: { libId: "Device:LED", is: "white" } }, v, [])).toBe(true);
+    expect(evalCond({ value: { ref: "R9", is: "39" } }, v, [])).toBe(false); // nothing placed
+    expect(evalCond({ value: { libId: "power:+5V", is: "+5V" } }, v, [])).toBe(false); // #PWR is not placed
+    expect(() => parseTourDef({ id: "t", editor: "eeschema", steps: [{ id: "a", text: "x", until: { value: { is: "39" } } }, { id: "b", text: "y", until: { next: true } }] })).toThrow(/exactly one of libId, ref/);
+  });
+
+  it("sameValue reads units, SI prefixes and RKM notation", () => {
+    for (const [a, b] of [["39", "39R"], ["39", "39 Ω"], ["39", "39ohm"], ["39", "0.039k"], ["4k7", "4.7k"], ["4k7", "4700"], ["4R7", "4.7"], ["2M2", "2.2M"], ["100n", "0.1u"], ["10m", "0.01"]]) {
+      expect(sameValue(a!, b!), `${a} = ${b}`).toBe(true);
+    }
+    for (const [a, b] of [["39", "390"], ["1M", "1m"], ["39", "39k"], ["white", "red"], ["", "0"]]) {
+      expect(sameValue(a!, b!), `${a} != ${b}`).toBe(false);
+    }
   });
 
   it("net: one net holds every selector; power names the net", () => {
