@@ -22,6 +22,7 @@ const store = new Map<string, string>();
 const deps = (over: Partial<TourDeps> = {}): TourDeps => ({
   symbols: () => "[]",
   nets: () => "[]",
+  board: () => "{}",
   openBusy: () => false,
   dialogOpen: () => false,
   anyDialogOpen: () => false,

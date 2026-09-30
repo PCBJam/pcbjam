@@ -39,7 +39,14 @@ const SCH_TARGETS = [
   'tool:eeschema.InteractiveDrawing.placeNoConnect',
   'tool:eeschema.InspectionTool.runERC',
 ];
-const PCB_TARGETS = ['tool:pcbnew.InteractiveRouter.SingleTrack', 'tool:pcbnew.InteractiveDrawing.rectangle'];
+// The PCB chapter of the USB-stick tutorial (overlay-system 0004): routing, the outline tool,
+// Update PCB (a common action in pcbnew), and a footprint of the demo board by reference.
+const PCB_TARGETS = [
+  'tool:pcbnew.InteractiveRouter.SingleTrack',
+  'tool:pcbnew.InteractiveDrawing.rectangle',
+  'tool:common.Control.updatePcbFromSchematic',
+  'footprint:U1',
+];
 
 async function boot(page: Page, file: string, title: RegExp): Promise<void> {
   await page.goto(`/default/projects/demo/${file}?overlayDemo=1`);

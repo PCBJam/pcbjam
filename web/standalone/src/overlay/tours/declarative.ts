@@ -8,7 +8,8 @@
  * Step choice: the current step is the first whose `when` holds (default
  * true) and whose `until` is not met.
  *   - state conditions (`dialogOpen`, `symbols`, `footprint`, `value`,
- *     `net`, `noConnect`) are re-evaluated live — undoing the work re-opens the step;
+ *     `net`, `noConnect`, and on the board `boardFootprints`, `boardOutline`,
+ *     `unrouted`, `tracks`, `activeLayer`) are re-evaluated live — undoing the work re-opens the step;
  *   - event conditions (`next`, `action`, `dialogOpened`, `dialogClosed`)
  *     only fire on the event, so a step whose `until` contains one LATCHES
  *     done once met while it is the current step.
@@ -17,6 +18,7 @@
 import { z } from "zod";
 import { ATTRIBUTION_MAX, TEXT_MAX, TITLE_MAX } from "../types";
 import { parseTarget } from "../targets/parse";
+import { parseBoardStatus, type BoardStatus } from "../board-status";
 import type { Tour, TourEvent, TourStepContent } from "./runner";
 
 // ── Schema ──────────────────────────────────────────────────────────────────
@@ -54,6 +56,12 @@ export type Cond =
   | { value: { libId?: string; ref?: string; is: string } }
   | { net: PinSel[] }
   | { noConnect: PinSel }
+  // PCB editor (overlay-system 0004 H4)
+  | { boardFootprints: { ref?: string; fpid?: string; min?: number; inside?: true } }
+  | { boardOutline: { closed: true } }
+  | { unrouted: { max: number } }
+  | { tracks: { min: number } }
+  | { activeLayer: string }
   | { all: Cond[] }
   | { any: Cond[] }
   | { not: Cond };
@@ -88,6 +96,23 @@ export const condSchema: z.ZodType<Cond> = z.lazy(() =>
       .strict(),
     z.object({ net: z.array(pinSelSchema).min(2).max(16) }).strict(),
     z.object({ noConnect: pinSelSchema }).strict(),
+    z
+      .object({
+        boardFootprints: z
+          .object({
+            ref: z.string().min(1).max(32).optional(),
+            fpid: libId.optional(),
+            min: z.number().int().min(1).max(500).optional(),
+            inside: z.literal(true).optional(),
+          })
+          .strict()
+          .refine((f) => f.ref === undefined || f.fpid === undefined, { message: "at most one of ref, fpid" }),
+      })
+      .strict(),
+    z.object({ boardOutline: z.object({ closed: z.literal(true) }).strict() }).strict(),
+    z.object({ unrouted: z.object({ max: z.number().int().min(0).max(100000) }).strict() }).strict(),
+    z.object({ tracks: z.object({ min: z.number().int().min(1).max(100000) }).strict() }).strict(),
+    z.object({ activeLayer: z.string().regex(/^[A-Za-z0-9_.]{1,32}$/) }).strict(),
     z.object({ all: z.array(condSchema).min(1).max(16) }).strict(),
     z.object({ any: z.array(condSchema).min(1).max(16) }).strict(),
     z.object({ not: condSchema }).strict(),
@@ -234,6 +259,8 @@ export interface DeclState {
   nets: SheetNet[] | null;
   /** UUIDs of symbols placed since the tour started, in sheet order. */
   added: Set<string>;
+  /** Null until read (only read when the tour references the board) or off the PCB editor. */
+  board?: BoardStatus | null;
   dialogOpen(cls: string): boolean;
 }
 
@@ -317,6 +344,17 @@ export function evalCond(c: Cond, state: DeclState, events: readonly TourEvent[]
     const wanted = state.symbols.filter((s) => placed(s) && matchesSymbol(sel, s));
     return wanted.length > 0 && wanted.every((s) => pins.some((p) => p.uuid === s.uuid && p.noConnect));
   }
+  if ("boardFootprints" in c) {
+    const f = c.boardFootprints;
+    const hits = (state.board?.footprints ?? []).filter((fp) =>
+      f.ref !== undefined ? fp.ref === f.ref : f.fpid !== undefined ? fp.fpid === f.fpid : true,
+    );
+    return hits.length >= (f.min ?? 1) && (!f.inside || hits.every((fp) => fp.inside));
+  }
+  if ("boardOutline" in c) return state.board?.outlineClosed === true;
+  if ("unrouted" in c) return !!state.board && state.board.unrouted <= c.unrouted.max;
+  if ("tracks" in c) return (state.board?.tracks ?? 0) >= c.tracks.min;
+  if ("activeLayer" in c) return state.board?.activeLayer === c.activeLayer;
   if ("all" in c) return c.all.every((x) => evalCond(x, state, events));
   if ("any" in c) return c.any.some((x) => evalCond(x, state, events));
   return !evalCond(c.not, state, events);
@@ -352,6 +390,22 @@ export function tourUsesNets(def: TourDef): boolean {
   return def.steps.some((s) => condUsesNets(s.when) || condUsesNets(s.until));
 }
 
+const BOARD_KEYS = ["boardFootprints", "boardOutline", "unrouted", "tracks", "activeLayer"] as const;
+
+function condUsesBoard(c: Cond | undefined): boolean {
+  if (!c) return false;
+  if (BOARD_KEYS.some((k) => k in c)) return true;
+  if ("all" in c) return c.all.some(condUsesBoard);
+  if ("any" in c) return c.any.some(condUsesBoard);
+  if ("not" in c) return condUsesBoard(c.not);
+  return false;
+}
+
+/** The board is read only for tours that ask about it (targets `footprint:` resolve on their own). */
+export function tourUsesBoard(def: TourDef): boolean {
+  return def.steps.some((s) => condUsesBoard(s.when) || condUsesBoard(s.until));
+}
+
 /** `new:<libId>` → `item:<uuid>` of the newest such added symbol; else as-is. */
 export function resolveStepTarget(target: string | undefined, state: DeclState): string | undefined {
   const m = target ? NEW_TARGET.exec(target) : null;
@@ -366,6 +420,8 @@ export function resolveStepTarget(target: string | undefined, state: DeclState):
 export interface TourDeps {
   symbols(): unknown;
   nets(): unknown;
+  /** `Module.kicadBoardStatus()` (PCB editor; "{}" elsewhere). */
+  board(): unknown;
   /** A file open is in flight: the engine answers an empty sheet. */
   openBusy(): boolean;
   dialogOpen(cls: string): boolean;
@@ -375,15 +431,18 @@ export interface TourDeps {
 
 export function compileTour(def: TourDef, deps: TourDeps): Tour<DeclState> {
   const readNets = tourUsesNets(def);
+  const readBoard = tourUsesBoard(def);
   const latched = new Set<string>();
   let shown: string | null = null;
   let symbols: SheetSymbol[] = [];
   let nets: SheetNet[] | null = null;
+  let board: BoardStatus | null = null;
   let baseline: Set<string> | null = null;
 
   const stateOf = (): DeclState => ({
     symbols,
     nets,
+    board,
     added: new Set(baseline ? symbols.filter((s) => !baseline!.has(s.uuid)).map((s) => s.uuid) : []),
     dialogOpen: deps.dialogOpen,
   });
@@ -402,6 +461,7 @@ export function compileTour(def: TourDef, deps: TourDeps): Tour<DeclState> {
           baseline ??= new Set(read.map((s) => s.uuid));
         }
         if (readNets) nets = parseSheetNets(deps.nets()) ?? nets;
+        if (readBoard) board = parseBoardStatus(deps.board()) ?? board;
       }
       const s = stateOf();
       // Latch the step that was on screen when these events happened.

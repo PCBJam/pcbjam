@@ -10,6 +10,7 @@ import type { ResolvedTarget } from "../types";
 import { openDialog } from "../editor-events";
 import { normalizeUiLabel, parseTarget, type ParsedTarget } from "./parse";
 import { findDialogControl } from "./dialog-controls";
+import { readBoardStatus } from "../board-status";
 import { pickToolByAction, toolActionsFor } from "./tool-actions";
 
 /** Registry coords are `#canvas`-relative (wxScreenBase in wx.js). */
@@ -124,6 +125,12 @@ function resolveItem(uuid: string): ResolvedTarget | null {
   return box ? resolveCanvas(box) : null;
 }
 
+/** `footprint:<REF>` → the footprint's box via the board read (PCB editor only). */
+function resolveFootprint(ref: string): ResolvedTarget | null {
+  const fp = readBoardStatus()?.footprints.find((f) => f.ref === ref);
+  return fp ? resolveItem(fp.uuid) : null;
+}
+
 function resolveMenu(title: string, item: string | undefined): ResolvedTarget | null {
   if (item) {
     const want = normalizeUiLabel(item);
@@ -167,6 +174,8 @@ export function resolveParsed(t: ParsedTarget): ResolvedTarget | null {
       return resolveDialog(t.cls, t.control);
     case "item":
       return resolveItem(t.uuid);
+    case "footprint":
+      return resolveFootprint(t.ref);
     case "tooltip":
       return resolveTooltip(t.text);
     case "menu":
@@ -195,6 +204,7 @@ export function targetDependsOn(t: ParsedTarget): { registry: boolean; viewport:
     case "area":
     case "point":
     case "item": // item moves without a viewport change are caught by the tracker's safety tick
+    case "footprint":
       return { registry: false, viewport: true, dom: false };
     case "menu":
     case "panel":

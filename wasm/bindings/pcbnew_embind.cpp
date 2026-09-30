@@ -59,6 +59,7 @@
 #include <view/view.h>
 #include <view/view_overlay.h>
 #include <pcb_draw_panel_gal.h>
+#include <connectivity/connectivity_data.h>
 #include <nlohmann/json.hpp>
 #include "collab_common.h"
 #include "collab_presence_core.h"
@@ -1738,6 +1739,91 @@ std::string pcbItemBBox( std::string aId )
 }
 
 
+// Guide overlay (overlay-system 0004 H3): the board as a guided tour sees it, as JSON —
+// {"outlineClosed", "activeLayer", "tracks", "vias", "unrouted",
+//  "footprints":[{"uuid","ref","fpid","x","y","side","inside"}]} (positions in IU).
+// A pure read (never kicadCollabSnapshotItems, which rebaselines the collab differ):
+//   - outlineClosed: Edge.Cuts forms at least one closed outline (NOT inferred from the
+//     board's extents, as the plotter / 3D viewer would);
+//   - inside: every pad of the footprint lies within that outline (pads, not the bounding
+//     box: an edge connector's courtyard and notes deliberately sit on the edge);
+//   - unrouted: connections still missing (the ratsnest, every commit keeps it current).
+// "{}" while no board frame is up (the schematic page of the merged image).
+std::string pcbBoardStatus()
+{
+    PCB_EDIT_FRAME* fr = pcbFrame();
+
+    if( !fr || !fr->GetBoard() )
+        return "{}";
+
+    BOARD*         board = fr->GetBoard();
+    SHAPE_POLY_SET outline;
+    const bool     closed = board->GetBoardPolygonOutlines( outline, /*aInferOutlineIfNecessary*/ false )
+                            && outline.OutlineCount() > 0;
+
+    auto inOutline = [&]( const VECTOR2I& aPt )
+    {
+        return closed && outline.Contains( aPt );
+    };
+
+    json footprints = json::array();
+
+    for( FOOTPRINT* fp : board->Footprints() )
+    {
+        bool inside = closed;
+
+        if( fp->Pads().empty() )
+        {
+            inside = inOutline( fp->GetPosition() );
+        }
+        else
+        {
+            for( PAD* pad : fp->Pads() )
+            {
+                const BOX2I bb = pad->GetBoundingBox();
+
+                if( !inOutline( bb.GetOrigin() ) || !inOutline( bb.GetEnd() )
+                    || !inOutline( VECTOR2I( bb.GetLeft(), bb.GetBottom() ) )
+                    || !inOutline( VECTOR2I( bb.GetRight(), bb.GetTop() ) ) )
+                {
+                    inside = false;
+                    break;
+                }
+            }
+        }
+
+        footprints.push_back( { { "uuid", toUtf8( fp->m_Uuid.AsString() ) },
+                                { "ref", toUtf8( fp->GetReference() ) },
+                                { "fpid", toUtf8( fp->GetFPIDAsString() ) },
+                                { "x", fp->GetPosition().x },
+                                { "y", fp->GetPosition().y },
+                                { "side", itemLayer( fp ) == B_Cu ? "back" : "front" },
+                                { "inside", inside } } );
+    }
+
+    int tracks = 0;
+    int vias = 0;
+
+    for( PCB_TRACK* t : board->Tracks() )
+    {
+        if( t->Type() == PCB_VIA_T )
+            vias++;
+        else
+            tracks++;
+    }
+
+    const std::shared_ptr<CONNECTIVITY_DATA> conn = board->GetConnectivity();
+
+    json out = { { "outlineClosed", closed },
+                 { "activeLayer", toUtf8( BOARD::GetStandardLayerName( fr->GetActiveLayer() ) ) },
+                 { "tracks", tracks },
+                 { "vias", vias },
+                 { "unrouted", conn ? (int) conn->GetUnconnectedCount( false ) : 0 },
+                 { "footprints", footprints } };
+    return out.dump();
+}
+
+
 // ── presence entry points (collab-presence 0002) ────────────────────────────────────────────
 
 // Install the presence input hooks on the GAL canvas (idempotent). Called by the JS
@@ -3036,6 +3122,9 @@ EMSCRIPTEN_BINDINGS(pcbnew) {
     // Layer bridge (viewer-panels) — pcbnew-only names, merged-image safe
     // (null-frame no-op when eeschema is the live frame).
     function("kicadLayersGetState", &pcbLayersGetState);
+    // Guide overlay (overlay-system 0004): the board as a tour reads it — pcbnew-only name,
+    // merged-image safe ("{}" while the schematic frame is live).
+    function("kicadBoardStatus", &pcbBoardStatus);
     function("kicadLayersSetVisible", &pcbLayersSetVisible);
     function("kicadLayersSetActive", &pcbLayersSetActive);
     // Session-menu 3D entry (read-only-viewer 0003) — pcbnew-only name,

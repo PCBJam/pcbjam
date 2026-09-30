@@ -9,6 +9,7 @@ import {
   parseTourDef,
   resolveStepTarget,
   sameValue,
+  tourUsesBoard,
   tourUsesNets,
   type Cond,
   type DeclState,
@@ -179,10 +180,11 @@ describe("targets and net reads", () => {
 });
 
 describe("compileTour", () => {
-  function deps(sheet: { syms: SheetSymbol[]; busy?: boolean; dialog?: boolean }, reads: string[]): TourDeps {
+  function deps(sheet: { syms: SheetSymbol[]; busy?: boolean; dialog?: boolean; board?: string }, reads: string[]): TourDeps {
     return {
       symbols: () => (reads.push("symbols"), JSON.stringify(sheet.syms)),
       nets: () => (reads.push("nets"), "[]"),
+      board: () => (reads.push("board"), sheet.board ?? "{}"),
       openBusy: () => !!sheet.busy,
       dialogOpen: () => !!sheet.dialog,
       anyDialogOpen: () => !!sheet.dialog,
@@ -233,3 +235,71 @@ describe("compileTour", () => {
     expect(t.steps[1]!.content(s).buttons).toBeUndefined();
   });
 });
+
+describe("board conditions (PCB editor)", () => {
+  const FP = (ref: string, fpid: string, inside: boolean) => ({ uuid: ref.toLowerCase(), ref, fpid, x: 0, y: 0, side: "front" as const, inside });
+  const board = {
+    outlineClosed: true,
+    activeLayer: "Edge.Cuts",
+    tracks: 3,
+    vias: 0,
+    unrouted: 2,
+    footprints: [FP("J1", "plugin_usb:USB_A_PCB_Edge", true), FP("R1", "Resistor_SMD:R_0805_2012Metric", true), FP("D1", "LED_SMD:LED_0603_1608Metric", false)],
+  };
+  const on = (over: Partial<typeof board> = {}) => state({ board: { ...board, ...over } });
+
+  it("boardFootprints: count by ref, fpid or all; `inside` needs every match inside the outline", () => {
+    expect(evalCond({ boardFootprints: { min: 3 } }, on(), [])).toBe(true);
+    expect(evalCond({ boardFootprints: { min: 4 } }, on(), [])).toBe(false);
+    expect(evalCond({ boardFootprints: { ref: "J1", inside: true } }, on(), [])).toBe(true);
+    expect(evalCond({ boardFootprints: { fpid: "LED_SMD:LED_0603_1608Metric", inside: true } }, on(), [])).toBe(false);
+    expect(evalCond({ boardFootprints: { min: 3, inside: true } }, on(), [])).toBe(false);
+    expect(evalCond({ boardFootprints: { ref: "J9" } }, on(), [])).toBe(false);
+  });
+
+  it("outline, unrouted, tracks and the active layer", () => {
+    expect(evalCond({ boardOutline: { closed: true } }, on(), [])).toBe(true);
+    expect(evalCond({ boardOutline: { closed: true } }, on({ outlineClosed: false }), [])).toBe(false);
+    expect(evalCond({ unrouted: { max: 0 } }, on(), [])).toBe(false);
+    expect(evalCond({ unrouted: { max: 0 } }, on({ unrouted: 0 }), [])).toBe(true);
+    expect(evalCond({ tracks: { min: 3 } }, on(), [])).toBe(true);
+    expect(evalCond({ activeLayer: "Edge.Cuts" }, on(), [])).toBe(true);
+    expect(evalCond({ activeLayer: "F.Cu" }, on(), [])).toBe(false);
+  });
+
+  it("without a board (schematic page, not read yet) nothing on it holds — not even `unrouted: 0`", () => {
+    const none = state({ board: null });
+    for (const c of [{ boardFootprints: { min: 1 } }, { boardOutline: { closed: true } }, { unrouted: { max: 0 } }, { tracks: { min: 1 } }, { activeLayer: "F.Cu" }] as Cond[]) {
+      expect(evalCond(c, none, []), JSON.stringify(c)).toBe(false);
+    }
+  });
+
+  it("validates the board vocabulary", () => {
+    const bad = (until: unknown) => () => parseTourDef({ id: "t", editor: "pcbnew", steps: [{ id: "a", text: "x", until }, { id: "b", text: "y", until: { next: true } }] });
+    expect(bad({ boardFootprints: { ref: "J1", fpid: "A:B" } })).toThrow(/at most one of ref, fpid/);
+    expect(bad({ boardOutline: { closed: false } })).toThrow();
+    expect(bad({ unrouted: { max: -1 } })).toThrow();
+    expect(bad({ activeLayer: "Edge Cuts" })).toThrow();
+    expect(() => parseTourDef({ id: "t", editor: "pcbnew", steps: [{ id: "a", target: "footprint:J1", text: "x", until: { next: true } }] })).not.toThrow();
+  });
+
+  it("reads the board only for tours that ask about it", () => {
+    const sch = parseTourDef(minimal([{ id: "a", text: "x", until: { symbols: { libId: "Device:R", min: 1 } } }, last]));
+    const pcb = parseTourDef({ id: "p", editor: "pcbnew", steps: [{ id: "o", text: "Draw the outline", until: { boardOutline: { closed: true } } }, last] });
+    expect(tourUsesBoard(sch)).toBe(false);
+    expect(tourUsesBoard(pcb)).toBe(true);
+    const reads: string[] = [];
+    const raw = JSON.stringify({ ...board, outlineClosed: false });
+    const deps: TourDeps = {
+      symbols: () => "[]", nets: () => "[]", board: () => (reads.push("board"), raw),
+      openBusy: () => false, dialogOpen: () => false, anyDialogOpen: () => false,
+    };
+    compileTour(sch, deps).sample([]);
+    expect(reads).toEqual([]);
+    const t = compileTour(pcb, deps);
+    const s = t.sample([]);
+    expect(reads).toEqual(["board"]);
+    expect(t.steps.find((st) => st.when(s))?.id).toBe("o");
+  });
+});
+

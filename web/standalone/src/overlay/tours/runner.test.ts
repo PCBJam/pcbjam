@@ -21,6 +21,7 @@ function fakeDeps(sheet: { raw: string; busy?: boolean }): TourDeps {
   return {
     symbols: () => sheet.raw,
     nets: () => "[]",
+    board: () => "{}",
     openBusy: () => !!sheet.busy,
     dialogOpen: (cls) => !!openDialog(cls),
     anyDialogOpen,

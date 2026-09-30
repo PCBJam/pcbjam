@@ -9,6 +9,7 @@
  *                             owner-drawn item type (searchctrl, tool…);
  *                             <label> narrows by its label/name
  *   item:<uuid>               a schematic/board item on the canvas
+ *   footprint:<REF>           a footprint on the board, by its reference (J1)
  *   tooltip:<text>            toolbar button by the first tooltip line
  *                             (friendly name, hotkey stripped) — language-
  *                             dependent fallback until `tool:` resolves
@@ -23,6 +24,7 @@ export type ParsedTarget =
   | { ns: "tool"; action: string }
   | { ns: "dialog"; cls: string; control?: { type: string; label?: string } }
   | { ns: "item"; uuid: string }
+  | { ns: "footprint"; ref: string }
   | { ns: "tooltip"; text: string }
   | { ns: "menu"; title: string; item?: string }
   | { ns: "panel"; id: string }
@@ -55,6 +57,8 @@ export function parseTarget(target: string): ParsedTarget | null {
     }
     case "item":
       return /^[0-9a-fA-F-]{8,}$/.test(rest) ? { ns, uuid: rest.toLowerCase() } : null;
+    case "footprint":
+      return /^[A-Za-z_#][A-Za-z0-9_#?*+.-]{0,31}$/.test(rest) ? { ns, ref: rest } : null;
     case "menu": {
       const slash = rest.indexOf("/");
       if (slash < 0) return { ns, title: rest };

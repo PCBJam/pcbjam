@@ -83,3 +83,13 @@ describe("item targets", () => {
     expect(parseTarget("item:abc")).toBeNull();
   });
 });
+
+describe("footprint targets", () => {
+  it("names a board footprint by reference", () => {
+    expect(parseTarget("footprint:J1")).toEqual({ ns: "footprint", ref: "J1" });
+    expect(parseTarget("footprint:#PWR01")).toEqual({ ns: "footprint", ref: "#PWR01" });
+    expect(parseTarget("footprint:")).toBeNull();
+    expect(parseTarget("footprint:has space")).toBeNull();
+  });
+});
+
