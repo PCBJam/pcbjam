@@ -110,24 +110,18 @@ test.describe('guide overlay engine hooks', () => {
 
     // The chooser's first open hydrates the libraries under a full-page
     // loading cover (which also pauses the guide overlay): wait until the
-    // chooser's Cancel button itself is under its registry point.
-    const cancel = await page.evaluate(() => {
-      const hit = window.wxElementRegistry!
-        .findAll({ visible: true })
-        .find((e) => /Button/i.test(e.typeName || '') && /^&?Cancel$/i.test(e.label ?? ''));
-      if (!hit) return null;
-      const origin = document.getElementById('canvas')!.getBoundingClientRect();
-      return { x: origin.left + hit.centerX, y: origin.top + hit.centerY };
-    });
-    expect(cancel, 'chooser Cancel button registered').not.toBeNull();
+    // chooser's search field is the element under its own center again.
+    // Not the Cancel button: with CI's Linux font metrics the chooser spans
+    // the viewport's height and Cancel starts under the version badge.
+    const SEARCH = 'dialog:DIALOG_SYMBOL_CHOOSER/control:searchctrl';
     await expect
       .poll(
         () =>
-          page.evaluate(([x, y]) => {
-            const el = document.elementFromPoint(x!, y!);
-            return el?.tagName === 'BUTTON' && /cancel/i.test(el.textContent ?? '');
-          }, [cancel!.x, cancel!.y]),
-        { timeout: 120000, intervals: [500], message: 'Cancel button uncovered (libraries loaded)' },
+          page.evaluate((t) => {
+            const r = window.__pcbjamOverlay!.resolve(t)?.rect;
+            return !!r && document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)?.tagName === 'INPUT';
+          }, SEARCH),
+        { timeout: 120000, intervals: [500], message: 'chooser search field uncovered (libraries loaded)' },
       )
       .toBe(true);
 
@@ -141,7 +135,6 @@ test.describe('guide overlay engine hooks', () => {
 
     // M3: a control inside the dialog — the chooser's search field — lies
     // within the dialog and is what a step anchors to.
-    const SEARCH = 'dialog:DIALOG_SYMBOL_CHOOSER/control:searchctrl';
     const dlg = (await resolved(page, 'dialog:DIALOG_SYMBOL_CHOOSER'))!;
     const search = await resolved(page, SEARCH);
     expect(search, 'search field resolves').not.toBeNull();
@@ -162,15 +155,17 @@ test.describe('guide overlay engine hooks', () => {
     const grab = { x: captionBox.x + captionBox.width / 2, y: captionBox.y + captionBox.height / 2 };
     await page.mouse.move(grab.x, grab.y);
     await page.mouse.down();
-    // Up-left: down/right would slide Cancel under the version badge (z-20).
-    await page.mouse.move(grab.x - 40, grab.y - 30, { steps: 8 });
+    // Left, and only a little up: the version badge (z-20) covers the
+    // bottom-right corner, where CI's taller chooser puts Cancel (clicked
+    // below), and its title bar starts close to the top edge.
+    await page.mouse.move(grab.x - 80, grab.y - 10, { steps: 8 });
     await page.mouse.up();
     await expect
       .poll(async () => {
         const r = await resolved(page, SEARCH);
         return r ? [Math.round(r.x - search!.x), Math.round(r.y - search!.y)] : null;
       }, { timeout: 20000, message: 'search target moved with the dialog' })
-      .toEqual([-40, -30]);
+      .toEqual([-80, -10]);
     await expect
       .poll(async () => {
         const ring = await page.getByTestId('overlay-ring').boundingBox();
@@ -182,7 +177,12 @@ test.describe('guide overlay engine hooks', () => {
     // Cancel the chooser → dialogClosed, the target goes away. (Esc would
     // need keyboard focus inside the dialog; the Cancel button does not.)
     const cancelNow = (await resolved(page, 'dialog:DIALOG_SYMBOL_CHOOSER/control:button:Cancel'))!;
-    await page.mouse.click(cancelNow.x + cancelNow.width / 2, cancelNow.y + cancelNow.height / 2);
+    const at = { x: cancelNow.x + cancelNow.width / 2, y: cancelNow.y + cancelNow.height / 2 };
+    expect(
+      await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.textContent?.trim(), at),
+      'nothing covers Cancel',
+    ).toBe('Cancel');
+    await page.mouse.click(at.x, at.y);
     await expect
       .poll(
         async () => {
