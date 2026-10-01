@@ -35,7 +35,8 @@ export const SYMBOL_MANIFEST: Record<string, string[]> = {
   // 1N4148 extends 1N4001, 1N5817 extends SB120 — exercises extends-bundling.
   Diode: ["1N4001", "1N4148", "SB120", "1N5817"],
   Connector: ["Conn_01x02_Pin", "Conn_01x04_Pin"],
-  power: ["GND", "GNDA", "VCC", "+5V", "+3V3"],
+  // PWR_FLAG: tells ERC where a supply comes from — a clean ERC needs it on most first boards.
+  power: ["GND", "GNDA", "VCC", "+5V", "+3V3", "PWR_FLAG"],
 };
 
 /** Curated footprint pick list: the common SMD parts a first board needs. */

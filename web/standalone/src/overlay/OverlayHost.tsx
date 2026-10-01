@@ -203,8 +203,11 @@ export function OverlayHost({ tool }: { tool: string }) {
               pressButton("close");
             }
           }}
+          // Only the buttons take the pointer: the card often sits over the sheet right where the
+          // user works (a part follows the mouse below it), so moves and clicks on its body reach
+          // the canvas underneath.
           className={cn(
-            "pointer-events-auto absolute w-80 max-w-[calc(100vw-24px)] rounded-xl bg-white text-neutral-900 shadow-2xl ring-1 ring-inset ring-black/10 dark:bg-neutral-900 dark:text-white dark:ring-white/15",
+            "pointer-events-none absolute w-80 max-w-[calc(100vw-24px)] rounded-xl bg-white text-neutral-900 shadow-2xl ring-1 ring-inset ring-black/10 dark:bg-neutral-900 dark:text-white dark:ring-white/15",
             !layout && "invisible",
           )}
           style={{ left: layout?.x ?? 0, top: layout?.y ?? 0 }}
@@ -241,7 +244,7 @@ export function OverlayHost({ tool }: { tool: string }) {
                 aria-label="Close guide"
                 data-testid="overlay-close"
                 onClick={() => pressButton("close")}
-                className="-mr-1 rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
+                className="pointer-events-auto -mr-1 rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
               >
                 <X className="h-4 w-4" />
               </button>
@@ -258,7 +261,7 @@ export function OverlayHost({ tool }: { tool: string }) {
                     data-testid={`overlay-${b}`}
                     onClick={() => pressButton(b)}
                     className={cn(
-                      "rounded-md px-3 py-1 text-xs font-medium",
+                      "pointer-events-auto rounded-md px-3 py-1 text-xs font-medium",
                       b === "next"
                         ? "bg-sky-600 text-white hover:bg-sky-500"
                         : "text-neutral-600 hover:bg-black/5 dark:text-white/70 dark:hover:bg-white/10",

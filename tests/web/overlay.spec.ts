@@ -263,6 +263,32 @@ test.describe('guide overlay (eeschema)', () => {
     await page.getByTestId('overlay-close').click();
   });
 
+  test('the card lets the work on the sheet through; only its buttons take the pointer', async ({ page }) => {
+    await bootEeschema(page);
+    await page.evaluate(() =>
+      window.__pcbjamOverlay!.show({
+        owner: 'e2e',
+        target: 'tool:eeschema.InteractiveDrawing.placeSymbol',
+        title: 'Move it',
+        text: 'Press M over the part, then click where it should go — even right under this card.',
+      }),
+    );
+    const card = page.getByTestId('overlay-card');
+    await expect(card).toHaveAttribute('data-target-state', 'found', { timeout: 20000 });
+    // A part moved under the card keeps following the mouse: the text passes the pointer to the
+    // canvas below, the close button keeps it.
+    const under = (testid: string) =>
+      page.evaluate((id) => {
+        const r = document.querySelector(`[data-testid="${id}"]`)!.getBoundingClientRect();
+        const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+        return hit?.closest('[data-testid="overlay-card"]') ? (hit.closest('[data-testid]')?.getAttribute('data-testid') ?? 'card') : (hit?.tagName ?? null);
+      }, testid);
+    expect(await under('overlay-text')).toBe('CANVAS');
+    expect(await under('overlay-close')).toBe('overlay-close');
+    await page.getByTestId('overlay-close').click();
+    await expect(card).toHaveCount(0);
+  });
+
   test('a celebrating step throws a short rainbow at the mouse; reduced motion shows only the chip', async ({ page }) => {
     await bootEeschema(page);
     const canvas = (await page.locator('#canvas').boundingBox())!;
