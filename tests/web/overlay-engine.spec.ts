@@ -124,6 +124,9 @@ test.describe('guide overlay engine hooks', () => {
         { timeout: 120000, intervals: [500], message: 'chooser search field uncovered (libraries loaded)' },
       )
       .toBe(true);
+    // The version badge steps aside while a KiCad dialog is open (it covered dialog buttons in
+    // the bottom-right corner); it comes back once the chooser closes (below).
+    await expect(page.getByTestId('version-badge')).toHaveCount(0);
 
     // dialog: target resolves to the chooser window; a step anchors to it.
     await expect.poll(() => resolved(page, 'dialog:DIALOG_SYMBOL_CHOOSER'), { timeout: 20000 }).not.toBeNull();
@@ -195,6 +198,7 @@ test.describe('guide overlay engine hooks', () => {
       )
       .toBe(true);
     await expect(page.getByTestId('overlay-card')).toHaveAttribute('data-target-state', 'lost', { timeout: 10000 });
+    await expect(page.getByTestId('version-badge')).toBeVisible();
 
     // Leave the placer, then the hotkey path emits the same action name.
     await page.keyboard.press('Escape');

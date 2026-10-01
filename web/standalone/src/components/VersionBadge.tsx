@@ -1,5 +1,7 @@
+import * as React from "react";
 import { ExternalLink, Github } from "lucide-react";
 import { APP_GIT_SHA, APP_TAG, LANDING_URL, REPO_URL } from "@/lib/config";
+import { anyDialogOpen, onEditorEvent } from "@/overlay/editor-events";
 
 /**
  * Small bottom-right overlay showing this build's version + a link to the
@@ -17,7 +19,27 @@ export function shortBuildTag(tag: string): string {
   return tag.replace(/\b[0-9a-f]{12,40}\b/i, (h) => h.slice(0, 7));
 }
 
+/**
+ * True while a KiCad dialog is open. KiCad dialogs are centred and, with Linux/Windows font
+ * metrics at 1280×720, reach the bottom-right corner — their Cancel / "Run ERC" buttons sat
+ * under this badge, and a click there opened pcbjam.com (seen in CI 2026-09-30). Re-reads
+ * on every render too: the editor-events store clears when the editor unmounts.
+ */
+function useKiCadDialogOpen(): boolean {
+  const [, bump] = React.useReducer((n: number) => n + 1, 0);
+  React.useEffect(
+    () =>
+      onEditorEvent((e) => {
+        if (e.type !== "action") bump();
+      }),
+    [],
+  );
+  return anyDialogOpen();
+}
+
 export function VersionBadge() {
+  const dialogOpen = useKiCadDialogOpen();
+  if (dialogOpen) return null;
   const tag = shortBuildTag(APP_TAG ?? "dev");
   const versionUrl = APP_GIT_SHA
     ? `${REPO_URL}/commit/${APP_GIT_SHA}`
@@ -31,7 +53,10 @@ export function VersionBadge() {
       : "source repository";
 
   return (
-    <div className="fixed bottom-3 right-3 z-20 flex items-center gap-2 rounded bg-black/70 px-2.5 py-1 font-mono text-[11px] text-white/80 shadow">
+    <div
+      data-testid="version-badge"
+      className="fixed bottom-3 right-3 z-20 flex items-center gap-2 rounded bg-black/70 px-2.5 py-1 font-mono text-[11px] text-white/80 shadow"
+    >
       <a
         href={versionUrl}
         target="_blank"
