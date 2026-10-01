@@ -8,6 +8,8 @@ import { mark } from "./load-trace";
 import { deferBoardModelPrescan, prescanBoardModels } from "./libs/models-bridge";
 import { openFileInTool } from "./open-flow";
 import { isLocalSettingsPath, viewerLocalSettings } from "@/lib/viewer-local-settings";
+import { installLazyDirs, type LazyDirs, type LazyFs } from "./lazy-dirs";
+import { expandRefs, hasReferences, initialStageSet, placeholderDirs, referencesIn } from "./stage-plan";
 
 /**
  * The only thing the editor needs to know about a file to sync it into MEMFS:
@@ -73,6 +75,18 @@ export interface DriveOptions {
    *  the boot overlay's "Project files — n/m" line. Reported once up front
    *  with done=0 so the line appears as soon as staging starts. */
   onFileProgress?: (done: number, total: number) => void;
+  /**
+   * Scoped staging (project-sync 0003): stage the project folder and what
+   * the design references; every other folder is a placeholder filled by
+   * `fetchFolder` when KiCad first looks into it. Absent ⇒ the whole tree is
+   * staged, as before (small projects, sources without sync routes).
+   */
+  scoped?: {
+    /** Synchronous fetch of one folder's named files (lazy-fetch.ts). */
+    fetchFolder: (dir: string, paths: string[]) => Array<[string, Uint8Array]>;
+    /** The placeholder handle, once staging is done (peer file changes consult it). */
+    onLazyDirs?: (lazy: LazyDirs) => void;
+  };
   /** Read-only sessions: park the board's 3D prescan until the viewer opens
    *  (runDeferredModelPrescan) instead of prefetching every model at open. */
   deferModelPrescan?: boolean;
@@ -191,7 +205,9 @@ async function syncProjectToMemfs(win: ToolWindow, opts: DriveOptions): Promise<
   getFS(win).mkdirTree(memfsProjectDir(opts.slug));
 
   let staged = 0;
-  opts.onFileProgress?.(0, opts.files.length);
+  // Scoped staging learns its total as references are followed.
+  let total = opts.scoped && opts.projectSync ? 0 : opts.files.length;
+  opts.onFileProgress?.(0, total);
   const stageOne = (path: string, bytes: Uint8Array): void => {
     if (opts.viewerLocalSettings && isLocalSettingsPath(path)) {
       const stripped = viewerLocalSettings(bytes);
@@ -199,7 +215,7 @@ async function syncProjectToMemfs(win: ToolWindow, opts: DriveOptions): Promise<
       bytes = stripped;
     }
     restageFile(win, opts.slug, path, bytes, opts.log);
-    opts.onFileProgress?.(++staged, opts.files.length);
+    opts.onFileProgress?.(++staged, Math.max(total, staged));
     // 3D models: prefetch every model this board references (R2 → IDB → MEMFS)
     // so the 3D viewer's first open resolves locally. Fire-and-forget — project
     // open never waits on it; a ref that misses falls back to the C++ per-model
@@ -213,6 +229,13 @@ async function syncProjectToMemfs(win: ToolWindow, opts: DriveOptions): Promise<
         );
     }
   };
+
+  if (opts.scoped && opts.projectSync) {
+    await stageScoped(win, opts, stageOne, (n) => {
+      total = n;
+    });
+    return;
+  }
 
   // Plain uploaded files stage through the project sync namespace when the
   // backend offers one — one bundle GET cold, a manifest diff warm — and any
@@ -241,7 +264,7 @@ async function syncProjectToMemfs(win: ToolWindow, opts: DriveOptions): Promise<
         if (file.path === opts.targetPath) throw err;
         skipped.push(file.path);
         opts.log(`[stage] skipped ${file.path}: ${String(err)}`);
-        opts.onFileProgress?.(++staged, opts.files.length);
+        opts.onFileProgress?.(++staged, Math.max(total, staged));
         continue;
       }
       stageOne(file.path, bytes);
@@ -262,6 +285,137 @@ async function syncProjectToMemfs(win: ToolWindow, opts: DriveOptions): Promise<
   }
 }
 
+/** A plain uploaded row the sync namespace can vouch for (not the target, not room-backed). */
+function namespaceEligible(f: ToolFile, targetPath: string | undefined): boolean {
+  return f.path !== targetPath && !f.hasYdoc && !f.isLive && (f.revision ?? 0) > 0;
+}
+
+function projectSyncStack(slug: string, sync: ProjectSyncConfig, kind: "static" | "sparse"): SyncStack {
+  const baseFetch = sync.fetchImpl ?? fetch;
+  // The transport joins `/manifest`, `/bundle`, `/body/…` onto the base URL,
+  // so the session's `copy=` rides on each request here, not on the base.
+  const credentialed: typeof fetch = (input, init) =>
+    baseFetch(typeof input === "string" ? withCopyParam(input) : input, {
+      ...init,
+      credentials: "include",
+    });
+  return new SyncStack({
+    layers: [
+      {
+        // Ids (stable) key the IDB cache; slugs (renameable) only address HTTP.
+        namespace: projectSyncNamespace(sync.scopeId, sync.projectId, sync.copyId),
+        kind,
+        url: `${sync.apiBase}/api/scopes/${encodeURIComponent(sync.scope)}/projects/${encodeURIComponent(slug)}/sync`,
+        digest: sync.digest,
+      },
+    ],
+    fetchImpl: credentialed,
+    storeFactory: sync.storeFactory,
+  });
+}
+
+/**
+ * Scoped staging (project-sync 0003; the rule lives in stage-plan.ts): stage
+ * the initial set, read what was staged for references, stage those, until
+ * nothing new turns up — then leave every other folder as a placeholder.
+ * Plain rows come from the project sync namespace, read lazily (`sparse`:
+ * the manifest lists everything, a body is fetched when asked and kept in
+ * IndexedDB); the target and room-backed files take the per-file path.
+ */
+export async function stageScoped(
+  win: ToolWindow,
+  opts: DriveOptions,
+  stageOne: (path: string, bytes: Uint8Array) => void,
+  setTotal: (n: number) => void,
+): Promise<void> {
+  const paths = opts.files.map((f) => f.path);
+  const byPath = new Map(opts.files.map((f) => [f.path, f]));
+  const viewer = !!opts.viewerLocalSettings;
+  const plan = initialStageSet({ paths, targetPath: opts.targetPath, viewer, gerbview: opts.tool === "gerbview" });
+  const ctx = { projectDir: plan.projectDir, viewer };
+
+  let stack: SyncStack | null = projectSyncStack(opts.slug, opts.projectSync!, "sparse");
+  try {
+    await stack.open();
+  } catch (e) {
+    opts.log(`[stage] project sync namespace unavailable (${String(e)}) — per-file staging`);
+    stack.close();
+    stack = null;
+  }
+
+  const queued = new Set(plan.paths);
+  const staged = new Set<string>();
+  const skipped: string[] = [];
+  const decoder = new TextDecoder();
+  let wave = [...plan.paths];
+  try {
+    while (wave.length) {
+      setTotal(queued.size);
+      const queue = wave;
+      const found: string[] = [];
+      const worker = async (): Promise<void> => {
+        for (let path = queue.shift(); path; path = queue.shift()) {
+          const file = byPath.get(path);
+          if (!file) continue;
+          let bytes: Uint8Array | null = null;
+          try {
+            if (stack && namespaceEligible(file, opts.targetPath)) {
+              bytes = await stack.read(path);
+              // `eligible` requires revision > 0, so this is always a real row.
+              if (bytes && file.revision !== undefined) opts.onStagedRevision?.(path, file.revision);
+            }
+            // The namespace raced the listing, or the file is room-backed.
+            bytes ??= await opts.fetchBytes(path);
+          } catch (err) {
+            // Only the target is load-bearing (findings Q-2).
+            if (path === opts.targetPath) throw err;
+            skipped.push(path);
+            opts.log(`[stage] skipped ${path}: ${String(err)}`);
+            continue;
+          }
+          stageOne(path, bytes);
+          staged.add(path);
+          if (hasReferences(path, viewer)) {
+            found.push(...expandRefs(referencesIn(path, decoder.decode(bytes), ctx), paths));
+          }
+        }
+      };
+      const results = await Promise.allSettled(
+        Array.from({ length: Math.min(STAGE_CONCURRENCY, queue.length) }, worker),
+      );
+      const failed = results.find((r) => r.status === "rejected");
+      if (failed) throw (failed as PromiseRejectedResult).reason;
+      wave = [];
+      for (const p of found) {
+        if (queued.has(p)) continue;
+        queued.add(p);
+        wave.push(p);
+      }
+    }
+  } finally {
+    stack?.close();
+  }
+  if (skipped.length) {
+    opts.onStatus(`${skipped.length} project file(s) could not be loaded: ${skipped.join(", ")}`);
+  }
+
+  // Everything else: the folders exist, and fill when KiCad looks into them.
+  // A file that could not be staged above stays owed to its folder.
+  const { dirs, missing } = placeholderDirs(paths, staged);
+  const left = paths.length - staged.size;
+  opts.log(`[stage] scoped: ${staged.size} staged, ${left} left to ${missing.size} placeholder folder(s)`);
+  const lazy = installLazyDirs({
+    fs: getFS(win) as unknown as LazyFs,
+    root: memfsProjectDir(opts.slug),
+    dirs,
+    missing,
+    fetchFolder: opts.scoped!.fetchFolder,
+    stage: stageOne,
+    log: opts.log,
+  });
+  opts.scoped!.onLazyDirs?.(lazy);
+}
+
 /**
  * Stage every namespace-eligible file from the project sync stack, returning
  * the files that still need the per-file path. Exported for tests.
@@ -277,37 +431,11 @@ export async function stageViaProjectSync(
 ): Promise<ToolFile[]> {
   const sync = opts.projectSync;
   if (!sync) return opts.files;
-  const eligible = opts.files.filter(
-    (f) =>
-      f.path !== opts.targetPath &&
-      !f.hasYdoc &&
-      !f.isLive &&
-      (f.revision ?? 0) > 0,
-  );
+  const eligible = opts.files.filter((f) => namespaceEligible(f, opts.targetPath));
   const rest = opts.files.filter((f) => !eligible.includes(f));
   if (eligible.length === 0) return rest;
 
-  const baseFetch = sync.fetchImpl ?? fetch;
-  // The transport joins `/manifest`, `/bundle`, `/body/…` onto the base URL,
-  // so the session's `copy=` rides on each request here, not on the base.
-  const credentialed: typeof fetch = (input, init) =>
-    baseFetch(typeof input === "string" ? withCopyParam(input) : input, {
-      ...init,
-      credentials: "include",
-    });
-  const stack = new SyncStack({
-    layers: [
-      {
-        // Ids (stable) key the IDB cache; slugs (renameable) only address HTTP.
-        namespace: projectSyncNamespace(sync.scopeId, sync.projectId, sync.copyId),
-        kind: "static",
-        url: `${sync.apiBase}/api/scopes/${encodeURIComponent(sync.scope)}/projects/${encodeURIComponent(opts.slug)}/sync`,
-        digest: sync.digest,
-      },
-    ],
-    fetchImpl: credentialed,
-    storeFactory: sync.storeFactory,
-  });
+  const stack = projectSyncStack(opts.slug, sync, "static");
   try {
     await stack.open();
     const all = await stack.readAll();

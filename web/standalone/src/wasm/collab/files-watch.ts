@@ -65,6 +65,12 @@ export interface FilesWatchOptions {
   fetchBytes: (relPath: string) => Promise<Uint8Array>;
   /** MEMFS write of a sibling (kicad-runner restageFile). */
   restage: (relPath: string, bytes: Uint8Array) => void;
+  /**
+   * Scoped staging (project-sync 0003): false for a path whose folder is
+   * still a placeholder — it is not fetched now; the folder brings it when
+   * KiCad first looks there. Absent ⇒ every changed path is restaged.
+   */
+  isLoaded?: (relPath: string) => boolean;
   /** A path not in the boot listing appeared (a peer's "Add Sheet"). */
   onNewPath?: (relPath: string) => void;
   /** A room-backed path was replaced at rest by an upload/job (0004 §2.5). */
@@ -166,6 +172,7 @@ export function createFilesHintRouter(opts: FilesWatchOptions) {
         knownPaths.add(change.path);
         opts.onNewPath?.(change.path);
       }
+      if (opts.isLoaded && !opts.isLoaded(change.path)) continue;
       restageLater(change.path);
     }
   };

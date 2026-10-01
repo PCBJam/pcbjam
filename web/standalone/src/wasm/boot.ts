@@ -596,6 +596,12 @@ async function doBoot(opts: BootOptions): Promise<void> {
             update_check_prompt: true,
             data_collection_prompt: true,
           },
+          // KiCad's save-time backups and local history (on by default) walk
+          // and copy the project folder into this in-memory filesystem, which
+          // is never stored — the platform keeps the history. Off: otherwise
+          // every save would also pull in every placeholder folder
+          // (project-sync 0003).
+          auto_backup: { enabled: false },
           environment: {
             vars: Object.fromEntries(
               MODELS_3D_ENV_VARS.map((v) => [v, MODELS_3D_ROOT]),

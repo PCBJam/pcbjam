@@ -153,6 +153,21 @@ describe("files hint router (project-sync 0002 §3)", () => {
     expect(restaged).toEqual(["hw/root.kicad_sch"]);
   });
 
+  it("project-sync 0003: a change in a placeholder folder is not fetched — the folder brings it later", async () => {
+    const { router, restaged, fetched, observed } = makeRouter({
+      isLoaded: (p) => !p.startsWith("firmware/"),
+    });
+    router.handle(1, [
+      ch({ path: "firmware/main.c", revision: 7, origin: "upload", by: "peer" }),
+      ch({ path: "x.kicad_pro", revision: 3, origin: "upload", by: "peer" }),
+    ]);
+    await tick();
+    expect(fetched).toEqual(["x.kicad_pro"]);
+    expect(restaged).toEqual(["x.kicad_pro"]);
+    // The revision is still observed: bookkeeping does not depend on staging.
+    expect(observed.get("firmware/main.c")).toBe(7);
+  });
+
   it("removing the open document — the target or the active sheet — raises the banner, not an unstage", () => {
     const events: string[] = [];
     const { router } = makeRouter({

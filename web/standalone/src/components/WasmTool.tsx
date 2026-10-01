@@ -77,7 +77,10 @@ import {
 import { startCrossAppPresence, type CrossAppHandle } from "@/wasm/collab/cross-app";
 import { connectKicadDoc } from "@/wasm/collab";
 import { isGatewayFenced, onGatewayFenced } from "@/wasm/collab/gateway";
-import { copySegment, currentCopyRef } from "@/lib/copy-context";
+import { copySegment, currentCopyRef, withCopyParam } from "@/lib/copy-context";
+import { makeSyncFolderFetch } from "@/wasm/lazy-fetch";
+import type { LazyDirs } from "@/wasm/lazy-dirs";
+import { wantsScopedStaging } from "@/wasm/stage-plan";
 import { refreshChangedPaths } from "@/lib/git-provenance";
 import { fenceReloadsSilently } from "@/lib/git-view";
 import {
@@ -356,6 +359,8 @@ export function WasmTool({
   const sheetManagerRef = React.useRef<SheetCollabManager | null>(null);
   // Board sidecars KiCad writes outside the save chokepoints (proposal 21 S6).
   const sidecarSweepRef = React.useRef<SidecarSweep | null>(null);
+  // Placeholder folders of a scoped stage (project-sync 0003); null = whole tree staged.
+  const lazyDirsRef = React.useRef<LazyDirs | null>(null);
   // The project's .kicad_pro / .kicad_dru as live rooms (proposal 21 WP5).
   const sidecarRoomsRef = React.useRef<SidecarRooms | null>(null);
   // Its owning handle, so unmount tears the room socket + doc down — eeschema's
@@ -1387,6 +1392,7 @@ export function WasmTool({
         // (boot throw, open-never-settled, degrade, unmount) destroys it
         // instead of leaking the socket + doc (findings C-1).
         pendingDocSessionRef.current = session ?? null;
+        const projectUrl = `${API_BASE_URL}/api/scopes/${encodeURIComponent(currentScope())}/projects/${encodeURIComponent(slug)}`;
         const openResult = await driveProjectIntoTool(win, {
           tool,
           slug,
@@ -1419,6 +1425,23 @@ export function WasmTool({
                 }
               : null,
           onStagedRevision,
+          // Project-sync 0003: a big project stages its folder and what the
+          // design references; the rest loads when KiCad looks into it.
+          scoped: wantsScopedStaging(win.location.search, files.length, import.meta.env.VITE_STAGE_ALL === "1")
+            ? {
+                fetchFolder: makeSyncFolderFetch({
+                  folderUrl: `${projectUrl}/sync/folder`,
+                  fileUrl: (relPath) =>
+                    withCopyParam(`${projectUrl}/files/${relPath.split("/").map(encodeURIComponent).join("/")}`),
+                  withParams: withCopyParam,
+                  onRevision: onStagedRevision,
+                  log: append,
+                }),
+                onLazyDirs: (lazy) => {
+                  lazyDirsRef.current = lazy;
+                },
+              }
+            : undefined,
           log: append,
           onStatus: setStatus,
           onFileProgress: (done, total) =>
@@ -1748,7 +1771,9 @@ export function WasmTool({
             },
             // A peer's file op (project-page 0003). Not on screen: drop it
             // from MEMFS + the sheet pool so nothing reads a file that is gone.
+            isLoaded: (p) => lazyDirsRef.current?.noteChanged(p) ?? true,
             onPathRemoved: (c) => {
+              lazyDirsRef.current?.noteRemoved(c.path);
               roomBacked.delete(c.path);
               sheetManagerRef.current?.invalidate(c.path);
               unstageFile(win, slug, c.path, append);
