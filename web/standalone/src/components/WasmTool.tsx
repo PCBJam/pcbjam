@@ -101,7 +101,8 @@ import { hasLayersBridge, LayerPanel, type LayersModule } from "@/components/Lay
 import { ImportItemPanel } from "@/components/ImportItemPanel";
 import { hasImportBridge, type ImportModule } from "@/wasm/import-item";
 import { PluginSidebar } from "@/plugins/PluginManagerSidebar";
-import { usePluginCatalog, type PluginView } from "@/plugins/plugin-catalog";
+import { hostedPlugins, usePluginCatalog, type PluginView } from "@/plugins/plugin-catalog";
+import { useTutorialFromUrl } from "@/plugins/tutorials";
 import { SelectionInspector } from "@/components/SelectionInspector";
 import { hasSheetsBridge, SheetPanel, type SheetsModule } from "@/components/SheetPanel";
 import { bindLocalSelectionFeed } from "@/wasm/collab/local-selection";
@@ -503,6 +504,8 @@ export function WasmTool({
   const pluginPocEnabled = (import.meta.env.VITE_PLUGIN_PLATFORM === "1" || import.meta.env.DEV && import.meta.env.VITE_PLUGIN_POC === "1") && (tool === "pcbnew" || tool === "eeschema");
   const [pluginView, setPluginView] = React.useState<PluginView>(null);
   const pluginCatalog = usePluginCatalog(ready && pluginPocEnabled);
+  // A tutorial just started here (Tutorials menu / web Tutorials page): open its panel.
+  useTutorialFromUrl(pluginCatalog, setPluginView, pluginPocEnabled && hostedPlugins);
   // Read-only sessions never bind presence, so the inspector's selection
   // store is fed by this minimal local handler (+ the C++ input hooks).
   const localSelectionRef = React.useRef<{ destroy(): void } | null>(null);

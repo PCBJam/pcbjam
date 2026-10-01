@@ -24,7 +24,7 @@ export function PluginMenu({ tool, catalog, view, onViewChange }: PluginMenuProp
           <Puzzle size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
           <span className="min-w-0 flex-1 truncate">Board Inspector</span><span className="text-[10px] text-neutral-400 dark:text-white/40">Bundled</span>
         </button>}
-        {catalog.plugins.map(plugin => {
+        {catalog.plugins.filter(plugin => plugin.source !== 'tutorial').map(plugin => {
           const compatible = plugin.manifest.surfaces.includes('editor:' + tool);
           return <button key={pluginKey(plugin)} type="button" disabled={!compatible || plugin.enabled===false}
             className={overlayRowClass + ' disabled:cursor-not-allowed disabled:opacity-40'}
@@ -35,7 +35,7 @@ export function PluginMenu({ tool, catalog, view, onViewChange }: PluginMenuProp
             {hostedPlugins && plugin.source === 'upload' && <span className="text-[10px] text-neutral-400 dark:text-white/40">Private</span>}
           </button>;
         })}
-        {!catalog.plugins.length && (hostedPlugins || tool !== 'pcbnew') && <p className="px-2 py-1 text-xs text-neutral-500 dark:text-white/50">{catalog.loaded ? 'No plugins installed yet' : 'Loading plugins…'}</p>}
+        {!catalog.plugins.some(plugin => plugin.source !== 'tutorial') && (hostedPlugins || tool !== 'pcbnew') && <p className="px-2 py-1 text-xs text-neutral-500 dark:text-white/50">{catalog.loaded ? 'No plugins installed yet' : 'Loading plugins…'}</p>}
         {catalog.error && <p role="status" className="px-2 py-1 text-xs text-amber-700 dark:text-amber-200">Plugin list unavailable</p>}
       </div>
       {/* Everyone installs from the marketplace in the web app; the menu then

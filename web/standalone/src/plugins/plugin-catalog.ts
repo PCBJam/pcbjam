@@ -11,8 +11,9 @@ export interface Descriptor {
   grants?: string[];
   installed?: boolean;
   enabled?: boolean;
-  /** Installed from the marketplace (published by PCBJam) or a private upload. */
-  source?: 'marketplace' | 'upload';
+  /** Installed from the marketplace (published by PCBJam), a private upload, or by starting a
+   *  tutorial (overlay-system 0005: runs like any plugin, hidden from the plugin lists). */
+  source?: 'marketplace' | 'upload' | 'tutorial';
   fileMetadata?: Record<string, { sha256: string; bytes: number }>;
   backends?: Array<{endpoint:string;origin:string;paths?:string[];methods?:('GET'|'POST')[];auth?:'none'|'pcbjam-user';kind?:'remote-provider';registrationId?:string;policyDigest:string;status:string;ready:boolean;audience?:string;issuer?:string}>;
   /** Snapshot of a remote provider's /.well-known document (kind: "remote-provider" only). */

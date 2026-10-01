@@ -188,7 +188,7 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
         });
       }
       if (abort.signal.aborted) instance?.dispose();
-      else setStatus(selected === BUILTIN ? 'Read only · Current board' : hostedPlugins ? (active?.source === 'marketplace' ? 'Published by PCBJam · Signed in' : 'Private plugin · Signed in') : 'Local development plugin');
+      else setStatus(selected === BUILTIN ? 'Read only · Current board' : hostedPlugins ? (active?.source === 'marketplace' ? 'Published by PCBJam · Signed in' : active?.source === 'tutorial' ? 'Tutorial by PCBJam · Signed in' : 'Private plugin · Signed in') : 'Local development plugin');
     })().catch(error => fail(error instanceof Error ? error.message : 'Plugin could not start'));
     return () => { abort.abort(); instance?.dispose(); doc.off('update', changed); };
   }, [doc, fileName, tool, readOnly, attempt, selected, active?.digest, active?.generation, active?.enabled, project?.id, project?.scope, project?.name, projectFiles]);
@@ -298,8 +298,9 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
         </section>}
         <section aria-label="Installed plugins" className="mt-6 border-t border-black/10 pt-4 dark:border-white/10">
           <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-white/50">Installed plugins</h3>
-          {!plugins.length && <p className="text-neutral-500 dark:text-white/60">{catalog.loaded ? 'No added plugins yet.' : 'Loading plugins…'}</p>}
-          {plugins.map(plugin => <div key={pluginKey(plugin)} className="flex items-center gap-2 border-b border-black/5 py-3 last:border-0 dark:border-white/5">
+          {!plugins.some(plugin => plugin.source !== 'tutorial') && <p className="text-neutral-500 dark:text-white/60">{catalog.loaded ? 'No added plugins yet.' : 'Loading plugins…'}</p>}
+          {/* Tutorials live in the Tutorials menu, not among the user's plugins. */}
+          {plugins.filter(plugin => plugin.source !== 'tutorial').map(plugin => <div key={pluginKey(plugin)} className="flex items-center gap-2 border-b border-black/5 py-3 last:border-0 dark:border-white/5">
             <div className="min-w-0 flex-1"><p className="truncate font-medium" title={plugin.manifest.name}>{plugin.manifest.name}</p><p className="mt-1 text-neutral-500 dark:text-white/50">{plugin.manifest.version}{plugin.source === 'marketplace' ? ' · From the marketplace' : ''}{compatible(plugin) ? '' : ' · Available in another editor'}</p></div>
             <button className={button} disabled={busy || !compatible(plugin) || plugin.enabled===false} onClick={() => openPlugin(pluginKey(plugin))}>Open</button>
             {hostedPlugins && <button className={button} disabled={busy} onClick={async()=>{setBusy(true);try{await (await packageHost()).setPluginEnabled(plugin,plugin.enabled===false);await refresh();}catch(error){setNotice((error as Error).message);}finally{setBusy(false);}}}>{plugin.enabled===false?'Enable':'Disable'}</button>}

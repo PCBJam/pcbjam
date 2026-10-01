@@ -23,6 +23,7 @@ import { OverlayMenu, OverlayMenuSection, overlayRowClass } from "@/components/O
 import { CHROME_HOTKEY_LABEL } from "./ui-helpers";
 import type { StaleLibEntry } from "./useLibNotices";
 import { PluginMenu, type PluginMenuProps } from "@/plugins/PluginMenu";
+import { TutorialMenu } from "@/plugins/TutorialMenu";
 
 /**
  * Behind-the-library state (libs 0017 §2b/2c): placed items a peer updated in
@@ -336,6 +337,7 @@ export function SessionMenu({
         </OverlayMenuSection>
       )}
 
+      {plugins && <TutorialMenu {...plugins} />}
       {plugins && <PluginMenu {...plugins} />}
 
       <OverlayMenuSection label="View">
