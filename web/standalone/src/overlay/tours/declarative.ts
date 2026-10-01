@@ -10,8 +10,8 @@
  *   - state conditions (`dialogOpen`, `symbols`, `footprint`, `value`,
  *     `net`, `noConnect`, and on the board `boardFootprints`, `boardOutline`,
  *     `unrouted`, `tracks`, `activeLayer`) are re-evaluated live — undoing the work re-opens the step;
- *   - event conditions (`next`, `action`, `dialogOpened`, `dialogClosed`)
- *     only fire on the event, so a step whose `until` contains one LATCHES
+ *   - event conditions (`next`, `action`, `dialogOpened`, `dialogClosed`,
+ *     `checkFinished`) only fire on the event, so a step whose `until` contains one LATCHES
  *     done once met while it is the current step. With a memory store the
  *     latches survive a reload or an editor switch (memory.ts).
  * The last step must finish on `{ next: true }`; its Next ends the tour.
@@ -59,13 +59,17 @@ export type Cond =
   | { dialogOpened: string }
   | { dialogClosed: string }
   | { dialogOpen: string }
+  /** ERC / DRC ran in its dialog — optionally with at most this many errors / warnings (event). */
+  | { checkFinished: { kind: "erc" | "drc"; maxErrors?: number; maxWarnings?: number } }
   | { symbols: { libId: string; min: number; new?: boolean } }
   | { footprint: { libId?: string; ref?: string; set: true | string } }
   | { value: { libId?: string; ref?: string; is: string } }
+  /** Every placed matching symbol is turned to one of these angles. */
+  | { orientation: { libId?: string; ref?: string; angle: number[] } }
   | { net: PinSel[] }
   | { noConnect: PinSel }
   // PCB editor (overlay-system 0004 H4)
-  | { boardFootprints: { ref?: string; fpid?: string; min?: number; inside?: true } }
+  | { boardFootprints: { ref?: string; fpid?: string; min?: number; inside?: true; angle?: number[] } }
   | { boardOutline: { closed: true } }
   | { unrouted: { max: number } }
   | { tracks: { min: number } }
@@ -81,6 +85,17 @@ export const condSchema: z.ZodType<Cond> = z.lazy(() =>
     z.object({ dialogOpened: dialogClass }).strict(),
     z.object({ dialogClosed: dialogClass }).strict(),
     z.object({ dialogOpen: dialogClass }).strict(),
+    z
+      .object({
+        checkFinished: z
+          .object({
+            kind: z.enum(["erc", "drc"]),
+            maxErrors: z.number().int().min(0).max(100000).optional(),
+            maxWarnings: z.number().int().min(0).max(100000).optional(),
+          })
+          .strict(),
+      })
+      .strict(),
     z
       .object({
         symbols: z.object({ libId, min: z.number().int().min(1).max(100), new: z.boolean().optional() }).strict(),
@@ -102,6 +117,18 @@ export const condSchema: z.ZodType<Cond> = z.lazy(() =>
           .refine((v) => (v.libId === undefined) !== (v.ref === undefined), { message: "exactly one of libId, ref" }),
       })
       .strict(),
+    z
+      .object({
+        orientation: z
+          .object({
+            libId: libId.optional(),
+            ref: z.string().min(1).max(32).optional(),
+            angle: z.array(z.union([z.literal(0), z.literal(90), z.literal(180), z.literal(270)])).min(1).max(4),
+          })
+          .strict()
+          .refine((o) => (o.libId === undefined) !== (o.ref === undefined), { message: "exactly one of libId, ref" }),
+      })
+      .strict(),
     z.object({ net: z.array(pinSelSchema).min(2).max(16) }).strict(),
     z.object({ noConnect: pinSelSchema }).strict(),
     z
@@ -112,6 +139,7 @@ export const condSchema: z.ZodType<Cond> = z.lazy(() =>
             fpid: libId.optional(),
             min: z.number().int().min(1).max(500).optional(),
             inside: z.literal(true).optional(),
+            angle: z.array(z.number().min(0).max(360)).min(1).max(8).optional(),
           })
           .strict()
           .refine((f) => f.ref === undefined || f.fpid === undefined, { message: "at most one of ref, fpid" }),
@@ -201,6 +229,13 @@ export interface SheetSymbol {
   ref: string;
   value: string;
   footprint: string;
+  /** 0 / 90 / 180 / 270 (undefined from engines before overlay-system 0005). */
+  angle?: number;
+  /** "x", "y" or "" when not mirrored. */
+  mirror?: string;
+  /** The symbol's anchor in world IU. */
+  x?: number;
+  y?: number;
 }
 export interface SheetPin {
   uuid: string;
@@ -233,7 +268,18 @@ export function parseSheetSymbols(raw: unknown): SheetSymbol[] | null {
     const uuid = str(r?.uuid);
     const lib = str(r?.libId);
     if (!uuid || !lib) continue;
-    out.push({ uuid: uuid.toLowerCase(), libId: lib, ref: str(r.ref) ?? "", value: str(r.value) ?? "", footprint: str(r.footprint) ?? "" });
+    const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+    out.push({
+      uuid: uuid.toLowerCase(),
+      libId: lib,
+      ref: str(r.ref) ?? "",
+      value: str(r.value) ?? "",
+      footprint: str(r.footprint) ?? "",
+      angle: num(r.angle),
+      mirror: str(r.mirror) ?? undefined,
+      x: num(r.x),
+      y: num(r.y),
+    });
   }
   return out;
 }
@@ -329,6 +375,16 @@ export function evalCond(c: Cond, state: DeclState, events: readonly TourEvent[]
   if ("dialogOpened" in c) return events.some((e) => e.type === "dialogShown" && e.cls === c.dialogOpened);
   if ("dialogClosed" in c) return events.some((e) => e.type === "dialogClosed" && e.cls === c.dialogClosed);
   if ("dialogOpen" in c) return state.dialogOpen(c.dialogOpen);
+  if ("checkFinished" in c) {
+    const { kind, maxErrors, maxWarnings } = c.checkFinished;
+    return events.some(
+      (e) =>
+        e.type === "checkFinished" &&
+        e.kind === kind &&
+        (maxErrors === undefined || e.errors <= maxErrors) &&
+        (maxWarnings === undefined || e.warnings <= maxWarnings),
+    );
+  }
   if ("symbols" in c) {
     const { libId: lib, min } = c.symbols;
     const n = state.symbols.filter((s) => s.libId === lib && (!c.symbols.new || state.added.has(s.uuid))).length;
@@ -346,6 +402,11 @@ export function evalCond(c: Cond, state: DeclState, events: readonly TourEvent[]
     const hits = state.symbols.filter((s) => placed(s) && (v.libId !== undefined ? s.libId === v.libId : s.ref === v.ref));
     return hits.length > 0 && hits.every((s) => sameValue(s.value, v.is));
   }
+  if ("orientation" in c) {
+    const o = c.orientation;
+    const hits = state.symbols.filter((s) => placed(s) && (o.libId !== undefined ? s.libId === o.libId : s.ref === o.ref));
+    return hits.length > 0 && hits.every((s) => s.angle !== undefined && o.angle.includes(s.angle));
+  }
   if ("net" in c) {
     const sels = c.net;
     return (state.nets ?? []).some((n) => sels.every((sel) => netSatisfies(n, sel, state)));
@@ -362,7 +423,9 @@ export function evalCond(c: Cond, state: DeclState, events: readonly TourEvent[]
     const hits = (state.board?.footprints ?? []).filter((fp) =>
       f.ref !== undefined ? fp.ref === f.ref : f.fpid !== undefined ? fp.fpid === f.fpid : true,
     );
-    return hits.length >= (f.min ?? 1) && (!f.inside || hits.every((fp) => fp.inside));
+    const turned = (fp: { angle?: number }) =>
+      fp.angle !== undefined && f.angle!.some((a) => Math.abs((((fp.angle! - a) % 360) + 540) % 360 - 180) < 0.5);
+    return hits.length >= (f.min ?? 1) && (!f.inside || hits.every((fp) => fp.inside)) && (!f.angle || hits.every(turned));
   }
   if ("boardOutline" in c) return state.board?.outlineClosed === true;
   if ("unrouted" in c) return !!state.board && state.board.unrouted <= c.unrouted.max;
@@ -375,7 +438,7 @@ export function evalCond(c: Cond, state: DeclState, events: readonly TourEvent[]
 
 /** True when `c` contains an event leaf (such steps latch). */
 export function hasEventLeaf(c: Cond): boolean {
-  if ("next" in c || "action" in c || "dialogOpened" in c || "dialogClosed" in c) return true;
+  if ("next" in c || "action" in c || "dialogOpened" in c || "dialogClosed" in c || "checkFinished" in c) return true;
   if ("all" in c) return c.all.some(hasEventLeaf);
   if ("any" in c) return c.any.some(hasEventLeaf);
   if ("not" in c) return hasEventLeaf(c.not);

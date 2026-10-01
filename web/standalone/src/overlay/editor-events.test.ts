@@ -28,6 +28,16 @@ describe("editor-events", () => {
     expect(parseEditorEvent({ type: "action", name: "a.b", depth: 1 })).toEqual({ type: "action", name: "a.b", depth: 1 });
     expect(parseEditorEvent({ type: "action", name: "" })).toBeNull();
     expect(parseEditorEvent({ type: "dialogShown", cls: "D", ptr: 5 })).toBeNull();
+    expect(parseEditorEvent({ type: "checkFinished", kind: "erc", errors: 2, warnings: 0, unconnected: 0 })).toEqual({
+      type: "checkFinished",
+      kind: "erc",
+      errors: 2,
+      warnings: 0,
+      unconnected: 0,
+    });
+    expect(parseEditorEvent({ type: "checkFinished", kind: "drc", errors: 0, warnings: 1 })).toMatchObject({ unconnected: 0 });
+    expect(parseEditorEvent({ type: "checkFinished", kind: "lvs", errors: 0, warnings: 0 })).toBeNull();
+    expect(parseEditorEvent({ type: "checkFinished", kind: "erc", errors: -1, warnings: 0 })).toBeNull();
     expect(parseEditorEvent("x")).toBeNull();
     expect(parseEditorEvent(null)).toBeNull();
   });

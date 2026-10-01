@@ -8,7 +8,9 @@
 export type EditorEvent =
   | { type: "action"; name: string; depth: number }
   | { type: "dialogShown"; cls: string; ptr: string; title: string }
-  | { type: "dialogClosed"; cls: string; ptr: string; title: string };
+  | { type: "dialogClosed"; cls: string; ptr: string; title: string }
+  /** ERC / DRC finished in its dialog, with the counts it shows (overlay-system 0005). */
+  | { type: "checkFinished"; kind: "erc" | "drc"; errors: number; warnings: number; unconnected: number };
 
 export type EditorEventType = EditorEvent["type"];
 
@@ -29,11 +31,18 @@ export function parseEditorEvent(detail: unknown): EditorEvent | null {
   if ((d.type === "dialogShown" || d.type === "dialogClosed") && typeof d.cls === "string" && typeof d.ptr === "string") {
     return { type: d.type, cls: d.cls, ptr: d.ptr, title: typeof d.title === "string" ? d.title : "" };
   }
+  if (d.type === "checkFinished" && (d.kind === "erc" || d.kind === "drc")) {
+    const n = (v: unknown) => (typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : null);
+    const errors = n(d.errors);
+    const warnings = n(d.warnings);
+    if (errors === null || warnings === null) return null;
+    return { type: "checkFinished", kind: d.kind, errors, warnings, unconnected: n(d.unconnected) ?? 0 };
+  }
   return null;
 }
 
 function track(e: EditorEvent): void {
-  if (e.type === "action") return;
+  if (e.type !== "dialogShown" && e.type !== "dialogClosed") return;
   const list = (openDialogs.get(e.cls) ?? []).filter((d) => d.ptr !== e.ptr);
   if (e.type === "dialogShown") list.push({ ptr: e.ptr, title: e.title });
   if (list.length) openDialogs.set(e.cls, list);

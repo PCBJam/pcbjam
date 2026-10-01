@@ -10,6 +10,8 @@ export interface BoardFootprint {
   fpid: string;
   x: number;
   y: number;
+  /** Rotation in degrees, 0 ≤ angle < 360 (undefined from engines before overlay-system 0005). */
+  angle?: number;
   side: "front" | "back";
   /** Every pad lies inside the closed board outline. */
   inside: boolean;
@@ -51,6 +53,7 @@ export function parseBoardStatus(raw: unknown): BoardStatus | null {
       fpid: typeof f.fpid === "string" ? f.fpid : "",
       x,
       y,
+      angle: num(f.angle) ?? undefined,
       side: f.side === "back" ? "back" : "front",
       inside: f.inside === true,
     });

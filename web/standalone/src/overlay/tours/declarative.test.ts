@@ -238,6 +238,41 @@ describe("compileTour", () => {
   });
 });
 
+describe("checks and orientation (tutorial round 2)", () => {
+  it("checkFinished: an ERC/DRC run, optionally clean enough", () => {
+    const erc = (errors: number, warnings: number) =>
+      ev({ type: "checkFinished", kind: "erc", errors, warnings, unconnected: 0 });
+    expect(evalCond({ checkFinished: { kind: "erc" } }, state(), erc(2, 0))).toBe(true);
+    expect(evalCond({ checkFinished: { kind: "erc", maxErrors: 0 } }, state(), erc(2, 0))).toBe(false);
+    expect(evalCond({ checkFinished: { kind: "erc", maxErrors: 0 } }, state(), erc(0, 3))).toBe(true);
+    expect(evalCond({ checkFinished: { kind: "erc", maxErrors: 0, maxWarnings: 0 } }, state(), erc(0, 3))).toBe(false);
+    expect(evalCond({ checkFinished: { kind: "drc" } }, state(), erc(0, 0))).toBe(false);
+    expect(evalCond({ checkFinished: { kind: "erc" } }, state(), [])).toBe(false);
+    expect(hasEventLeaf({ checkFinished: { kind: "drc" } })).toBe(true);
+    expect(() => parseTourDef(minimal([{ ...last, when: { checkFinished: { kind: "lvs" } } }]))).toThrow(/invalid tour/);
+  });
+
+  it("orientation: every placed matching symbol is turned to one of the angles", () => {
+    const R1 = { ...S("Device:R", "r1", "R1"), angle: 90 };
+    const R2 = { ...S("Device:R", "r2", "R2"), angle: 0 };
+    expect(evalCond({ orientation: { ref: "R1", angle: [90, 270] } }, state({ symbols: [R1, R2] }), [])).toBe(true);
+    expect(evalCond({ orientation: { libId: "Device:R", angle: [90, 270] } }, state({ symbols: [R1, R2] }), [])).toBe(false);
+    expect(evalCond({ orientation: { libId: "Device:R", angle: [90, 270] } }, state({ symbols: [R1] }), [])).toBe(true);
+    // Engines before 0005 report no angle: never satisfied.
+    expect(evalCond({ orientation: { ref: "R1", angle: [0] } }, state(), [])).toBe(false);
+    expect(() => parseTourDef(minimal([{ ...last, when: { orientation: { ref: "R1", angle: [45] } } }]))).toThrow(/invalid tour/);
+    expect(() => parseTourDef(minimal([{ ...last, when: { orientation: { angle: [90] } } }]))).toThrow(/invalid tour/);
+  });
+
+  it("reads orientation and position from the engine payload", () => {
+    const [s] = parseSheetSymbols(
+      JSON.stringify([{ uuid: "U1", libId: "Device:R", ref: "R1", value: "39", footprint: "", angle: 270, mirror: "x", x: 1000, y: -2000 }]),
+    )!;
+    expect(s).toMatchObject({ uuid: "u1", angle: 270, mirror: "x", x: 1000, y: -2000 });
+    expect(parseSheetSymbols(JSON.stringify([{ uuid: "U2", libId: "Device:R" }]))![0]!.angle).toBeUndefined();
+  });
+});
+
 describe("step cap, celebrate, memory and Back (tutorial round 2)", () => {
   function deps(sheet: { syms: SheetSymbol[]; dialog?: boolean }): TourDeps {
     return {
@@ -365,6 +400,16 @@ describe("board conditions (PCB editor)", () => {
     footprints: [FP("J1", "plugin_usb:USB_A_PCB_Edge", true), FP("R1", "Resistor_SMD:R_0805_2012Metric", true), FP("D1", "LED_SMD:LED_0603_1608Metric", false)],
   };
   const on = (over: Partial<typeof board> = {}) => state({ board: { ...board, ...over } });
+
+  it("boardFootprints: `angle` needs every match turned to one of the angles (wrapping, ±0.5°)", () => {
+    const turned = { ...board, footprints: [{ ...FP("R1", "R", true), angle: 90 }, { ...FP("R2", "R", true), angle: 359.8 }] };
+    const s = { ...on(), board: turned };
+    expect(evalCond({ boardFootprints: { ref: "R1", angle: [90, 270] } }, s, [])).toBe(true);
+    expect(evalCond({ boardFootprints: { ref: "R2", angle: [0] } }, s, [])).toBe(true);
+    expect(evalCond({ boardFootprints: { fpid: "R", angle: [90, 270] } }, s, [])).toBe(false);
+    // An engine without angles never satisfies an angle condition.
+    expect(evalCond({ boardFootprints: { ref: "J1", angle: [0] } }, on(), [])).toBe(false);
+  });
 
   it("boardFootprints: count by ref, fpid or all; `inside` needs every match inside the outline", () => {
     expect(evalCond({ boardFootprints: { min: 3 } }, on(), [])).toBe(true);

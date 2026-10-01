@@ -2168,7 +2168,8 @@ std::string pcbItemBBox( std::string aId )
 
 // Guide overlay (overlay-system 0004 H3): the board as a guided tour sees it, as JSON —
 // {"outlineClosed", "activeLayer", "tracks", "vias", "unrouted",
-//  "footprints":[{"uuid","ref","fpid","x","y","side","inside"}]} (positions in IU).
+//  "footprints":[{"uuid","ref","fpid","x","y","angle","side","inside"}]} (positions in IU,
+//  angle in degrees 0..360, overlay-system 0005: "rotate a part" is a state a tour can check).
 // A pure read (never kicadCollabSnapshotItems, which rebaselines the collab differ):
 //   - outlineClosed: Edge.Cuts forms at least one closed outline (NOT inferred from the
 //     board's extents, as the plotter / 3D viewer would);
@@ -2224,6 +2225,7 @@ std::string pcbBoardStatus()
                                 { "fpid", toUtf8( fp->GetFPIDAsString() ) },
                                 { "x", fp->GetPosition().x },
                                 { "y", fp->GetPosition().y },
+                                { "angle", fp->GetOrientation().Normalize().AsDegrees() },
                                 { "side", itemLayer( fp ) == B_Cu ? "back" : "front" },
                                 { "inside", inside } } );
     }

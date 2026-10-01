@@ -7,7 +7,10 @@ import { test, expect } from "./fixtures";
  *
  *   +5V ── R1.1   R1.2 ──wire── R2.1   R2.2 ✕ (no-connect)
  *
- *   - kicadSheetSymbols: uuid, libId, ref, value, footprint per placed symbol;
+ *   - kicadSheetSymbols: uuid, libId, ref, value, footprint per placed symbol,
+ *     plus its orientation (angle, mirror) and position (x, y in schematic
+ *     units, 10 000 per mm) — a tour checks "turn the resistor" by state
+ *     (overlay-system 0005 M2);
  *   - kicadSheetNets: every net with a pin on the shown sheet, power-symbol
  *     pins (#PWR…) left out, the power symbol naming its net, no-connect
  *     flags per pin, and fresh after a commit (a collab apply adds a wire).
@@ -20,7 +23,17 @@ type Mod = {
   kicadSheetNets(): string;
 };
 type FS = { mkdirTree(p: string): void; writeFile(p: string, d: string): void };
-type Sym = { uuid: string; libId: string; ref: string; value: string; footprint: string };
+type Sym = {
+  uuid: string;
+  libId: string;
+  ref: string;
+  value: string;
+  footprint: string;
+  angle: number;
+  mirror: string;
+  x: number;
+  y: number;
+};
 type Net = { net: string; pins: { uuid: string; ref: string; libId: string; pin: string; name: string; noConnect: boolean }[] };
 
 const BOOT_TIMEOUT = 150000;
@@ -137,9 +150,29 @@ test.describe("guide-tour engine reads (eeschema)", () => {
 
     const syms = (await symbols(page)).sort((a, b) => a.ref.localeCompare(b.ref));
     expect(syms).toEqual([
-      { uuid: PWR, libId: "power:+5V", ref: "#PWR01", value: "+5V", footprint: "" },
-      { uuid: R1, libId: "Device:R", ref: "R1", value: "10k", footprint: "Resistor_SMD:R_0603_1608Metric" },
-      { uuid: R2, libId: "Device:R", ref: "R2", value: "39", footprint: "Resistor_SMD:R_1206_3216Metric" },
+      { uuid: PWR, libId: "power:+5V", ref: "#PWR01", value: "+5V", footprint: "", angle: 0, mirror: "", x: 1016000, y: 977900 },
+      {
+        uuid: R1,
+        libId: "Device:R",
+        ref: "R1",
+        value: "10k",
+        footprint: "Resistor_SMD:R_0603_1608Metric",
+        angle: 0,
+        mirror: "",
+        x: 1016000,
+        y: 1016000,
+      },
+      {
+        uuid: R2,
+        libId: "Device:R",
+        ref: "R2",
+        value: "39",
+        footprint: "Resistor_SMD:R_1206_3216Metric",
+        angle: 0,
+        mirror: "",
+        x: 1270000,
+        y: 1016000,
+      },
     ]);
 
     const list = await nets(page);

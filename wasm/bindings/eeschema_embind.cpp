@@ -2293,10 +2293,13 @@ std::string schItemBBox( std::string aId )
 
 
 // Guide overlay (overlay-system 0002 M4, 0003 phase 1): the symbols placed on
-// the CURRENT sheet as [{"uuid","libId","ref","value","footprint"}] — ref,
-// value and footprint as shown on this sheet instance. A pure read — unlike
-// kicadCollabSnapshotItems, which formats every item and rebaselines the
-// collab differ, so it must not be polled by anything but the collab bridge.
+// the CURRENT sheet as [{"uuid","libId","ref","value","footprint","angle",
+// "mirror","x","y"}] — ref, value and footprint as shown on this sheet
+// instance; angle 0/90/180/270 and mirror "x"/"y"/"" as the symbol's
+// orientation (0005: "rotate the resistor" is a state a tour can check); x/y
+// its anchor in world IU. A pure read — unlike kicadCollabSnapshotItems,
+// which formats every item and rebaselines the collab differ, so it must not
+// be polled by anything but the collab bridge.
 std::string schSheetSymbols()
 {
     json out = json::array();
@@ -2312,11 +2315,28 @@ std::string schSheetSymbols()
     for( SCH_ITEM* item : screen->Items().OfType( SCH_SYMBOL_T ) )
     {
         auto* sym = static_cast<SCH_SYMBOL*>( item );
+        int   angle = 0;
+
+        switch( sym->GetOrientationProp() )
+        {
+        case SYMBOL_ORIENTATION_PROP::SYMBOL_ANGLE_90:  angle = 90;  break;
+        case SYMBOL_ORIENTATION_PROP::SYMBOL_ANGLE_180: angle = 180; break;
+        case SYMBOL_ORIENTATION_PROP::SYMBOL_ANGLE_270: angle = 270; break;
+        default:                                        angle = 0;   break;
+        }
+
+        const char*    mirror = sym->GetMirrorX() ? "x" : sym->GetMirrorY() ? "y" : "";
+        const VECTOR2I pos = sym->GetPosition();
+
         out.push_back( { { "uuid", toUtf8( sym->m_Uuid.AsString() ) },
                          { "libId", toUtf8( sym->GetLibId().Format().wx_str() ) },
                          { "ref", toUtf8( sym->GetRef( &path ) ) },
                          { "value", toUtf8( sym->GetValue( false, &path, false ) ) },
-                         { "footprint", toUtf8( sym->GetFootprintFieldText( false, &path, false ) ) } } );
+                         { "footprint", toUtf8( sym->GetFootprintFieldText( false, &path, false ) ) },
+                         { "angle", angle },
+                         { "mirror", mirror },
+                         { "x", pos.x },
+                         { "y", pos.y } } );
     }
 
     return out.dump();
