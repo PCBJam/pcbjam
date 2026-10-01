@@ -3,7 +3,7 @@ import { __resetOverlayForTests, overlay, pressButton } from "../api";
 import { EDITOR_EVENT, __resetEditorEventsForTests, installEditorEvents } from "../editor-events";
 import { addResistorTour } from "./add-resistor";
 import type { TourDeps } from "./declarative";
-import { anyDialogOpen, openDialog } from "../editor-events";
+import { anyDialogOpen, anyModalDialogOpen, openDialog } from "../editor-events";
 import { startTour, type Tour } from "./runner";
 
 // sessionStorage for the node test environment.
@@ -25,6 +25,7 @@ function fakeDeps(sheet: { raw: string; busy?: boolean }): TourDeps {
     openBusy: () => !!sheet.busy,
     dialogOpen: (cls) => !!openDialog(cls),
     anyDialogOpen,
+    modalDialogOpen: anyModalDialogOpen,
   };
 }
 

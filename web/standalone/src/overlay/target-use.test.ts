@@ -22,7 +22,7 @@ describe("target use", () => {
     const t = "tool:eeschema.InteractiveDrawingLineWireBus.drawWires";
     expect(isTargetAction({ type: "action", name: "eeschema.InteractiveDrawingLineWireBus.drawWires", depth: 0 }, t)).toBe(true);
     expect(isTargetAction({ type: "action", name: "eeschema.InteractiveDrawing.placeSymbol", depth: 0 }, t)).toBe(false);
-    expect(isTargetAction({ type: "dialogShown", cls: "DIALOG_X", ptr: "1", title: "" }, t)).toBe(false);
+    expect(isTargetAction({ type: "dialogShown", cls: "DIALOG_X", ptr: "1", title: "", modal: true }, t)).toBe(false);
     expect(isTargetAction({ type: "action", name: "x.y", depth: 0 }, "menu:Tools")).toBe(false);
   });
 

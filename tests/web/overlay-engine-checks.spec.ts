@@ -9,11 +9,21 @@ import { waitForRegistry, shotPath } from '../e2e/utils/element-tracker';
  *     footprint's angle — "rotate the resistor" is a state a tour can check;
  *   - the footprint chooser (a modal FRAME, not a DIALOG_SHIM) reports dialogShown/Closed, opens
  *     centred with a title bar, and the field dialog's library icon (KiCad's STD_BITMAP_BUTTON)
- *     is a `dialog:…/control:StdBitmapButton` target.
+ *     is a `dialog:…/control:StdBitmapButton` target;
+ *   - dialogShown says whether a nested loop runs the dialog (`modal`): the ERC and DRC windows
+ *     are modeless, so a tour keeps reading the sheet while the user fixes what they found.
  */
 
 type Rect = { x: number; y: number; width: number; height: number };
-type EditorEvent = { type: string; cls?: string; kind?: string; errors?: number; warnings?: number; unconnected?: number };
+type EditorEvent = {
+  type: string;
+  cls?: string;
+  modal?: boolean;
+  kind?: string;
+  errors?: number;
+  warnings?: number;
+  unconnected?: number;
+};
 interface OverlayHandle {
   resolve(target: string): { rect: Rect } | null;
   onEditorEvent(cb: (e: EditorEvent) => void): () => void;
@@ -70,6 +80,8 @@ async function pumpUntil<T>(page: Page, at: { x: number; y: number }, read: () =
 }
 
 const dialogOpen = (page: Page, cls: string) => page.evaluate((c) => !!window.__pcbjamOverlay!.openDialog(c), cls);
+const shownModal = (page: Page, cls: string) =>
+  page.evaluate((c) => (window.__editorEvents ?? []).find((e) => e.type === 'dialogShown' && e.cls === c)?.modal ?? null, cls);
 const lastCheck = (page: Page, kind: string) =>
   page.evaluate((k) => (window.__editorEvents ?? []).filter((e) => e.type === 'checkFinished' && e.kind === k).pop() ?? null, kind);
 
@@ -94,6 +106,7 @@ test.describe('guide overlay engine hooks (tutorial round 2)', () => {
     const canvas = (await page.locator('#canvas').boundingBox())!;
     const idle = { x: canvas.x + canvas.width * 0.85, y: canvas.y + canvas.height * 0.85 };
     await pumpUntil(page, idle, () => dialogOpen(page, 'DIALOG_ERC'), 'the ERC dialog opens');
+    expect(await shownModal(page, 'DIALOG_ERC'), 'the ERC window is modeless').toBe(false);
 
     const run = await resolved(page, 'dialog:DIALOG_ERC/control:button:Run ERC');
     await page.mouse.click(center(run).x, center(run).y);
@@ -119,6 +132,7 @@ test.describe('guide overlay engine hooks (tutorial round 2)', () => {
     await page.mouse.click(center(sym).x, center(sym).y);
     await page.keyboard.press('f');
     await pumpUntil(page, center(sym), () => dialogOpen(page, 'DIALOG_FIELD_PROPERTIES'), 'the footprint field dialog opens');
+    expect(await shownModal(page, 'DIALOG_FIELD_PROPERTIES'), 'the field dialog runs a modal loop').toBe(true);
 
     // KiCad's library icon next to the field: a STD_BITMAP_BUTTON, registered by its window name.
     const browse = await resolved(page, 'dialog:DIALOG_FIELD_PROPERTIES/control:StdBitmapButton');
@@ -126,6 +140,7 @@ test.describe('guide overlay engine hooks (tutorial round 2)', () => {
     const viewport = page.viewportSize()!;
     const away = { x: viewport.width - 40, y: viewport.height - 60 };
     await pumpUntil(page, away, () => dialogOpen(page, 'FOOTPRINT_CHOOSER_FRAME'), 'the footprint chooser opens');
+    expect(await shownModal(page, 'FOOTPRINT_CHOOSER_FRAME'), 'the chooser frame runs a modal loop').toBe(true);
 
     // Its first open hydrates the footprint libraries under the full-page loading cover: wait
     // until the chooser's own search field is the element under its centre again.
@@ -181,6 +196,7 @@ test.describe('guide overlay engine hooks (tutorial round 2)', () => {
     const canvas = (await page.locator('#canvas').boundingBox())!;
     const idle = { x: canvas.x + canvas.width * 0.85, y: canvas.y + canvas.height * 0.85 };
     await pumpUntil(page, idle, () => dialogOpen(page, 'DIALOG_DRC'), 'the DRC dialog opens');
+    expect(await shownModal(page, 'DIALOG_DRC'), 'the DRC window is modeless').toBe(false);
 
     const run = await resolved(page, 'dialog:DIALOG_DRC/control:button:Run DRC');
     await page.mouse.click(center(run).x, center(run).y);

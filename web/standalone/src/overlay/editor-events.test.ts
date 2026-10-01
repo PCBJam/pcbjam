@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   EDITOR_EVENT,
   __resetEditorEventsForTests,
+  anyDialogOpen,
+  anyModalDialogOpen,
   installEditorEvents,
   onEditorEvent,
   openDialog,
@@ -51,9 +53,9 @@ describe("editor-events", () => {
   it("tracks open dialogs per class, newest first", () => {
     fire(target, { type: "dialogShown", cls: "D", ptr: "1", title: "one" });
     fire(target, { type: "dialogShown", cls: "D", ptr: "2", title: "two" });
-    expect(openDialog("D")).toEqual({ ptr: "2", title: "two" });
+    expect(openDialog("D")).toEqual({ ptr: "2", title: "two", modal: true });
     fire(target, { type: "dialogClosed", cls: "D", ptr: "2", title: "two" });
-    expect(openDialog("D")).toEqual({ ptr: "1", title: "one" });
+    expect(openDialog("D")).toEqual({ ptr: "1", title: "one", modal: true });
     fire(target, { type: "dialogClosed", cls: "D", ptr: "1", title: "one" });
     expect(openDialog("D")).toBeNull();
   });
@@ -66,6 +68,18 @@ describe("editor-events", () => {
     fire(target, { type: "action", name: "y" });
     expect(seen).toHaveLength(1);
   });
+  it("tells modal dialogs (a nested loop runs) from modeless ones; an engine that does not say is modal", () => {
+    expect(parseEditorEvent({ type: "dialogShown", cls: "D", ptr: "1" })).toMatchObject({ modal: true });
+    fire(target, { type: "dialogShown", cls: "DIALOG_ERC", ptr: "1", title: "ERC", modal: false });
+    expect(anyDialogOpen()).toBe(true);
+    expect(anyModalDialogOpen()).toBe(false);
+    fire(target, { type: "dialogShown", cls: "DIALOG_SYMBOL_CHOOSER", ptr: "2", title: "Choose Symbol", modal: true });
+    expect(anyModalDialogOpen()).toBe(true);
+    fire(target, { type: "dialogClosed", cls: "DIALOG_SYMBOL_CHOOSER", ptr: "2", title: "Choose Symbol" });
+    expect(anyModalDialogOpen()).toBe(false);
+    expect(openDialog("DIALOG_ERC")).toEqual({ ptr: "1", title: "ERC", modal: false });
+  });
+
   it("lists every open dialog's pointer, across classes", () => {
     fire(target, { type: "dialogShown", cls: "A", ptr: "1", title: "" });
     fire(target, { type: "dialogShown", cls: "B", ptr: "2", title: "" });

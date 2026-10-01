@@ -106,8 +106,8 @@ describe("evalCond", () => {
     expect(evalCond({ next: true }, s, ev({ type: "button", button: "next" }))).toBe(true);
     expect(evalCond({ next: true }, s, ev({ type: "button", button: "skip" }))).toBe(false);
     expect(evalCond({ action: "a.b" }, s, ev({ type: "action", name: "a.b", depth: 0 }))).toBe(true);
-    expect(evalCond({ dialogOpened: "D" }, s, ev({ type: "dialogShown", cls: "D", ptr: "1", title: "" }))).toBe(true);
-    expect(evalCond({ dialogClosed: "D" }, s, ev({ type: "dialogShown", cls: "D", ptr: "1", title: "" }))).toBe(false);
+    expect(evalCond({ dialogOpened: "D" }, s, ev({ type: "dialogShown", cls: "D", ptr: "1", title: "", modal: true }))).toBe(true);
+    expect(evalCond({ dialogClosed: "D" }, s, ev({ type: "dialogShown", cls: "D", ptr: "1", title: "", modal: true }))).toBe(false);
   });
 
   it("symbols counts by lib id, optionally only new ones", () => {
@@ -190,6 +190,7 @@ describe("compileTour", () => {
       openBusy: () => !!sheet.busy,
       dialogOpen: () => !!sheet.dialog,
       anyDialogOpen: () => !!sheet.dialog,
+      modalDialogOpen: () => !!sheet.dialog,
     };
   }
   const def = parseTourDef(
@@ -207,10 +208,10 @@ describe("compileTour", () => {
     let s = t.sample([]);
     expect(pick(t, s)).toBe("open");
     // Not yet shown → an event does not latch it.
-    s = t.sample(ev({ type: "dialogShown", cls: "C", ptr: "1", title: "" }));
+    s = t.sample(ev({ type: "dialogShown", cls: "C", ptr: "1", title: "", modal: true }));
     expect(pick(t, s)).toBe("open");
     t.steps[0]!.content(s); // the runner shows it
-    s = t.sample(ev({ type: "dialogShown", cls: "C", ptr: "1", title: "" }));
+    s = t.sample(ev({ type: "dialogShown", cls: "C", ptr: "1", title: "", modal: true }));
     expect(pick(t, s)).toBe("place");
     expect(reads).not.toContain("nets");
   });
@@ -274,14 +275,16 @@ describe("checks and orientation (tutorial round 2)", () => {
 });
 
 describe("step cap, celebrate, memory and Back (tutorial round 2)", () => {
-  function deps(sheet: { syms: SheetSymbol[]; dialog?: boolean }): TourDeps {
+  /** `dialog`: a modal dialog is open; `modeless`: only a modeless one (ERC, DRC). */
+  function deps(sheet: { syms: SheetSymbol[]; dialog?: boolean; modeless?: boolean }): TourDeps {
     return {
       symbols: () => JSON.stringify(sheet.syms),
       nets: () => "[]",
       board: () => "{}",
       openBusy: () => false,
-      dialogOpen: () => !!sheet.dialog,
-      anyDialogOpen: () => !!sheet.dialog,
+      dialogOpen: () => !!sheet.dialog || !!sheet.modeless,
+      anyDialogOpen: () => !!sheet.dialog || !!sheet.modeless,
+      modalDialogOpen: () => !!sheet.dialog,
     };
   }
   const pick = (t: ReturnType<typeof compileTour>, s: DeclState) => t.steps.find((st) => st.when(s))?.id;
@@ -317,7 +320,7 @@ describe("step cap, celebrate, memory and Back (tutorial round 2)", () => {
     );
     const before = compileTour(def, deps(sheet), { memory });
     expect(tick(before).id).toBe("open");
-    expect(tick(before, ev({ type: "dialogShown", cls: "C", ptr: "1", title: "" })).id).toBe("place");
+    expect(tick(before, ev({ type: "dialogShown", cls: "C", ptr: "1", title: "", modal: true })).id).toBe("place");
     // The page reloads: a new compile with the same memory keeps the latch and the baseline.
     const after = compileTour(def, deps(sheet), { memory });
     expect(tick(after).id).toBe("place");
@@ -358,7 +361,7 @@ describe("step cap, celebrate, memory and Back (tutorial round 2)", () => {
 
     expect(tick(t, ev({ type: "button", button: "next" })).content?.buttons).toEqual(["back"]); // "tool"
     sheet.dialog = true;
-    const search = tick(t, ev({ type: "dialogShown", cls: "C", ptr: "1", title: "" }));
+    const search = tick(t, ev({ type: "dialogShown", cls: "C", ptr: "1", title: "", modal: true }));
     expect(search.id).toBe("search");
     expect(search.content?.buttons).toBeUndefined(); // no Back while a dialog is open
     expect(t.back!()).toBe(false);
@@ -379,6 +382,26 @@ describe("step cap, celebrate, memory and Back (tutorial round 2)", () => {
     expect(t.back!()).toBe(true);
     expect(restored).toEqual(["cp2", "cp1"]);
     expect(tick(t).id).toBe("intro");
+  });
+
+  it("a modeless dialog (ERC, DRC) neither pauses the reads nor takes Back away", () => {
+    const sheet = { syms: [] as SheetSymbol[], modeless: false };
+    const checkpoints: CheckpointStore = { capture: () => ({ doc: null }) as unknown as Checkpoint, restore: () => true };
+    const def = parseTourDef(
+      minimal([
+        { id: "run", text: "Run ERC", until: { next: true } },
+        { id: "fix", text: "Add the power flags", until: { symbols: { libId: "power:PWR_FLAG", min: 2 } } },
+        last,
+      ]),
+    );
+    const t = compileTour(def, deps(sheet), { checkpoints });
+    tick(t);
+    sheet.modeless = true; // the ERC window stays open while the user fixes what it found
+    const fix = tick(t, ev({ type: "button", button: "next" }));
+    expect(fix.id).toBe("fix");
+    expect(fix.content?.buttons).toEqual(["back"]);
+    sheet.syms = [S("power:PWR_FLAG", "f1", "#FLG01"), S("power:PWR_FLAG", "f2", "#FLG02")];
+    expect(tick(t).id).toBe("end");
   });
 
   it("without a checkpoint store there is no Back", () => {
@@ -455,7 +478,7 @@ describe("board conditions (PCB editor)", () => {
     const raw = JSON.stringify({ ...board, outlineClosed: false });
     const deps: TourDeps = {
       symbols: () => "[]", nets: () => "[]", board: () => (reads.push("board"), raw),
-      openBusy: () => false, dialogOpen: () => false, anyDialogOpen: () => false,
+      openBusy: () => false, dialogOpen: () => false, anyDialogOpen: () => false, modalDialogOpen: () => false,
     };
     compileTour(sch, deps).sample([]);
     expect(reads).toEqual([]);

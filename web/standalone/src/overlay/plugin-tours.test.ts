@@ -26,6 +26,7 @@ const deps = (over: Partial<TourDeps> = {}): TourDeps => ({
   openBusy: () => false,
   dialogOpen: () => false,
   anyDialogOpen: () => false,
+  modalDialogOpen: () => false,
   ...over,
 });
 
@@ -154,6 +155,8 @@ describe("pluginSheetAdapter", () => {
     expect(sheet.symbols()).toEqual([{ uuid: "a", libId: "Device:R", ref: "R1", value: "10k", footprint: "" }]);
     expect(sheet.connectivity()).toEqual([{ net: "+5V", pins: [{ uuid: "a", ref: "R1", libId: "Device:R", pin: "1", name: "~", noConnect: false }] }]);
     expect(() => pluginSheetAdapter(deps({ openBusy: () => true })).symbols()).toThrow(/loading/);
-    expect(() => pluginSheetAdapter(deps({ anyDialogOpen: () => true })).connectivity()).toThrow(/dialog/);
+    expect(() => pluginSheetAdapter(deps({ anyDialogOpen: () => true, modalDialogOpen: () => true })).connectivity()).toThrow(/dialog/);
+    // A modeless dialog (ERC) leaves the sheet readable.
+    expect(pluginSheetAdapter(deps({ anyDialogOpen: () => true })).connectivity()).toEqual([]);
   });
 });

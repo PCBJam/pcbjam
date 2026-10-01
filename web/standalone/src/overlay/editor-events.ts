@@ -7,7 +7,10 @@
 
 export type EditorEvent =
   | { type: "action"; name: string; depth: number }
-  | { type: "dialogShown"; cls: string; ptr: string; title: string }
+  /** `modal`: a nested event loop runs the dialog (ShowModal / ShowQuasiModal / a modal frame);
+   *  false for modeless ones (ERC, DRC, Find). Engines before overlay-system 0005 do not say:
+   *  taken as modal. */
+  | { type: "dialogShown"; cls: string; ptr: string; title: string; modal: boolean }
   | { type: "dialogClosed"; cls: string; ptr: string; title: string }
   /** ERC / DRC finished in its dialog, with the counts it shows (overlay-system 0005). */
   | { type: "checkFinished"; kind: "erc" | "drc"; errors: number; warnings: number; unconnected: number };
@@ -18,7 +21,7 @@ export const EDITOR_EVENT = "pcbjam:editor-event";
 
 const listeners = new Set<(e: EditorEvent) => void>();
 /** Open dialogs by class, most recently shown last (a class can be open twice). */
-const openDialogs = new Map<string, { ptr: string; title: string }[]>();
+const openDialogs = new Map<string, { ptr: string; title: string; modal: boolean }[]>();
 let installedOn: EventTarget | null = null;
 
 /** Validate an untrusted `detail`; null when it is not an editor event. */
@@ -29,7 +32,9 @@ export function parseEditorEvent(detail: unknown): EditorEvent | null {
     return { type: "action", name: d.name, depth: typeof d.depth === "number" ? d.depth : 0 };
   }
   if ((d.type === "dialogShown" || d.type === "dialogClosed") && typeof d.cls === "string" && typeof d.ptr === "string") {
-    return { type: d.type, cls: d.cls, ptr: d.ptr, title: typeof d.title === "string" ? d.title : "" };
+    const title = typeof d.title === "string" ? d.title : "";
+    if (d.type === "dialogClosed") return { type: d.type, cls: d.cls, ptr: d.ptr, title };
+    return { type: d.type, cls: d.cls, ptr: d.ptr, title, modal: d.modal !== false };
   }
   if (d.type === "checkFinished" && (d.kind === "erc" || d.kind === "drc")) {
     const n = (v: unknown) => (typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : null);
@@ -44,7 +49,7 @@ export function parseEditorEvent(detail: unknown): EditorEvent | null {
 function track(e: EditorEvent): void {
   if (e.type !== "dialogShown" && e.type !== "dialogClosed") return;
   const list = (openDialogs.get(e.cls) ?? []).filter((d) => d.ptr !== e.ptr);
-  if (e.type === "dialogShown") list.push({ ptr: e.ptr, title: e.title });
+  if (e.type === "dialogShown") list.push({ ptr: e.ptr, title: e.title, modal: e.modal });
   if (list.length) openDialogs.set(e.cls, list);
   else openDialogs.delete(e.cls);
 }
@@ -83,9 +88,15 @@ export function onEditorEvent(cb: (e: EditorEvent) => void): () => void {
   return () => listeners.delete(cb);
 }
 
-/** True while any KiCad dialog is open (its modal loop may be running). */
+/** True while any KiCad dialog is open, modal or not. */
 export function anyDialogOpen(): boolean {
   return openDialogs.size > 0;
+}
+
+/** True while a modal KiCad dialog is open: its nested event loop runs, so the page must not
+ *  read the engine. A modeless one (ERC, DRC) leaves the editor as it is. */
+export function anyModalDialogOpen(): boolean {
+  return [...openDialogs.values()].some((list) => list.some((d) => d.modal));
 }
 
 /** Every open KiCad dialog (window pointer as the registry id). */
@@ -94,7 +105,7 @@ export function openDialogPtrs(): string[] {
 }
 
 /** The most recently shown open dialog of this class. */
-export function openDialog(cls: string): { ptr: string; title: string } | null {
+export function openDialog(cls: string): { ptr: string; title: string; modal: boolean } | null {
   const list = openDialogs.get(cls);
   return list?.[list.length - 1] ?? null;
 }

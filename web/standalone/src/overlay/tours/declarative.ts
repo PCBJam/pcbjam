@@ -233,7 +233,7 @@ export interface SheetSymbol {
   angle?: number;
   /** "x", "y" or "" when not mirrored. */
   mirror?: string;
-  /** The symbol's anchor in world IU. */
+  /** The symbol's anchor in schematic units (10 000 per mm). */
   x?: number;
   y?: number;
 }
@@ -513,8 +513,11 @@ export interface TourDeps {
   /** A file open is in flight: the engine answers an empty sheet. */
   openBusy(): boolean;
   dialogOpen(cls: string): boolean;
-  /** Any dialog open: its modal loop may be running — no engine reads. */
+  /** Any dialog open, modal or not. */
   anyDialogOpen(): boolean;
+  /** A modal dialog open: its nested event loop is running — no engine reads, no Back. A
+   *  modeless one (ERC, DRC) does not stop either: the user fixes what it found with it open. */
+  modalDialogOpen(): boolean;
 }
 
 export interface CompileOptions {
@@ -568,7 +571,7 @@ export function compileTour(def: TourDef, deps: TourDeps, opts: CompileOptions =
     editor: def.editor,
     title: def.title ?? "Guide",
     sample(events: TourEvent[]) {
-      if (!deps.openBusy() && !deps.anyDialogOpen()) {
+      if (!deps.openBusy() && !deps.modalDialogOpen()) {
         const read = parseSheetSymbols(deps.symbols());
         if (read) {
           symbols = read;
@@ -590,8 +593,8 @@ export function compileTour(def: TourDef, deps: TourDeps, opts: CompileOptions =
       return s;
     },
     back() {
-      // A dialog's modal loop may be running; the step it belongs to is the one to finish.
-      if (!opts.checkpoints || deps.anyDialogOpen()) return false;
+      // A dialog's modal loop is running; the step it belongs to is the one to finish.
+      if (!opts.checkpoints || deps.modalDialogOpen()) return false;
       const i = backTarget();
       if (i < 0) return false;
       const target = history[i]!;
@@ -610,7 +613,7 @@ export function compileTour(def: TourDef, deps: TourDeps, opts: CompileOptions =
         shown = step.id;
         enter(step.id);
         const buttons: OverlayButton[] = [];
-        if (opts.checkpoints && !deps.anyDialogOpen() && backTarget() >= 0) buttons.push("back");
+        if (opts.checkpoints && !deps.modalDialogOpen() && backTarget() >= 0) buttons.push("back");
         if (hasNextLeaf(step.until)) buttons.push("next");
         return {
           target: resolveStepTarget(step.target, s),

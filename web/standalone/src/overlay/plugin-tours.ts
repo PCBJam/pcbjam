@@ -145,7 +145,7 @@ export function pluginTourAdapter(opts: {
 export function pluginSheetAdapter(deps: TourDeps = engineTourDeps) {
   const guard = () => {
     if (deps.openBusy()) throw new Error("The document is still loading");
-    if (deps.anyDialogOpen()) throw new Error("Close the open dialog first");
+    if (deps.modalDialogOpen()) throw new Error("Close the open dialog first");
   };
   return {
     symbols(): unknown[] {
