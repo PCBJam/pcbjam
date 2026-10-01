@@ -9,12 +9,14 @@ import { onEditorEvent, openDialog } from "./editor-events";
 import { openTrustedPrompt } from "./trusted-prompts";
 import { resolveTarget } from "./targets/resolve";
 import { addResistorTour } from "./tours/add-resistor";
+import { roomCheckpoints } from "./tours/checkpoints";
+import { engineTourDeps } from "./tours/engine";
 import { readTourStatus, startTour, type Tour, type TourRunner } from "./tours/runner";
 
-/** Internal demo tours, by `?overlayDemo=<id>`. */
+/** Internal demo tours, by `?overlayDemo=<id>`. Back works where the editor has a room. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const TOURS: Record<string, () => Tour<any>> = {
-  "add-resistor": () => addResistorTour(),
+  "add-resistor": () => addResistorTour(engineTourDeps, { checkpoints: roomCheckpoints }),
 };
 
 export interface OverlayDemoHandle {

@@ -11,6 +11,7 @@ import { openDialog } from "../editor-events";
 import { normalizeUiLabel, parseTarget, type ParsedTarget } from "./parse";
 import { findDialogControl } from "./dialog-controls";
 import { readBoardStatus } from "../board-status";
+import { parseSheetSymbols } from "../tours/declarative";
 import { pickToolByAction, toolActionsFor } from "./tool-actions";
 
 /** Registry coords are `#canvas`-relative (wxScreenBase in wx.js). */
@@ -125,6 +126,13 @@ function resolveItem(uuid: string): ResolvedTarget | null {
   return box ? resolveCanvas(box) : null;
 }
 
+/** `symbol:<REF>` → the symbol's box via the sheet read (schematic editor only). */
+function resolveSymbol(ref: string): ResolvedTarget | null {
+  const mod = (window as { Module?: { kicadSheetSymbols?: () => unknown } }).Module;
+  const sym = parseSheetSymbols(mod?.kicadSheetSymbols?.())?.find((s) => s.ref === ref);
+  return sym ? resolveItem(sym.uuid) : null;
+}
+
 /** `footprint:<REF>` → the footprint's box via the board read (PCB editor only). */
 function resolveFootprint(ref: string): ResolvedTarget | null {
   const fp = readBoardStatus()?.footprints.find((f) => f.ref === ref);
@@ -176,6 +184,8 @@ export function resolveParsed(t: ParsedTarget): ResolvedTarget | null {
       return resolveItem(t.uuid);
     case "footprint":
       return resolveFootprint(t.ref);
+    case "symbol":
+      return resolveSymbol(t.ref);
     case "tooltip":
       return resolveTooltip(t.text);
     case "menu":
@@ -205,6 +215,7 @@ export function targetDependsOn(t: ParsedTarget): { registry: boolean; viewport:
     case "point":
     case "item": // item moves without a viewport change are caught by the tracker's safety tick
     case "footprint":
+    case "symbol":
       return { registry: false, viewport: true, dom: false };
     case "menu":
     case "panel":

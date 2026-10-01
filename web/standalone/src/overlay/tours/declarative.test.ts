@@ -18,6 +18,8 @@ import {
   type TourDeps,
 } from "./declarative";
 import type { TourEvent } from "./runner";
+import type { Checkpoint, CheckpointStore } from "./checkpoints";
+import type { TourMemory } from "./memory";
 
 const S = (libId: string, uuid: string, ref: string, footprint = ""): SheetSymbol => ({ uuid, libId, ref, value: "", footprint });
 const P = (ref: string, uuid: string, libId: string, pin: string, noConnect = false) => ({ uuid, ref, libId, pin, name: "", noConnect });
@@ -233,6 +235,122 @@ describe("compileTour", () => {
     expect(lastStep.final).toBe(true);
     expect(lastStep.content(s).buttons).toEqual(["next"]);
     expect(t.steps[1]!.content(s).buttons).toBeUndefined();
+  });
+});
+
+describe("step cap, celebrate, memory and Back (tutorial round 2)", () => {
+  function deps(sheet: { syms: SheetSymbol[]; dialog?: boolean }): TourDeps {
+    return {
+      symbols: () => JSON.stringify(sheet.syms),
+      nets: () => "[]",
+      board: () => "{}",
+      openBusy: () => false,
+      dialogOpen: () => !!sheet.dialog,
+      anyDialogOpen: () => !!sheet.dialog,
+    };
+  }
+  const pick = (t: ReturnType<typeof compileTour>, s: DeclState) => t.steps.find((st) => st.when(s))?.id;
+  /** The runner's tick: sample, then show the chosen step (which records it). */
+  const tick = (t: ReturnType<typeof compileTour>, events: TourEvent[] = []) => {
+    const s = t.sample(events);
+    const step = t.steps.find((st) => st.when(s));
+    return { id: step?.id, content: step?.content(s) };
+  };
+
+  it("allows 60 steps, not 61", () => {
+    const steps = (n: number) => [...Array.from({ length: n - 1 }, (_, i) => ({ id: `s${i}`, text: "x", until: { next: true } })), last];
+    expect(parseTourDef(minimal(steps(60))).steps).toHaveLength(60);
+    expect(() => parseTourDef(minimal(steps(61)))).toThrow(/invalid tour/);
+  });
+
+  it("passes `celebrate` through and rejects anything else", () => {
+    const t = compileTour(parseTourDef(minimal([{ ...last, celebrate: "rainbow" }])), deps({ syms: [] }));
+    expect(tick(t).content?.celebrate).toBe("rainbow");
+    expect(() => parseTourDef(minimal([{ ...last, celebrate: "confetti" }]))).toThrow(/invalid tour/);
+  });
+
+  it("remembers latches and the new: baseline across a reload", () => {
+    let stored: TourMemory | null = null;
+    const memory = { load: () => stored, save: (m: TourMemory) => void (stored = JSON.parse(JSON.stringify(m))) };
+    const sheet = { syms: [S("Device:R", "old", "R1")] };
+    const def = parseTourDef(
+      minimal([
+        { id: "open", text: "Open", until: { dialogOpened: "C" } },
+        { id: "place", text: "Place", until: { symbols: { libId: "Device:R", min: 1, new: true } } },
+        last,
+      ]),
+    );
+    const before = compileTour(def, deps(sheet), { memory });
+    expect(tick(before).id).toBe("open");
+    expect(tick(before, ev({ type: "dialogShown", cls: "C", ptr: "1", title: "" })).id).toBe("place");
+    // The page reloads: a new compile with the same memory keeps the latch and the baseline.
+    const after = compileTour(def, deps(sheet), { memory });
+    expect(tick(after).id).toBe("place");
+    sheet.syms = [S("Device:R", "old", "R1"), S("Device:R", "fresh", "R2")];
+    const s = after.sample([]);
+    expect([...s.added]).toEqual(["fresh"]);
+    expect(pick(after, s)).toBe("end");
+  });
+
+  it("Back restores the document of the step before, skipping steps that need an open dialog", () => {
+    const sheet = { syms: [] as SheetSymbol[], dialog: false };
+    const restored: string[] = [];
+    let n = 0;
+    const cp = (tag: string, syms: SheetSymbol[]) => ({ doc: null, snapshot: { tag, syms } }) as unknown as Checkpoint;
+    const checkpoints: CheckpointStore = {
+      capture: () => cp(`cp${++n}`, [...sheet.syms]),
+      restore: (c) => {
+        const snap = c.snapshot as unknown as { tag: string; syms: SheetSymbol[] };
+        restored.push(snap.tag);
+        sheet.syms = snap.syms;
+        return true;
+      },
+    };
+    const def = parseTourDef(
+      minimal([
+        { id: "intro", text: "Hi", until: { next: true } },
+        { id: "tool", text: "Click Place Symbols", until: { dialogOpened: "C" } },
+        { id: "search", text: "Find R", when: { dialogOpen: "C" }, until: { symbols: { libId: "Device:R", min: 1, new: true } } },
+        { id: "value", text: "Set its value", until: { next: true } },
+        last,
+      ]),
+    );
+    const t = compileTour(def, deps(sheet), { checkpoints });
+    const first = tick(t);
+    expect(first.id).toBe("intro");
+    expect(first.content?.buttons).toEqual(["next"]); // nothing to go back to
+    expect(t.back!()).toBe(false);
+
+    expect(tick(t, ev({ type: "button", button: "next" })).content?.buttons).toEqual(["back"]); // "tool"
+    sheet.dialog = true;
+    const search = tick(t, ev({ type: "dialogShown", cls: "C", ptr: "1", title: "" }));
+    expect(search.id).toBe("search");
+    expect(search.content?.buttons).toBeUndefined(); // no Back while a dialog is open
+    expect(t.back!()).toBe(false);
+
+    sheet.dialog = false;
+    sheet.syms = [S("Device:R", "r1", "R1")];
+    const value = tick(t);
+    expect(value.id).toBe("value");
+    expect(value.content?.buttons).toEqual(["back", "next"]);
+
+    // Back from "value": "search" only shows inside the chooser, so it lands on "tool" — with
+    // the sheet as it was then (no resistor) and "tool" no longer latched.
+    expect(t.back!()).toBe(true);
+    expect(restored).toEqual(["cp2"]);
+    expect(sheet.syms).toEqual([]);
+    expect(tick(t).id).toBe("tool");
+    // And once more: back to the intro.
+    expect(t.back!()).toBe(true);
+    expect(restored).toEqual(["cp2", "cp1"]);
+    expect(tick(t).id).toBe("intro");
+  });
+
+  it("without a checkpoint store there is no Back", () => {
+    const t = compileTour(parseTourDef(minimal([{ id: "a", text: "A", until: { next: true } }, last])), deps({ syms: [] }));
+    tick(t);
+    expect(tick(t, ev({ type: "button", button: "next" })).content?.buttons).toEqual(["next"]);
+    expect(t.back!()).toBe(false);
   });
 });
 

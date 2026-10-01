@@ -91,5 +91,12 @@ describe("footprint targets", () => {
     expect(parseTarget("footprint:")).toBeNull();
     expect(parseTarget("footprint:has space")).toBeNull();
   });
+
+  it("names a schematic symbol by reference", () => {
+    expect(parseTarget("symbol:J1")).toEqual({ ns: "symbol", ref: "J1" });
+    expect(parseTarget("symbol:#PWR01")).toEqual({ ns: "symbol", ref: "#PWR01" });
+    expect(parseTarget("symbol:")).toBeNull();
+    expect(parseTarget("symbol:J1 J2")).toBeNull();
+  });
 });
 

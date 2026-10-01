@@ -2,14 +2,15 @@ import * as React from "react";
 import { X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getOverlayState, overlay, pressButton, subscribeOverlay } from "./api";
+import { Celebration, trackPointer } from "./Celebration";
 import { layoutCard, spotlightPath, spotlightRect } from "./geometry";
 import { installOverlayDemo } from "./demo";
 import { installEditorEvents, onEditorEvent, openDialogPtrs } from "./editor-events";
 import { dialogRects } from "./obstacles";
-import { isTargetAction, pointInRect, stepUseKey } from "./target-use";
+import { isCanvasWork, isTargetAction, pointInRect, stepUseKey } from "./target-use";
 import { startOverlayTracking } from "./tracker";
 import type { OverlayButton } from "./types";
-import type { CssRect } from "@/wasm/canvas-coords";
+import { glCanvasRect, type CssRect } from "@/wasm/canvas-coords";
 
 /**
  * The overlay layer (overlay-system 0002 M1): spotlight, target ring and the
@@ -62,10 +63,19 @@ function useObstacles(active: boolean): { rects: CssRect[]; dialog: boolean } {
 
 const NO_OBSTACLES = { rects: [] as CssRect[], dialog: false };
 
+/** A pointerdown on the sheet or board itself (target-use.ts `isCanvasWork`). */
+function isSheetClick(ev: PointerEvent): boolean {
+  const el = ev.target as Element | null;
+  if (el?.id !== "canvas") return false;
+  const origin = el.getBoundingClientRect();
+  const dialogs = dialogRects(openDialogPtrs(), window.wxElementRegistry?.elements, { x: origin.left, y: origin.top });
+  return isCanvasWork(ev.clientX, ev.clientY, glCanvasRect(), dialogs);
+}
+
 /**
- * True once the user used this step's target: clicked inside it, or ran its
- * tool's action (hotkey). Keyed by the step (target-use.ts), so the dim comes
- * back only for a new request.
+ * True once the user used this step's target: clicked inside it, ran its
+ * tool's action (hotkey), or clicked on the sheet or board. Keyed by the step
+ * (target-use.ts), so the dim comes back only for a new request.
  */
 function useTargetUsed(key: string | null, target: string | undefined, rect: CssRect | null): boolean {
   const [usedKey, setUsedKey] = React.useState<string | null>(null);
@@ -80,7 +90,7 @@ function useTargetUsed(key: string | null, target: string | undefined, rect: Css
     // Capture phase: the engine's canvas handlers must not hide the click from us.
     const onDown = (ev: PointerEvent) => {
       const r = rectRef.current;
-      if (r && pointInRect(ev.clientX, ev.clientY, r)) mark();
+      if ((r && pointInRect(ev.clientX, ev.clientY, r)) || isSheetClick(ev)) mark();
     };
     window.addEventListener("pointerdown", onDown, true);
     return () => {
@@ -109,6 +119,7 @@ export function OverlayHost({ tool }: { tool: string }) {
 
   React.useEffect(() => installEditorEvents(), []);
   React.useEffect(() => startOverlayTracking(), []);
+  React.useEffect(() => trackPointer(), []);
   // After tracking + events: a demo tour shows its first step immediately.
   React.useEffect(() => installOverlayDemo(tool), [tool]);
   // The page navigates away on an editor switch; clear on unmount so owners
@@ -116,12 +127,20 @@ export function OverlayHost({ tool }: { tool: string }) {
   React.useEffect(() => () => void overlay.clear(undefined, "unmount"), []);
 
   const { step, target, targetState, paused } = state;
+  const stepKey = step ? stepUseKey(step) : null;
   const obstacles = useObstacles(!!step && !paused);
-  const used = useTargetUsed(
-    step ? stepUseKey(step) : null,
-    step?.target,
-    targetState === "found" && target ? target.rect : null,
-  );
+  const used = useTargetUsed(stepKey, step?.target, targetState === "found" && target ? target.rect : null);
+
+  // A celebrating step celebrates once each time it is reached (not on every re-show of the
+  // same card). The effect outlives the step: a final "well done" card may end the tour at once.
+  const [celebration, setCelebration] = React.useState<number | null>(null);
+  const celebrations = React.useRef(0);
+  const celebrate = step?.celebrate;
+  React.useEffect(() => {
+    if (celebrate) setCelebration(++celebrations.current);
+  }, [stepKey, celebrate]);
+  const celebrationLayer =
+    celebration !== null ? <Celebration key={celebration} onDone={() => setCelebration(null)} /> : null;
 
   React.useLayoutEffect(() => {
     const el = cardRef.current;
@@ -139,7 +158,7 @@ export function OverlayHost({ tool }: { tool: string }) {
     return () => ro.disconnect();
   }, [step, paused]);
 
-  if (!step || paused) return null;
+  if (!step || paused) return celebrationLayer;
 
   const anchored = targetState === "found" && target ? target : null;
   const layout = card ? layoutCard({ target: anchored?.rect ?? null, card, view, placement: step.placement, obstacles: obstacles.rects }) : null;
@@ -153,103 +172,106 @@ export function OverlayHost({ tool }: { tool: string }) {
   const buttons = step.buttons ?? [];
 
   return (
-    <div data-testid="overlay-root" className="pointer-events-none fixed inset-0 z-[45]">
-      {spot && (
-        <svg data-testid="overlay-spotlight" className="absolute inset-0 h-full w-full" aria-hidden>
-          <path d={spotlightPath(view, spot)} fill="rgba(0,0,0,0.45)" fillRule="evenodd" />
-        </svg>
-      )}
-      {ring && (
-        <div
-          data-testid="overlay-ring"
-          aria-hidden
-          className="absolute rounded-lg ring-2 ring-sky-400 motion-safe:animate-pulse"
-          style={{ left: ring.x, top: ring.y, width: ring.width, height: ring.height }}
-        />
-      )}
-      <div
-        ref={cardRef}
-        role="dialog"
-        aria-label={step.title ?? "Guide"}
-        data-testid="overlay-card"
-        data-owner={step.owner}
-        data-target-state={targetState}
-        data-side={layout?.side ?? ""}
-        data-docked={layout?.docked ? "1" : "0"}
-        onKeyDown={(e) => {
-          if (e.key === "Escape") {
-            e.stopPropagation();
-            pressButton("close");
-          }
-        }}
-        className={cn(
-          "pointer-events-auto absolute w-80 max-w-[calc(100vw-24px)] rounded-xl bg-white text-neutral-900 shadow-2xl ring-1 ring-inset ring-black/10 dark:bg-neutral-900 dark:text-white dark:ring-white/15",
-          !layout && "invisible",
+    <>
+      {celebrationLayer}
+      <div data-testid="overlay-root" className="pointer-events-none fixed inset-0 z-[45]">
+        {spot && (
+          <svg data-testid="overlay-spotlight" className="absolute inset-0 h-full w-full" aria-hidden>
+            <path d={spotlightPath(view, spot)} fill="rgba(0,0,0,0.45)" fillRule="evenodd" />
+          </svg>
         )}
-        style={{ left: layout?.x ?? 0, top: layout?.y ?? 0 }}
-      >
-        {layout?.arrow && (
+        {ring && (
           <div
+            data-testid="overlay-ring"
             aria-hidden
-            data-testid="overlay-arrow"
-            className="absolute h-3 w-3 rotate-45 bg-white ring-1 ring-black/10 dark:bg-neutral-900 dark:ring-white/15"
-            style={{ left: layout.arrow.x - layout.x - 6, top: layout.arrow.y - layout.y - 6 }}
+            className="absolute rounded-lg ring-2 ring-sky-400 motion-safe:animate-pulse"
+            style={{ left: ring.x, top: ring.y, width: ring.width, height: ring.height }}
           />
         )}
-        <div className="relative rounded-xl bg-inherit px-4 pb-3 pt-3">
-          <div className="flex items-start gap-2">
-            <div className="min-w-0 flex-1">
-              {(step.attribution || step.progress) && (
-                <div className="mb-1 flex items-center gap-2 text-[11px] text-neutral-500 dark:text-white/50">
-                  {step.attribution && (
-                    <span data-testid="overlay-attribution" className="truncate">
-                      from {step.attribution}
-                    </span>
-                  )}
-                  {step.progress && (
-                    <span data-testid="overlay-progress" className="ml-auto shrink-0 tabular-nums">
-                      {step.progress.step} / {step.progress.of}
-                    </span>
-                  )}
-                </div>
-              )}
-              {step.title && <div className="text-sm font-semibold">{step.title}</div>}
-            </div>
-            <button
-              type="button"
-              aria-label="Close guide"
-              data-testid="overlay-close"
-              onClick={() => pressButton("close")}
-              className="-mr-1 rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
-            >
-              <X className="h-4 w-4" />
-            </button>
-          </div>
-          <p data-testid="overlay-text" aria-live="polite" className="mt-1 whitespace-pre-line text-sm leading-snug">
-            {text}
-          </p>
-          {buttons.length > 0 && (
-            <div className="mt-3 flex items-center justify-end gap-2">
-              {buttons.map((b) => (
-                <button
-                  key={b}
-                  type="button"
-                  data-testid={`overlay-${b}`}
-                  onClick={() => pressButton(b)}
-                  className={cn(
-                    "rounded-md px-3 py-1 text-xs font-medium",
-                    b === "next"
-                      ? "bg-sky-600 text-white hover:bg-sky-500"
-                      : "text-neutral-600 hover:bg-black/5 dark:text-white/70 dark:hover:bg-white/10",
-                  )}
-                >
-                  {BUTTON_LABEL[b]}
-                </button>
-              ))}
-            </div>
+        <div
+          ref={cardRef}
+          role="dialog"
+          aria-label={step.title ?? "Guide"}
+          data-testid="overlay-card"
+          data-owner={step.owner}
+          data-target-state={targetState}
+          data-side={layout?.side ?? ""}
+          data-docked={layout?.docked ? "1" : "0"}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              e.stopPropagation();
+              pressButton("close");
+            }
+          }}
+          className={cn(
+            "pointer-events-auto absolute w-80 max-w-[calc(100vw-24px)] rounded-xl bg-white text-neutral-900 shadow-2xl ring-1 ring-inset ring-black/10 dark:bg-neutral-900 dark:text-white dark:ring-white/15",
+            !layout && "invisible",
           )}
+          style={{ left: layout?.x ?? 0, top: layout?.y ?? 0 }}
+        >
+          {layout?.arrow && (
+            <div
+              aria-hidden
+              data-testid="overlay-arrow"
+              className="absolute h-3 w-3 rotate-45 bg-white ring-1 ring-black/10 dark:bg-neutral-900 dark:ring-white/15"
+              style={{ left: layout.arrow.x - layout.x - 6, top: layout.arrow.y - layout.y - 6 }}
+            />
+          )}
+          <div className="relative rounded-xl bg-inherit px-4 pb-3 pt-3">
+            <div className="flex items-start gap-2">
+              <div className="min-w-0 flex-1">
+                {(step.attribution || step.progress) && (
+                  <div className="mb-1 flex items-center gap-2 text-[11px] text-neutral-500 dark:text-white/50">
+                    {step.attribution && (
+                      <span data-testid="overlay-attribution" className="truncate">
+                        from {step.attribution}
+                      </span>
+                    )}
+                    {step.progress && (
+                      <span data-testid="overlay-progress" className="ml-auto shrink-0 tabular-nums">
+                        {step.progress.step} / {step.progress.of}
+                      </span>
+                    )}
+                  </div>
+                )}
+                {step.title && <div className="text-sm font-semibold">{step.title}</div>}
+              </div>
+              <button
+                type="button"
+                aria-label="Close guide"
+                data-testid="overlay-close"
+                onClick={() => pressButton("close")}
+                className="-mr-1 rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <p data-testid="overlay-text" aria-live="polite" className="mt-1 whitespace-pre-line text-sm leading-snug">
+              {text}
+            </p>
+            {buttons.length > 0 && (
+              <div className="mt-3 flex items-center justify-end gap-2">
+                {buttons.map((b) => (
+                  <button
+                    key={b}
+                    type="button"
+                    data-testid={`overlay-${b}`}
+                    onClick={() => pressButton(b)}
+                    className={cn(
+                      "rounded-md px-3 py-1 text-xs font-medium",
+                      b === "next"
+                        ? "bg-sky-600 text-white hover:bg-sky-500"
+                        : "text-neutral-600 hover:bg-black/5 dark:text-white/70 dark:hover:bg-white/10",
+                    )}
+                  >
+                    {BUTTON_LABEL[b]}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </div>
-    </div>
+    </>
   );
 }

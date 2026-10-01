@@ -148,6 +148,7 @@ import { markDeliberateNavigation } from "@/components/wasm-tool/quit-hook";
 import { setActiveEditor } from "@/wasm/active-editor";
 import { publishViewport } from "@/wasm/viewport-store";
 import { OverlayHost } from "@/overlay/OverlayHost";
+import { setTourDoc } from "@/overlay/tours/checkpoints";
 import { savePartAndPlace } from "@/libs/save-part";
 import {
   chromeSetter,
@@ -494,6 +495,11 @@ export function WasmTool({
   // bound collab doc (pcbnew: the board room; eeschema: the ACTIVE sheet's
   // room, re-pointed on navigation). Null without a doc room (?collab=0).
   const [panelDoc, setPanelDoc] = React.useState<Y.Doc | null>(null);
+  // A tour's Back restores the same room's document (overlay/tours/checkpoints.ts).
+  React.useEffect(() => {
+    setTourDoc(panelDoc);
+    return () => setTourDoc(null);
+  }, [panelDoc]);
   const pluginPocEnabled = (import.meta.env.VITE_PLUGIN_PLATFORM === "1" || import.meta.env.DEV && import.meta.env.VITE_PLUGIN_POC === "1") && (tool === "pcbnew" || tool === "eeschema");
   const [pluginView, setPluginView] = React.useState<PluginView>(null);
   const pluginCatalog = usePluginCatalog(ready && pluginPocEnabled);

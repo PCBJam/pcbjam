@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isTargetAction, pointInRect, stepUseKey, targetActionName } from "./target-use";
+import { isCanvasWork, isTargetAction, pointInRect, stepUseKey, targetActionName } from "./target-use";
 
 describe("target use", () => {
   it("keys a step by what it asks for, so a new request dims again", () => {
@@ -33,5 +33,15 @@ describe("target use", () => {
     expect(pointInRect(25, 40, r)).toBe(true);
     expect(pointInRect(9, 40, r)).toBe(false);
     expect(pointInRect(25, 61, r)).toBe(false);
+  });
+
+  it("counts a click on the drawing as work, not one on a toolbar or inside a dialog", () => {
+    const gal = { x: 200, y: 60, width: 900, height: 600 };
+    const dialog = { x: 400, y: 200, width: 300, height: 200 };
+    expect(isCanvasWork(500, 100, gal, [dialog])).toBe(true); // on the sheet
+    expect(isCanvasWork(500, 300, gal, [dialog])).toBe(false); // inside the open dialog
+    expect(isCanvasWork(100, 100, gal, [dialog])).toBe(false); // left toolbar / panels
+    expect(isCanvasWork(500, 30, gal, [])).toBe(false); // top toolbar
+    expect(isCanvasWork(500, 100, null, [])).toBe(false); // no editor canvas yet
   });
 });

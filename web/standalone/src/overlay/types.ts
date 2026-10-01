@@ -28,6 +28,8 @@ export interface OverlayStep {
   attribution?: string;
   /** Card text while the target is not on screen. */
   lostText?: string;
+  /** A short host-drawn celebration when the step shows (Celebration.tsx). */
+  celebrate?: "rainbow";
 }
 
 export const TITLE_MAX = 80;

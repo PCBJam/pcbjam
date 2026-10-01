@@ -105,6 +105,35 @@ describe("tour runner", () => {
     expect(overlay.getState().step).toBeNull();
   });
 
+  it("routes Back to the tour and re-samples; the final step keeps Back next to Next", () => {
+    let at = 1;
+    let backs = 0;
+    const tour: Tour<number> = {
+      id: "b",
+      editor: "eeschema",
+      title: "B",
+      sample: () => at,
+      back: () => {
+        backs++;
+        at = 1;
+        return true;
+      },
+      steps: [
+        { id: "one", when: (s) => s === 1, content: () => ({ text: "one" }) },
+        { id: "two", final: true, when: (s) => s === 2, content: () => ({ text: "two", buttons: ["back", "next"] }) },
+      ],
+    };
+    const runner = startTour(tour, { poll: false });
+    at = 2;
+    runner.tick();
+    expect(runner.currentStep()).toBe("two");
+    expect(overlay.getState().step?.buttons).toEqual(["back", "next"]);
+    pressButton("back");
+    expect(backs).toBe(1);
+    expect(runner.currentStep()).toBe("one");
+    expect(store.get("pcbjam:tour:b")).toBe("active"); // Back on the final step does not finish it
+  });
+
   it("keeps the tour active when the page unmounts (editor switch)", () => {
     const tour: Tour<number> = {
       id: "u",

@@ -73,6 +73,7 @@ export function sanitizeStep(step: OverlayStep): OverlayStep {
     progress,
     attribution: cap(step.attribution, ATTRIBUTION_MAX),
     lostText: cap(step.lostText, TEXT_MAX),
+    celebrate: step.celebrate === "rainbow" ? "rainbow" : undefined,
   };
 }
 

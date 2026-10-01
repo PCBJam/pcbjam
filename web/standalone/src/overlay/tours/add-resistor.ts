@@ -3,7 +3,7 @@
  * tour definition (0003 phase 2) — the same form a plugin hands the host.
  * Place a Device:R in the schematic editor.
  */
-import { compileTour, parseTourDef, type TourDeps, type TourDef } from "./declarative";
+import { compileTour, parseTourDef, type CompileOptions, type TourDeps, type TourDef } from "./declarative";
 import { engineTourDeps } from "./engine";
 
 const CHOOSER = "DIALOG_SYMBOL_CHOOSER";
@@ -51,6 +51,6 @@ export const ADD_RESISTOR: TourDef = parseTourDef({
   ],
 });
 
-export function addResistorTour(deps: TourDeps = engineTourDeps) {
-  return compileTour(ADD_RESISTOR, deps);
+export function addResistorTour(deps: TourDeps = engineTourDeps, opts: CompileOptions = {}) {
+  return compileTour(ADD_RESISTOR, deps, opts);
 }

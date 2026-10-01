@@ -28,6 +28,9 @@ describe("overlay api", () => {
     expect(s.buttons).toEqual(["back", "next"]);
     expect(s.progress).toBeUndefined();
     expect(s.placement).toBe("auto");
+    expect(s.celebrate).toBeUndefined();
+    expect(sanitizeStep({ owner: "t", text: "ok", celebrate: "rainbow" }).celebrate).toBe("rainbow");
+    expect(sanitizeStep({ owner: "t", text: "ok", celebrate: "fireworks" as never }).celebrate).toBeUndefined();
   });
 
   it("replaces the current step and reports it", () => {

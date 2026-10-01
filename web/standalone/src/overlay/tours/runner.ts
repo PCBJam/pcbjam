@@ -39,6 +39,8 @@ export interface Tour<S> {
    *  press since the last sample. */
   sample(events: TourEvent[]): S;
   steps: TourStep<S>[];
+  /** The card's Back: put the editor back to an earlier step (declarative.ts). False: nothing to go back to. */
+  back?(): boolean;
 }
 
 export type TourStatus = "active" | "done" | "dismissed";
@@ -133,7 +135,8 @@ export function startTour<S>(tour: Tour<S>, opts: TourOptions = {}): TourRunner 
       ...content,
       owner,
       attribution: opts.attribution ?? content.attribution ?? tour.title,
-      buttons: step.final ? ["next"] : content.buttons,
+      // The final step always ends on Next; a Back it offers stays.
+      buttons: step.final ? [...(content.buttons ?? []).filter((b) => b === "back"), "next"] : content.buttons,
       progress: { step: step.position ?? idx + 1, of: length },
     });
   };
@@ -153,7 +156,14 @@ export function startTour<S>(tour: Tour<S>, opts: TourOptions = {}): TourRunner 
   const offButton = overlay.on("button", (e) => {
     if (e.owner !== owner) return;
     const step = tour.steps.find((s) => s.id === current);
-    if (step?.final && e.button === "next") stop("done");
+    if (e.button === "back") {
+      try {
+        tour.back?.();
+      } catch (err) {
+        console.error(`[tour:${tour.id}] back failed:`, err);
+      }
+      tick();
+    } else if (step?.final && e.button === "next") stop("done");
     else {
       pending.push({ type: "button", button: e.button });
       tick();

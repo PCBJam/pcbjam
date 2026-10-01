@@ -12,13 +12,21 @@
  *     `unrouted`, `tracks`, `activeLayer`) are re-evaluated live — undoing the work re-opens the step;
  *   - event conditions (`next`, `action`, `dialogOpened`, `dialogClosed`)
  *     only fire on the event, so a step whose `until` contains one LATCHES
- *     done once met while it is the current step.
+ *     done once met while it is the current step. With a memory store the
+ *     latches survive a reload or an editor switch (memory.ts).
  * The last step must finish on `{ next: true }`; its Next ends the tour.
+ *
+ * Back (tutorial round 2): with a checkpoint store, every step remembers the
+ * document as it was when it first showed; Back restores the newest earlier
+ * step's document and forgets the latches from that step on, so the
+ * state-driven choice lands on it again (checkpoints.ts).
  */
 import { z } from "zod";
-import { ATTRIBUTION_MAX, TEXT_MAX, TITLE_MAX } from "../types";
+import { ATTRIBUTION_MAX, TEXT_MAX, TITLE_MAX, type OverlayButton } from "../types";
 import { parseTarget } from "../targets/parse";
 import { parseBoardStatus, type BoardStatus } from "../board-status";
+import type { Checkpoint, CheckpointStore } from "./checkpoints";
+import type { TourMemoryStore } from "./memory";
 import type { Tour, TourEvent, TourStepContent } from "./runner";
 
 // ── Schema ──────────────────────────────────────────────────────────────────
@@ -137,17 +145,22 @@ export const tourStepSchema = z
     placement: z.enum(["auto", "top", "bottom", "left", "right"]).optional(),
     spotlight: z.boolean().optional(),
     pulse: z.boolean().optional(),
+    /** A short host-drawn celebration when the step shows (e.g. ERC came back clean). */
+    celebrate: z.literal("rainbow").optional(),
     when: condSchema.optional(),
     until: condSchema,
   })
   .strict();
+
+/** Steps per tour. A beginner chapter with its sub-steps runs to ~40. */
+export const TOUR_STEPS_MAX = 60;
 
 export const tourDefSchema = z
   .object({
     id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/),
     title: z.string().min(1).max(ATTRIBUTION_MAX).optional(),
     editor: z.enum(["eeschema", "pcbnew"]),
-    steps: z.array(tourStepSchema).min(1).max(30),
+    steps: z.array(tourStepSchema).min(1).max(TOUR_STEPS_MAX),
   })
   .strict()
   .superRefine((def, ctx) => {
@@ -377,6 +390,18 @@ export function hasNextLeaf(c: Cond): boolean {
   return false; // under `not`, Next can never complete the step
 }
 
+/**
+ * True when `c` only holds while a dialog is open. Back cannot return to such a step:
+ * restoring the document does not reopen the dialog (Back lands on the step before it).
+ */
+export function needsOpenDialog(c: Cond | undefined): boolean {
+  if (!c) return false;
+  if ("dialogOpen" in c) return true;
+  if ("all" in c) return c.all.some(needsOpenDialog);
+  if ("any" in c) return c.any.every(needsOpenDialog);
+  return false;
+}
+
 function condUsesNets(c: Cond | undefined): boolean {
   if (!c) return false;
   if ("net" in c || "noConnect" in c) return true;
@@ -429,15 +454,41 @@ export interface TourDeps {
   anyDialogOpen(): boolean;
 }
 
-export function compileTour(def: TourDef, deps: TourDeps): Tour<DeclState> {
+export interface CompileOptions {
+  /** Keeps latches and the `new:` baseline across reloads (memory.ts); default: in memory only. */
+  memory?: TourMemoryStore;
+  /** Lets Back take the work back (checkpoints.ts); default: no Back button. */
+  checkpoints?: CheckpointStore;
+}
+
+export function compileTour(def: TourDef, deps: TourDeps, opts: CompileOptions = {}): Tour<DeclState> {
   const readNets = tourUsesNets(def);
   const readBoard = tourUsesBoard(def);
-  const latched = new Set<string>();
+  const remembered = opts.memory?.load() ?? null;
+  const latched = new Set<string>(remembered?.latched ?? []);
   let shown: string | null = null;
   let symbols: SheetSymbol[] = [];
   let nets: SheetNet[] | null = null;
   let board: BoardStatus | null = null;
-  let baseline: Set<string> | null = null;
+  let baseline: Set<string> | null = remembered?.baseline ? new Set(remembered.baseline) : null;
+  const remember = () => opts.memory?.save({ latched: [...latched], baseline: baseline ? [...baseline] : null });
+
+  // The steps in the order they first showed, each with the document as it was then.
+  const history: { id: string; checkpoint: Checkpoint | null }[] = [];
+  const order = new Map(def.steps.map((s, i) => [s.id, i]));
+  const enter = (id: string) => {
+    const at = history.findIndex((h) => h.id === id);
+    if (at >= 0) history.length = at + 1; // back on an earlier step: Back, or the work was undone
+    else history.push({ id, checkpoint: opts.checkpoints?.capture() ?? null });
+  };
+  /** Index in `history` of the step Back returns to; -1 when there is none. */
+  const backTarget = () => {
+    for (let i = history.length - 2; i >= 0; i--) {
+      const h = history[i]!;
+      if (h.checkpoint && !needsOpenDialog(def.steps[order.get(h.id)!]!.when)) return i;
+    }
+    return -1;
+  };
 
   const stateOf = (): DeclState => ({
     symbols,
@@ -458,7 +509,10 @@ export function compileTour(def: TourDef, deps: TourDeps): Tour<DeclState> {
         const read = parseSheetSymbols(deps.symbols());
         if (read) {
           symbols = read;
-          baseline ??= new Set(read.map((s) => s.uuid));
+          if (!baseline) {
+            baseline = new Set(read.map((s) => s.uuid));
+            remember();
+          }
         }
         if (readNets) nets = parseSheetNets(deps.nets()) ?? nets;
         if (readBoard) board = parseBoardStatus(deps.board()) ?? board;
@@ -468,8 +522,21 @@ export function compileTour(def: TourDef, deps: TourDeps): Tour<DeclState> {
       const current = def.steps.find((st) => st.id === shown);
       if (current && !latched.has(current.id) && hasEventLeaf(current.until) && evalCond(current.until, s, events)) {
         latched.add(current.id);
+        remember();
       }
       return s;
+    },
+    back() {
+      // A dialog's modal loop may be running; the step it belongs to is the one to finish.
+      if (!opts.checkpoints || deps.anyDialogOpen()) return false;
+      const i = backTarget();
+      if (i < 0) return false;
+      const target = history[i]!;
+      if (!opts.checkpoints.restore(target.checkpoint!)) return false;
+      for (const st of def.steps.slice(order.get(target.id)!)) latched.delete(st.id);
+      remember();
+      history.length = i + 1;
+      return true;
     },
     steps: def.steps.map((step, i) => ({
       id: step.id,
@@ -478,6 +545,10 @@ export function compileTour(def: TourDef, deps: TourDeps): Tour<DeclState> {
       when: (s: DeclState) => (step.when ? evalCond(step.when, s, []) : true) && !done(step, s),
       content: (s: DeclState): TourStepContent => {
         shown = step.id;
+        enter(step.id);
+        const buttons: OverlayButton[] = [];
+        if (opts.checkpoints && !deps.anyDialogOpen() && backTarget() >= 0) buttons.push("back");
+        if (hasNextLeaf(step.until)) buttons.push("next");
         return {
           target: resolveStepTarget(step.target, s),
           title: step.title,
@@ -486,7 +557,8 @@ export function compileTour(def: TourDef, deps: TourDeps): Tour<DeclState> {
           placement: step.placement,
           spotlight: step.spotlight,
           pulse: step.pulse,
-          buttons: hasNextLeaf(step.until) ? ["next"] : undefined,
+          celebrate: step.celebrate,
+          buttons: buttons.length ? buttons : undefined,
         };
       },
     })),

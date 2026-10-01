@@ -15,8 +15,10 @@
  */
 import { overlay } from "./api";
 import { resolveTarget } from "./targets/resolve";
+import { roomCheckpoints, type CheckpointStore } from "./tours/checkpoints";
 import { compileTour, parseSheetNets, parseSheetSymbols, parseTourDef, type TourDef, type TourDeps } from "./tours/declarative";
 import { engineTourDeps } from "./tours/engine";
+import { clearTourMemory, sessionTourMemory } from "./tours/memory";
 import { readTourStatus, runningTours, startTour, type TourRunner, type TourStatus } from "./tours/runner";
 
 export interface PluginPointer {
@@ -50,6 +52,8 @@ export function pluginTourAdapter(opts: {
   tool: () => string;
   signal: AbortSignal;
   deps?: TourDeps;
+  /** Back's document checkpoints (default: the editor's active room). */
+  checkpoints?: CheckpointStore;
   /** The plugin's tour started — the sidebar collapses the plugin's panel out of the way. */
   onTourStart?(): void;
   /** The plugin's tour stopped (done, dismissed, or stopped without a status). */
@@ -88,10 +92,17 @@ export function pluginTourAdapter(opts: {
       if (otherTourRunning()) return { status: "busy" };
       overlay.clear(owner); // a pointer gives way to the plugin's own tour
       def = parsed;
-      runner = startTour(compileTour(parsed, opts.deps ?? engineTourDeps), {
+      const id = storageId(parsed.id);
+      // A fresh start forgets the last run's latches; a resume picks them up.
+      if (!resume) clearTourMemory(id);
+      const compiled = compileTour(parsed, opts.deps ?? engineTourDeps, {
+        memory: sessionTourMemory(id),
+        checkpoints: opts.checkpoints ?? roomCheckpoints,
+      });
+      runner = startTour(compiled, {
         owner,
         attribution: opts.pluginName,
-        storageId: storageId(parsed.id),
+        storageId: id,
         onStop: (status) => opts.onTourEnd?.(status),
       });
       opts.onTourStart?.();

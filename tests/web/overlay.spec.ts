@@ -199,14 +199,16 @@ test.describe('guide overlay (eeschema)', () => {
           window.__pcbjamOverlay!.show({ owner: 'e2e', target, title: 'Wire it', text, spotlight: true, pulse: true }),
         { target: WIRES, text },
       );
+    // Keyboard focus on the sheet BEFORE the step: a click on the sheet during the step would
+    // itself lift the dim (next test), and this one is about the hotkey alone.
+    const canvas = (await page.locator('#canvas').boundingBox())!;
+    await page.mouse.click(canvas.x + canvas.width * 0.4, canvas.y + canvas.height * 0.5);
     await show('Click Draw Wires (or press W).');
     const card = page.getByTestId('overlay-card');
     await expect(card).toHaveAttribute('data-target-state', 'found', { timeout: 20000 });
     await expect(page.getByTestId('overlay-spotlight')).toBeVisible();
 
     // W over the sheet runs the tool's action — no click on the button, no dialog.
-    const canvas = (await page.locator('#canvas').boundingBox())!;
-    await page.mouse.click(canvas.x + canvas.width * 0.4, canvas.y + canvas.height * 0.5);
     await page.keyboard.press('w');
     await expect(page.getByTestId('overlay-spotlight')).toHaveCount(0, { timeout: 20000 });
     await expect(page.getByTestId('overlay-ring')).toHaveCount(0);
@@ -217,6 +219,73 @@ test.describe('guide overlay (eeschema)', () => {
     // Another step on the same tool is a new request: the dim is back.
     await show('Now draw the next wire: click Draw Wires again.');
     await expect(page.getByTestId('overlay-spotlight')).toBeVisible({ timeout: 20000 });
+    await page.getByTestId('overlay-close').click();
+  });
+
+  test('a click on the sheet makes the dim and ring step aside; the card stays', async ({ page }) => {
+    await bootEeschema(page);
+    const show = (text: string) =>
+      page.evaluate(
+        (text) =>
+          window.__pcbjamOverlay!.show({
+            owner: 'e2e',
+            target: 'tool:eeschema.InteractiveDrawing.placeSymbol',
+            title: 'Add a symbol',
+            text,
+            spotlight: true,
+            pulse: true,
+          }),
+        text,
+      );
+    await show('Click Place Symbols.');
+    const card = page.getByTestId('overlay-card');
+    await expect(card).toHaveAttribute('data-target-state', 'found', { timeout: 20000 });
+    await expect(page.getByTestId('overlay-spotlight')).toBeVisible();
+    await expect(page.getByTestId('overlay-ring')).toBeVisible();
+
+    // The user starts working on the sheet instead: nothing should grey it out any more.
+    const gal = await page.evaluate(() => {
+      const el = Array.from(document.querySelectorAll<HTMLElement>('[id^="glcanvas-"]')).find(
+        (c) => getComputedStyle(c).display !== 'none' && c.getBoundingClientRect().width > 0,
+      )!;
+      const r = el.getBoundingClientRect();
+      return { x: r.x, y: r.y, width: r.width, height: r.height };
+    });
+    await page.mouse.click(gal.x + gal.width * 0.3, gal.y + gal.height * 0.6);
+    await expect(page.getByTestId('overlay-spotlight')).toHaveCount(0, { timeout: 20000 });
+    await expect(page.getByTestId('overlay-ring')).toHaveCount(0);
+    await expect(card).toBeVisible();
+    await page.screenshot({ path: shotPath(page, 'overlay-06-sheet-click.png') });
+
+    // A new request points again.
+    await show('Now click Place Symbols once more.');
+    await expect(page.getByTestId('overlay-spotlight')).toBeVisible({ timeout: 20000 });
+    await page.getByTestId('overlay-close').click();
+  });
+
+  test('a celebrating step throws a short rainbow at the mouse; reduced motion shows only the chip', async ({ page }) => {
+    await bootEeschema(page);
+    const canvas = (await page.locator('#canvas').boundingBox())!;
+    await page.mouse.move(canvas.x + canvas.width / 2, canvas.y + canvas.height / 2);
+    const celebrate = (title: string) =>
+      page.evaluate(
+        (title) => window.__pcbjamOverlay!.show({ owner: 'e2e', title, text: 'No errors.', celebrate: 'rainbow' }),
+        title,
+      );
+    await celebrate('ERC is clean');
+    await expect(page.getByTestId('overlay-celebration')).toBeVisible();
+    await expect(page.getByTestId('overlay-celebration-trail')).toHaveCount(1);
+    // It is short, and it never takes clicks (the card does; the trail layer does not).
+    await expect(page.getByTestId('overlay-celebration')).toHaveCount(0, { timeout: 10000 });
+    await expect(page.getByTestId('overlay-celebration-trail')).toHaveCount(0);
+    await expect(page.getByTestId('overlay-card')).toBeVisible();
+
+    // Reduced motion: the chip only, nothing moves (and the screenshot is deterministic).
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await celebrate('DRC is clean');
+    await expect(page.getByTestId('overlay-celebration')).toBeVisible();
+    await expect(page.getByTestId('overlay-celebration-trail')).toHaveCount(0);
+    await page.screenshot({ path: shotPath(page, 'overlay-07-celebrate-reduced.png') });
     await page.getByTestId('overlay-close').click();
   });
 

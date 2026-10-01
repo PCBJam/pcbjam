@@ -10,6 +10,7 @@
  *                             <label> narrows by its label/name
  *   item:<uuid>               a schematic/board item on the canvas
  *   footprint:<REF>           a footprint on the board, by its reference (J1)
+ *   symbol:<REF>              a symbol on the shown sheet, by its reference (J1)
  *   tooltip:<text>            toolbar button by the first tooltip line
  *                             (friendly name, hotkey stripped) — language-
  *                             dependent fallback until `tool:` resolves
@@ -25,6 +26,7 @@ export type ParsedTarget =
   | { ns: "dialog"; cls: string; control?: { type: string; label?: string } }
   | { ns: "item"; uuid: string }
   | { ns: "footprint"; ref: string }
+  | { ns: "symbol"; ref: string }
   | { ns: "tooltip"; text: string }
   | { ns: "menu"; title: string; item?: string }
   | { ns: "panel"; id: string }
@@ -37,6 +39,9 @@ function numbers(s: string, n: number): number[] | null {
   const out = parts.map(Number);
   return out.every(Number.isFinite) ? out : null;
 }
+
+/** A KiCad reference designator (J1, R12, #PWR01, U?). */
+const REF = /^[A-Za-z_#][A-Za-z0-9_#?*+.-]{0,31}$/;
 
 export function parseTarget(target: string): ParsedTarget | null {
   const colon = target.indexOf(":");
@@ -58,7 +63,9 @@ export function parseTarget(target: string): ParsedTarget | null {
     case "item":
       return /^[0-9a-fA-F-]{8,}$/.test(rest) ? { ns, uuid: rest.toLowerCase() } : null;
     case "footprint":
-      return /^[A-Za-z_#][A-Za-z0-9_#?*+.-]{0,31}$/.test(rest) ? { ns, ref: rest } : null;
+      return REF.test(rest) ? { ns, ref: rest } : null;
+    case "symbol":
+      return REF.test(rest) ? { ns, ref: rest } : null;
     case "menu": {
       const slash = rest.indexOf("/");
       if (slash < 0) return { ns, title: rest };
