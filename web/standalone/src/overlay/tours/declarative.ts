@@ -64,16 +64,26 @@ export type Cond =
   | { symbols: { libId: string; min: number; new?: boolean } }
   | { footprint: { libId?: string; ref?: string; set: true | string } }
   | { value: { libId?: string; ref?: string; is: string } }
-  /** Every placed matching symbol is turned to one of these angles. */
-  | { orientation: { libId?: string; ref?: string; angle: number[] } }
+  /** Every placed matching symbol is turned to one of these angles and/or mirrored so: "y" is
+   *  KiCad's Mirror Horizontally (X key), "x" Mirror Vertically (Y key), "none" unmirrored. */
+  | { orientation: { libId?: string; ref?: string; angle?: number[]; mirror?: "x" | "y" | "none" } }
   | { net: PinSel[] }
   | { noConnect: PinSel }
   // PCB editor (overlay-system 0004 H4)
-  | { boardFootprints: { ref?: string; fpid?: string; min?: number; inside?: true; angle?: number[] } }
+  /** `side` narrows the matching footprints to one side of the board (overlay-system 0006). */
+  | { boardFootprints: { ref?: string; fpid?: string; side?: "front" | "back"; min?: number; inside?: true; angle?: number[] } }
   | { boardOutline: { closed: true } }
   | { unrouted: { max: number } }
   | { tracks: { min: number } }
   | { activeLayer: string }
+  /** At least this many vias (overlay-system 0006). */
+  | { vias: { min: number } }
+  /** At least `min` (default 1) copper zones of this net, on this layer, filled or not. */
+  | { zones: { net?: string; layer?: string; filled?: boolean; min?: number } }
+  /** KiCad's simulator finished a run with data — of this analysis, with this many points (event). */
+  | { simFinished: { kind?: string; minPoints?: number } }
+  /** The simulator's plot shows all these traces, e.g. "I(D1)" (event: a run or a probe). */
+  | { simTraces: { has: string[] } }
   | { all: Cond[] }
   | { any: Cond[] }
   | { not: Cond };
@@ -123,10 +133,12 @@ export const condSchema: z.ZodType<Cond> = z.lazy(() =>
           .object({
             libId: libId.optional(),
             ref: z.string().min(1).max(32).optional(),
-            angle: z.array(z.union([z.literal(0), z.literal(90), z.literal(180), z.literal(270)])).min(1).max(4),
+            angle: z.array(z.union([z.literal(0), z.literal(90), z.literal(180), z.literal(270)])).min(1).max(4).optional(),
+            mirror: z.enum(["x", "y", "none"]).optional(),
           })
           .strict()
-          .refine((o) => (o.libId === undefined) !== (o.ref === undefined), { message: "exactly one of libId, ref" }),
+          .refine((o) => (o.libId === undefined) !== (o.ref === undefined), { message: "exactly one of libId, ref" })
+          .refine((o) => o.angle !== undefined || o.mirror !== undefined, { message: "angle or mirror" }),
       })
       .strict(),
     z.object({ net: z.array(pinSelSchema).min(2).max(16) }).strict(),
@@ -137,6 +149,7 @@ export const condSchema: z.ZodType<Cond> = z.lazy(() =>
           .object({
             ref: z.string().min(1).max(32).optional(),
             fpid: libId.optional(),
+            side: z.enum(["front", "back"]).optional(),
             min: z.number().int().min(1).max(500).optional(),
             inside: z.literal(true).optional(),
             angle: z.array(z.number().min(0).max(360)).min(1).max(8).optional(),
@@ -149,6 +162,30 @@ export const condSchema: z.ZodType<Cond> = z.lazy(() =>
     z.object({ unrouted: z.object({ max: z.number().int().min(0).max(100000) }).strict() }).strict(),
     z.object({ tracks: z.object({ min: z.number().int().min(1).max(100000) }).strict() }).strict(),
     z.object({ activeLayer: z.string().regex(/^[A-Za-z0-9_.]{1,32}$/) }).strict(),
+    z.object({ vias: z.object({ min: z.number().int().min(1).max(10000) }).strict() }).strict(),
+    z
+      .object({
+        zones: z
+          .object({
+            net: z.string().min(1).max(128).optional(),
+            layer: z.string().regex(/^[A-Za-z0-9_.]{1,32}$/).optional(),
+            filled: z.boolean().optional(),
+            min: z.number().int().min(1).max(100).optional(),
+          })
+          .strict(),
+      })
+      .strict(),
+    z
+      .object({
+        simFinished: z
+          .object({
+            kind: z.string().regex(/^[a-z]{1,16}$/).optional(),
+            minPoints: z.number().int().min(1).max(10_000_000).optional(),
+          })
+          .strict(),
+      })
+      .strict(),
+    z.object({ simTraces: z.object({ has: z.array(z.string().min(1).max(128)).min(1).max(8) }).strict() }).strict(),
     z.object({ all: z.array(condSchema).min(1).max(16) }).strict(),
     z.object({ any: z.array(condSchema).min(1).max(16) }).strict(),
     z.object({ not: condSchema }).strict(),
@@ -347,19 +384,22 @@ function allPins(state: DeclState): SheetPin[] {
   return (state.nets ?? []).flatMap((n) => n.pins);
 }
 
-const SI: Record<string, number> = { p: 1e-12, n: 1e-9, u: 1e-6, "µ": 1e-6, m: 1e-3, R: 1, r: 1, k: 1e3, K: 1e3, M: 1e6, G: 1e9 };
+const SI: Record<string, number> = { p: 1e-12, n: 1e-9, u: 1e-6, "µ": 1e-6, "μ": 1e-6, m: 1e-3, R: 1, r: 1, k: 1e3, K: 1e3, M: 1e6, G: 1e9 };
 
 /**
  * A component value as something comparable: a number when it reads as one
  * (`39`, `39R`, `39Ω`, `39 ohm`, `0.039k`, RKM `4k7` = `4.7k`, `4R7` = 4.7;
- * `m` is milli, `M` mega, as in KiCad), otherwise the lower-cased text
- * (`white`).
+ * `m` is milli, `M` mega, as in KiCad; a farad unit is dropped, so `10u` = `10uF` = `10µF`
+ * = `10μF`), otherwise the lower-cased text (`white`).
  */
 export function valueKey(raw: string): number | string {
   let s = raw.trim().replace(/\s+/g, "").replace(/(ohms?|Ω|ω)$/i, "");
-  const rkm = /^(\d+)([pnuµmRrkKMG])(\d+)$/.exec(s);
+  // Farads: the word, an "F" after a digit or a prefix, an "f" only after a prefix (a bare "1f"
+  // stays text: KiCad reads it as femto, which the table does not know).
+  s = s.replace(/farads?$/i, "").replace(/([\dpnuµμmkKMG])F$/, "$1").replace(/([pnuµμmkKMG])f$/, "$1");
+  const rkm = /^(\d+)([pnuµμmRrkKMG])(\d+)$/.exec(s);
   if (rkm) s = `${rkm[1]}.${rkm[3]}${rkm[2]}`;
-  const m = /^(\d+(?:\.\d+)?|\.\d+)([pnuµmRrkKMG])?$/.exec(s);
+  const m = /^(\d+(?:\.\d+)?|\.\d+)([pnuµμmRrkKMG])?$/.exec(s);
   if (m) return Number(m[1]) * (m[2] ? SI[m[2]]! : 1);
   return raw.trim().toLowerCase();
 }
@@ -408,7 +448,10 @@ export function evalCond(c: Cond, state: DeclState, events: readonly TourEvent[]
   if ("orientation" in c) {
     const o = c.orientation;
     const hits = state.symbols.filter((s) => placed(s) && (o.libId !== undefined ? s.libId === o.libId : s.ref === o.ref));
-    return hits.length > 0 && hits.every((s) => s.angle !== undefined && o.angle.includes(s.angle));
+    const turned = (s: SheetSymbol) => o.angle === undefined || (s.angle !== undefined && o.angle.includes(s.angle));
+    const mirrored = (s: SheetSymbol) =>
+      o.mirror === undefined || (s.mirror !== undefined && s.mirror === (o.mirror === "none" ? "" : o.mirror));
+    return hits.length > 0 && hits.every((s) => turned(s) && mirrored(s));
   }
   if ("net" in c) {
     const sels = c.net;
@@ -423,8 +466,10 @@ export function evalCond(c: Cond, state: DeclState, events: readonly TourEvent[]
   }
   if ("boardFootprints" in c) {
     const f = c.boardFootprints;
-    const hits = (state.board?.footprints ?? []).filter((fp) =>
-      f.ref !== undefined ? fp.ref === f.ref : f.fpid !== undefined ? fp.fpid === f.fpid : true,
+    const hits = (state.board?.footprints ?? []).filter(
+      (fp) =>
+        (f.ref !== undefined ? fp.ref === f.ref : f.fpid !== undefined ? fp.fpid === f.fpid : true) &&
+        (f.side === undefined || fp.side === f.side),
     );
     const turned = (fp: { angle?: number }) =>
       fp.angle !== undefined && f.angle!.some((a) => Math.abs((((fp.angle! - a) % 360) + 540) % 360 - 180) < 0.5);
@@ -434,14 +479,41 @@ export function evalCond(c: Cond, state: DeclState, events: readonly TourEvent[]
   if ("unrouted" in c) return !!state.board && state.board.unrouted <= c.unrouted.max;
   if ("tracks" in c) return (state.board?.tracks ?? 0) >= c.tracks.min;
   if ("activeLayer" in c) return state.board?.activeLayer === c.activeLayer;
+  if ("vias" in c) return (state.board?.vias ?? 0) >= c.vias.min;
+  if ("zones" in c) {
+    const z = c.zones;
+    const hits = (state.board?.zones ?? []).filter(
+      (zone) =>
+        (z.net === undefined || zone.net === z.net) &&
+        (z.layer === undefined || zone.layers.includes(z.layer)) &&
+        (z.filled === undefined || zone.filled === z.filled),
+    );
+    return hits.length >= (z.min ?? 1);
+  }
+  if ("simFinished" in c) {
+    const { kind, minPoints } = c.simFinished;
+    return events.some(
+      (e) => e.type === "simFinished" && e.ok && (kind === undefined || e.kind === kind) && (minPoints === undefined || e.points >= minPoints),
+    );
+  }
+  if ("simTraces" in c) {
+    const want = c.simTraces.has.map(traceKey);
+    return events.some(
+      (e) => (e.type === "simFinished" || e.type === "simPlotChanged") && want.every((w) => e.traces.some((t) => traceKey(t) === w)),
+    );
+  }
   if ("all" in c) return c.all.every((x) => evalCond(x, state, events));
   if ("any" in c) return c.any.some((x) => evalCond(x, state, events));
   return !evalCond(c.not, state, events);
 }
 
+/** "I(D1)" and "i( d1 )" are the same trace. */
+const traceKey = (t: string) => t.replace(/\s+/g, "").toLowerCase();
+
 /** True when `c` contains an event leaf (such steps latch). */
 export function hasEventLeaf(c: Cond): boolean {
   if ("next" in c || "action" in c || "dialogOpened" in c || "dialogClosed" in c || "checkFinished" in c) return true;
+  if ("simFinished" in c || "simTraces" in c) return true;
   if ("all" in c) return c.all.some(hasEventLeaf);
   if ("any" in c) return c.any.some(hasEventLeaf);
   if ("not" in c) return hasEventLeaf(c.not);
@@ -481,7 +553,7 @@ export function tourUsesNets(def: TourDef): boolean {
   return def.steps.some((s) => condUsesNets(s.when) || condUsesNets(s.until));
 }
 
-const BOARD_KEYS = ["boardFootprints", "boardOutline", "unrouted", "tracks", "activeLayer"] as const;
+const BOARD_KEYS = ["boardFootprints", "boardOutline", "unrouted", "tracks", "activeLayer", "vias", "zones"] as const;
 
 function condUsesBoard(c: Cond | undefined): boolean {
   if (!c) return false;

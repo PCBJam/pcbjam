@@ -19,3 +19,14 @@ export function dialogRects(
   }
   return out;
 }
+
+/**
+ * True when `inner` lies within one of `rects` (±1 px): a step's target that sits inside an
+ * open dialog or tool frame — the simulator's Run button — is where the user works, not
+ * something the dialog covers (overlay-system 0006).
+ */
+export function insideAny(inner: CssRect, rects: readonly CssRect[]): boolean {
+  return rects.some(
+    (r) => inner.x >= r.x - 1 && inner.y >= r.y - 1 && inner.x + inner.width <= r.x + r.width + 1 && inner.y + inner.height <= r.y + r.height + 1,
+  );
+}

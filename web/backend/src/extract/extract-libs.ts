@@ -31,7 +31,8 @@ import { parseFootprintFile } from "./kicad-pretty.js";
 
 /** Curated symbol pick list: the common parts a first board needs. */
 export const SYMBOL_MANIFEST: Record<string, string[]> = {
-  Device: ["R", "C", "L", "D", "LED", "D_Schottky", "D_Zener"],
+  // C_Polarized: the multivibrator tutorial's 10 µF capacitors.
+  Device: ["R", "C", "C_Polarized", "L", "D", "LED", "D_Schottky", "D_Zener"],
   // 1N4148 extends 1N4001, 1N5817 extends SB120 — exercises extends-bundling.
   Diode: ["1N4001", "1N4148", "SB120", "1N5817"],
   Connector: ["Conn_01x02_Pin", "Conn_01x04_Pin"],
@@ -43,8 +44,12 @@ export const SYMBOL_MANIFEST: Record<string, string[]> = {
 export const FOOTPRINT_MANIFEST: Record<string, string[]> = {
   Resistor_SMD: ["R_0402_1005Metric", "R_0603_1608Metric", "R_0805_2012Metric"],
   Capacitor_SMD: ["C_0402_1005Metric", "C_0603_1608Metric"],
-  LED_SMD: ["LED_0603_1608Metric"],
+  LED_SMD: ["LED_0603_1608Metric", "LED_0805_2012Metric"],
   Diode_SMD: ["D_0603_1608Metric"],
+  // The multivibrator tutorial's through-hole capacitors, SOT-23 transistors and 2-pin header.
+  Capacitor_THT: ["CP_Radial_D5.0mm_P2.00mm"],
+  Package_TO_SOT_SMD: ["SOT-23"],
+  "Connector_PinHeader_2.54mm": ["PinHeader_1x02_P2.54mm_Vertical"],
 };
 
 interface IndexItem {

@@ -13,7 +13,12 @@ export type EditorEvent =
   | { type: "dialogShown"; cls: string; ptr: string; title: string; modal: boolean }
   | { type: "dialogClosed"; cls: string; ptr: string; title: string }
   /** ERC / DRC finished in its dialog, with the counts it shows (overlay-system 0005). */
-  | { type: "checkFinished"; kind: "erc" | "drc"; errors: number; warnings: number; unconnected: number };
+  | { type: "checkFinished"; kind: "erc" | "drc"; errors: number; warnings: number; unconnected: number }
+  /** KiCad's simulator finished a run: the analysis ("tran", "ac"…), whether it produced data,
+   *  the point count and the traces now plotted (overlay-system 0006). */
+  | { type: "simFinished"; kind: string; ok: boolean; points: number; traces: string[] }
+  /** The simulator's plot changed (a probe click, the signals list): the traces it shows. */
+  | { type: "simPlotChanged"; kind: string; traces: string[] };
 
 export type EditorEventType = EditorEvent["type"];
 
@@ -42,6 +47,14 @@ export function parseEditorEvent(detail: unknown): EditorEvent | null {
     const warnings = n(d.warnings);
     if (errors === null || warnings === null) return null;
     return { type: "checkFinished", kind: d.kind, errors, warnings, unconnected: n(d.unconnected) ?? 0 };
+  }
+  if ((d.type === "simFinished" || d.type === "simPlotChanged") && typeof d.kind === "string" && d.kind.length <= 16) {
+    const traces = Array.isArray(d.traces)
+      ? d.traces.filter((t): t is string => typeof t === "string" && t.length > 0 && t.length <= 256).slice(0, 64)
+      : [];
+    if (d.type === "simPlotChanged") return { type: d.type, kind: d.kind, traces };
+    const points = typeof d.points === "number" && Number.isInteger(d.points) && d.points >= 0 ? d.points : 0;
+    return { type: d.type, kind: d.kind, ok: d.ok === true, points, traces };
   }
   return null;
 }

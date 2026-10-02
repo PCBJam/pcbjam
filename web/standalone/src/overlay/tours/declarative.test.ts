@@ -9,6 +9,7 @@ import {
   parseTourDef,
   resolveStepTarget,
   sameValue,
+  valueKey,
   tourUsesBoard,
   tourUsesNets,
   type Cond,
@@ -428,8 +429,33 @@ describe("board conditions (PCB editor)", () => {
     vias: 0,
     unrouted: 2,
     footprints: [FP("J1", "plugin_usb:USB_A_PCB_Edge", true), FP("R1", "Resistor_SMD:R_0805_2012Metric", true), FP("D1", "LED_SMD:LED_0603_1608Metric", false)],
+    zones: [] as { net: string; layers: string[]; filled: boolean }[],
   };
   const on = (over: Partial<typeof board> = {}) => state({ board: { ...board, ...over } });
+
+  it("boardFootprints: `side` narrows the matches to one side of the board", () => {
+    const flipped = { ...board, footprints: [{ ...FP("R1", "R", true), side: "back" as const }, { ...FP("R2", "R", true), side: "back" as const }, FP("R3", "R", true)] };
+    const s = { ...on(), board: flipped };
+    expect(evalCond({ boardFootprints: { fpid: "R", side: "back", min: 2 } }, s, [])).toBe(true);
+    expect(evalCond({ boardFootprints: { fpid: "R", side: "back", min: 3 } }, s, [])).toBe(false);
+    expect(evalCond({ boardFootprints: { ref: "R3", side: "back" } }, s, [])).toBe(false);
+    expect(evalCond({ boardFootprints: { ref: "R3", side: "front" } }, s, [])).toBe(true);
+    expect(() => parseTourDef(minimal([{ ...last, until: { boardFootprints: { side: "top" } } }]))).toThrow(/invalid tour/);
+  });
+
+  it("vias and zones: counted from the board read; a zone matches by net, layer and fill", () => {
+    expect(evalCond({ vias: { min: 1 } }, on(), [])).toBe(false);
+    expect(evalCond({ vias: { min: 2 } }, on({ vias: 2 }), [])).toBe(true);
+    const zones = [{ net: "GND", layers: ["B.Cu"], filled: true }, { net: "GND", layers: ["F.Cu"], filled: false }];
+    expect(evalCond({ zones: { net: "GND", layer: "B.Cu", filled: true } }, on({ zones }), [])).toBe(true);
+    expect(evalCond({ zones: { net: "GND", layer: "F.Cu", filled: true } }, on({ zones }), [])).toBe(false);
+    expect(evalCond({ zones: { net: "GND", min: 2 } }, on({ zones }), [])).toBe(true);
+    expect(evalCond({ zones: { net: "+5V" } }, on({ zones }), [])).toBe(false);
+    expect(evalCond({ zones: {} }, on(), [])).toBe(false);
+    // Board conditions make the tour read the board.
+    expect(tourUsesBoard(parseTourDef(minimal([{ id: "v", text: "x", until: { vias: { min: 1 } } }, last])))).toBe(true);
+    expect(tourUsesBoard(parseTourDef(minimal([{ id: "z", text: "x", until: { zones: { net: "GND" } } }, last])))).toBe(true);
+  });
 
   it("boardFootprints: `angle` needs every match turned to one of the angles (wrapping, ±0.5°)", () => {
     const turned = { ...board, footprints: [{ ...FP("R1", "R", true), angle: 90 }, { ...FP("R2", "R", true), angle: 359.8 }] };
@@ -496,3 +522,55 @@ describe("board conditions (PCB editor)", () => {
   });
 });
 
+
+describe("multivibrator conditions (overlay-system 0006)", () => {
+  const Q = (ref: string, mirror: string, angle = 0) => ({ uuid: ref.toLowerCase(), libId: "kit:BC817", ref, value: "BC817", footprint: "SOT-23", angle, mirror });
+
+  it("orientation: `mirror` as KiCad reports it (X key → \"y\"), alone or with an angle", () => {
+    const s = state({ symbols: [Q("Q1", "y"), Q("Q2", "")] });
+    expect(evalCond({ orientation: { ref: "Q1", mirror: "y" } }, s, [])).toBe(true);
+    expect(evalCond({ orientation: { ref: "Q1", angle: [0], mirror: "y" } }, s, [])).toBe(true);
+    expect(evalCond({ orientation: { ref: "Q1", mirror: "x" } }, s, [])).toBe(false);
+    expect(evalCond({ orientation: { ref: "Q2", mirror: "none" } }, s, [])).toBe(true);
+    expect(evalCond({ orientation: { libId: "kit:BC817", mirror: "y" } }, s, [])).toBe(false); // every match
+    // Engines before overlay-system 0005 send no mirror: never satisfied.
+    const old = state({ symbols: [{ uuid: "q1", libId: "kit:BC817", ref: "Q1", value: "", footprint: "" }] });
+    expect(evalCond({ orientation: { ref: "Q1", mirror: "none" } }, old, [])).toBe(false);
+    expect(() => parseTourDef(minimal([{ ...last, until: { orientation: { ref: "Q1" } } }]))).toThrow(/invalid tour/);
+    expect(() => parseTourDef(minimal([{ ...last, until: { orientation: { ref: "Q1", mirror: "z" } } }]))).toThrow(/invalid tour/);
+  });
+
+  it("values: a farad unit and the Greek mu do not change the value", () => {
+    for (const v of ["10uF", "10µF", "10μF", "10 uF", "10u", "10uf", "10µ", "0.01m"]) expect(sameValue(v, "10u"), v).toBe(true);
+    expect(sameValue("10 farad", "10F")).toBe(true);
+    expect(sameValue("4u7F", "4.7u")).toBe(true);
+    expect(sameValue("1F", "1")).toBe(true);
+    expect(sameValue("10nF", "10u")).toBe(false);
+    expect(valueKey("1f")).toBe("1f"); // femto is not in the table: compared as text
+    expect(sameValue("470", "470Ω")).toBe(true);
+  });
+
+  const sim = (over: Record<string, unknown>): TourEvent =>
+    ({ type: "simFinished", kind: "tran", ok: true, points: 3600, traces: [], ...over }) as TourEvent;
+
+  it("simFinished: a run with data, of this analysis, with enough points (event)", () => {
+    expect(evalCond({ simFinished: {} }, state(), [sim({})])).toBe(true);
+    expect(evalCond({ simFinished: { kind: "tran", minPoints: 1000 } }, state(), [sim({})])).toBe(true);
+    expect(evalCond({ simFinished: { kind: "ac" } }, state(), [sim({})])).toBe(false);
+    expect(evalCond({ simFinished: { minPoints: 5000 } }, state(), [sim({})])).toBe(false);
+    expect(evalCond({ simFinished: {} }, state(), [sim({ ok: false })])).toBe(false);
+    expect(evalCond({ simFinished: {} }, state(), [])).toBe(false);
+    expect(hasEventLeaf({ simFinished: {} })).toBe(true);
+    expect(() => parseTourDef(minimal([{ ...last, until: { simFinished: { kind: "TRAN" } } }]))).toThrow(/invalid tour/);
+  });
+
+  it("simTraces: every wanted trace on the plot, after a run or a probe click (event)", () => {
+    const plot = (traces: string[]): TourEvent => ({ type: "simPlotChanged", kind: "tran", traces }) as TourEvent;
+    expect(evalCond({ simTraces: { has: ["I(D1)", "I(D2)"] } }, state(), [plot(["I(D1)", "I(D2)", "V(/Q1C)"])])).toBe(true);
+    expect(evalCond({ simTraces: { has: ["I(D1)", "I(D2)"] } }, state(), [plot(["i( d1 )", "I(d2)"])])).toBe(true);
+    expect(evalCond({ simTraces: { has: ["I(D1)", "I(D2)"] } }, state(), [plot(["I(D1)"])])).toBe(false);
+    expect(evalCond({ simTraces: { has: ["I(D1)"] } }, state(), [sim({ traces: ["I(D1)"] })])).toBe(true);
+    expect(hasEventLeaf({ all: [{ simTraces: { has: ["I(D1)"] } }] })).toBe(true);
+    expect(() => parseTourDef(minimal([{ ...last, until: { simTraces: { has: [] } } }]))).toThrow(/invalid tour/);
+  });
+});

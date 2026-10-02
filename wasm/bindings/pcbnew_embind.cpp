@@ -2168,8 +2168,10 @@ std::string pcbItemBBox( std::string aId )
 
 // Guide overlay (overlay-system 0004 H3): the board as a guided tour sees it, as JSON —
 // {"outlineClosed", "activeLayer", "tracks", "vias", "unrouted",
-//  "footprints":[{"uuid","ref","fpid","x","y","angle","side","inside"}]} (positions in IU,
-//  angle in degrees 0..360, overlay-system 0005: "rotate a part" is a state a tour can check).
+//  "footprints":[{"uuid","ref","fpid","x","y","angle","side","inside"}],
+//  "zones":[{"net","layers":["B.Cu",…],"filled"}]} (positions in IU, angle in degrees 0..360;
+//  overlay-system 0005: "rotate a part" is a state a tour can check; 0006: copper zones — rule
+//  areas are left out — so "fill the bottom with ground" is one too).
 // A pure read (never kicadCollabSnapshotItems, which rebaselines the collab differ):
 //   - outlineClosed: Edge.Cuts forms at least one closed outline (NOT inferred from the
 //     board's extents, as the plotter / 3D viewer would);
@@ -2241,6 +2243,23 @@ std::string pcbBoardStatus()
             tracks++;
     }
 
+    json zones = json::array();
+
+    for( ZONE* zone : board->Zones() )
+    {
+        if( zone->GetIsRuleArea() )
+            continue;
+
+        json layers = json::array();
+
+        for( PCB_LAYER_ID layer : zone->GetLayerSet().Seq() )
+            layers.push_back( toUtf8( BOARD::GetStandardLayerName( layer ) ) );
+
+        zones.push_back( { { "net", toUtf8( zone->GetNetname() ) },
+                           { "layers", layers },
+                           { "filled", zone->IsFilled() } } );
+    }
+
     const std::shared_ptr<CONNECTIVITY_DATA> conn = board->GetConnectivity();
 
     json out = { { "outlineClosed", closed },
@@ -2248,7 +2267,8 @@ std::string pcbBoardStatus()
                  { "tracks", tracks },
                  { "vias", vias },
                  { "unrouted", conn ? (int) conn->GetUnconnectedCount( false ) : 0 },
-                 { "footprints", footprints } };
+                 { "footprints", footprints },
+                 { "zones", zones } };
     return out.dump();
 }
 

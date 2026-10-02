@@ -80,6 +80,18 @@ describe("editor-events", () => {
     expect(openDialog("DIALOG_ERC")).toEqual({ ptr: "1", title: "ERC", modal: false });
   });
 
+  it("parses the simulator's events (overlay-system 0006), rejecting malformed ones", () => {
+    expect(parseEditorEvent({ type: "simFinished", kind: "tran", ok: true, points: 3600, traces: ["I(D1)", 7, ""] })).toEqual({
+      type: "simFinished", kind: "tran", ok: true, points: 3600, traces: ["I(D1)"],
+    });
+    expect(parseEditorEvent({ type: "simFinished", kind: "tran", points: -1 })).toEqual({ type: "simFinished", kind: "tran", ok: false, points: 0, traces: [] });
+    expect(parseEditorEvent({ type: "simPlotChanged", kind: "tran", traces: ["I(D1)", "I(D2)"] })).toEqual({
+      type: "simPlotChanged", kind: "tran", traces: ["I(D1)", "I(D2)"],
+    });
+    expect(parseEditorEvent({ type: "simFinished", points: 3 })).toBeNull();
+    expect(parseEditorEvent({ type: "simPlotChanged", kind: "x".repeat(40), traces: [] })).toBeNull();
+  });
+
   it("lists every open dialog's pointer, across classes", () => {
     fire(target, { type: "dialogShown", cls: "A", ptr: "1", title: "" });
     fire(target, { type: "dialogShown", cls: "B", ptr: "2", title: "" });

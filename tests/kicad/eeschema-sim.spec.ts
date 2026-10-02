@@ -1,7 +1,9 @@
 import { test, expect } from './fixtures';
 import { PNG } from 'pngjs';
-import { stableShot, waitForEditorReady } from '../e2e/utils/element-tracker';
-import { loadRectifier, openSimulator, runSimulation } from './utils/sim-harness';
+import {
+    clickByLabel, findAllGridCells, findByTooltip, findGridCellByLabel, stableShot, waitForEditorReady,
+} from '../e2e/utils/element-tracker';
+import { loadRectifier, openSimulator, runSimulation, waitForRunToolEnabled } from './utils/sim-harness';
 
 /**
  * eeschema simulator end-to-end (docs/features/ngspice-split/): the historic
@@ -110,6 +112,88 @@ test.describe('eeschema simulator', () => {
             l.includes('index out of bounds') || l.includes('indirect call to null')
             || l.includes('uncaught exception: unwind'));
         expect(corruption, 'no wasm trap').toHaveLength(0);
+    });
+
+    // The guide overlay's view of the simulator (docs/features/overlay-system/0006 M1): the frame
+    // reports itself like a modeless dialog (E1), first opens as a band across the bottom with its
+    // whole toolbar drawn (E4), a finished run reports its analysis, size and traces (E2), and a
+    // changed plot reports its traces (E3) — what a tour's simFinished / simTraces wait for.
+    test('reports itself, its finished run and its plotted traces to the guide overlay', async ({ page, testLogger }) => {
+        type EditorEvent = { type: string; cls?: string; modal?: boolean; kind?: string; ok?: boolean;
+            points?: number; traces?: string[] };
+        await page.goto('/kicad/eeschema.html');
+        await waitForEditorReady(page);
+        await loadRectifier(page);
+        await page.evaluate(() => {
+            const w = window as any;
+            w.__editorEvents = [];
+            window.addEventListener('pcbjam:editor-event', (e) => w.__editorEvents.push((e as CustomEvent).detail));
+        });
+        const events = (type: string) => page.evaluate((t) =>
+            ((window as any).__editorEvents as EditorEvent[]).filter((e) => e.type === t), type);
+
+        const simWin = await openSimulator(page);
+        await expect.poll(() => events('dialogShown'), { message: 'the simulator reports it opened' })
+            .toEqual([expect.objectContaining({ cls: 'SIMULATOR_FRAME', modal: false })]);
+
+        // E4: a band across the bottom of the page, every tool of its toolbar drawn inside it.
+        await waitForRunToolEnabled(page);
+        const frame = (await page.locator(`#${simWin}`).boundingBox())!;
+        const view = page.viewportSize()!;
+        expect(frame.x, 'left margin').toBeLessThanOrEqual(16);
+        expect(view.width - (frame.x + frame.width), 'right margin').toBeLessThanOrEqual(16);
+        expect(view.height - (frame.y + frame.height), 'bottom margin').toBeLessThanOrEqual(16);
+        expect(frame.y, 'the sheet stays visible above it').toBeGreaterThan(view.height * 0.25);
+        for (const tooltip of ['Run Simulation', 'Probe Schematic', 'Add Tuned Value']) {
+            const tool = await findByTooltip(page, tooltip, { elementType: 'tool' });
+            expect(tool, `${tooltip} drawn`).not.toBeNull();
+            expect(tool!.centerX > frame.x && tool!.centerX < frame.x + frame.width
+                && tool!.centerY > frame.y && tool!.centerY < frame.y + frame.height,
+                `${tooltip} inside the simulator`).toBe(true);
+        }
+
+        // E2: the workbook's transient run, with its two plotted signals.
+        await runSimulation(page);
+        const finished = await events('simFinished');
+        expect(finished).toHaveLength(1);
+        expect(finished[0]).toMatchObject({ kind: 'tran', ok: true });
+        expect(finished[0].points, 'a real transient').toBeGreaterThan(100);
+        expect([...finished[0].traces!].sort()).toEqual(['V(/rect_out)', 'V(/signal_in)']);
+
+        // E3: hiding a signal (its Plot tick in the signals grid) reports the plot's new traces.
+        const plotTick = async (signal: string) => {
+            const name = await findGridCellByLabel(page, signal);
+            expect(name, `${signal} in the signals grid`).not.toBeNull();
+            const row = /^Row (\d+),/.exec(name!.tooltip)![1];
+            const cells = await findAllGridCells(page);
+            const tick = cells.find((c) => c.parentId === name!.parentId && c.tooltip === `Row ${row}, Col 1`);
+            expect(tick, `${signal}'s Plot cell`).toBeTruthy();
+            return tick!;
+        };
+        const lastPlot = async () => (await events('simPlotChanged')).at(-1)?.traces ?? null;
+        let tick = await plotTick('V(/signal_in)');
+        await page.mouse.click(tick.centerX, tick.centerY);
+        await expect.poll(lastPlot, { message: 'hiding V(/signal_in) is reported' }).toEqual(['V(/rect_out)']);
+        tick = await plotTick('V(/signal_in)');
+        await page.mouse.click(tick.centerX, tick.centerY);
+        await expect.poll(async () => [...((await lastPlot()) ?? [])].sort(), { message: 'showing it again is reported' })
+            .toEqual(['V(/rect_out)', 'V(/signal_in)']);
+        await stableShot(page, 'eeschema-sim-overlay-events.png');
+
+        // Closing reports it once (the changed workbook asks first: discard).
+        await page.locator(`#${simWin} .window-titlebar-close`).click();
+        await expect.poll(async () => {
+            await page.mouse.move(4, 4);
+            await page.mouse.move(8, 8);
+            if ((await events('dialogClosed')).length > 0) return true;
+            await clickByLabel(page, 'Discard Changes');
+            return false;
+        }, { message: 'the simulator reports it closed', timeout: 60000 }).toBe(true);
+        expect(await events('dialogClosed')).toEqual([expect.objectContaining({ cls: 'SIMULATOR_FRAME', modal: false })]);
+        expect(await events('dialogShown')).toHaveLength(1);
+
+        const all = [...testLogger.consoleLogs, ...testLogger.errors];
+        expect(all.filter((l) => l.includes('Aborted(')), 'no aborts').toHaveLength(0);
     });
 
     test('a second run after the first succeeds (engine reset path)', async ({ page, testLogger }) => {

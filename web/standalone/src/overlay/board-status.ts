@@ -17,6 +17,14 @@ export interface BoardFootprint {
   inside: boolean;
 }
 
+/** A copper zone (overlay-system 0006; rule areas are left out). */
+export interface BoardZone {
+  net: string;
+  /** Canonical layer names, e.g. ["B.Cu"]. */
+  layers: string[];
+  filled: boolean;
+}
+
 export interface BoardStatus {
   /** Edge.Cuts forms at least one closed outline. */
   outlineClosed: boolean;
@@ -27,6 +35,8 @@ export interface BoardStatus {
   /** Connections the ratsnest still shows. */
   unrouted: number;
   footprints: BoardFootprint[];
+  /** Empty from engines before overlay-system 0006. */
+  zones: BoardZone[];
 }
 
 const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
@@ -58,6 +68,15 @@ export function parseBoardStatus(raw: unknown): BoardStatus | null {
       inside: f.inside === true,
     });
   }
+  const zones: BoardZone[] = [];
+  for (const z of (Array.isArray(r.zones) ? r.zones : []) as Record<string, unknown>[]) {
+    if (!z || typeof z !== "object") continue;
+    zones.push({
+      net: typeof z.net === "string" ? z.net : "",
+      layers: Array.isArray(z.layers) ? z.layers.filter((l): l is string => typeof l === "string") : [],
+      filled: z.filled === true,
+    });
+  }
   return {
     outlineClosed: r.outlineClosed,
     activeLayer: typeof r.activeLayer === "string" ? r.activeLayer : "",
@@ -65,6 +84,7 @@ export function parseBoardStatus(raw: unknown): BoardStatus | null {
     vias: num(r.vias) ?? 0,
     unrouted: num(r.unrouted) ?? 0,
     footprints,
+    zones,
   };
 }
 

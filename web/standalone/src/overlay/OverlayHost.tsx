@@ -6,7 +6,7 @@ import { Celebration, trackPointer } from "./Celebration";
 import { layoutCard, spotlightPath, spotlightRect } from "./geometry";
 import { installOverlayDemo } from "./demo";
 import { installEditorEvents, onEditorEvent, openDialogPtrs } from "./editor-events";
-import { dialogRects } from "./obstacles";
+import { dialogRects, insideAny } from "./obstacles";
 import { isCanvasWork, isTargetAction, pointInRect, stepUseKey } from "./target-use";
 import { startOverlayTracking } from "./tracker";
 import type { OverlayButton } from "./types";
@@ -31,8 +31,8 @@ const BUTTON_LABEL: Record<OverlayButton, string> = { back: "Back", skip: "Skip"
  * dragged, collapsed, hidden; dialogs open, close and move. `dialog` tells whether any
  * KiCad dialog is among them.
  */
-function useObstacles(active: boolean): { rects: CssRect[]; dialog: boolean } {
-  const [obstacles, setObstacles] = React.useState<{ rects: CssRect[]; dialog: boolean }>(NO_OBSTACLES);
+function useObstacles(active: boolean): { rects: CssRect[]; dialogs: CssRect[]; dialog: boolean } {
+  const [obstacles, setObstacles] = React.useState<{ rects: CssRect[]; dialogs: CssRect[]; dialog: boolean }>(NO_OBSTACLES);
   React.useEffect(() => {
     if (!active) {
       setObstacles(NO_OBSTACLES);
@@ -47,7 +47,7 @@ function useObstacles(active: boolean): { rects: CssRect[]; dialog: boolean } {
         .filter((r) => r.width > 0 && r.height > 0)
         .map((r) => ({ x: r.left, y: r.top, width: r.width, height: r.height }));
       const dialogs = canvas ? dialogRects(openDialogPtrs(), window.wxElementRegistry?.elements, { x: canvas.left, y: canvas.top }) : [];
-      const next = { rects: panels.concat(dialogs), dialog: dialogs.length > 0 };
+      const next = { rects: panels.concat(dialogs), dialogs, dialog: dialogs.length > 0 };
       const key = JSON.stringify(next);
       if (key !== last) {
         last = key;
@@ -61,7 +61,7 @@ function useObstacles(active: boolean): { rects: CssRect[]; dialog: boolean } {
   return obstacles;
 }
 
-const NO_OBSTACLES = { rects: [] as CssRect[], dialog: false };
+const NO_OBSTACLES = { rects: [] as CssRect[], dialogs: [] as CssRect[], dialog: false };
 
 /** A pointerdown on the sheet or board itself (target-use.ts `isCanvasWork`). */
 function isSheetClick(ev: PointerEvent): boolean {
@@ -163,8 +163,10 @@ export function OverlayHost({ tool }: { tool: string }) {
   const anchored = targetState === "found" && target ? target : null;
   const layout = card ? layoutCard({ target: anchored?.rect ?? null, card, view, placement: step.placement, obstacles: obstacles.rects }) : null;
   // The dim and the ring point at where to click. Once the user used the target — or a dialog
-  // it opened is where they work now — they would only grey out the work (target-use.ts).
-  const dialogCovered = obstacles.dialog && !step.target?.startsWith("dialog:");
+  // it opened is where they work now — they would only grey out the work (target-use.ts). A
+  // target inside an open dialog or tool frame (the simulator's Run button) is that work.
+  const dialogCovered =
+    obstacles.dialog && !step.target?.startsWith("dialog:") && !(anchored && insideAny(anchored.rect, obstacles.dialogs));
   const spot =
     anchored && anchored.surface === "ui" && step.spotlight && !dialogCovered && !used ? spotlightRect(anchored.rect) : null;
   const ring = anchored && !used && (step.pulse || anchored.surface === "canvas") ? spotlightRect(anchored.rect, 4) : null;

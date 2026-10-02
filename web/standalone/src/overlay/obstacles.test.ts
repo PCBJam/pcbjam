@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dialogRects } from "./obstacles";
+import { dialogRects, insideAny } from "./obstacles";
 
 const win = (over: Partial<WxElementInfo>): WxElementInfo => ({
   id: "1", typeName: "wxDialog", name: "", label: "", visible: true, enabled: true,
@@ -19,5 +19,16 @@ describe("dialogRects", () => {
     const windows = new Map([["hidden", win({ visible: false })], ["empty", win({ width: 0 })]]);
     expect(dialogRects(["hidden", "empty", "gone"], windows, { x: 0, y: 0 })).toEqual([]);
     expect(dialogRects(["a"], undefined, { x: 0, y: 0 })).toEqual([]);
+  });
+});
+
+describe("insideAny", () => {
+  it("tells a target inside an open dialog (its own button) from one the dialog covers", () => {
+    const sim = { x: 8, y: 400, width: 1400, height: 480 };
+    expect(insideAny({ x: 160, y: 440, width: 30, height: 30 }, [sim])).toBe(true); // Run, in the simulator
+    expect(insideAny({ x: 160, y: 20, width: 30, height: 30 }, [sim])).toBe(false); // the sheet's toolbar
+    expect(insideAny({ x: 1390, y: 870, width: 30, height: 30 }, [sim])).toBe(false); // half out
+    expect(insideAny({ x: 8, y: 400, width: 1400, height: 480 }, [sim])).toBe(true);
+    expect(insideAny({ x: 0, y: 0, width: 1, height: 1 }, [])).toBe(false);
   });
 });
