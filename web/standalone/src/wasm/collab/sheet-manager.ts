@@ -17,6 +17,7 @@ import {
   type KicadDoc,
   type KicadItem,
   type PresenceUser,
+  mapLimit,
 } from "@pcbjam/shared";
 import { copySegment } from "@/lib/copy-context";
 import { connectKicadDoc, type KicadDocSession } from "./index";
@@ -612,16 +613,14 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
   }
 
   async function connectAll(sheetPaths: string[]): Promise<void> {
-    await Promise.all(
-      sheetPaths.map((p) =>
-        // Passive on the gateway (load-path-rework 0003): warm-all becomes
-        // pure registration — awareness + touched hints flow, but no
-        // BoardRoom wakes for a sheet nobody opens or edits.
-        ensureRoom(p, { passive: true }).catch((err) => {
-          cwarn(`[sheet] failed to warm ${p}`, err);
-          return null;
-        }),
-      ),
+    await mapLimit(sheetPaths, 8, (p) =>
+      // Passive on the gateway (load-path-rework 0003): warm-all becomes
+      // pure registration — awareness + touched hints flow, but no
+      // BoardRoom wakes for a sheet nobody opens or edits.
+      ensureRoom(p, { passive: true }).catch((err) => {
+        cwarn(`[sheet] failed to warm ${p}`, err);
+        return null;
+      }),
     );
   }
 

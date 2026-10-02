@@ -1,3 +1,4 @@
+import { mapLimit } from "@pcbjam/shared";
 import { MODELS_3D_ROOT } from "../constants";
 import type { Model3dSource } from "./models-source";
 
@@ -247,48 +248,39 @@ export async function collectBoardModelFiles(
   if (!refs.length) return out;
 
   const seen = new Set<string>();
-  let idx = 0;
-  const worker = async (): Promise<void> => {
-    while (true) {
-      throwIfAborted();
-      if (!isCurrent() || idx >= refs.length) return;
-      const ref = refs[idx++]!;
-      // The remembered serving candidate goes first (skips re-probing
-      // fallbacks that failed on an earlier export); the rest stay as backup
-      // in case it can no longer serve (IDB eviction).
-      const remembered = servingCandidate.get(ref);
-      const candidates = remembered
-        ? [remembered, ...refCandidates(ref).filter((c) => c !== remembered)]
-        : refCandidates(ref);
-      for (const candidate of candidates) {
-        let body: Uint8Array | null = null;
-        try {
-          body = await source.getModelBody(candidate);
-        } catch {
-          // Best-effort: try the next format. The exporter reports a miss if
-          // no candidate exists.
-        }
-        throwIfAborted();
-        if (!isCurrent()) return;
-        if (!body) continue;
-
-        servingCandidate.set(ref, candidate);
-        if (!seen.has(candidate)) {
-          seen.add(candidate);
-          // The OCC worker receives this buffer as a transferable. Keep its
-          // ownership independent from any source/cache view.
-          out.push({ path: candidate, bytes: new Uint8Array(body) });
-        }
-        break;
+  // An abort throws: `mapLimit` then starts no further model.
+  await mapLimit(refs, Math.max(1, Math.trunc(concurrency)), async (ref) => {
+    throwIfAborted();
+    if (!isCurrent()) return;
+    // The remembered serving candidate goes first (skips re-probing
+    // fallbacks that failed on an earlier export); the rest stay as backup
+    // in case it can no longer serve (IDB eviction).
+    const remembered = servingCandidate.get(ref);
+    const candidates = remembered
+      ? [remembered, ...refCandidates(ref).filter((c) => c !== remembered)]
+      : refCandidates(ref);
+    for (const candidate of candidates) {
+      let body: Uint8Array | null = null;
+      try {
+        body = await source.getModelBody(candidate);
+      } catch {
+        // Best-effort: try the next format. The exporter reports a miss if
+        // no candidate exists.
       }
+      throwIfAborted();
+      if (!isCurrent()) return;
+      if (!body) continue;
+
+      servingCandidate.set(ref, candidate);
+      if (!seen.has(candidate)) {
+        seen.add(candidate);
+        // The OCC worker receives this buffer as a transferable. Keep its
+        // ownership independent from any source/cache view.
+        out.push({ path: candidate, bytes: new Uint8Array(body) });
+      }
+      break;
     }
-  };
-  await Promise.all(
-    Array.from(
-      { length: Math.min(Math.max(1, Math.trunc(concurrency)), refs.length) },
-      () => worker(),
-    ),
-  );
+  });
   throwIfAborted();
   installedLog(`[3d] export prefetch: ${out.length}/${refs.length} board model(s)`);
   return out;
@@ -338,21 +330,14 @@ export async function prescanBoardModels(
   installedLog(`[3d] prescan: ${total} model ref(s) on board`);
   const started = performance.now();
 
-  let idx = 0;
-  const worker = async (): Promise<void> => {
-    while (idx < refs.length) {
-      const ref = refs[idx++]!;
-      try {
-        await ensureModelInMemfs(ref);
-      } catch {
-        // best-effort: the C++ lazy path (or a later prescan) retries
-      }
-      emitModelsLoading({ loading: ++done < total, done, total });
+  await mapLimit(refs, concurrency, async (ref) => {
+    try {
+      await ensureModelInMemfs(ref);
+    } catch {
+      // best-effort: the C++ lazy path (or a later prescan) retries
     }
-  };
-  await Promise.all(
-    Array.from({ length: Math.min(concurrency, total) }, () => worker()),
-  );
+    emitModelsLoading({ loading: ++done < total, done, total });
+  });
   installedLog(
     `[3d] prescan: ${done}/${total} in ${Math.round(performance.now() - started)}ms`,
   );

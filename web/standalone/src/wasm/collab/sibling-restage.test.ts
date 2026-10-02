@@ -15,6 +15,9 @@ const { connectKicadDoc, restageFile, ydocHasState, docToFile } = vi.hoisted(() 
 vi.mock("./index", () => ({ connectKicadDoc }));
 vi.mock("../kicad-runner", () => ({ restageFile }));
 vi.mock("@pcbjam/shared", () => ({
+  // The real helper bounds concurrency; these tests use a handful of sheets.
+  mapLimit: <T, R>(items: readonly T[], _limit: number, fn: (item: T, i: number) => Promise<R>) =>
+    Promise.all(items.map(fn)),
   collabRoomId: (s: string, p: string, d: string) => `${s}:${p}:${d}`,
   ydocHasState,
   ydocIsHollow: () => false,

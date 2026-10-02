@@ -1,5 +1,5 @@
 import { peekNamespaces, SyncStack, type SyncStackOptions } from "@pcbjam/sync-client";
-import { asyncMap } from "@/lib/async-map";
+import { mapLimit } from "@pcbjam/shared";
 import type { LibInfo, LibItemInfo, LibsSource, LibsSyncState } from "./source";
 
 /**
@@ -188,20 +188,16 @@ export function cdnLibsSource(
       // (warm ⇒ a cheap manifest diff). Tolerate per-lib failures so one bad lib
       // doesn't abort the warm-up. Progress is reported on COMPLETION only —
       // with several libs in flight there is no single "current" one.
-      await asyncMap(
-        libs,
-        async (lib) => {
-          if (signal?.aborted) return;
-          try {
-            await openStack(lib.id);
-          } catch {
-            // best-effort: the lib still loads lazily on demand
-          }
-          if (signal?.aborted) return;
-          onProgress?.({ done: ++done, total, current: lib.name });
-        },
-        concurrency,
-      );
+      await mapLimit(libs, concurrency, async (lib) => {
+        if (signal?.aborted) return;
+        try {
+          await openStack(lib.id);
+        } catch {
+          // best-effort: the lib still loads lazily on demand
+        }
+        if (signal?.aborted) return;
+        onProgress?.({ done: ++done, total, current: lib.name });
+      });
     },
     async getAllItems(
       libId: string,

@@ -1,3 +1,4 @@
+import { mapLimit } from "@pcbjam/shared";
 import * as React from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
@@ -63,12 +64,10 @@ export function ProjectView() {
     void (async () => {
       try {
         if (!(await store.hasProject(slug))) {
-          const files = await Promise.all(
-            data.files.map(async (f) => ({
-              path: f.path,
-              bytes: await fetchFileBytes(slug, f.path),
-            })),
-          );
+          const files = await mapLimit(data.files, 8, async (f) => ({
+            path: f.path,
+            bytes: await fetchFileBytes(slug, f.path),
+          }));
           await store.createProject(data.project.name, files, { slug });
         }
         await qc.invalidateQueries({ queryKey: ["local-projects"] });

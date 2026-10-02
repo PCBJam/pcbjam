@@ -1,5 +1,5 @@
 import type { Tool } from "@pcbjam/shared";
-import { FILELESS_TOOLS, toolForFile } from "@pcbjam/shared";
+import { FILELESS_TOOLS, mapLimit, toolForFile } from "@pcbjam/shared";
 import { SyncStack } from "@pcbjam/sync-client";
 import { projectSyncNamespace, withCopyParam } from "../lib/copy-context";
 import { defaultKicadPro } from "../lib/new-file";
@@ -247,37 +247,29 @@ async function syncProjectToMemfs(win: ToolWindow, opts: DriveOptions): Promise<
     ? stageViaProjectSync(opts, stageOne)
     : Promise.resolve(opts.files));
 
-  const queue = [...perFile];
   const skipped: string[] = [];
-  const worker = async (): Promise<void> => {
-    for (let file = queue.shift(); file; file = queue.shift()) {
-      let bytes: Uint8Array;
-      try {
-        bytes = await opts.fetchBytes(file.path);
-      } catch (err) {
-        // Findings Q-2: only the TARGET is load-bearing — without its bytes
-        // there is nothing to open, so that failure still rejects below. A
-        // sibling that cannot be fetched (a schematic whose body is gone, a
-        // stale listing row, a transient 5xx) must NOT abort the open of an
-        // unrelated board: log it, count it, and let KiCad report the missing
-        // sheet through its own dialog if it ever needs it.
-        if (file.path === opts.targetPath) throw err;
-        skipped.push(file.path);
-        opts.log(`[stage] skipped ${file.path}: ${String(err)}`);
-        opts.onFileProgress?.(++staged, Math.max(total, staged));
-        continue;
-      }
-      stageOne(file.path, bytes);
+  // A target rejection fails the stage. `mapLimit` starts nothing new after
+  // it and lets the in-flight siblings settle before it throws, so a failure
+  // can't leave a fetch writing into MEMFS after the caller has moved on.
+  await mapLimit(perFile, STAGE_CONCURRENCY, async (file) => {
+    let bytes: Uint8Array;
+    try {
+      bytes = await opts.fetchBytes(file.path);
+    } catch (err) {
+      // Findings Q-2: only the TARGET is load-bearing — without its bytes
+      // there is nothing to open, so that failure still rejects below. A
+      // sibling that cannot be fetched (a schematic whose body is gone, a
+      // stale listing row, a transient 5xx) must NOT abort the open of an
+      // unrelated board: log it, count it, and let KiCad report the missing
+      // sheet through its own dialog if it ever needs it.
+      if (file.path === opts.targetPath) throw err;
+      skipped.push(file.path);
+      opts.log(`[stage] skipped ${file.path}: ${String(err)}`);
+      opts.onFileProgress?.(++staged, Math.max(total, staged));
+      return;
     }
-  };
-  // A target rejection fails the stage, but let the in-flight siblings settle
-  // first so a failure can't leave a fetch writing into MEMFS after the caller
-  // has moved on.
-  const results = await Promise.allSettled(
-    Array.from({ length: Math.min(STAGE_CONCURRENCY, queue.length) }, worker),
-  );
-  const failed = results.find((r) => r.status === "rejected");
-  if (failed) throw (failed as PromiseRejectedResult).reason;
+    stageOne(file.path, bytes);
+  });
   if (skipped.length) {
     opts.onStatus(
       `${skipped.length} project file(s) could not be loaded: ${skipped.join(", ")}`,
@@ -351,40 +343,32 @@ export async function stageScoped(
   try {
     while (wave.length) {
       setTotal(queued.size);
-      const queue = wave;
       const found: string[] = [];
-      const worker = async (): Promise<void> => {
-        for (let path = queue.shift(); path; path = queue.shift()) {
-          const file = byPath.get(path);
-          if (!file) continue;
-          let bytes: Uint8Array | null = null;
-          try {
-            if (stack && namespaceEligible(file, opts.targetPath)) {
-              bytes = await stack.read(path);
-              // `eligible` requires revision > 0, so this is always a real row.
-              if (bytes && file.revision !== undefined) opts.onStagedRevision?.(path, file.revision);
-            }
-            // The namespace raced the listing, or the file is room-backed.
-            bytes ??= await opts.fetchBytes(path);
-          } catch (err) {
-            // Only the target is load-bearing (findings Q-2).
-            if (path === opts.targetPath) throw err;
-            skipped.push(path);
-            opts.log(`[stage] skipped ${path}: ${String(err)}`);
-            continue;
+      await mapLimit(wave, STAGE_CONCURRENCY, async (path) => {
+        const file = byPath.get(path);
+        if (!file) return;
+        let bytes: Uint8Array | null = null;
+        try {
+          if (stack && namespaceEligible(file, opts.targetPath)) {
+            bytes = await stack.read(path);
+            // `eligible` requires revision > 0, so this is always a real row.
+            if (bytes && file.revision !== undefined) opts.onStagedRevision?.(path, file.revision);
           }
-          stageOne(path, bytes);
-          staged.add(path);
-          if (hasReferences(path, viewer)) {
-            found.push(...expandRefs(referencesIn(path, decoder.decode(bytes), ctx), paths));
-          }
+          // The namespace raced the listing, or the file is room-backed.
+          bytes ??= await opts.fetchBytes(path);
+        } catch (err) {
+          // Only the target is load-bearing (findings Q-2).
+          if (path === opts.targetPath) throw err;
+          skipped.push(path);
+          opts.log(`[stage] skipped ${path}: ${String(err)}`);
+          return;
         }
-      };
-      const results = await Promise.allSettled(
-        Array.from({ length: Math.min(STAGE_CONCURRENCY, queue.length) }, worker),
-      );
-      const failed = results.find((r) => r.status === "rejected");
-      if (failed) throw (failed as PromiseRejectedResult).reason;
+        stageOne(path, bytes);
+        staged.add(path);
+        if (hasReferences(path, viewer)) {
+          found.push(...expandRefs(referencesIn(path, decoder.decode(bytes), ctx), paths));
+        }
+      });
       wave = [];
       for (const p of found) {
         if (queued.has(p)) continue;

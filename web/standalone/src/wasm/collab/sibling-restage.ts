@@ -1,4 +1,4 @@
-import { collabRoomId, docToFile, ydocHasState, ydocIsHollow, yToDoc } from "@pcbjam/shared";
+import { collabRoomId, docToFile, mapLimit, ydocHasState, ydocIsHollow, yToDoc } from "@pcbjam/shared";
 import { copySegment } from "@/lib/copy-context";
 import type * as Y from "yjs";
 import { restageFile } from "../kicad-runner";
@@ -221,16 +221,14 @@ export async function startSiblingRestage(opts: {
 
   if (!opts.presence) {
     const sessions: KicadDocSession[] = [];
-    await Promise.all(
-      sheetPaths.map(async (sheetPath) => {
-        try {
-          const session = await openSession(sheetPath);
-          if (session) sessions.push(session);
-        } catch (err) {
-          log(`[sibling] room connect failed for ${sheetPath}: ${String(err)}`);
-        }
-      }),
-    );
+    await mapLimit(sheetPaths, 8, async (sheetPath) => {
+      try {
+        const session = await openSession(sheetPath);
+        if (session) sessions.push(session);
+      } catch (err) {
+        log(`[sibling] room connect failed for ${sheetPath}: ${String(err)}`);
+      }
+    });
     const detachFocus = attachFocusRepull(() => sessions);
     return {
       destroy() {

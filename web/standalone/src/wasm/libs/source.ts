@@ -1,4 +1,4 @@
-import { asyncMap } from "@/lib/async-map";
+import { mapLimit } from "@pcbjam/shared";
 import { handleModel3dRequest } from "./models-bridge";
 import { libIdFromUri, libUri } from "./uri";
 
@@ -290,10 +290,8 @@ async function fallbackGetAllItems(
 ): Promise<Array<{ kind: string; name: string; body: Uint8Array }>> {
   const items = await source.listItems(libId);
   const enc = new TextEncoder();
-  const bodies = await asyncMap(
-    items,
-    (it) => source.getItemBody(libId, it.kind, it.name).catch(() => null),
-    8,
+  const bodies = await mapLimit(items, 8, (it) =>
+    source.getItemBody(libId, it.kind, it.name).catch(() => null),
   );
   return items.flatMap((it, i) => {
     const body = bodies[i];

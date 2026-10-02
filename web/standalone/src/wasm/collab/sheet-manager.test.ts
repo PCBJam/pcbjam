@@ -18,6 +18,9 @@ const { ydocHasState, syncLayoutToY, fileToDoc, libObservers } = vi.hoisted(() =
   libObservers: new Map<unknown, Set<(ev: unknown, txn: unknown) => void>>(),
 }));
 vi.mock("@pcbjam/shared", () => ({
+  // The real helper bounds concurrency; these tests use a handful of sheets.
+  mapLimit: <T, R>(items: readonly T[], _limit: number, fn: (item: T, i: number) => Promise<R>) =>
+    Promise.all(items.map(fn)),
   collabRoomId: (s: string, p: string, d: string) => `${s}:${p}:${d}`,
   ydocHasState,
   syncLayoutToY,

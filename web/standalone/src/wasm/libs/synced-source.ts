@@ -5,6 +5,7 @@ import {
   SYNC_STACKS_BATCH_MAX,
   type SyncStackDescriptor,
   USER_HEADER,
+  mapLimit,
 } from "@pcbjam/shared";
 import {
   onSyncRoomFrame,
@@ -561,23 +562,17 @@ export function syncedScopeLibsSource(
       // the workers below open stacks without a request each.
       if (!presyncOpts?.signal?.aborted) await prefetchStacks(libs);
       const concurrency = presyncOpts?.concurrency ?? 8;
-      const queue = [...libs];
-      const worker = async (): Promise<void> => {
-        for (let lib = queue.shift(); lib; lib = queue.shift()) {
-          if (presyncOpts?.signal?.aborted) return;
-          try {
-            // Opening the stack (via any op) hydrates the lib's IDB cache.
-            await forLib(lib.id).listItems(lib.id);
-          } catch {
-            // Best-effort: a lib that fails to presync still loads lazily.
-          }
-          done++;
-          presyncOpts?.onProgress?.({ done, total, current: lib.name });
+      await mapLimit(libs, concurrency, async (lib) => {
+        if (presyncOpts?.signal?.aborted) return;
+        try {
+          // Opening the stack (via any op) hydrates the lib's IDB cache.
+          await forLib(lib.id).listItems(lib.id);
+        } catch {
+          // Best-effort: a lib that fails to presync still loads lazily.
         }
-      };
-      await Promise.all(
-        Array.from({ length: Math.min(concurrency, total) }, worker),
-      );
+        done++;
+        presyncOpts?.onProgress?.({ done, total, current: lib.name });
+      });
     },
     dispose(): void {
       offRoomFrames();
@@ -594,15 +589,13 @@ export function syncedScopeLibsSource(
       opts.log?.(
         `[synced] realtime upgrade for ${libs.length}/${libNames.length} referenced lib(s)`,
       );
-      await Promise.all(
-        libs.map((l) =>
-          forLib(l.id)
-            .enableRealtime?.([])
-            ?.catch((e) =>
-              opts.log?.(`[synced] realtime upgrade failed for ${l.name}: ${String(e)}`),
-            ),
-        ),
-      );
+      await mapLimit(libs, 8, async (l) => {
+        await forLib(l.id)
+          .enableRealtime?.([])
+          ?.catch((e) =>
+            opts.log?.(`[synced] realtime upgrade failed for ${l.name}: ${String(e)}`),
+          );
+      });
     },
   };
 }
