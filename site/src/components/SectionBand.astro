@@ -4,6 +4,8 @@
  * .container with default vertical rhythm; optionally tints the band
  * (`tone="soft"`) and/or paints the faint blueprint dot-grid motif (`grid`).
  * Pass `flush` to drop the default block padding (e.g. the thin stat bar).
+ * Pass `page` on a page's FIRST band: its top padding becomes --page-top, so the
+ * page's <h1> sits exactly where the landing page's and the blog's do.
  * Pass an `id` for in-page anchor links.
  */
 interface Props {
@@ -11,6 +13,7 @@ interface Props {
   tone?: 'default' | 'soft';
   grid?: boolean;
   flush?: boolean;
+  page?: boolean;
   class?: string;
   labelledby?: string;
 }
@@ -20,13 +23,16 @@ const {
   tone = 'default',
   grid = false,
   flush = false,
+  page = false,
   class: cls = '',
   labelledby,
 } = Astro.props;
 const bandClass = ['band', tone === 'soft' ? 'band-soft' : '', grid ? 'bp-grid' : '', cls]
   .filter(Boolean)
   .join(' ');
-const innerClass = ['container', flush ? '' : 'band-inner'].filter(Boolean).join(' ');
+const innerClass = ['container', flush ? '' : 'band-inner', page ? 'band-page' : '']
+  .filter(Boolean)
+  .join(' ');
 ---
 
 <section id={id} class={bandClass} aria-labelledby={labelledby}>
@@ -51,5 +57,9 @@ const innerClass = ['container', flush ? '' : 'band-inner'].filter(Boolean).join
   }
   .band-inner {
     padding-block: clamp(3rem, 7vw, 5.5rem);
+  }
+  .band-page {
+    /* Less the band's 1px (transparent) top border. */
+    padding-top: calc(var(--page-top) - 1px);
   }
 </style>

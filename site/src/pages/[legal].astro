@@ -26,7 +26,7 @@ const dateFmt = new Intl.DateTimeFormat('en-GB', {
 
 <BaseLayout title={page.data.title} description={page.data.description}>
   <article class="prose">
-    <h1>{page.data.title}</h1>
+    <h1 class="page-title">{page.data.title}</h1>
     <p class="muted">Last updated: {dateFmt.format(page.data.updated)}</p>
     <Content />
   </article>

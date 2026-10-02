@@ -8,7 +8,7 @@
 # Cloudflare Transform Rule on that hostname (see deploy/demo/README.md).
 #
 # DO NOT widen these to `/*`. The landing page deliberately is NOT isolated: a
-# require-corp document cannot load the no-COEP YouTube hero iframe. See the
+# require-corp document cannot load the no-COEP YouTube demo iframe. See the
 # comment in src/sections/GerberDemoSection.astro.
 #
 # Both URL forms of the blog post are listed on purpose. Pages serves the

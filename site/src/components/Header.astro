@@ -1,11 +1,10 @@
 ---
-// README-style header: jar mark + mono wordmark, five mono links. The primary
-// call to action lives in the hero, not up here.
+// README-style header: jar mark + mono wordmark, four mono links. The primary
+// call to action lives in the hero, not up here — and so does the demo link.
 import { APP_URL } from '../lib/app-url';
 
 const links: { href: string; label: string; external?: boolean; primary?: boolean }[] = [
   { href: APP_URL, label: 'app', primary: true }, // same tab + same red as the hero's "Go to app"
-  { href: 'https://demo.pcbjam.com', label: 'demo', external: true },
   { href: '/blog', label: 'blog' },
   { href: '/pricing', label: 'pricing' },
   { href: 'https://discord.gg/ybhqJxjR3E', label: 'discord', external: true },

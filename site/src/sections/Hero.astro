@@ -5,81 +5,144 @@ const DISCORD_URL = 'https://discord.gg/ybhqJxjR3E';
 const DEMO_URL = 'https://demo.pcbjam.com';
 ---
 
-<section class="readme hero">
-  <h1>Collaborative KiCad in the browser.</h1>
-  <p class="lead">
-    Run KiCad online: schematic capture, PCB layout, DRC, 3D and Gerber export, in a tab.
-    Work on the same project with your team at the same time. Your files stay in KiCad's own
-    format.
-  </p>
+{/* Above the fold: the pitch, one button, and the product running behind it.
+    The loop (public/landing/hero-loop.mp4) is a real session in the editor:
+    four people routing, placing and commenting on one board. It is muted,
+    decorative (aria-hidden) and paused for prefers-reduced-motion. The
+    long-form YouTube demo lives further down, in DemoVideo.astro. */}
+<section class="hero" aria-labelledby="hero-title">
+  <video
+    class="hero-video"
+    autoplay
+    muted
+    loop
+    playsinline
+    preload="metadata"
+    poster="/landing/hero-loop-poster.jpg"
+    aria-hidden="true"
+    tabindex="-1"
+  >
+    <source src="/landing/hero-loop.mp4" type="video/mp4" />
+  </video>
 
-  <AppCta id="waitlist" class="hero-form">
-    <Fragment slot="micro">
-      or <a href={DISCORD_URL} rel="noopener" target="_blank">join the Discord</a> ·
-      <a href={DEMO_URL} rel="noopener" target="_blank">open the demo</a> (no account) ·
-      <a href="/privacy">privacy</a>
-    </Fragment>
-  </AppCta>
+  <div class="container hero-inner">
+    <div class="hero-card page-head">
+    <h1 id="hero-title" class="page-title">Collaborative KiCad in the browser.</h1>
+    <p class="page-lead">
+      The full KiCad editor in a tab. Route, place and review the same board with your team, live.
+      Your files stay in KiCad's own format.
+    </p>
 
-  {/* Demo video (YouTube, privacy-enhanced host: no cookies until play). The
-      landing page is deliberately NOT cross-origin isolated (see public/_headers)
-      so this iframe can load. */}
-  <figure class="loop">
-    <div class="frame video">
-      <iframe
-        src="https://www.youtube-nocookie.com/embed/6tXAyWIOZ_o?rel=0"
-        title="PCBJam: KiCad on the web, demo video"
-        loading="lazy"
-        allow="accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-        referrerpolicy="strict-origin-when-cross-origin"
-        allowfullscreen
-      ></iframe>
+    <AppCta id="waitlist" class="hero-cta">
+      <Fragment slot="micro">
+        or <a href={DEMO_URL} rel="noopener" target="_blank">open the demo</a> (no account) ·
+        <a href={DISCORD_URL} rel="noopener" target="_blank">join the Discord</a>
+      </Fragment>
+    </AppCta>
     </div>
-    <figcaption class="mono small muted">
-      7 minute demo · <a href="https://www.youtube.com/watch?v=6tXAyWIOZ_o" rel="noopener" target="_blank">watch on YouTube</a>
-    </figcaption>
-  </figure>
+  </div>
 </section>
+
+<script>
+  // Respect reduced motion: hold the poster frame instead of looping. Runs on
+  // every ClientRouter page load (the video element is replaced on each swap).
+  function holdHeroForReducedMotion() {
+    const v = document.querySelector<HTMLVideoElement>('.hero-video');
+    if (!v) return;
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      v.removeAttribute('autoplay');
+      v.pause();
+    }
+  }
+  document.addEventListener('astro:page-load', holdHeroForReducedMotion);
+</script>
 
 <style>
   .hero {
-    padding-block: 2.5rem 1.75rem;
-    display: flex;
-    flex-direction: column;
-    gap: 1.25rem;
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+    /* Tall enough to show the board, short enough that the next section peeks. */
+    min-height: clamp(30rem, 74vh, 42rem);
+    border-bottom: 1px solid var(--border);
   }
-  h1 {
-    font-size: clamp(1.9rem, 5vw, 2.6rem);
-    font-weight: 600;
-    letter-spacing: -0.015em;
-    line-height: 1.12;
-    margin: 0;
-    text-wrap: balance;
-  }
-  .lead {
-    margin: 0;
-    font-size: 1.1rem;
-    color: var(--fg-muted);
-    max-width: 40rem;
-    text-wrap: pretty;
-  }
-  .hero-form {
-    max-width: 32rem;
-  }
-  .loop {
-    margin: 0.5rem 0 0;
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-  }
-  .video {
-    aspect-ratio: 16 / 9;
-    background: #000;
-  }
-  .video iframe {
-    display: block;
+  .hero-video {
+    position: absolute;
+    inset: 0;
     width: 100%;
     height: 100%;
-    border: 0;
+    z-index: -1;
+  }
+  .hero-video {
+    object-fit: cover;
+    object-position: 60% 50%;
+    background: var(--bg-soft);
+  }
+  .hero-inner {
+    /* The same distance from the header as every other page's title. */
+    padding-top: var(--page-top);
+    padding-bottom: 3rem;
+  }
+  /* A lightly frosted card keeps the copy readable over the board without
+     touching the rest of the video. Its padding is taken back with negative
+     margins, so the title sits exactly where every other page's title does. */
+  .hero-card {
+    --pad-x: 1.75rem;
+    --pad-y: 1.5rem;
+    width: fit-content;
+    max-width: calc(29rem + 2 * var(--pad-x));
+    /* ...less its 1px border, too. */
+    margin: calc(-1 * var(--pad-y) - 1px) 0 0 calc(-1 * var(--pad-x) - 1px);
+    padding: var(--pad-y) var(--pad-x);
+    border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+    border-radius: var(--radius-lg);
+    background: color-mix(in srgb, var(--bg) 72%, transparent);
+    backdrop-filter: blur(10px) saturate(1.1);
+    -webkit-backdrop-filter: blur(10px) saturate(1.1);
+    box-shadow: 0 8px 30px rgb(16 23 41 / 0.08);
+  }
+  .hero-card > * {
+    max-width: 27rem;
+  }
+  .hero-card .page-title {
+    max-width: 26rem;
+  }
+  .hero-cta {
+    margin-top: 0.5rem;
+  }
+
+  /* Phones: a busy board behind running text is unreadable at this size, so the
+     loop drops below the copy as a framed strip instead. */
+  @media (max-width: 720px) {
+    .hero {
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      border-bottom: 0;
+    }
+    .hero-inner {
+      order: -1;
+      padding-bottom: 1.5rem;
+    }
+    /* No video behind the copy on phones, so no card either. */
+    .hero-card {
+      margin: 0;
+      padding: 0;
+      border: 0;
+      background: none;
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+      box-shadow: none;
+      width: auto;
+    }
+    .hero-video {
+      position: static;
+      z-index: auto;
+      height: auto;
+      /* The loop is cropped to KiCad's canvas: 1824 x 888. */
+      aspect-ratio: 1824 / 888;
+      object-position: 50% 50%;
+      border-block: 1px solid var(--border);
+    }
   }
 </style>

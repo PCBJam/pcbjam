@@ -8,27 +8,82 @@ const posts = (await getCollection('blog')).sort(
 
 const dateFmt = new Intl.DateTimeFormat('en-US', {
   year: 'numeric',
-  month: 'long',
+  month: 'short',
   day: 'numeric',
 });
 ---
 
 <BaseLayout title="Blog" description="The PCBJam engineering blog — WebAssembly, real-time collaboration, and KiCad internals.">
-  <h1>Blog</h1>
+  <header class="page-head">
+    <h1 class="page-title">Blog</h1>
+    <p class="page-lead">
+      Devlogs and engineering notes from building KiCad for the browser: WebAssembly, real-time
+      collaboration and KiCad internals.
+    </p>
+  </header>
 
-  <ul class="post-list">
+  <ol class="posts">
     {
       posts.map((post) => (
-        <li class="card">
-          <time datetime={post.data.pubDate.toISOString()}>
+        <li class="post">
+          <time class="mono small muted" datetime={post.data.pubDate.toISOString()}>
             {dateFmt.format(post.data.pubDate)}
           </time>
-          <h3>
-            <a href={`/blog/${post.id}`}>{post.data.title}</a>
-          </h3>
-          <p class="muted">{post.data.description}</p>
+          <div class="post-body">
+            <h2>
+              <a href={`/blog/${post.id}`}>{post.data.title}</a>
+            </h2>
+            <p>{post.data.description}</p>
+          </div>
         </li>
       ))
     }
-  </ul>
+  </ol>
 </BaseLayout>
+
+<style>
+  .posts {
+    list-style: none;
+    margin: 2.5rem 0 0;
+    padding: 0;
+    border-top: 1px solid var(--border);
+  }
+  .post {
+    display: grid;
+    grid-template-columns: 8rem minmax(0, 1fr);
+    gap: 0.25rem 1.5rem;
+    padding-block: 1.25rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .post time {
+    padding-top: 0.2rem;
+    white-space: nowrap;
+  }
+  .post-body {
+    max-width: var(--measure);
+  }
+  .post h2 {
+    font-size: 1.15rem;
+    font-weight: 600;
+    line-height: 1.35;
+    margin: 0 0 0.3rem;
+    text-wrap: balance;
+  }
+  .post h2 a {
+    color: var(--fg);
+  }
+  .post h2 a:hover {
+    color: var(--red);
+    text-decoration: none;
+  }
+  .post p {
+    margin: 0;
+    color: var(--fg-2);
+    text-wrap: pretty;
+  }
+  @media (max-width: 560px) {
+    .post {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>

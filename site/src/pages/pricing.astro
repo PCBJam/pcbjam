@@ -159,11 +159,10 @@ const jsonLd = {
     set:html={JSON.stringify(jsonLd)}
   />
 
-  <SectionBand labelledby="pricing-h1" grid>
-    <div class="section-head">
-      <span class="eyebrow">Pricing</span>
-      <h1 id="pricing-h1">Design boards together.</h1>
-      <p class="lead">
+  <SectionBand labelledby="pricing-h1" page>
+    <div class="page-head head">
+      <h1 id="pricing-h1" class="page-title">Design boards together.</h1>
+      <p class="page-lead">
         Everything public is <strong>free</strong> - for everyone, forever. Private work is free
         for up to three people and seven projects in your personal team - beyond that, one seat
         per person.
@@ -325,6 +324,9 @@ const jsonLd = {
 </script>
 
 <style>
+  .head {
+    margin-bottom: 2rem;
+  }
   .billing-toggle {
     display: inline-flex;
     align-items: center;
@@ -381,7 +383,8 @@ const jsonLd = {
   .plans {
     display: grid;
     gap: 1rem;
-    grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+    /* All four plans in one row at the shared 64rem width. */
+    grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
     align-items: stretch;
   }
   .plan {
