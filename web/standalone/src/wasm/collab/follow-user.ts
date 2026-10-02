@@ -18,7 +18,10 @@ import { viewportRect } from "./presence-kicad";
  * its target, and every local `onViewport` echo is compared against it —
  * a matching echo (epsilon — the rect round-trips through the GAL matrix)
  * is our own fit landing; a deviating one means the user panned/zoomed/
- * jumped locally, so the follow ends. Same-tool, same-sheet only in v1:
+ * jumped locally, so the follow ends. A deviating echo that comes with a
+ * CHANGED CANVAS SIZE is not the user: a panel opened, an info bar appeared,
+ * the window was resized — the view shifts by itself. The followed region is
+ * fitted into the new canvas and the follow goes on. Same-tool, same-sheet only in v1:
  * an eeschema leader on another sheet pauses the fit (rect coordinates are
  * per-sheet); cross-tool follow is out of scope.
  *
@@ -85,6 +88,9 @@ export function createFollow(opts: {
   /** Grace: ignore break-checks until the first fit's echo arrived, else the
    *  stale pre-follow viewport emit would instantly end the follow. */
   let sawEcho = false;
+  /** Canvas pixel size of the last local emit — a change means a layout
+   *  change moved the view, not the user. */
+  let lastSize: { w: number; h: number } | null = null;
 
   const subscribers = new Set<(t: FollowTarget | null) => void>();
   const notify = () => {
@@ -151,12 +157,23 @@ export function createFollow(opts: {
       return () => subscribers.delete(cb);
     },
     noteLocalViewport(vp) {
+      const resized = !!lastSize && (vp.w !== lastSize.w || vp.h !== lastSize.h);
+      lastSize = { w: vp.w, h: vp.h };
       if (!target || !applied) return;
       if (isEcho(vp, applied)) {
         sawEcho = true;
         return;
       }
       if (!sawEcho) return; // pre-fit stale emit — the fit hasn't landed yet
+      if (resized) {
+        // The canvas changed size and took the view with it (KiCad's
+        // "created by an older version" bar appearing after load ended
+        // follows in CI): fit the followed region into the new canvas.
+        clog("follow: canvas resized — refitting", target.name);
+        sawEcho = false;
+        fit(applied.cx, applied.cy, applied.halfW, applied.halfH);
+        return;
+      }
       clog("follow: local input — stopped following", target.name);
       stop();
     },

@@ -109,6 +109,33 @@ describe("createFollow", () => {
     expect(follow.following()).toBeNull();
   });
 
+  it("a canvas resize that shifts the view refits instead of ending the follow", () => {
+    // CI flake 2026-10-02: KiCad's "created by an older version" bar appeared
+    // above the canvas after the fit had landed; the canvas shrank, the view
+    // centre moved, and that read as the user panning.
+    const p = fakePresence([peer()]);
+    const fit = vi.fn();
+    const follow = createFollow({ presence: p.handle, fit });
+    const rect = { cx: 100, cy: 200, halfW: 50, halfH: 40 };
+    follow.noteLocalViewport(echoFor({ cx: 0, cy: 0, halfW: 500, halfH: 400 })); // before the follow
+    follow.follow(LEADER);
+    follow.noteLocalViewport(echoFor(rect)); // the fit landed
+    expect(fit).toHaveBeenCalledTimes(1);
+
+    // The bar appears: the canvas is 40 px shorter and the centre moved down.
+    const scale = echoFor(rect).scale;
+    follow.noteLocalViewport({ cx: 100, cy: 200 + 20 / scale, scale, w: 1000, h: 760 });
+    expect(follow.following()).toEqual(LEADER);
+    expect(fit).toHaveBeenCalledTimes(2);
+    expect(fit).toHaveBeenLastCalledWith(100, 200, 50, 40);
+
+    // The refit lands on the new canvas; a real pan after that still breaks.
+    follow.noteLocalViewport(echoFor(rect, 1000, 760));
+    expect(follow.following()).toEqual(LEADER);
+    follow.noteLocalViewport({ ...echoFor(rect, 1000, 760), cx: 160 });
+    expect(follow.following()).toBeNull();
+  });
+
   it("unfollows when the leader leaves the room", () => {
     const p = fakePresence([peer()]);
     const follow = createFollow({ presence: p.handle, fit: vi.fn() });
