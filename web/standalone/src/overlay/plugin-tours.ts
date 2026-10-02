@@ -10,15 +10,17 @@
  *   - `panel:` targets are host-internal (our own React UI);
  *   - when the plugin instance stops (panel closed, restart, disable,
  *     uninstall, revoke — its AbortSignal) its tour stops WITHOUT a status
- *     change (so `resume` works after an editor-switch navigation) and its
- *     pointer is cleared.
+ *     change (so `resume` works after an editor-switch navigation, a reload,
+ *     or the next visit to the project) and its pointer is cleared;
+ *   - a tour's progress belongs to one plugin in one project, kept in this
+ *     browser (tours/tour-store.ts).
  */
 import { overlay } from "./api";
 import { resolveTarget } from "./targets/resolve";
 import { roomCheckpoints, type CheckpointStore } from "./tours/checkpoints";
 import { compileTour, parseSheetNets, parseSheetSymbols, parseTourDef, type TourDef, type TourDeps } from "./tours/declarative";
 import { engineTourDeps } from "./tours/engine";
-import { clearTourMemory, sessionTourMemory } from "./tours/memory";
+import { clearTourMemory, storedTourMemory } from "./tours/memory";
 import { readTourStatus, runningTours, startTour, type TourRunner, type TourStatus } from "./tours/runner";
 
 export interface PluginPointer {
@@ -51,6 +53,8 @@ export function pluginTourAdapter(opts: {
   pluginKey: string;
   /** Manifest name — the host-drawn attribution. */
   pluginName: string;
+  /** The open project's id: a tour's progress is kept per project (null: no saved project). */
+  project?: string | null;
   /** The editor this page runs ("eeschema" | "pcbnew"). */
   tool: () => string;
   signal: AbortSignal;
@@ -63,7 +67,7 @@ export function pluginTourAdapter(opts: {
   onTourEnd?(status?: TourStatus): void;
 }): PluginTourAdapter {
   const owner = `plugin:${opts.pluginKey}`;
-  const storageId = (id: string) => `plugin:${opts.pluginKey}:${id}`;
+  const storageId = (id: string) => `plugin:${opts.pluginKey}:${opts.project ?? "-"}:${id}`;
   let runner: TourRunner | null = null;
   let def: TourDef | null = null;
 
@@ -99,7 +103,7 @@ export function pluginTourAdapter(opts: {
       // A fresh start forgets the last run's latches; a resume picks them up.
       if (!resume) clearTourMemory(id);
       const compiled = compileTour(parsed, opts.deps ?? engineTourDeps, {
-        memory: sessionTourMemory(id),
+        memory: storedTourMemory(id),
         checkpoints: opts.checkpoints ?? roomCheckpoints,
       });
       runner = startTour(compiled, {

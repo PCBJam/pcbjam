@@ -36,6 +36,9 @@ async function boot(page: Page, query: string, path = '-/eeschema'): Promise<voi
 
 const card = (page: Page) => page.getByTestId('overlay-card');
 const progress = (page: Page) => page.getByTestId('overlay-progress');
+/** A tour's stored status (the browser keeps all tours under one key: overlay tours/tour-store.ts). */
+const tourStatus = (page: Page, id: string) =>
+  page.evaluate((id) => (JSON.parse(localStorage.getItem('pcbjam:tours') ?? '{}')[id]?.status ?? null) as string | null, id);
 
 async function resolved(page: Page, target: string): Promise<Rect> {
   let rect: Rect | null = null;
@@ -149,7 +152,7 @@ test.describe('guide overlay demo tour', () => {
 
     await page.getByTestId('overlay-next').click();
     await expect(page.getByTestId('overlay-root')).toHaveCount(0);
-    expect(await page.evaluate(() => sessionStorage.getItem('pcbjam:tour:add-resistor'))).toBe('done');
+    expect(await tourStatus(page, 'add-resistor')).toBe('done');
   });
 
   test('Back takes the placed resistor away and returns to the step before', async ({ page }) => {
@@ -185,7 +188,7 @@ test.describe('guide overlay demo tour', () => {
     await expect(progress(page)).toHaveText('1 / 4');
 
     await page.getByTestId('overlay-close').click();
-    expect(await page.evaluate(() => sessionStorage.getItem('pcbjam:tour:add-resistor'))).toBe('dismissed');
+    expect(await tourStatus(page, 'add-resistor')).toBe('dismissed');
 
     await boot(page, '');
     // The editor is up and the overlay host mounted (the demo handle is only

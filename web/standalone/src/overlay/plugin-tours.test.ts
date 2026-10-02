@@ -4,10 +4,10 @@ import { __resetEditorEventsForTests } from "./editor-events";
 import { pluginSheetAdapter, pluginTourAdapter } from "./plugin-tours";
 import type { TourDeps } from "./tours/declarative";
 import { addResistorTour } from "./tours/add-resistor";
-import { __stopAllToursForTests, runningTours, startTour } from "./tours/runner";
+import { __stopAllToursForTests, readTourStatus, runningTours, startTour } from "./tours/runner";
 
 const store = new Map<string, string>();
-(globalThis as { sessionStorage?: Pick<Storage, "getItem" | "setItem"> }).sessionStorage = {
+(globalThis as { localStorage?: Pick<Storage, "getItem" | "setItem"> }).localStorage = {
   getItem: (k) => store.get(k) ?? null,
   setItem: (k, v) => void store.set(k, v),
 };
@@ -41,8 +41,8 @@ const TOUR = {
 
 describe("pluginTourAdapter", () => {
   let abort: AbortController;
-  const make = (key = "p1", tool = "eeschema") =>
-    pluginTourAdapter({ pluginKey: key, pluginName: "Blinky Guide", tool: () => tool, signal: abort.signal, deps: deps() });
+  const make = (key = "p1", tool = "eeschema", project: string | null = "proj-1") =>
+    pluginTourAdapter({ pluginKey: key, pluginName: "Blinky Guide", project, tool: () => tool, signal: abort.signal, deps: deps() });
 
   beforeEach(() => {
     store.clear();
@@ -81,7 +81,7 @@ describe("pluginTourAdapter", () => {
     expect(() => make().showPointer({ target: "menu:File", text: "x" })).toThrow(/Another guide/);
   });
 
-  it("resumes only a tour still active in this tab", () => {
+  it("resumes only a tour still active in this project", () => {
     expect(make().start(TOUR, true)).toEqual({ status: "not-active" });
     make().start(TOUR, false);
     abort.abort(); // page goes away: tour stops, status stays active
@@ -93,10 +93,15 @@ describe("pluginTourAdapter", () => {
     expect(make().start(TOUR, true)).toEqual({ status: "not-active" });
   });
 
-  it("keeps plugins' progress apart", () => {
+  it("keeps plugins' and projects' progress apart", () => {
     make("p1").start(TOUR, false);
-    expect(store.get("pcbjam:tour:plugin:p1:blinky")).toBe("active");
-    expect(store.has("pcbjam:tour:blinky")).toBe(false);
+    expect(readTourStatus("plugin:p1:proj-1:blinky")).toBe("active");
+    expect(readTourStatus("blinky")).toBeNull();
+    abort.abort(); // the page goes away
+    abort = new AbortController();
+    expect(make("p2").start(TOUR, true)).toEqual({ status: "not-active" }); // another plugin
+    expect(make("p1", "eeschema", "proj-2").start(TOUR, true)).toEqual({ status: "not-active" }); // another project
+    expect(make("p1", "eeschema", "proj-1").start(TOUR, true)).toEqual({ status: "started" });
   });
 
   it("pointers: shown or not-found, never during the plugin's own tour, cleared on stop", () => {

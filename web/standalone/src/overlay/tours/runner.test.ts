@@ -4,11 +4,12 @@ import { EDITOR_EVENT, __resetEditorEventsForTests, installEditorEvents } from "
 import { addResistorTour } from "./add-resistor";
 import type { TourDeps } from "./declarative";
 import { anyDialogOpen, anyModalDialogOpen, openDialog } from "../editor-events";
-import { startTour, type Tour } from "./runner";
+import { readTourStatus, startTour, type Tour } from "./runner";
+import { updateTourEntry } from "./tour-store";
 
-// sessionStorage for the node test environment.
+// localStorage for the node test environment.
 const store = new Map<string, string>();
-(globalThis as { sessionStorage?: Pick<Storage, "getItem" | "setItem"> }).sessionStorage = {
+(globalThis as { localStorage?: Pick<Storage, "getItem" | "setItem"> }).localStorage = {
   getItem: (k) => store.get(k) ?? null,
   setItem: (k, v) => void store.set(k, v),
 };
@@ -72,7 +73,7 @@ describe("tour runner", () => {
 
     pressButton("next");
     expect(overlay.getState().step).toBeNull();
-    expect(store.get("pcbjam:tour:add-resistor")).toBe("done");
+    expect(readTourStatus("add-resistor")).toBe("done");
   });
 
   it("re-shows the search step whenever the chooser reopens", () => {
@@ -101,7 +102,7 @@ describe("tour runner", () => {
     runner.tick();
     expect(overlay.getState().id).toBe(id);
     pressButton("close");
-    expect(store.get("pcbjam:tour:t")).toBe("dismissed");
+    expect(readTourStatus("t")).toBe("dismissed");
     runner.tick();
     expect(overlay.getState().step).toBeNull();
   });
@@ -132,7 +133,7 @@ describe("tour runner", () => {
     pressButton("back");
     expect(backs).toBe(1);
     expect(runner.currentStep()).toBe("one");
-    expect(store.get("pcbjam:tour:b")).toBe("active"); // Back on the final step does not finish it
+    expect(readTourStatus("b")).toBe("active"); // Back on the final step does not finish it
   });
 
   it("keeps the tour active when the page unmounts (editor switch)", () => {
@@ -145,7 +146,7 @@ describe("tour runner", () => {
     };
     startTour(tour, { poll: false });
     overlay.clear(undefined, "unmount");
-    expect(store.get("pcbjam:tour:u")).toBe("active");
+    expect(readTourStatus("u")).toBe("active");
   });
 });
 
@@ -162,11 +163,11 @@ describe("demoTourFor", () => {
 
   it("resumes an active tour without the query, never a done/dismissed one", async () => {
     const { demoTourFor } = await import("../demo");
-    store.set("pcbjam:tour:add-resistor", "active");
+    updateTourEntry("add-resistor", { status: "active" });
     expect(demoTourFor("eeschema", "")).toBe("add-resistor");
-    store.set("pcbjam:tour:add-resistor", "dismissed");
+    updateTourEntry("add-resistor", { status: "dismissed" });
     expect(demoTourFor("eeschema", "")).toBeNull();
-    store.set("pcbjam:tour:add-resistor", "done");
+    updateTourEntry("add-resistor", { status: "done" });
     expect(demoTourFor("eeschema", "")).toBeNull();
   });
 });

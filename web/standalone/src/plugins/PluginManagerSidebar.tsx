@@ -83,11 +83,17 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
   const active = plugins.find(plugin => pluginKey(plugin) === selected);
   const compatible = (plugin: Descriptor) => plugin.manifest.surfaces.includes('editor:' + tool);
   // An editor switch is a page navigation: the plugin that was open (a tutorial spanning both
-  // editors) comes back on the new page once the catalog is known. Read before the effect below
-  // forgets it for the page's initial empty view.
-  const rememberedPanel = React.useRef(readPluginPanel());
+  // editors) comes back on the new page once the catalog is known — so does the one last left open
+  // in this project, on a reload or the next visit. Read before the effect below forgets this
+  // tab's memory for the page's initial empty view (that view keeps the project's memory: another
+  // tab, or the panel about to reopen).
   const projectKey = project?.id ?? null;
-  React.useEffect(() => { rememberPluginPanel(view, projectKey); }, [view, projectKey]);
+  const rememberedPanel = React.useRef(readPluginPanel(projectKey));
+  const viewChanged = React.useRef(false);
+  React.useEffect(() => {
+    rememberPluginPanel(view, projectKey, { forgetProject: viewChanged.current });
+    viewChanged.current = true;
+  }, [view, projectKey]);
   React.useEffect(() => {
     const remembered = rememberedPanel.current;
     if (!remembered || !catalog.loaded) return;
@@ -167,7 +173,7 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
           selectItems: ids => selectItems(ids),
           // Guided tours + pointers (overlay-system 0003): drawn by the host with the plugin's name,
           // cleared when this instance stops (abort.signal).
-          tours: toursRef.current = pluginTourAdapter({ pluginKey: pluginKey(active), pluginName: active.manifest.name, tool: () => tool, signal: abort.signal,
+          tours: toursRef.current = pluginTourAdapter({ pluginKey: pluginKey(active), pluginName: active.manifest.name, project: project?.id ?? null, tool: () => tool, signal: abort.signal,
             onTourStart: () => setCollapseSignal(n => n + 1),
             onTourEnd: () => { if (panelHiddenRef.current && !abort.signal.aborted && viewRef.current?.kind === 'plugin') onViewChange(null); } }),
           // The shown schematic sheet, on engines that have the reads.

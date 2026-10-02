@@ -7,12 +7,14 @@
  * reloading the page all land on the right step by construction.
  *
  * Tour content is data + small predicates; the runner owns the overlay calls,
- * progress numbering and persistence (sessionStorage, so a tour survives the
- * page navigation an editor switch does).
+ * progress numbering and persistence (the browser's localStorage via
+ * tour-store.ts, so a tour survives a reload, the page navigation an editor
+ * switch does, and a closed tab).
  */
 import { overlay } from "../api";
 import { onEditorEvent, type EditorEvent } from "../editor-events";
 import type { OverlayButton, OverlayStep } from "../types";
+import { readTourEntry, updateTourEntry } from "./tour-store";
 
 /** What a tour's sampler sees: engine events plus the card's own buttons. */
 export type TourEvent = EditorEvent | { type: "button"; button: OverlayButton };
@@ -45,23 +47,13 @@ export interface Tour<S> {
 
 export type TourStatus = "active" | "done" | "dismissed";
 
-const storageKey = (id: string) => `pcbjam:tour:${id}`;
-
 export function readTourStatus(id: string): TourStatus | null {
-  try {
-    const v = sessionStorage.getItem(storageKey(id));
-    return v === "active" || v === "done" || v === "dismissed" ? v : null;
-  } catch {
-    return null;
-  }
+  const v = readTourEntry(id)?.status;
+  return v === "active" || v === "done" || v === "dismissed" ? v : null;
 }
 
 function writeTourStatus(id: string, status: TourStatus): void {
-  try {
-    sessionStorage.setItem(storageKey(id), status);
-  } catch {
-    /* private mode — the tour just won't resume after a navigation */
-  }
+  updateTourEntry(id, { status });
 }
 
 export interface TourRunner {
@@ -79,7 +71,7 @@ export interface TourOptions {
   owner?: string;
   /** Host-drawn "from …" label; wins over the tour's own title (plugins can't choose it). */
   attribution?: string;
-  /** sessionStorage identity (default the tour id); plugins namespace theirs. */
+  /** Stored identity (default the tour id); plugins namespace theirs by plugin and project. */
   storageId?: string;
   /** Called once when the tour stops, with the status it ended in (none: stopped by its owner). */
   onStop?(status?: TourStatus): void;
