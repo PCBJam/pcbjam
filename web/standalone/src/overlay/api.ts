@@ -74,6 +74,7 @@ export function sanitizeStep(step: OverlayStep): OverlayStep {
     attribution: cap(step.attribution, ATTRIBUTION_MAX),
     lostText: cap(step.lostText, TEXT_MAX),
     celebrate: step.celebrate === "rainbow" ? "rainbow" : undefined,
+    closable: step.closable === false ? false : undefined,
   };
 }
 
@@ -116,12 +117,12 @@ export const overlay = {
   },
 };
 
-/** Card button → owners. Close is the user's: it clears the step too. */
+/** Card button → owners. Close is the user's: it clears the step too (unless the card has none). */
 export function pressButton(button: OverlayButton | "close"): void {
   const { step, id } = state;
   if (!step) return;
   if (button === "close") {
-    overlay.clear(undefined, "user");
+    if (step.closable !== false) overlay.clear(undefined, "user");
     return;
   }
   emit({ type: "button", id, owner: step.owner, button });

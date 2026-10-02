@@ -198,7 +198,8 @@ export function OverlayHost({ tool }: { tool: string }) {
           data-side={layout?.side ?? ""}
           data-docked={layout?.docked ? "1" : "0"}
           onKeyDown={(e) => {
-            if (e.key === "Escape") {
+            // A card that cannot be closed leaves Escape to the editor (cards often say "press Esc").
+            if (e.key === "Escape" && step.closable !== false) {
               e.stopPropagation();
               pressButton("close");
             }
@@ -239,15 +240,17 @@ export function OverlayHost({ tool }: { tool: string }) {
                 )}
                 {step.title && <div className="text-sm font-semibold">{step.title}</div>}
               </div>
-              <button
-                type="button"
-                aria-label="Close guide"
-                data-testid="overlay-close"
-                onClick={() => pressButton("close")}
-                className="pointer-events-auto -mr-1 rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
-              >
-                <X className="h-4 w-4" />
-              </button>
+              {step.closable !== false && (
+                <button
+                  type="button"
+                  aria-label="Close guide"
+                  data-testid="overlay-close"
+                  onClick={() => pressButton("close")}
+                  className="pointer-events-auto -mr-1 rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              )}
             </div>
             <p data-testid="overlay-text" aria-live="polite" className="mt-1 whitespace-pre-line text-sm leading-snug">
               {text}

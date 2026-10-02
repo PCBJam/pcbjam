@@ -21,7 +21,7 @@ export interface OverlayStep {
   spotlight?: boolean;
   /** Animated ring around the target. */
   pulse?: boolean;
-  /** Host-drawn navigation buttons. Close (×) is always present. */
+  /** Host-drawn navigation buttons. Close (×) is present unless `closable` is false. */
   buttons?: OverlayButton[];
   progress?: { step: number; of: number };
   /** Host-drawn "from …" label, e.g. a plugin's name. */
@@ -30,6 +30,9 @@ export interface OverlayStep {
   lostText?: string;
   /** A short host-drawn celebration when the step shows (Celebration.tsx). */
   celebrate?: "rainbow";
+  /** False: no × and Escape does not close the card (a tutorial the user should not lose mid-way;
+   *  its owner offers another way out — a plugin tour stops when its panel closes). */
+  closable?: boolean;
 }
 
 export const TITLE_MAX = 80;

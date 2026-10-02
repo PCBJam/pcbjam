@@ -35,6 +35,9 @@ export interface PluginTourAdapter {
   start(tour: unknown, resume: boolean): { status: "started" | "not-active" | "busy" };
   /** True while this plugin's tour runs (the sidebar keeps a hidden panel alive for it). */
   isRunning(): boolean;
+  /** True while a tour whose cards have no × runs: closing the panel is then the way out, so it
+   *  closes for real — the tour stops without a status change, and reopening the panel resumes it. */
+  pausesOnClose(): boolean;
   stop(): void;
   status(): { id: string | null; step: number; of: number; state: TourStatus | "none" };
   showPointer(step: PluginPointer): "shown" | "not-found";
@@ -114,6 +117,8 @@ export function pluginTourAdapter(opts: {
     },
 
     isRunning: ownTourRunning,
+
+    pausesOnClose: () => ownTourRunning() && def?.closable === false,
 
     status() {
       if (!def) return { id: null, step: 0, of: 0, state: "none" };

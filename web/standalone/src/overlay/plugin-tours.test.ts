@@ -144,6 +144,28 @@ describe("pluginTourAdapter lifecycle hooks", () => {
   });
 });
 
+describe("pluginTourAdapter: a tour without close", () => {
+  it("pauses when its panel closes — no status change — and resumes when it reopens", () => {
+    store.clear();
+    __resetOverlayForTests();
+    const make = (signal: AbortSignal) =>
+      pluginTourAdapter({ pluginKey: "p8", pluginName: "Blinky Guide", tool: () => "eeschema", signal, deps: deps() });
+    const abort = new AbortController();
+    const a = make(abort.signal);
+    a.start(TOUR, false);
+    expect(a.pausesOnClose()).toBe(false); // closable: the sidebar keeps its panel alive, hidden
+    a.start({ ...TOUR, closable: false }, false);
+    expect(a.pausesOnClose()).toBe(true);
+    pressButton("close"); // there is no × to press; a stray close changes nothing
+    expect(a.isRunning()).toBe(true);
+    abort.abort(); // the sidebar closes the panel: the plugin stops, and its tour with it
+    expect(a.isRunning()).toBe(false);
+    expect(a.pausesOnClose()).toBe(false);
+    expect(make(new AbortController().signal).start({ ...TOUR, closable: false }, true)).toEqual({ status: "started" });
+    __stopAllToursForTests();
+  });
+});
+
 describe("pluginSheetAdapter", () => {
   it("returns parsed engine reads and refuses while busy", () => {
     const sheet = pluginSheetAdapter(

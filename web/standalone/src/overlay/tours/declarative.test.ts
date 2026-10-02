@@ -307,6 +307,13 @@ describe("step cap, celebrate, memory and Back (tutorial round 2)", () => {
     expect(() => parseTourDef(minimal([{ ...last, celebrate: "confetti" }]))).toThrow(/invalid tour/);
   });
 
+  it("a tour may give its cards no close; anything but a boolean is refused", () => {
+    const closed = compileTour(parseTourDef({ ...minimal([last]), closable: false }), deps({ syms: [] }));
+    expect(tick(closed).content?.closable).toBe(false);
+    expect(tick(compileTour(parseTourDef(minimal([last])), deps({ syms: [] }))).content?.closable).toBeUndefined();
+    expect(() => parseTourDef({ ...minimal([last]), closable: "no" })).toThrow(/invalid tour/);
+  });
+
   it("remembers latches and the new: baseline across a reload", () => {
     let stored: TourMemory | null = null;
     const memory = { load: () => stored, save: (m: TourMemory) => void (stored = JSON.parse(JSON.stringify(m))) };

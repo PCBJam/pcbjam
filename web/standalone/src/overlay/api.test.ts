@@ -33,6 +33,16 @@ describe("overlay api", () => {
     expect(sanitizeStep({ owner: "t", text: "ok", celebrate: "fireworks" as never }).celebrate).toBeUndefined();
   });
 
+  it("a card without close: the flag survives sanitizing, and close does nothing", () => {
+    expect(sanitizeStep({ owner: "t", text: "ok" }).closable).toBeUndefined();
+    expect(sanitizeStep({ owner: "t", text: "ok", closable: false }).closable).toBe(false);
+    expect(sanitizeStep({ owner: "t", text: "ok", closable: "no" as never }).closable).toBeUndefined();
+    overlay.show({ owner: "a", text: "one", closable: false });
+    pressButton("close");
+    expect(overlay.getState().step?.owner).toBe("a");
+    expect(events.map((e) => e.type)).toEqual(["shown"]);
+  });
+
   it("replaces the current step and reports it", () => {
     const a = overlay.show({ owner: "a", text: "one", target: "panel:x" });
     const b = overlay.show({ owner: "b", text: "two" });

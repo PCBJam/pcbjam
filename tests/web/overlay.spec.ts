@@ -339,6 +339,37 @@ test.describe('guide overlay (eeschema)', () => {
     expect(Math.abs(rect!.x - title!.x)).toBeLessThanOrEqual(1);
   });
 
+  test('a card that cannot be closed has no × and leaves Escape to the editor', async ({ page }) => {
+    await bootEeschema(page);
+    await page.evaluate(() => {
+      const w = window as unknown as { __overlayEvents: string[] };
+      w.__overlayEvents = [];
+      for (const t of ['shown', 'cleared', 'button'] as const) {
+        window.__pcbjamOverlay!.on(t, (e) => w.__overlayEvents.push(e.type));
+      }
+      window.__pcbjamOverlay!.show({
+        owner: 'e2e',
+        title: 'Stay with me',
+        text: 'Place the part, then press Esc.',
+        buttons: ['next'],
+        closable: false,
+      });
+    });
+    const card = page.getByTestId('overlay-card');
+    await expect(card).toBeVisible();
+    await expect(page.getByTestId('overlay-close')).toHaveCount(0);
+    await page.screenshot({ path: shotPath(page, 'overlay-07-not-closable.png') });
+
+    // Focus inside the card, as right after pressing one of its buttons: Escape is not a close.
+    await page.getByTestId('overlay-next').focus();
+    await page.keyboard.press('Escape');
+    // The card's own button still answers — and nothing cleared the step in between.
+    await page.getByTestId('overlay-next').click();
+    const events = await page.evaluate(() => (window as unknown as { __overlayEvents: string[] }).__overlayEvents);
+    expect(events).toEqual(['shown', 'button']);
+    await expect(card).toBeVisible();
+  });
+
   test('a canvas area target follows zoom', async ({ page }) => {
     await bootEeschema(page);
     const vp = await page.evaluate(() => JSON.parse(window.Module.kicadCollabGetViewport()));

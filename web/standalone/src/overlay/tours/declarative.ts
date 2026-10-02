@@ -188,6 +188,9 @@ export const tourDefSchema = z
     id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/),
     title: z.string().min(1).max(ATTRIBUTION_MAX).optional(),
     editor: z.enum(["eeschema", "pcbnew"]),
+    /** False: the cards have no × and Escape leaves them alone (a tutorial nobody should lose
+     *  mid-way); a plugin's tour then stops when its panel closes, and resumes when it reopens. */
+    closable: z.boolean().optional(),
     steps: z.array(tourStepSchema).min(1).max(TOUR_STEPS_MAX),
   })
   .strict()
@@ -624,6 +627,7 @@ export function compileTour(def: TourDef, deps: TourDeps, opts: CompileOptions =
           spotlight: step.spotlight,
           pulse: step.pulse,
           celebrate: step.celebrate,
+          closable: def.closable === false ? false : undefined,
           buttons: buttons.length ? buttons : undefined,
         };
       },

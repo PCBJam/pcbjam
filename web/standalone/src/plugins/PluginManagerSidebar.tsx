@@ -59,14 +59,16 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
   const onClose = () => onViewChange(null);
   // While the open plugin runs a guided tour, closing its panel only hides it: the tour (and the
   // plugin it may call back into) keeps going. Reopening from the menu shows it again; when the
-  // tour ends with the panel still hidden, the plugin is closed for real.
+  // tour ends with the panel still hidden, the plugin is closed for real. A tour whose cards have
+  // no × is the exception: closing the panel is the user's way out of it, so the plugin closes and
+  // the tour pauses until the panel reopens.
   const toursRef = React.useRef<ReturnType<typeof pluginTourAdapter> | null>(null);
   const [panelHidden, setPanelHidden] = React.useState(false);
   const panelHiddenRef = React.useRef(false);
   panelHiddenRef.current = panelHidden;
   const [collapseSignal, setCollapseSignal] = React.useState(0);
   React.useEffect(() => { setPanelHidden(false); }, [view]);
-  const closePanel = () => { if (toursRef.current?.isRunning()) setPanelHidden(true); else onClose(); };
+  const closePanel = () => { if (toursRef.current?.isRunning() && !toursRef.current.pausesOnClose()) setPanelHidden(true); else onClose(); };
   const openPlugin = (id: string) => { setNotice(''); onViewChange({ kind: 'plugin', id }); };
   const [candidate, setCandidate] = React.useState<Descriptor | null>(null);
   const [notice, setNotice] = React.useState('');
