@@ -64,6 +64,21 @@ only) — not playwright directly. One spec on one engine:
 
 - **`retries: 0`** in both configs (`playwright.config.ts` — the merged wasm-suite config —
   and `playwright-web.config.ts`). A failure is real; don't mask it with a retry.
+- The one exception is the release (tag) run: `release.yml` passes `e2e_retries: 1` to the
+  shared build workflow, which sets `PW_E2E_RETRIES=1` for the two gating suites. The tagged
+  commit already passed with no retries on main, so one retry only keeps a single flaky test
+  from failing the release. The retried test is reported as "flaky" and keeps its first
+  attempt's trace — treat it as a bug to fix, not as noise.
+
+## A test that sits until its timeout
+
+- Shortly before a test's timeout, an automatic fixture (`e2e/utils/hang-diagnostics.ts`,
+  Linux only) records what every browser process of that worker is doing: per-thread state,
+  CPU over a one-second sample, current syscall, and native stacks via gdb. If the test then
+  fails, it is attached as `hang-diagnostics.txt` next to the trace. Read it when a trace shows
+  a frozen page and nothing else.
+- Per-test console logs in `tests/logs/` end with the project name (and `retryN` on a retry),
+  so the same spec on two engines no longer overwrites one log.
 
 ## Every spec runs in CI — `lint:ci-coverage`
 

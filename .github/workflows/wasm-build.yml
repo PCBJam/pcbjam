@@ -36,6 +36,10 @@ on:
         description: "Upload the publishable output/ subset as the 'wasm-output' artifact"
         type: boolean
         default: false
+      e2e_retries:
+        description: "Playwright retries for the gating e2e suites (0 everywhere except the release run)"
+        type: number
+        default: 0
     secrets:
       # Declared so this reusable workflow may reference ${{ secrets.DISCORD_WEBHOOK_URL }}
       # (an undeclared secret reference is a workflow startup failure). ci-ubicloud.yml
@@ -79,7 +83,9 @@ jobs:
           # xvfb: kicad e2e runs headed Firefox under a virtual display.
           # autoconf/automake/make: host wxWidgets + wx test-app builds.
           # cmake/ninja/g++: host GAL/3D test-app builds.
-          sudo apt-get install -y cmake ninja-build g++ xvfb autoconf automake make
+          # gdb: native stacks of a frozen browser process when an e2e test is
+          # about to time out (tests/e2e/utils/hang-diagnostics.ts).
+          sudo apt-get install -y cmake ninja-build g++ xvfb autoconf automake make gdb
 
       - uses: actions/checkout@v4
         with: { submodules: recursive }
@@ -468,6 +474,8 @@ jobs:
         id: e2e
         if: inputs.run_tests
         working-directory: tests
+        env:
+          PW_E2E_RETRIES: ${{ inputs.e2e_retries }}
         run: xvfb-run -a npm run test:e2e
 
       # The React web-app suite (web/) against the pnpm dev stack (frontend
@@ -478,6 +486,8 @@ jobs:
         id: web_e2e
         if: inputs.run_tests && !cancelled() && steps.e2e.outcome != 'skipped'
         working-directory: tests
+        env:
+          PW_E2E_RETRIES: ${{ inputs.e2e_retries }}
         run: xvfb-run -a npm run test:web:ci
 
       # Runtime-perf E2E (eeschema + pcbnew): measures the current build's

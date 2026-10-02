@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { test, expect, type Page, type TestInfo } from '@playwright/test';
@@ -10,10 +9,6 @@ import { test, expect, type Page, type TestInfo } from '@playwright/test';
  * SYNC-08 lands with WP7.
  */
 test.describe.configure({ timeout: 300_000 });
-test.beforeAll(() => execFileSync(process.execPath, ['collab/build-sync-audit.mjs'], {
-  cwd: path.resolve(__dirname, '..'), stdio: 'inherit',
-}));
-
 const DIR = '/home/kicad/documents/';
 const FP = '66666666-0000-0000-0000-000000000001';
 const POLY = '66666666-0000-0000-0000-000000000002';

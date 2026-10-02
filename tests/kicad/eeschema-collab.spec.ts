@@ -1,4 +1,3 @@
-import { execSync } from "node:child_process";
 import path from "node:path";
 import type { Page } from "@playwright/test";
 import { test, expect } from "./fixtures";
@@ -89,10 +88,6 @@ async function bootAndOpen(page: Page, name: string): Promise<void> {
 
   await expect.poll(() => page.title(), { timeout: 30000 }).toMatch(new RegExp(name, "i"));
 }
-
-test.beforeAll(() => {
-  execSync("node collab/build.mjs", { cwd: path.resolve(__dirname, ".."), stdio: "inherit" });
-});
 
 test.describe("eeschema collab bridge — single page", () => {
   test("snapshot reflects schematic by uuid/type/position", async ({ page, testLogger }) => {

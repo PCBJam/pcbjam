@@ -1,12 +1,12 @@
 // Bundle the ysync-integrity browser entry (see browser-entry-integrity.ts).
 // Same alias rules as build.mjs's v2 bundle: ONE yjs copy, shared by source.
-import { build } from "esbuild";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildAtomic } from "./atomic-build.mjs";
 
 const testsDir = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 
-await build({
+await buildAtomic({
   entryPoints: [path.join(testsDir, "collab/browser-entry-integrity.ts")],
   bundle: true,
   format: "iife",

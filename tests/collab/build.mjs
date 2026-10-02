@@ -2,13 +2,13 @@
 // sourced from the web frontend) into a single IIFE the pl_editor harness loads.
 // nodePaths lets esbuild resolve `yjs` from tests/node_modules even though the
 // reconciler lives under web/. Output: apps/kicad/collab-bundle.js (global KicadCollab).
-import { build } from "esbuild";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildAtomic } from "./atomic-build.mjs";
 
 const testsDir = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 
-await build({
+await buildAtomic({
   entryPoints: [path.join(testsDir, "collab/browser-entry.ts")],
   bundle: true,
   format: "iife",
@@ -25,7 +25,7 @@ await build({
 console.log("collab bundle built → apps/kicad/collab-bundle.js");
 
 // The V2 ("items") bundle — the PRODUCTION collab stack (see browser-entry-v2.ts).
-await build({
+await buildAtomic({
   entryPoints: [path.join(testsDir, "collab/browser-entry-v2.ts")],
   bundle: true,
   format: "iife",

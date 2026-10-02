@@ -1,5 +1,3 @@
-import { execSync } from "node:child_process";
-import path from "node:path";
 import { test, expect } from "./fixtures";
 import {
   TRIO_PL,
@@ -42,11 +40,6 @@ import {
  * and are marked test.fail() naming the tracking doc — fixing the bug flips
  * them to "unexpected pass", forcing the marker's removal.
  */
-
-test.beforeAll(() => {
-  // Rebuild the v2 bundle so the harness always exercises the current stack.
-  execSync("node collab/build.mjs", { cwd: path.resolve(__dirname, ".."), stdio: "inherit" });
-});
 
 /** Heavy editors exceed Firefox's per-content-process wasm budget at 2+
  *  instances (see ysync-two-tab.spec.ts) — at 3 it is strictly worse. */

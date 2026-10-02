@@ -1,5 +1,3 @@
-import { execSync } from "node:child_process";
-import path from "node:path";
 import { test, expect } from "./fixtures";
 import {
   TRIO_PCB,
@@ -27,10 +25,6 @@ const NETTED_PCB: ToolCfg = {
     .replace(`(uuid "${PAD1}")`, `(net 1 "SIG") (uuid "${PAD1}")`)
     .replace(`(uuid "${PAD2}")`, `(net 2 "GND") (uuid "${PAD2}")`),
 };
-
-test.beforeAll(() => {
-  execSync("node collab/build.mjs", { cwd: path.resolve(__dirname, ".."), stdio: "inherit" });
-});
 
 test("PCB peers retain pad nets after moving the same footprint in both directions", async ({
   context,

@@ -315,7 +315,9 @@ Button positions (relative to canvas):
 
 ## Collab e2e — legacy vs v2 bundles, and repro markers
 
-Two esbuild bundles (`npm run build:collab`, rebuilt by the specs' `beforeAll`):
+Two esbuild bundles (`npm run build:collab`; rebuilt ONCE per run by `global-setup.ts`,
+before any worker starts — specs must not rebuild them, a worker injecting a bundle while
+another rewrites it gets a truncated script):
 
 - `apps/kicad/collab-bundle.js` — the LEGACY scalar wire (`startCollab` /
   `kicadCollabSnapshot/Apply` / `onDelta`). Dead in production (nothing registers

@@ -1,14 +1,26 @@
 import { test as base } from '@playwright/test';
 import * as path from 'path';
-import { setupTestLogger, writeTestLogs, TestLogger, MAIN_CANVAS, waitForApp, tryLoadApp, getCanvasBox, WXWIDGETS_LOGS_DIR, getTestFileName } from './test-utils';
+import { setupTestLogger, writeTestLogs, TestLogger, MAIN_CANVAS, waitForApp, tryLoadApp, getCanvasBox, WXWIDGETS_LOGS_DIR, getTestFileName, getTestLogName } from './test-utils';
+import { armHangDiagnostics } from './hang-diagnostics';
 
 // Extend base test with automatic logging
 export const test = base.extend<{
   testLogger: TestLogger;
+  hangDiagnostics: void;
 }>({
+  // Auto: every test gets the about-to-time-out process dump (see hang-diagnostics.ts).
+  hangDiagnostics: [
+    async ({}, use, testInfo) => {
+      const finish = armHangDiagnostics(testInfo);
+      await use();
+      await finish();
+    },
+    { auto: true },
+  ],
+
   testLogger: async ({ page }, use, testInfo) => {
-    // Build test name from describe block + test title
-    const testName = testInfo.titlePath.join(' - ');
+    // Describe blocks + test title + project (+ retry)
+    const testName = getTestLogName(testInfo);
 
     const logger = setupTestLogger(page);
 

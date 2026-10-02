@@ -1,13 +1,25 @@
 import { test as base } from '@playwright/test';
 import * as path from 'path';
-import { setupTestLogger, writeTestLogs, TestLogger, MAIN_CANVAS, waitForApp, tryLoadApp, getCanvasBox, KICAD_LOGS_DIR, getTestFileName } from '../e2e/utils/test-utils';
+import { setupTestLogger, writeTestLogs, TestLogger, MAIN_CANVAS, waitForApp, tryLoadApp, getCanvasBox, KICAD_LOGS_DIR, getTestFileName, getTestLogName } from '../e2e/utils/test-utils';
+import { armHangDiagnostics } from '../e2e/utils/hang-diagnostics';
 import { installNgspiceServiceStub } from './utils/ngspice-service';
 import { installOccServiceStub } from './utils/occ-service';
 
 // Extend base test with automatic logging
 export const test = base.extend<{
   testLogger: TestLogger;
+  hangDiagnostics: void;
 }>({
+  // Auto: every test gets the about-to-time-out process dump (see hang-diagnostics.ts).
+  hangDiagnostics: [
+    async ({}, use, testInfo) => {
+      const finish = armHangDiagnostics(testInfo);
+      await use();
+      await finish();
+    },
+    { auto: true },
+  ],
+
   // Every harness page gets the occ_service provider ambiently (standalone
   // parity: boot.ts installs it whenever the editor bundle boots). Init-script
   // based, so it exists from document start on every navigation; the worker
@@ -23,8 +35,8 @@ export const test = base.extend<{
   },
 
   testLogger: async ({ page }, use, testInfo) => {
-    // Build test name from describe block + test title
-    const testName = testInfo.titlePath.join(' - ');
+    // Describe blocks + test title + project (+ retry)
+    const testName = getTestLogName(testInfo);
 
     const logger = setupTestLogger(page);
 

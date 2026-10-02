@@ -1,4 +1,3 @@
-import { execSync } from "node:child_process";
 import path from "node:path";
 import type { Page } from "@playwright/test";
 import { test, expect } from "./fixtures";
@@ -14,7 +13,7 @@ import { test, expect } from "./fixtures";
  *     a local text insert in tab A appears in tab B, and vice-versa.
  *
  * The collab reconciler/transport are bundled from web/standalone/src/wasm/collab via
- * esbuild into apps/kicad/collab-bundle.js (rebuilt in beforeAll for freshness).
+ * esbuild into apps/kicad/collab-bundle.js (rebuilt once per run by global-setup.ts).
  */
 
 const CHANNEL_BASE = "pl-collab-e2e";
@@ -99,14 +98,6 @@ async function modelText(page: Page): Promise<string> {
     return w.FS.readFile(out, { encoding: "utf8" });
   });
 }
-
-test.beforeAll(() => {
-  // Rebuild the collab bundle so the test always exercises the current reconciler.
-  execSync("node collab/build.mjs", {
-    cwd: path.resolve(__dirname, ".."),
-    stdio: "inherit",
-  });
-});
 
 test.describe("pl_editor collab bridge — single page (C++ contract)", () => {
   test("snapshot reflects model; apply changes/removes/adds by uuid; no echo", async ({

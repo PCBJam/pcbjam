@@ -1,4 +1,3 @@
-import { execSync } from "node:child_process";
 import path from "node:path";
 import type { Page } from "@playwright/test";
 import { test, expect } from "./fixtures";
@@ -40,10 +39,6 @@ import {
  * pre-action state (finding #7), and in concurrent scenarios there is no
  * single actor save to gate on.
  */
-
-test.beforeAll(() => {
-  execSync("node collab/build.mjs", { cwd: path.resolve(__dirname, ".."), stdio: "inherit" });
-});
 
 function skipFirefox(): void {
   // 2026-08-13: guard retired — the JSPI build (~half the asyncify size) fits

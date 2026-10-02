@@ -1,6 +1,4 @@
 import { test, expect, type Page } from "./fixtures";
-import { execSync } from "child_process";
-import * as path from "path";
 
 /**
  * repro for R-2 (docs/features/findings/groups/R-fixed-during-demo-record.md)
@@ -76,10 +74,6 @@ async function bootAndOpen(page: Page): Promise<void> {
   }, VIA_PCB);
   await expect.poll(() => page.title(), { timeout: 30000 }).toMatch(/vias/i);
 }
-
-test.beforeAll(() => {
-  execSync("node collab/build.mjs", { cwd: path.resolve(__dirname, ".."), stdio: "inherit" });
-});
 
 test("snapshotting a board with vias emits their width without a GetWidth assert (R-2)", async ({
   page,

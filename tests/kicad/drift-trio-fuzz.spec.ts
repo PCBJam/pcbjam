@@ -1,4 +1,3 @@
-import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import type { Page } from "@playwright/test";
@@ -50,10 +49,6 @@ import {
 const K_STEPS = 40;
 const SYNC_EVERY = 10;
 const SEED = Number(process.env.DRIFT_FUZZ_SEED ?? 1);
-
-test.beforeAll(() => {
-  execSync("node collab/build.mjs", { cwd: path.resolve(__dirname, ".."), stdio: "inherit" });
-});
 
 function skipFirefox(): void {
   // 2026-08-13: guard retired — the JSPI build (~half the asyncify size) fits

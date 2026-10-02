@@ -1,4 +1,3 @@
-import { execSync } from "node:child_process";
 import path from "node:path";
 import type { Page } from "@playwright/test";
 import { test, expect } from "./fixtures";
@@ -56,10 +55,6 @@ async function boot(page: Page, html: string, fns: string[]): Promise<void> {
     { timeout: BOOT_TIMEOUT },
   );
 }
-
-test.beforeAll(() => {
-  execSync("node collab/build.mjs", { cwd: path.resolve(__dirname, ".."), stdio: "inherit" });
-});
 
 // ── 1. eeschema cross-sheet commits ──────────────────────────────────────────
 

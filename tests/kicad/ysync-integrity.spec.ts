@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
@@ -25,8 +24,6 @@ const PCB = `(kicad_pcb (version 20241229) (generator "pcbnew") (generator_versi
     (property "Reference" "R1" (at 0 -4.2 0) (layer "F.SilkS") (effects (font (size 1 1) (thickness 0.15))))
     (property "Value" "R" (at 0 4.6 0) (layer "F.Fab") (effects (font (size 1 1) (thickness 0.15))))
     (fp_text user "HELLO" (at 0 0 0) (layer "F.SilkS") (uuid "${CHILD}") (effects (font (size 1 1) (thickness 0.15))))))`;
-
-test.beforeAll(() => execFileSync(process.execPath, ['collab/build-integrity.mjs'], { cwd: path.resolve(__dirname, '..'), stdio: 'inherit' }));
 
 async function boot(page: Page, html = 'pcbnew-collab.html') {
   await page.goto(`/kicad/${html}`);

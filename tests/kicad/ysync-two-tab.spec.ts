@@ -1,4 +1,3 @@
-import { execSync } from "node:child_process";
 import path from "node:path";
 import type { Page } from "@playwright/test";
 import { test, expect } from "./fixtures";
@@ -233,11 +232,6 @@ function getPos(page: Page, uuid: string): Promise<string> {
     uuid,
   );
 }
-
-test.beforeAll(() => {
-  // Rebuild both collab bundles so the test always exercises the current stack.
-  execSync("node collab/build.mjs", { cwd: path.resolve(__dirname, ".."), stdio: "inherit" });
-});
 
 // ── pl_editor: the green baseline (harness validation + adopt coverage) ──────
 

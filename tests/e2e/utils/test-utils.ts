@@ -1,4 +1,4 @@
-import { Page } from '@playwright/test';
+import { Page, TestInfo } from '@playwright/test';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -77,6 +77,15 @@ export function writeTestLogs(testName: string, logger: TestLogger, logsDir: str
 // Helper to get test file name without extension
 export function getTestFileName(filePath: string): string {
   return path.basename(filePath, '.spec.ts');
+}
+
+// Log name for one run of a test: describe blocks + title, then the project —
+// kicad-firefox and kicad-chromium run the same specs, and without it the later
+// project overwrote the earlier one's log — and the retry number, if any.
+export function getTestLogName(testInfo: TestInfo): string {
+  const parts = [...testInfo.titlePath, testInfo.project.name];
+  if (testInfo.retry > 0) parts.push(`retry${testInfo.retry}`);
+  return parts.join(' - ');
 }
 
 // Helper to wait for app initialization

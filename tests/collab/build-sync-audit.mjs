@@ -1,8 +1,8 @@
-import { build } from 'esbuild';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { buildAtomic } from './atomic-build.mjs';
 const tests = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
-await build({
+await buildAtomic({
   entryPoints: [path.join(tests, 'collab/browser-entry-sync-audit.ts')],
   bundle: true, format: 'iife', target: 'es2020',
   outfile: path.join(tests, 'apps/kicad/collab-sync-audit.js'),

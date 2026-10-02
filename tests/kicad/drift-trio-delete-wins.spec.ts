@@ -1,5 +1,3 @@
-import { execSync } from "node:child_process";
-import path from "node:path";
 import type { Page } from "@playwright/test";
 import { test, expect } from "./fixtures";
 import {
@@ -35,10 +33,6 @@ import {
  * Contract: convergence + drift silence on all three tabs; the winner is the
  * delete. Needs the 0012 #2 wasm (`window.kicadCollab.resolveItems`).
  */
-
-test.beforeAll(() => {
-  execSync("node collab/build.mjs", { cwd: path.resolve(__dirname, ".."), stdio: "inherit" });
-});
 
 interface ToolCase {
   label: string;
