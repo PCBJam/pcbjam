@@ -81,9 +81,13 @@ const frameEvents = (page: Page, cls: string) =>
   );
 const dialogOpen = (page: Page, cls: string) => page.evaluate((c) => !!window.__pcbjamOverlay!.openDialog(c), cls);
 
-/** The title-bar × of the top-level window whose title matches. */
+/** The title-bar × of the shown top-level window whose title matches (#window-container's own id also starts with "window-"). */
 const closeButton = (page: Page, title: RegExp) =>
-  page.locator('[id^="window-"]').filter({ has: page.locator('.window-titlebar-text', { hasText: title }) }).locator('.window-titlebar-close').first();
+  page
+    .locator('#window-container [id^="window-"]')
+    .filter({ has: page.locator('.window-titlebar-text:visible', { hasText: title }) })
+    .locator('.window-titlebar-close:visible')
+    .first();
 
 test.describe('guide overlay engine hooks (multivibrator tutorial, 0006)', () => {
   test.setTimeout(300000);
