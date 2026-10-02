@@ -235,7 +235,8 @@ export function ToolPage() {
           readOnly
             ? undefined
             : (relPath, bytes, signal) =>
-                uploadFileBytes(slug, relPath, bytes, signal)
+                // Every save sink hands over bytes KiCad wrote into MEMFS.
+                uploadFileBytes(slug, relPath, bytes, signal, { editorSave: true })
         }
         createFile={
           readOnly

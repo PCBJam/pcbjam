@@ -278,6 +278,25 @@ describe("remote source CAS ancestry for bundle-staged files", () => {
     );
     expect(revisionHeader?.[1]).toBe("1");
   });
+
+  it("only a save KiCad wrote is marked as an editor save", async () => {
+    // The backend skips its normalizing resave for marked bytes; a new-file
+    // template (no option) must keep it.
+    const source = await loadRemote(cacheMock());
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: (h: string) => (h === "x-pcbjam-file-revision" ? "1" : null) },
+      json: async () => ({ revision: 1 }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    await source().uploadFileBytes!("p", "a.kicad_sch", new Uint8Array([1]), undefined, { editorSave: true });
+    await source().uploadFileBytes!("p", "b.kicad_sch", new Uint8Array([1]));
+    const headersOf = (i: number) =>
+      ((fetchMock.mock.calls[i] as unknown[])[1] as { headers: Record<string, string> }).headers;
+    expect(headersOf(0)["x-pcbjam-file-source"]).toBe("editor-save");
+    expect(headersOf(1)["x-pcbjam-file-source"]).toBeUndefined();
+  });
 });
 
 describe("remote source: a sibling restage never moves the CAS base (proposal 21 S5a)", () => {

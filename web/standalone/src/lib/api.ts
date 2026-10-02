@@ -19,6 +19,7 @@ import type { LibInfo } from "@/wasm/libs/source";
 import { downloadBytes } from "./download";
 import {
   type FetchFileOptions,
+  type UploadFileOptions,
   ReadOnlyProjectError,
   descriptorForSlug,
   listPrimaryProjects,
@@ -140,6 +141,7 @@ export async function uploadFileBytes(
   relPath: string,
   bytes: Uint8Array,
   signal?: AbortSignal,
+  opts?: UploadFileOptions,
 ): Promise<SaveOutcome> {
   const source = projectSource();
   if (!source.uploadFileBytes) {
@@ -147,7 +149,7 @@ export async function uploadFileBytes(
     return SAVE_COMMITTED;
   }
   try {
-    return await source.uploadFileBytes(slug, relPath, bytes, signal);
+    return await source.uploadFileBytes(slug, relPath, bytes, signal, opts);
   } catch (e) {
     // Composite write to a read-only (gallery) project → fall back to download.
     if (e instanceof ReadOnlyProjectError) {

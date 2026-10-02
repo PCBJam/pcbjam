@@ -6,6 +6,8 @@ import {
   type ProjectFile,
   type ProjectWithFiles,
   PROJECT_FILE_REVISION_HEADER,
+  PROJECT_FILE_SOURCE_EDITOR_SAVE,
+  PROJECT_FILE_SOURCE_HEADER,
   YDOC_CONTENT_TYPE,
   sidecarKind,
   sidecarUpdateToFile,
@@ -47,6 +49,14 @@ import {
  * that routes per slug) so loaded folders + saved work coexist with the gallery.
  * See docs/features/demo-deploy/.
  */
+export interface UploadFileOptions {
+  /**
+   * The bytes are a save KiCad just wrote (the save hook), not a template or
+   * an import: the backend is told so and may skip normalizing them.
+   */
+  editorSave?: boolean;
+}
+
 export interface ProjectSource {
   /** What this source is + whether saves persist (surfaced in the UI). */
   readonly descriptor: SourceDescriptor;
@@ -77,6 +87,7 @@ export interface ProjectSource {
     relPath: string,
     bytes: Uint8Array,
     signal?: AbortSignal,
+    opts?: UploadFileOptions,
   ): Promise<SaveOutcome>;
   /**
    * Observe one path's latest server revision without downloading its body.
@@ -313,7 +324,7 @@ function remoteProjectSource(): ProjectSource {
     // latest observed metadata — so a save issued after a conflict cannot
     // silently overwrite the winner. The multipart POST remains the bulk
     // import path only (deliberately unconditional; see files.ts route note).
-    async uploadFileBytes(slug, relPath, bytes, signal) {
+    async uploadFileBytes(slug, relPath, bytes, signal, opts) {
       const key = revisionKey(slug, relPath);
       const expectedRevision = baseRevisions.get(key) ?? 0;
       let res: Response;
@@ -326,6 +337,8 @@ function remoteProjectSource(): ProjectSource {
           headers: {
             "content-type": "application/octet-stream",
             [PROJECT_FILE_REVISION_HEADER]: String(expectedRevision),
+            // KiCad wrote these bytes a moment ago: nothing to normalize.
+            ...(opts?.editorSave ? { [PROJECT_FILE_SOURCE_HEADER]: PROJECT_FILE_SOURCE_EDITOR_SAVE } : {}),
           },
         });
       } catch {
@@ -534,9 +547,9 @@ function compositeProjectSource(
     getProject: (slug) => route(slug).then((s) => s.getProject(slug)),
     fetchFileBytes: (slug, p, meta, opts) =>
       route(slug).then((s) => s.fetchFileBytes(slug, p, meta, opts)),
-    uploadFileBytes: async (slug, p, bytes, signal) => {
+    uploadFileBytes: async (slug, p, bytes, signal, opts) => {
       const s = await route(slug);
-      if (s.uploadFileBytes) return s.uploadFileBytes(slug, p, bytes, signal);
+      if (s.uploadFileBytes) return s.uploadFileBytes(slug, p, bytes, signal, opts);
       // Read-only gallery project being edited → download (api.ts also guards).
       throw new ReadOnlyProjectError(slug);
     },
