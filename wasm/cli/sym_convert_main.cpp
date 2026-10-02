@@ -77,6 +77,7 @@
 
 #include <wx/arrstr.h>
 #include <wx/filename.h>
+#include <wx/image.h>
 #include <wx/init.h>
 #include <wx/string.h>
 
@@ -217,6 +218,10 @@ SETTINGS_MANAGER& kiRuntime()
         pgm->CreateSingleton();
         trace( "kiRuntime: library manager (empty)" );
         pgm->CreateLibraryManager();
+        // A schematic can embed bitmap images in several formats; InitPgm()
+        // registers the decoders natively, and without them every sheet with
+        // an image fails to load ("Failed to read image data.").
+        wxInitAllImageHandlers();
         s_manager = &pgm->GetSettingsManager();
         trace( "kiRuntime: ready" );
     }

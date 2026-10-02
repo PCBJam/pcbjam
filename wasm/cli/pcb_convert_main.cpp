@@ -89,7 +89,9 @@
 #include <lset.h>
 #include <libraries/library_manager.h>
 #include <footprint.h>
+#include <generators_mgr.h>
 #include <pcb_field.h>
+#include <pcb_generator.h>
 #include <pcb_io/kicad_sexpr/pcb_io_kicad_sexpr.h>
 #include <pcb_io/pcb_io_mgr.h>
 #include <pcb_marker.h>
@@ -147,6 +149,53 @@ public:
 };
 
 
+// The diet prunes pcbnew/generators/ (pcb_tuning_pattern.cpp is the
+// interactive meander tool: tools, dialogs, router previews) and with it the
+// static that registers the "tuning_pattern" generator, so the s-expr parser
+// refused every board with a length-tuning pattern ("Cannot create generated
+// object of type 'tuning_pattern'"). Headless work never regenerates a
+// pattern: this stand-in keeps the saved properties as parsed and hands them
+// back to the writer unchanged; the member tracks are ordinary board items.
+class HEADLESS_GENERATOR : public PCB_GENERATOR
+{
+public:
+    HEADLESS_GENERATOR() : PCB_GENERATOR( nullptr, F_Cu )
+    {
+        // As PCB_TUNING_PATTERN's ctor: the legacy "meanders" spelling is
+        // written back under the current type name.
+        m_generatorType = wxS( "tuning_pattern" );
+        SetName( wxS( "Tuning Pattern" ) );
+    }
+
+    void EditStart( GENERATOR_TOOL*, BOARD*, BOARD_COMMIT* ) override {}
+    bool Update( GENERATOR_TOOL*, BOARD*, BOARD_COMMIT* ) override { return false; }
+    void EditFinish( GENERATOR_TOOL*, BOARD*, BOARD_COMMIT* ) override {}
+    void EditCancel( GENERATOR_TOOL*, BOARD*, BOARD_COMMIT* ) override {}
+    void Remove( GENERATOR_TOOL*, BOARD*, BOARD_COMMIT* ) override {}
+
+    const STRING_ANY_MAP GetProperties() const override
+    {
+        STRING_ANY_MAP props = m_props;
+        props.set( "origin", m_origin );
+        return props;
+    }
+
+    void SetProperties( const STRING_ANY_MAP& aProps ) override
+    {
+        PCB_GENERATOR::SetProperties( aProps );
+        m_props = aProps;
+    }
+
+    EDA_ITEM* Clone() const override { return new HEADLESS_GENERATOR( *this ); }
+
+    wxString GetPluralName() const override { return wxS( "Tuning Patterns" ); }
+    wxString GetCommitMessage() const override { return wxEmptyString; }
+
+private:
+    STRING_ANY_MAP m_props;
+};
+
+
 SETTINGS_MANAGER& kiRuntime()
 {
     static SETTINGS_MANAGER* s_manager = nullptr;
@@ -191,6 +240,17 @@ SETTINGS_MANAGER& kiRuntime()
         pgm->CreateSingleton();
         trace( "kiRuntime: library manager (empty)" );
         pgm->CreateLibraryManager();
+        // A board or footprint can embed bitmap images in several formats;
+        // InitPgm() registers the decoders natively. Here rather than in one
+        // loader: resave and lint load through PCB_IO_MGR directly.
+        wxInitAllImageHandlers();
+
+        for( const wxString& type : { wxString( wxS( "tuning_pattern" ) ), wxString( wxS( "meanders" ) ) } )
+        {
+            GENERATORS_MGR::Instance().Register( type, wxS( "Tuning Pattern" ),
+                                                 [] { return new HEADLESS_GENERATOR; } );
+        }
+
         s_manager = &pgm->GetSettingsManager();
         trace( "kiRuntime: ready" );
     }
@@ -214,9 +274,6 @@ BOARD* loadBoardHeadless( const char* aInPath )
 
     wxFileName pro( fn );
     pro.SetExt( wxS( "kicad_pro" ) );
-
-    // A board can embed bitmap images in several formats.
-    wxInitAllImageHandlers();
 
     // aSetActive=false: the set-active tail needs kiway plumbing that doesn't
     // exist headless (mirrors sym_convert's lint loader).

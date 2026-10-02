@@ -77,6 +77,8 @@ try {
     "kicad/qa/data/libraries/Resistor_SMD.pretty/R_0201_0603Metric_Pad0.64x0.40mm_HandSolder.kicad_mod",
   );
 
+  const tuningPcb = path.join(repo, "kicad/qa/data/pcbnew/diff_pair_uncoupled_tuning_drc.kicad_pcb");
+
   // --- resave: board version bump + relint clean --------------------------
   {
     const r = run(["--resave", demoPcb, out("pcb")]);
@@ -110,6 +112,87 @@ try {
       "every produced sheet lints clean",
       produced.every((f) => run(["--lint", path.join(out("hier"), f)]).code === 0),
     );
+  }
+
+  // --- embedded images: both sides must have the bitmap decoders -----------
+  // The headless runtime skips InitPgm(), so each side registers the wx image
+  // handlers itself; without them a sheet or board with a picture exits 4 and
+  // the upload gate flags a valid file ("Failed to read image data.").
+  {
+    const png =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+    const imageSch = out("image.kicad_sch");
+    writeFileSync(
+      imageSch,
+      `(kicad_sch (version 20231120) (generator "eeschema") (generator_version "8.0")
+  (uuid "6f1d3c1e-5d0b-4c53-9a0e-2a1b7c9d4e10") (paper "A4")
+  (lib_symbols)
+  (image (at 100 100) (scale 1) (uuid "0b9a5c1f-3e2d-4f6a-8b7c-1d2e3f4a5b6c")
+    (data "${png}"))
+  (sheet_instances (path "/" (page "1")))
+)
+`,
+    );
+    const sch = run(["--resave", imageSch, out("image-sch")]);
+    check("resave schematic with an embedded image exits 0", sch.code === 0, `exit ${sch.code} ${sch.stderr.trim()}`);
+    check(
+      "the resaved schematic keeps its image",
+      sch.code === 0 && readFileSync(path.join(out("image-sch"), "image.kicad_sch"), "utf8").includes("(image"),
+    );
+    check("schematic with an embedded image lints clean", run(["--lint", imageSch]).code === 0);
+
+    const imagePcb = out("image.kicad_pcb");
+    writeFileSync(
+      imagePcb,
+      `(kicad_pcb (version 20240108) (generator "pcbnew") (generator_version "8.0")
+  (general (thickness 1.6))
+  (paper "A4")
+  (layers (0 "F.Cu" signal) (31 "B.Cu" signal) (37 "F.SilkS" user "F.Silkscreen") (44 "Edge.Cuts" user))
+  (setup (pad_to_mask_clearance 0))
+  (net 0 "")
+  (image (at 100 100) (layer "F.SilkS") (scale 1) (uuid "7c2e4d6f-1a3b-4c5d-9e8f-0a1b2c3d4e5f")
+    (data "${png}"))
+)
+`,
+    );
+    const pcb = run(["--resave", imagePcb, out("image-pcb")]);
+    check("resave board with an embedded image exits 0", pcb.code === 0, `exit ${pcb.code} ${pcb.stderr.trim()}`);
+  }
+
+  // --- length-tuning patterns: a `(generated …)` block survives a resave -----
+  // The diet has no pcbnew/generators/, so the CLI registers a stand-in that
+  // carries the saved properties through; without it every board with a
+  // tuning pattern exits 4 ("Cannot create generated object of type …").
+  if (existsSync(tuningPcb)) {
+    const generated = (file: string): string[] => {
+      const text = readFileSync(file, "utf8");
+      const blocks: string[] = [];
+      for (let at = text.indexOf("(generated"); at !== -1; at = text.indexOf("(generated", at + 1)) {
+        let depth = 0;
+        let end = at;
+        do {
+          if (text[end] === "(") depth++;
+          else if (text[end] === ")") depth--;
+          end++;
+        } while (depth > 0 && end < text.length);
+        blocks.push(text.slice(at, end).replace(/\s+/g, " ").replace(/ \)/g, ")"));
+      }
+      return blocks.sort();
+    };
+    const r = run(["--resave", tuningPcb, out("tuning")]);
+    const produced = path.join(out("tuning"), path.basename(tuningPcb));
+    check("resave board with a tuning pattern exits 0", r.code === 0, `exit ${r.code} ${r.stderr.trim()}`);
+    const before = generated(tuningPcb);
+    const after = r.code === 0 ? generated(produced) : [];
+    check("the fixture has a tuning pattern", before.length > 0);
+    check(
+      "the tuning pattern is written back unchanged",
+      JSON.stringify(after) === JSON.stringify(before),
+      `\n  in:  ${before.join("\n       ")}\n  out: ${after.join("\n       ")}`,
+    );
+    check("board with a tuning pattern lints clean", run(["--lint", tuningPcb]).code === 0);
+  } else {
+    console.log("skip tuning-pattern fixture (kicad submodule not initialized)");
   }
 
   // --- resave: footprint keeps the (version) header (CTL_FOR_LIBRARY) ------
