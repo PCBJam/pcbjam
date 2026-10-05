@@ -1,3 +1,12 @@
+# The plugin developer guide moved to the docs site (docs-site 0001). Pages
+# that changed name are listed before the splat.
+/plugin-guide                   https://app.pcbjam.com/docs/plugins/                       301
+/plugin-guide/api               https://app.pcbjam.com/docs/plugins/api-and-permissions/   301
+/plugin-guide/api/              https://app.pcbjam.com/docs/plugins/api-and-permissions/   301
+/plugin-guide/security          https://app.pcbjam.com/docs/plugins/architecture/          301
+/plugin-guide/security/         https://app.pcbjam.com/docs/plugins/architecture/          301
+/plugin-guide/download/external-symbol-import/sdk.d.ts  https://app.pcbjam.com/docs/plugins/download/sdk.d.ts  301
+/plugin-guide/*                 https://app.pcbjam.com/docs/plugins/:splat                 301
 # SPA fallback: client-side routes (/p/:project/:tool, /l/:lib/:tool, …) have no
 # static file, so serve index.html with 200. Cloudflare Pages matches real static
 # assets (/, /assets/*, favicon, …) FIRST, so this only catches app routes.

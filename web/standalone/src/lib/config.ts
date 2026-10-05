@@ -1,6 +1,11 @@
 export const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3050";
 
+// The public PCBJam docs (no trailing slash): the plugin developer guide lives
+// under /plugins/. Self-hosted builds link to the public site by default.
+export const PLUGIN_DOCS_URL =
+  import.meta.env.VITE_DOCS_URL ?? "https://app.pcbjam.com/docs";
+
 // Where the KiCad WASM artifacts are served from (no trailing slash).
 //   dev / same-origin: "/wasm" (flat layout, served from public/wasm by Vite).
 //   prod CDN:          VITE_WASM_ROOT, e.g. "https://cdn.pcbjam.com/wasm".

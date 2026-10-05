@@ -10,7 +10,7 @@ import { selectModule, selectItems } from './selection';
 import { geometryModule, openGeometry } from './board-geometry';
 import { createDocumentAPI } from './document-api';
 import { sessionIdentity } from '@/lib/session-identity';
-import { API_BASE_URL } from '@/lib/config';
+import { API_BASE_URL, PLUGIN_DOCS_URL } from '@/lib/config';
 import { downloadBytes } from '@/lib/download';
 import { verifyPluginAccount } from './verify-account';
 import { mountRemoteProvider, type PartRequest } from '@/remote-provider/host';
@@ -251,7 +251,7 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
         <button type="button" title="Close plugins" aria-label="Close plugins" onClick={onClose} className="rounded p-2 hover:bg-black/5 dark:hover:bg-white/10"><X size={17} /></button>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 text-xs">
-        <a href="/plugin-guide/" target="_blank" rel="noopener noreferrer" className="mb-4 flex w-fit items-center gap-1.5 rounded text-sky-600 hover:underline dark:text-sky-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4"><BookOpen size={14} /> Developer guide <ExternalLink size={12} aria-hidden="true" /></a>
+        <a href={`${PLUGIN_DOCS_URL}/plugins/`} target="_blank" rel="noopener noreferrer" className="mb-4 flex w-fit items-center gap-1.5 rounded text-sky-600 hover:underline dark:text-sky-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4"><BookOpen size={14} /> Developer guide <ExternalLink size={12} aria-hidden="true" /></a>
         {catalog.developer && <>
         <h3 className="text-sm font-semibold">Add a plugin</h3>
         <p className="mt-1 text-neutral-500 dark:text-white/60">Choose a built plugin ZIP or folder. Review its permissions before installing.</p>

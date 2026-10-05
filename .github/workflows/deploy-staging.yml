@@ -114,9 +114,11 @@ jobs:
             --cdn "$CDN_ORIGIN" --api-base "$API_ORIGIN" \
             --app-base "$APP_ORIGIN" --errors-env staging \
             --models-source registry --plugins
-          # Worker Static Assets uses not_found_handling=single-page-application.
-          # The generated _redirects file is for Pages and duplicates that fallback.
-          rm -f web/standalone/dist/_redirects
+          # Worker Static Assets uses not_found_handling=single-page-application,
+          # which duplicates the Pages SPA line in _redirects: drop that line,
+          # keep the /plugin-guide → docs redirects.
+          grep -v '^/\*  *\/index\.html  *200' web/standalone/dist/_redirects > web/standalone/dist/_redirects.tmp || true
+          mv web/standalone/dist/_redirects.tmp web/standalone/dist/_redirects
 
       - name: Verify immutable plugin runtime assets
         run: node scripts/deploy/verify-plugin-runtime.mjs web/standalone/src/generated/plugin-runtime.json web/standalone/dist
