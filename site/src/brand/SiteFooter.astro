@@ -1,0 +1,85 @@
+---
+// Footer: copyright, mono links, KiCad attribution. Brand component shared by
+// the landing page and the docs site (see tokens.css).
+
+export interface FooterLink {
+  href: string;
+  label: string;
+  external?: boolean;
+}
+
+interface Props {
+  links: FooterLink[];
+  /** Build provenance link (the landing page's GPL corresponding-source pointer). */
+  build?: { sha: string; url: string };
+}
+
+const { links, build } = Astro.props;
+const year = new Date().getFullYear();
+---
+
+<footer class="site-footer">
+  <div class="container rows">
+    <div class="row">
+      <span
+        >&copy; {year} PCBJam &middot; built by <a
+          href="https://emergence-engineering.com"
+          rel="noopener"
+          target="_blank">Emergence Engineering</a
+        ></span
+      >
+      <nav class="links" aria-label="Footer">
+        {
+          links.map((l) => (
+            <a href={l.href} rel={l.external ? 'noopener' : undefined} target={l.external ? '_blank' : undefined}>
+              {l.label}
+            </a>
+          ))
+        }
+        {build && <a class="build" href={build.url} rel="noopener" target="_blank">build {build.sha}</a>}
+      </nav>
+    </div>
+    <p class="attrib">
+      Built on the open-source <a href="https://www.kicad.org" rel="noopener" target="_blank">KiCad</a>
+      EDA suite. Not affiliated with or endorsed by the KiCad project.
+    </p>
+  </div>
+</footer>
+
+<style>
+  .site-footer {
+    border-top: 1px solid var(--border);
+    color: var(--fg-muted);
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+  }
+  .rows {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+    padding-block: 1.25rem 1.5rem;
+  }
+  .row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1.5rem;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem 1rem;
+  }
+  .site-footer a {
+    color: var(--fg-muted);
+  }
+  .site-footer a:hover {
+    color: var(--red);
+    text-decoration: none;
+  }
+  .attrib {
+    margin: 0;
+    max-width: 48rem;
+  }
+</style>

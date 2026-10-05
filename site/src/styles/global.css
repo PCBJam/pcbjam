@@ -3,64 +3,7 @@
    avoids base-reset clashes on the existing blog/legal pages. */
 @import "tailwindcss/theme.css" layer(theme);
 @import "tailwindcss/utilities.css" layer(utilities);
-
-:root {
-  color-scheme: light;
-
-  /* ── Ink neutrals (authoritative; existing names kept — the *roles* stayed,
-     the values flipped to the light theme) ────────────────────────────── */
-  --bg: #fdfdfb; /* page (near-white, slightly warm) */
-  --bg-soft: #f3f4f0; /* surface / soft band */
-  --fg: #12161f; /* ink text */
-  --fg-muted: #5c6470; /* muted text */
-  --fg-2: #3a414d; /* body copy on the landing page */
-  --border: #dde0e4; /* hairlines */
-
-  /* ── Copper layers: red = F.Cu, blue = B.Cu (KiCad's own layer colours) ── */
-  --red: #c83434; /* F.Cu: primary button, `##` heading marks */
-  --blue: #4d7fc4; /* B.Cu: marks, icons */
-  --accent: #2b5ba6; /* links (B.Cu darkened for contrast on white) */
-  --brand-600: var(--red); /* primary button */
-  --brand-700: #a12a2a; /* primary button hover / deep */
-
-  /* ── Signal (green / "live" presence) ───────────────────────────────── */
-  --signal-400: #0a9b62; /* online text/icons (dark-theme value 32d583 is illegible on white) */
-  --signal-600: #039855; /* online fill / success */
-
-  /* ── Presence palette (peer cursors) ────────────────────────────────── */
-  --presence-1: #818cf8;
-  --presence-2: #38bdf8;
-  --presence-3: #2dd4bf;
-  --presence-4: #4ade80;
-  --presence-5: #fbbf24;
-  --presence-6: #fb923c;
-  --presence-7: #fb7185;
-  --presence-8: #c084fc;
-
-  /* ── Geometry ───────────────────────────────────────────────────────── */
-  --max-width: 64rem;
-  /* Space between the header and every page's <h1>. Landing, blog and pricing
-     all use it, so switching between them keeps the title in the same spot. */
-  --page-top: 3rem;
-  /* Readable line length for running text inside the 64rem column. */
-  --measure: 44rem;
-  --radius-sm: 4px;
-  --radius: 6px; /* radius-md (existing) */
-  --radius-lg: 10px;
-
-  /* ── Motion ─────────────────────────────────────────────────────────── */
-  --dur-fast: 120ms;
-  --dur: 200ms;
-  --dur-slow: 360ms;
-  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
-
-  /* ── Type ───────────────────────────────────────────────────────────── */
-  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo,
-    Consolas, "Liberation Mono", monospace;
-
-  font-family: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto,
-    Helvetica, Arial, sans-serif;
-}
+@import "../brand/tokens.css";
 
 /* Map the :root tokens into Tailwind's namespaces with `inline` so utilities
    (bg-surface, text-accent, font-mono, rounded-lg…) emit `var(--token)` and
@@ -138,12 +81,6 @@ h3 {
   margin: 0 0 0.5em;
 }
 
-.container {
-  width: 100%;
-  max-width: var(--max-width);
-  margin-inline: auto;
-  padding-inline: 1.25rem;
-}
 
 main {
   flex: 1;
