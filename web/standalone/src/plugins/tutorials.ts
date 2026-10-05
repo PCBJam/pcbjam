@@ -62,13 +62,15 @@ export function tutorialUrl(started: StartedTutorial): string {
 
 /**
  * `?tutorial=<slug>`: the tutorial was just started here — open its panel once the plugin catalog
- * knows it, then drop the parameter (on a reload the remembered panel takes over).
+ * knows it, then drop the parameter (on a reload the remembered panel takes over). `enabled`
+ * follows the session's toggles, which arrive after the first render, so the slug is read up
+ * front and acted on once it turns true.
  */
 export function useTutorialFromUrl(catalog: PluginCatalog, onViewChange: (view: PluginView) => void, enabled: boolean): void {
-  const wanted = React.useRef(enabled ? new URLSearchParams(window.location.search).get("tutorial") : null);
+  const wanted = React.useRef(new URLSearchParams(window.location.search).get("tutorial"));
   React.useEffect(() => {
     const slug = wanted.current;
-    if (!slug || !catalog.loaded) return;
+    if (!enabled || !slug || !catalog.loaded) return;
     wanted.current = null;
     let live = true;
     void listTutorials()
@@ -86,5 +88,5 @@ export function useTutorialFromUrl(catalog: PluginCatalog, onViewChange: (view: 
     return () => {
       live = false;
     };
-  }, [catalog.loaded, catalog.plugins, onViewChange]);
+  }, [enabled, catalog.loaded, catalog.plugins, onViewChange]);
 }
