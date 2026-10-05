@@ -1,7 +1,7 @@
 ---
 title: Terms of Service
 description: The agreement governing your use of PCBJam.
-updated: 2026-07-16
+updated: 2026-10-05
 ---
 
 ## The short version (summary)
@@ -62,6 +62,8 @@ PCBJam is operated by:
 3.1 PCBJam lets you create, edit, store, render, check, compile, export, share, and collaborate on printed-circuit-board (PCB) designs in your web browser, using a build of the open-source KiCad EDA toolchain compiled to WebAssembly, together with our own hosting, storage, collaboration, and account features.
 
 3.2 **The Service is a design aid, not a guarantee of a working board.** Outputs such as design-rule-check (DRC) results, 3D previews, netlists, Gerbers, drill files, bills of materials, and other exports are generated automatically and **may contain errors or omissions**. **You are solely responsible for independently reviewing, verifying, and validating your designs and any files you generate before relying on them, sending them for manufacture, or using them in any product.** We are not your engineer and do not certify fitness, safety, regulatory compliance, or manufacturability of any design. (This does not exclude liability we may not exclude — see §15.)
+
+Project templates and manufacturer rule sets ("fab templates") are based on information manufacturers publish about their capabilities, read on the date shown with each template. Manufacturers change their capabilities without notice to us, and we may misread them. Fab templates are a starting point, not a confirmation that a design can be made: check your design and the manufacturer's current requirements before you order.
 
 3.3 **Beta and evolving features.** Parts of the Service may be labelled beta, preview, or experimental, or may change as the product develops. Subject to your consumer rights and §14 (changes to the Service), we may add, change, or remove features.
 
