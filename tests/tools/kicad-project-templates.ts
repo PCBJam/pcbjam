@@ -62,6 +62,7 @@ function drc(pcb: string): { code: number; stderr: string; report: DrcReport } {
 }
 
 const TRACK = '\t(segment (start 10 10) (end 20 10) (width 0.15) (layer "F.Cu") (net 0) (uuid "6f1b9a52-0000-4000-8000-000000000001"))\n';
+const VIA = '\t(via (at 30 30) (size 0.6) (drill 0.25) (layers "F.Cu" "B.Cu") (net 0) (uuid "6f1b9a52-0000-4000-8000-000000000002"))\n';
 
 const root = mkdtempSync(path.join(tmpdir(), "kicad-templates-"));
 try {
@@ -103,6 +104,19 @@ try {
             `${label}: min track ${minTrack} mm reaches DRC`,
             flagged === minTrack > 0.15,
             `track_width flagged=${flagged}, stderr=${withTrack.stderr.trim()}`,
+          );
+
+          // A 0.25 mm via hole: the conditional via-drill rule (or the board's
+          // smallest hole) must reach DRC exactly when its minimum is above it.
+          const resolved = resolveFabRules(profile, { tier, layers, copperOuter: defaultChoices(profile).copperOuter, smallest });
+          const minVia = Math.max(resolved.viaDrill?.mm ?? 0, resolved.holeMin?.mm ?? 0);
+          writeFileSync(pcb, readFileSync(pcb, "utf8").replace(/\)\n$/, `${VIA})\n`));
+          const withVia = drc(pcb);
+          const drillFlagged = (withVia.report.violations ?? []).some((v) => v.type === "drill_out_of_range");
+          check(
+            `${label}: via drill ${minVia} mm reaches DRC`,
+            drillFlagged === minVia > 0.25,
+            `drill_out_of_range flagged=${drillFlagged}, stderr=${withVia.stderr.trim()}`,
           );
         }
       }
