@@ -16,9 +16,11 @@ interface Props {
   /** The page path, for aria-current. */
   path: string;
   homeHref?: string;
+  /** The wordmark next to the jar. */
+  name?: string;
 }
 
-const { links, path, homeHref = '/' } = Astro.props;
+const { links, path, homeHref = '/', name = 'pcbjam' } = Astro.props;
 const isActive = (href: string, external?: boolean) =>
   external ? false : href === '/' ? path === '/' : path.startsWith(href);
 ---
@@ -28,8 +30,10 @@ const isActive = (href: string, external?: boolean) =>
   <div class="container bar">
     <a class="brand" href={homeHref}>
       <img src={mark.src} alt="" width="20" height="28" />
-      <span class="brand-name">pcbjam</span>
+      <span class="brand-name">{name}</span>
     </a>
+
+    <slot />
 
     <input type="checkbox" id="nav-toggle" class="nav-toggle sr-only" />
     <label class="hamburger" for="nav-toggle" aria-label="Toggle menu">
