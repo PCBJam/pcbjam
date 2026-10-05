@@ -30,10 +30,11 @@
     "3d:check:parity": "tsx tools/screenshots/compare-dirs.ts --old 3d-regression/baseline --new 3d-regression/output/webgl --out 3d-regression/output/diff/parity --floors 3d-regression/floors.json --level webgl-vs-native --label 3d-parity",
     "3d:review": "tsx tools/screenshots/compare-dirs.ts --old 3d-regression/baseline --new 3d-regression/output/webgl --out 3d-regression/output/diff/parity-review --floors 3d-regression/floors.json --level webgl-vs-native --label 3d-parity --artifacts always",
     "3d:test:webgl": "playwright test --project=wx-chromium e2e/3d-webgl.spec.ts",
-    "tools:contract": "tsx tools/cli-contract.ts",
+    "tools:contract": "tsx tools/cli-contract.ts && tsx tools/kicad-project-templates.ts",
     "ngspice:worker-batch": "tsx tools/ngspice-worker-batch-unit.ts",
     "findings-e:contract": "tsx tools/findings-e-source-contract.ts",
-    "findings-e:parity": "tsx tools/service-stub-parity.ts"
+    "findings-e:parity": "tsx tools/service-stub-parity.ts",
+    "tools:templates": "tsx tools/kicad-project-templates.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",
