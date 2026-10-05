@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DOCK_BELOW_WIDTH, TARGET_GAP, UNANCHORED_BOTTOM, VIEW_MARGIN, chooseSide, layoutCard, overlapArea, spotlightPath } from "./geometry";
+import { DOCK_BELOW_WIDTH, TARGET_GAP, UNANCHORED_BOTTOM, VIEW_MARGIN, chooseSide, layoutCard, overlapArea, placeMoved, spotlightPath } from "./geometry";
 
 const view = { w: 1280, h: 800 };
 const card = { w: 320, h: 140 };
@@ -120,5 +120,21 @@ describe("layoutCard with obstacles", () => {
     const bottomPanel = { x: 400, y: 500, width: 500, height: 300 };
     const l = layoutCard({ target: null, card, view, obstacles: [bottomPanel] });
     expect(overlapArea({ x: l.x, y: l.y, width: card.w, height: card.h }, bottomPanel)).toBe(0);
+  });
+});
+
+describe("placeMoved", () => {
+  it("keeps a dragged card where it was dropped, without an arrow", () => {
+    expect(placeMoved({ x: 200, y: 150 }, card, view)).toEqual({ x: 200, y: 150, side: null, docked: false, arrow: null });
+  });
+
+  it("keeps the whole card on screen", () => {
+    expect(placeMoved({ x: -40, y: 900 }, card, view)).toMatchObject({ x: VIEW_MARGIN, y: view.h - card.h - VIEW_MARGIN });
+    expect(placeMoved({ x: 5000, y: -5 }, card, view)).toMatchObject({ x: view.w - card.w - VIEW_MARGIN, y: VIEW_MARGIN });
+  });
+
+  it("re-clamps after the view shrank", () => {
+    const small = { w: 600, h: 400 };
+    expect(placeMoved({ x: 900, y: 600 }, card, small)).toMatchObject({ x: small.w - card.w - VIEW_MARGIN, y: small.h - card.h - VIEW_MARGIN });
   });
 });

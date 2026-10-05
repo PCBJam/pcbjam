@@ -181,6 +181,24 @@ export function layoutCard(opts: {
   return best.layout;
 }
 
+/**
+ * A card the user dragged out of the way: where they dropped it, kept wholly on screen (the
+ * view or the card may have changed size since), arrowless.
+ */
+export function placeMoved(
+  pos: { x: number; y: number },
+  card: { w: number; h: number },
+  view: { w: number; h: number },
+): CardLayout {
+  return {
+    x: clamp(pos.x, VIEW_MARGIN, view.w - card.w - VIEW_MARGIN),
+    y: clamp(pos.y, VIEW_MARGIN, view.h - card.h - VIEW_MARGIN),
+    side: null,
+    docked: false,
+    arrow: null,
+  };
+}
+
 /** Target rect grown by the spotlight padding. */
 export function spotlightRect(t: CssRect, pad: number = SPOT_PAD): CssRect {
   return { x: t.x - pad, y: t.y - pad, width: t.width + 2 * pad, height: t.height + 2 * pad };

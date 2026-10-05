@@ -1,15 +1,15 @@
 import * as React from "react";
-import { X } from "lucide-react";
+import { GripHorizontal, LocateFixed, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getOverlayState, overlay, pressButton, subscribeOverlay } from "./api";
 import { Celebration, trackPointer } from "./Celebration";
-import { layoutCard, spotlightPath, spotlightRect } from "./geometry";
+import { layoutCard, overlapArea, placeMoved, spotlightPath, spotlightRect } from "./geometry";
 import { installOverlayDemo } from "./demo";
 import { installEditorEvents, onEditorEvent, openDialogPtrs } from "./editor-events";
 import { dialogRects, insideAny } from "./obstacles";
 import { isCanvasWork, isTargetAction, pointInRect, stepUseKey } from "./target-use";
 import { startOverlayTracking } from "./tracker";
-import type { OverlayButton } from "./types";
+import type { OverlayButton, TargetState } from "./types";
 import { glCanvasRect, type CssRect } from "@/wasm/canvas-coords";
 
 /**
@@ -21,6 +21,10 @@ import { glCanvasRect, type CssRect } from "@/wasm/canvas-coords";
  *
  * Esc closes only when focus is inside the card: on the canvas Esc belongs
  * to KiCad (cancel the running tool), which tutorials ask users to press.
+ *
+ * A card in the way of the work is dragged aside by its grip and stays there,
+ * on later steps too, until the user puts it back, a new step's target lies
+ * under it, or the tour ends.
  */
 
 const BUTTON_LABEL: Record<OverlayButton, string> = { back: "Back", skip: "Skip", next: "Next" };
@@ -89,6 +93,8 @@ function useTargetUsed(key: string | null, target: string | undefined, rect: Css
     });
     // Capture phase: the engine's canvas handlers must not hide the click from us.
     const onDown = (ev: PointerEvent) => {
+      // The card's own buttons and grip (a card dragged over its target included) are not the target.
+      if ((ev.target as Element | null)?.closest?.('[data-testid="overlay-card"]')) return;
       const r = rectRef.current;
       if ((r && pointInRect(ev.clientX, ev.clientY, r)) || isSheetClick(ev)) mark();
     };
@@ -99,6 +105,34 @@ function useTargetUsed(key: string | null, target: string | undefined, rect: Css
     };
   }, [key, target]);
   return key !== null && usedKey === key;
+}
+
+/**
+ * Where the user dragged the card, or null while it sits by its target. The spot holds for
+ * later steps of the same owner's tour, except that a new step whose target lies under it
+ * gets the card back beside that target — decided once per step, when its target resolves,
+ * so a drop onto the target later in the step stays where the user put it.
+ */
+function useMovedCard(opts: {
+  owner: string | null;
+  stepKey: string | null;
+  targetState: TargetState;
+  targetRect: CssRect | null;
+  card: { w: number; h: number } | null;
+  view: { w: number; h: number };
+}) {
+  const [moved, setMoved] = React.useState<{ x: number; y: number } | null>(null);
+  const entered = React.useRef<string | null>(null);
+  React.useEffect(() => setMoved(null), [opts.owner]);
+  React.useEffect(() => {
+    const { stepKey, targetState, targetRect, card, view } = opts;
+    if (!stepKey || entered.current === stepKey || targetState === "pending") return;
+    entered.current = stepKey;
+    if (!moved || !card || !targetRect) return;
+    const at = placeMoved(moved, card, view);
+    if (overlapArea({ x: at.x, y: at.y, width: card.w, height: card.h }, spotlightRect(targetRect)) > 0) setMoved(null);
+  });
+  return [moved, setMoved] as const;
 }
 
 function useViewSize(): { w: number; h: number } {
@@ -116,6 +150,7 @@ export function OverlayHost({ tool }: { tool: string }) {
   const view = useViewSize();
   const cardRef = React.useRef<HTMLDivElement>(null);
   const [card, setCard] = React.useState<{ w: number; h: number } | null>(null);
+  const drag = React.useRef<{ pointer: number; dx: number; dy: number } | null>(null);
 
   React.useEffect(() => installEditorEvents(), []);
   React.useEffect(() => startOverlayTracking(), []);
@@ -130,6 +165,14 @@ export function OverlayHost({ tool }: { tool: string }) {
   const stepKey = step ? stepUseKey(step) : null;
   const obstacles = useObstacles(!!step && !paused);
   const used = useTargetUsed(stepKey, step?.target, targetState === "found" && target ? target.rect : null);
+  const [moved, setMoved] = useMovedCard({
+    owner: step?.owner ?? null,
+    stepKey,
+    targetState,
+    targetRect: targetState === "found" && target ? target.rect : null,
+    card,
+    view,
+  });
 
   // A celebrating step celebrates once each time it is reached (not on every re-show of the
   // same card). The effect outlives the step: a final "well done" card may end the tour at once.
@@ -161,7 +204,11 @@ export function OverlayHost({ tool }: { tool: string }) {
   if (!step || paused) return celebrationLayer;
 
   const anchored = targetState === "found" && target ? target : null;
-  const layout = card ? layoutCard({ target: anchored?.rect ?? null, card, view, placement: step.placement, obstacles: obstacles.rects }) : null;
+  const layout = card
+    ? moved
+      ? placeMoved(moved, card, view)
+      : layoutCard({ target: anchored?.rect ?? null, card, view, placement: step.placement, obstacles: obstacles.rects })
+    : null;
   // The dim and the ring point at where to click. Once the user used the target — or a dialog
   // it opened is where they work now — they would only grey out the work (target-use.ts). A
   // target inside an open dialog or tool frame (the simulator's Run button) is that work.
@@ -172,6 +219,9 @@ export function OverlayHost({ tool }: { tool: string }) {
   const ring = anchored && !used && (step.pulse || anchored.surface === "canvas") ? spotlightRect(anchored.rect, 4) : null;
   const text = targetState === "lost" && step.lostText ? step.lostText : step.text;
   const buttons = step.buttons ?? [];
+  const endDrag = (e: React.PointerEvent) => {
+    if (drag.current?.pointer === e.pointerId) drag.current = null;
+  };
 
   return (
     <>
@@ -199,6 +249,7 @@ export function OverlayHost({ tool }: { tool: string }) {
           data-target-state={targetState}
           data-side={layout?.side ?? ""}
           data-docked={layout?.docked ? "1" : "0"}
+          data-moved={moved ? "1" : "0"}
           onKeyDown={(e) => {
             // A card that cannot be closed leaves Escape to the editor (cards often say "press Esc").
             if (e.key === "Escape" && step.closable !== false) {
@@ -206,9 +257,9 @@ export function OverlayHost({ tool }: { tool: string }) {
               pressButton("close");
             }
           }}
-          // Only the buttons take the pointer: the card often sits over the sheet right where the
-          // user works (a part follows the mouse below it), so moves and clicks on its body reach
-          // the canvas underneath.
+          // Only the buttons and the grip take the pointer: the card often sits over the sheet right
+          // where the user works (a part follows the mouse below it), so moves and clicks on its body
+          // reach the canvas underneath.
           className={cn(
             "pointer-events-none absolute w-80 max-w-[calc(100vw-24px)] rounded-xl bg-white text-neutral-900 shadow-2xl ring-1 ring-inset ring-black/10 dark:bg-neutral-900 dark:text-white dark:ring-white/15",
             !layout && "invisible",
@@ -240,8 +291,61 @@ export function OverlayHost({ tool }: { tool: string }) {
                     )}
                   </div>
                 )}
-                {step.title && <div className="text-sm font-semibold">{step.title}</div>}
+                {step.title && (
+                  <div data-testid="overlay-title" className="text-sm font-semibold">
+                    {step.title}
+                  </div>
+                )}
               </div>
+              {/* The grip, not the whole header: a header-wide handle would swallow clicks in a strip
+                  right beside the target, where the work happens. */}
+              <button
+                type="button"
+                aria-label="Move the card"
+                title="Drag to move the card"
+                data-testid="overlay-grip"
+                onPointerDown={(e) => {
+                  if (e.button !== 0 || !layout) return;
+                  e.preventDefault();
+                  e.currentTarget.setPointerCapture(e.pointerId);
+                  drag.current = { pointer: e.pointerId, dx: e.clientX - layout.x, dy: e.clientY - layout.y };
+                }}
+                onPointerMove={(e) => {
+                  const d = drag.current;
+                  if (!d || d.pointer !== e.pointerId || !card) return;
+                  // No button held: a drag that lost its release (the card re-rendered away) is over.
+                  if ((e.buttons & 1) === 0) {
+                    drag.current = null;
+                    return;
+                  }
+                  const at = placeMoved({ x: e.clientX - d.dx, y: e.clientY - d.dy }, card, view);
+                  setMoved({ x: at.x, y: at.y });
+                }}
+                onPointerUp={endDrag}
+                onPointerCancel={endDrag}
+                onLostPointerCapture={endDrag}
+                className={cn(
+                  "pointer-events-auto cursor-grab touch-none rounded p-0.5 text-neutral-400 hover:bg-black/5 hover:text-neutral-900 active:cursor-grabbing dark:text-white/50 dark:hover:bg-white/10 dark:hover:text-white",
+                  !moved && step.closable === false && "-mr-1",
+                )}
+              >
+                <GripHorizontal className="h-4 w-4" />
+              </button>
+              {moved && (
+                <button
+                  type="button"
+                  aria-label="Put the card back"
+                  title="Put the card back"
+                  data-testid="overlay-put-back"
+                  onClick={() => setMoved(null)}
+                  className={cn(
+                    "pointer-events-auto rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white",
+                    step.closable === false && "-mr-1",
+                  )}
+                >
+                  <LocateFixed className="h-4 w-4" />
+                </button>
+              )}
               {step.closable !== false && (
                 <button
                   type="button"

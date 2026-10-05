@@ -263,7 +263,7 @@ test.describe('guide overlay (eeschema)', () => {
     await page.getByTestId('overlay-close').click();
   });
 
-  test('the card lets the work on the sheet through; only its buttons take the pointer', async ({ page }) => {
+  test('the card lets the work on the sheet through; only its buttons and its grip take the pointer', async ({ page }) => {
     await bootEeschema(page);
     await page.evaluate(() =>
       window.__pcbjamOverlay!.show({
@@ -284,7 +284,94 @@ test.describe('guide overlay (eeschema)', () => {
         return hit?.closest('[data-testid="overlay-card"]') ? (hit.closest('[data-testid]')?.getAttribute('data-testid') ?? 'card') : (hit?.tagName ?? null);
       }, testid);
     expect(await under('overlay-text')).toBe('CANVAS');
+    expect(await under('overlay-title')).toBe('CANVAS');
     expect(await under('overlay-close')).toBe('overlay-close');
+    expect(await under('overlay-grip')).toBe('overlay-grip');
+    await page.getByTestId('overlay-close').click();
+    await expect(card).toHaveCount(0);
+  });
+
+  test('the card is dragged aside by its grip, keeps that spot, and comes back for a target it would cover', async ({ page }) => {
+    await bootEeschema(page);
+    const show = (text: string) =>
+      page.evaluate(
+        (text) =>
+          window.__pcbjamOverlay!.show({
+            owner: 'e2e',
+            target: 'tool:eeschema.InteractiveDrawing.placeSymbol',
+            title: 'Out of the way',
+            text,
+            spotlight: true,
+          }),
+        text,
+      );
+    const card = page.getByTestId('overlay-card');
+    const shown = async (text: string) => {
+      await expect(page.getByTestId('overlay-text')).toHaveText(text);
+      await expect(card).toHaveAttribute('data-target-state', 'found', { timeout: 20000 });
+    };
+    // Drags the card by its grip so that its top-left corner lands at `to`.
+    const dragCardTo = async (to: { x: number; y: number }) => {
+      const c = (await box(page, 'overlay-card'))!;
+      const g = (await box(page, 'overlay-grip'))!;
+      const from = { x: g.x + g.width / 2, y: g.y + g.height / 2 };
+      await page.mouse.move(from.x, from.y);
+      await page.mouse.down();
+      await page.mouse.move(from.x + (to.x - c.x) / 2, from.y + (to.y - c.y) / 2, { steps: 4 });
+      await page.mouse.move(from.x + to.x - c.x, from.y + to.y - c.y, { steps: 4 });
+      await page.mouse.up();
+    };
+    const near = (a: Rect, b: { x: number; y: number }) => Math.abs(a.x - b.x) <= 1 && Math.abs(a.y - b.y) <= 1;
+    const overlaps = (a: Rect, b: Rect) =>
+      a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+
+    await show('One.');
+    await shown('One.');
+    await expect(page.getByTestId('overlay-arrow')).toHaveCount(1);
+    const beside = (await box(page, 'overlay-card'))!;
+    const tool = (await toolRect(page, TOOL))!;
+
+    // Dropped where the user wants it: arrowless, with a put-back button. The drag was the
+    // card's own — the sheet never saw it (a sheet click would have lifted the dim).
+    const aside = { x: Math.round(beside.x - 300), y: Math.round(beside.y + 120) };
+    await dragCardTo(aside);
+    await expect(card).toHaveAttribute('data-moved', '1');
+    expect(near((await box(page, 'overlay-card'))!, aside)).toBe(true);
+    await expect(page.getByTestId('overlay-arrow')).toHaveCount(0);
+    await expect(page.getByTestId('overlay-put-back')).toBeVisible();
+    await expect(page.getByTestId('overlay-spotlight')).toBeVisible();
+    await page.screenshot({ path: shotPath(page, 'overlay-08-card-moved.png') });
+
+    // The next step keeps the spot.
+    await show('Two.');
+    await shown('Two.');
+    await expect(card).toHaveAttribute('data-moved', '1');
+    expect(near((await box(page, 'overlay-card'))!, aside)).toBe(true);
+
+    // Dropped onto its own target, it stays there for the rest of this step… (The grip ends on the
+    // tool, so the pointer stays inside the page; the card stops at the view's edge.)
+    const card2 = (await box(page, 'overlay-card'))!;
+    const grip = (await box(page, 'overlay-grip'))!;
+    await dragCardTo({
+      x: tool.x + tool.width / 2 - (grip.x + grip.width / 2 - card2.x),
+      y: tool.y + tool.height / 2 - (grip.y + grip.height / 2 - card2.y),
+    });
+    expect(overlaps((await box(page, 'overlay-card'))!, tool)).toBe(true);
+    await expect(card).toHaveAttribute('data-moved', '1');
+    // …but a new step whose target it would hide brings it back beside the target.
+    await show('Three.');
+    await shown('Three.');
+    await expect(card).toHaveAttribute('data-moved', '0');
+    await expect(page.getByTestId('overlay-arrow')).toHaveCount(1);
+    expect(overlaps((await box(page, 'overlay-card'))!, tool)).toBe(false);
+
+    // The put-back button does the same on request.
+    await dragCardTo(aside);
+    await expect(card).toHaveAttribute('data-moved', '1');
+    await page.getByTestId('overlay-put-back').click();
+    await expect(card).toHaveAttribute('data-moved', '0');
+    await expect(page.getByTestId('overlay-arrow')).toHaveCount(1);
+    expect(near((await box(page, 'overlay-card'))!, beside)).toBe(true);
     await page.getByTestId('overlay-close').click();
     await expect(card).toHaveCount(0);
   });
