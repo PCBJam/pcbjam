@@ -1,9 +1,12 @@
 /// <reference types="vite/client" />
 
 interface ImportMetaEnv {
-  readonly VITE_PLUGIN_PLATFORM?: string;
   readonly VITE_PLUGIN_RUNTIME_BASE?: string;
-  /** Local-only Board Inspector plugin sidebar POC. */
+  /**
+   * Dev-only local plugin lab (Board Inspector, packages from the plugin
+   * development server). Hosted plugins need no flag: the backend's `plugins`
+   * toggle turns them on per session.
+   */
   readonly VITE_PLUGIN_POC?: string;
   readonly VITE_API_BASE_URL?: string;
   /** The public docs root, default https://app.pcbjam.com/docs. */

@@ -107,7 +107,17 @@ export type PluginView =
   | { kind: "manager" }
   | { kind: "plugin"; id: string }
   | null;
-export const hostedPlugins = import.meta.env.VITE_PLUGIN_PLATFORM === "1";
+/**
+ * The dev-only local plugin lab (`VITE_PLUGIN_POC=1` under `vite dev`):
+ * packages come from the plugin development server, not the backend.
+ */
+export const localPluginLab = import.meta.env.DEV && import.meta.env.VITE_PLUGIN_POC === "1";
+/**
+ * Hosted mode: plugins come from the backend's plugin platform. Whether they
+ * are on at all is the backend's `plugins` toggle for this session
+ * (`useSessionFeature("plugins")`), read at runtime — every build is the same.
+ */
+export const hostedPlugins = !localPluginLab;
 export const packageHost = async (): Promise<PackageHost> => {
   const url =
     (import.meta.env.VITE_PLUGIN_RUNTIME_BASE ?? "/plugin-runtime/") +

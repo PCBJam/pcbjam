@@ -2,25 +2,28 @@ import * as React from 'react';
 import { GraduationCap, Loader2 } from 'lucide-react';
 import { OverlayMenuSection, overlayRowClass, useCloseOverlayMenu } from '@/components/OverlayMenu';
 import { hostedPlugins, pluginKey } from './plugin-catalog';
+import { useSessionFeature } from '@/lib/session-identity';
 import type { PluginMenuProps } from './PluginMenu';
 import { listTutorials, startTutorial, tutorialUrl, TUTORIAL_LEVEL, type Tutorial } from './tutorials';
 
 /**
  * The Session menu's Tutorials (overlay-system 0005): a row starts the tutorial in a new project;
- * "Open here" runs it in this one when the account already has it. Hidden where tutorials are off.
+ * "Open here" runs it in this one when the account already has it. Hidden where the backend's
+ * `tutorials` toggle is off for this session (it requires `plugins`).
  */
 export function TutorialMenu({ tool, catalog, onViewChange }: PluginMenuProps) {
   const closeMenu = useCloseOverlayMenu();
   const [list, setList] = React.useState<Tutorial[] | null | undefined>(undefined);
   const [busy, setBusy] = React.useState('');
   const [error, setError] = React.useState('');
+  const on = useSessionFeature('tutorials') && hostedPlugins;
   React.useEffect(() => {
-    if (!hostedPlugins) return;
+    if (!on) return;
     let live = true;
     listTutorials().then(l => { if (live) setList(l); }, () => { if (live) setList(null); });
     return () => { live = false; };
-  }, []);
-  if (!hostedPlugins || list === null || (list && !list.length)) return null;
+  }, [on]);
+  if (!on || list === null || (list && !list.length)) return null;
   const start = async (tutorial: Tutorial) => {
     setBusy(tutorial.slug);
     setError('');

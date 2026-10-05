@@ -100,8 +100,8 @@ import { hasTunerBridge, PresenceTuner, type TunerModule } from "@/components/Pr
 import { hasLayersBridge, LayerPanel, type LayersModule } from "@/components/LayerPanel";
 import { ImportItemPanel } from "@/components/ImportItemPanel";
 import { hasImportBridge, type ImportModule } from "@/wasm/import-item";
-import { PluginSidebar } from "@/plugins/PluginManagerSidebar";
-import { hostedPlugins, usePluginCatalog, type PluginView } from "@/plugins/plugin-catalog";
+import { localPluginLab, usePluginCatalog, type PluginView } from "@/plugins/plugin-catalog";
+import { useSessionFeature } from "@/lib/session-identity";
 import { useTutorialFromUrl } from "@/plugins/tutorials";
 import { SelectionInspector } from "@/components/SelectionInspector";
 import { hasSheetsBridge, SheetPanel, type SheetsModule } from "@/components/SheetPanel";
@@ -160,6 +160,12 @@ import {
   LIB_KIND_FOR_TOOL,
   SHEETS_OPEN_KEY,
 } from "@/components/wasm-tool/ui-helpers";
+
+// The plugin sidebar (host adapters, document/placement bridges) loads only for
+// sessions whose `plugins` toggle is on.
+const PluginSidebar = React.lazy(() =>
+  import("@/plugins/PluginManagerSidebar").then((m) => ({ default: m.PluginSidebar })),
+);
 
 /**
  * Boots a KiCad tool directly in this React document (no iframe): builds the
@@ -501,11 +507,16 @@ export function WasmTool({
     setTourDoc(panelDoc);
     return () => setTourDoc(null);
   }, [panelDoc]);
-  const pluginPocEnabled = (import.meta.env.VITE_PLUGIN_PLATFORM === "1" || import.meta.env.DEV && import.meta.env.VITE_PLUGIN_POC === "1") && (tool === "pcbnew" || tool === "eeschema");
+  // Plugins and tutorials follow the backend's toggles for this session
+  // (`/api/me` features, seeded from the boot payload); the dev-only local
+  // lab turns plugins on without a backend.
+  const pluginsOn = useSessionFeature("plugins");
+  const tutorialsOn = useSessionFeature("tutorials");
+  const pluginPocEnabled = (pluginsOn || localPluginLab) && (tool === "pcbnew" || tool === "eeschema");
   const [pluginView, setPluginView] = React.useState<PluginView>(null);
   const pluginCatalog = usePluginCatalog(ready && pluginPocEnabled);
   // A tutorial just started here (Tutorials menu / web Tutorials page): open its panel.
-  useTutorialFromUrl(pluginCatalog, setPluginView, pluginPocEnabled && hostedPlugins);
+  useTutorialFromUrl(pluginCatalog, setPluginView, pluginPocEnabled && tutorialsOn && !localPluginLab);
   // Read-only sessions never bind presence, so the inspector's selection
   // store is fed by this minimal local handler (+ the C++ input hooks).
   const localSelectionRef = React.useRef<{ destroy(): void } | null>(null);
@@ -2211,8 +2222,10 @@ export function WasmTool({
       )}
 
       {ready && pluginPocEnabled && (
-        <PluginSidebar project={{id:projectId,scope:scopeId,name:slug}} projectFiles={files} doc={panelDoc} tool={tool} readOnly={!!readOnly} fileName={targetPath ?? "Current document"}
-          view={pluginView} onViewChange={setPluginView} catalog={pluginCatalog} />
+        <React.Suspense fallback={null}>
+          <PluginSidebar project={{id:projectId,scope:scopeId,name:slug}} projectFiles={files} doc={panelDoc} tool={tool} readOnly={!!readOnly} fileName={targetPath ?? "Current document"}
+            view={pluginView} onViewChange={setPluginView} catalog={pluginCatalog} />
+        </React.Suspense>
       )}
 
       {/* DEV: presence style tuner (VITE_PRESENCE_TUNER=1). */}

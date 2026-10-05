@@ -3,6 +3,7 @@ import {
   loadSessionIdentity,
   seedSessionIdentity,
   resetSessionIdentityForTest,
+  sessionFeature,
   sessionIdentity,
 } from "./session-identity";
 
@@ -83,5 +84,26 @@ describe("loadSessionIdentity", () => {
     });
     expect(sessionIdentity()?.slug).toBe("boots");
     expect(f).not.toHaveBeenCalled();
+  });
+});
+
+describe("sessionFeature", () => {
+  it("reads the backend's per-session toggles; anything else is off", async () => {
+    mockMe({ user: null, features: { plugins: true, tutorials: false, git: "yes" } });
+    expect(sessionFeature("plugins")).toBe(false);
+    await loadSessionIdentity("http://api");
+    expect(sessionFeature("plugins")).toBe(true);
+    expect(sessionFeature("tutorials")).toBe(false);
+    expect(sessionFeature("git")).toBe(false);
+    expect(sessionFeature("unknown")).toBe(false);
+  });
+
+  it("is seeded from the boot payload; backends without /api/me leave it off", async () => {
+    seedSessionIdentity({ user: { slug: "carol" }, features: { tutorials: true } });
+    expect(sessionFeature("tutorials")).toBe(true);
+    resetSessionIdentityForTest();
+    mockMe(null, false);
+    await loadSessionIdentity("http://api");
+    expect(sessionFeature("plugins")).toBe(false);
   });
 });
