@@ -1,7 +1,9 @@
+import type { Page } from '@playwright/test';
 import { test, expect } from './fixtures';
 import { PNG } from 'pngjs';
 import {
-    clickByLabel, findAllGridCells, findByTooltip, findGridCellByLabel, stableShot, waitForEditorReady,
+    clickByLabel, findAllByLabel, findAllGridCells, findByTooltip, findGridCellByLabel, stableShot,
+    waitForEditorReady,
 } from '../e2e/utils/element-tracker';
 import { loadRectifier, openSimulator, runSimulation, waitForRunToolEnabled } from './utils/sim-harness';
 
@@ -33,6 +35,17 @@ function distinctColors(png: PNG): number {
         }
     }
     return colors.size;
+}
+
+/** A signal's Plot tick in the simulator's signals grid (clicking it shows/hides the trace). */
+async function plotTick(page: Page, signal: string) {
+    const name = await findGridCellByLabel(page, signal);
+    expect(name, `${signal} in the signals grid`).not.toBeNull();
+    const row = /^Row (\d+),/.exec(name!.tooltip)![1];
+    const cells = await findAllGridCells(page);
+    const tick = cells.find((c) => c.parentId === name!.parentId && c.tooltip === `Row ${row}, Col 1`);
+    expect(tick, `${signal}'s Plot cell`).toBeTruthy();
+    return tick!;
 }
 
 test.describe('eeschema simulator', () => {
@@ -161,20 +174,11 @@ test.describe('eeschema simulator', () => {
         expect([...finished[0].traces!].sort()).toEqual(['V(/rect_out)', 'V(/signal_in)']);
 
         // E3: hiding a signal (its Plot tick in the signals grid) reports the plot's new traces.
-        const plotTick = async (signal: string) => {
-            const name = await findGridCellByLabel(page, signal);
-            expect(name, `${signal} in the signals grid`).not.toBeNull();
-            const row = /^Row (\d+),/.exec(name!.tooltip)![1];
-            const cells = await findAllGridCells(page);
-            const tick = cells.find((c) => c.parentId === name!.parentId && c.tooltip === `Row ${row}, Col 1`);
-            expect(tick, `${signal}'s Plot cell`).toBeTruthy();
-            return tick!;
-        };
         const lastPlot = async () => (await events('simPlotChanged')).at(-1)?.traces ?? null;
-        let tick = await plotTick('V(/signal_in)');
+        let tick = await plotTick(page, 'V(/signal_in)');
         await page.mouse.click(tick.centerX, tick.centerY);
         await expect.poll(lastPlot, { message: 'hiding V(/signal_in) is reported' }).toEqual(['V(/rect_out)']);
-        tick = await plotTick('V(/signal_in)');
+        tick = await plotTick(page, 'V(/signal_in)');
         await page.mouse.click(tick.centerX, tick.centerY);
         await expect.poll(async () => [...((await lastPlot()) ?? [])].sort(), { message: 'showing it again is reported' })
             .toEqual(['V(/rect_out)', 'V(/signal_in)']);
@@ -194,6 +198,63 @@ test.describe('eeschema simulator', () => {
 
         const all = [...testLogger.consoleLogs, ...testLogger.errors];
         expect(all.filter((l) => l.includes('Aborted(')), 'no aborts').toHaveLength(0);
+    });
+
+    // The workbook (.wbk: analysis tabs, plotted traces, cursors) is written straight to MEMFS by
+    // KiCad, so without the save hook the web app never persists it and a reload loses it while
+    // the project still points at it. Both save paths must fire window.kicadCollab.onSave AFTER
+    // the bytes hit MEMFS: the toolbar's Save Workbook and Save in the close prompt.
+    test('saving the workbook hands the .wbk to the save hook', async ({ page, testLogger }) => {
+        type Saved = { path: string; text: string };
+        const wbk = '/home/kicad/documents/rectifier/rectifier.wbk';
+        await page.goto('/kicad/eeschema.html');
+        await waitForEditorReady(page);
+        await loadRectifier(page);
+        // The collector reads the file back the moment the hook fires, as the save router does.
+        await page.evaluate(() => {
+            const w = window as any;
+            w.__saved = [];
+            w.kicadCollab = { ...w.kicadCollab, onSave: (p: string) =>
+                w.__saved.push({ path: p, text: w.FS.readFile(p, { encoding: 'utf8' }) }) };
+        });
+        const saved = () => page.evaluate(() => (window as any).__saved as Saved[]);
+        const tracesOf = (s: Saved) => (JSON.parse(s.text).tabs[0].traces as Array<{ signal: string }>)
+            .map((t) => t.signal).sort();
+
+        const simWin = await openSimulator(page);
+        await waitForRunToolEnabled(page);
+        // The simulator has read the fixture's workbook; clobber it so only a real save can
+        // leave a parseable workbook behind.
+        await page.evaluate((p) => (window as any).FS.writeFile(p, 'stale'), wbk);
+
+        // Toolbar Save Workbook: the project already names rectifier.wbk, so no file dialog.
+        const saveTool = await findByTooltip(page, 'Save Workbook', { elementType: 'tool' });
+        expect(saveTool, 'Save Workbook drawn').not.toBeNull();
+        await page.mouse.click(saveTool!.centerX, saveTool!.centerY);
+        await expect.poll(async () => (await saved()).map((s) => s.path),
+            { message: 'the toolbar save reports the workbook' }).toEqual([wbk]);
+        expect(tracesOf((await saved())[0])).toEqual(['V(/rect_out)', 'V(/signal_in)']);
+
+        // Hide a trace (marks the workbook modified), then close: the prompt's Save writes it.
+        await runSimulation(page);
+        const tick = await plotTick(page, 'V(/signal_in)');
+        await page.mouse.click(tick.centerX, tick.centerY);
+        await page.locator(`#${simWin} .window-titlebar-close`).click();
+        await expect.poll(async () => {
+            await page.mouse.move(4, 4);
+            await page.mouse.move(8, 8);
+            if (await page.locator(`#${simWin}`).count() === 0) return true;
+            const save = (await findAllByLabel(page, 'Save')).find((e) => /^&?Save$/.test(e.label));
+            if (save) await page.mouse.click(save.centerX, save.centerY);
+            return false;
+        }, { message: 'the simulator closes through the Save prompt', timeout: 60000 }).toBe(true);
+
+        const all = await saved();
+        expect(all.map((s) => s.path), 'the close prompt reports the workbook').toEqual([wbk, wbk]);
+        expect(tracesOf(all[1]), 'the closing save wrote the current plot').toEqual(['V(/rect_out)']);
+
+        const logs = [...testLogger.consoleLogs, ...testLogger.errors];
+        expect(logs.filter((l) => l.includes('Aborted(')), 'no aborts').toHaveLength(0);
     });
 
     test('a second run after the first succeeds (engine reset path)', async ({ page, testLogger }) => {
