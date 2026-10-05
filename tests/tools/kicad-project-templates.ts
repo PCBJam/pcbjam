@@ -23,6 +23,7 @@ import {
   BUILTIN_FAB_PROFILES,
   defaultChoices,
   generateKicadProject,
+  profileHasMinimums,
   resolveFabRules,
 } from "../../web/pcbjam-shared/src/index.js";
 
@@ -67,40 +68,43 @@ try {
   for (const profile of BUILTIN_FAB_PROFILES) {
     for (const tier of Object.keys(profile.tiers)) {
       for (const layers of profile.options.layers) {
-        const label = `${profile.id} ${tier} ${layers}L`;
-        const dir = path.join(root, `${profile.id}-${tier}-${layers}`);
-        mkdirSync(dir, { recursive: true });
-        const files = generateKicadProject(
-          profile,
-          { ...defaultChoices(profile), tier, layers, stackup: undefined },
-          { name: "board", dir: "", date: "2026-10-05" },
-        );
-        for (const f of files) writeFileSync(path.join(dir, f.path), f.text);
-        const sch = path.join(dir, "board.kicad_sch");
-        const pcb = path.join(dir, "board.kicad_pcb");
-        const dru = path.join(dir, "board.kicad_dru");
+        // smallest=true only where the profile publishes absolute minimums.
+        for (const smallest of profileHasMinimums(profile) ? [false, true] : [false]) {
+          const label = `${profile.id} ${tier} ${layers}L${smallest ? " smallest" : ""}`;
+          const dir = path.join(root, `${profile.id}-${tier}-${layers}${smallest ? "-smallest" : ""}`);
+          mkdirSync(dir, { recursive: true });
+          const files = generateKicadProject(
+            profile,
+            { ...defaultChoices(profile), tier, layers, stackup: undefined, smallest },
+            { name: "board", dir: "", date: "2026-10-05" },
+          );
+          for (const f of files) writeFileSync(path.join(dir, f.path), f.text);
+          const sch = path.join(dir, "board.kicad_sch");
+          const pcb = path.join(dir, "board.kicad_pcb");
+          const dru = path.join(dir, "board.kicad_dru");
 
-        for (const file of [sch, pcb, ...(existsSync(dru) ? [dru] : [])]) {
-          const r = run(["--lint", file]);
-          check(`${label}: lint ${path.basename(file)}`, r.code === 0, r.stderr.trim());
+          for (const file of [sch, pcb, ...(existsSync(dru) ? [dru] : [])]) {
+            const r = run(["--lint", file]);
+            check(`${label}: lint ${path.basename(file)}`, r.code === 0, r.stderr.trim());
+          }
+
+          const empty = drc(pcb);
+          check(`${label}: rules load`, !/custom DRC rules failed to load/.test(empty.stderr), empty.stderr.trim());
+          // The only expected error: a new board has no outline yet.
+          const errors = (empty.report.violations ?? []).filter((v) => v.severity === "error" && v.type !== "invalid_outline");
+          check(`${label}: empty board has no DRC errors besides the missing outline`, errors.length === 0, errors.map((v) => v.type).join(", "));
+
+          // A 0.15 mm track: must fail exactly when the template's minimum is above it.
+          const minTrack = resolveFabRules(profile, { tier, layers, copperOuter: defaultChoices(profile).copperOuter, smallest }).trackWidth?.mm ?? 0;
+          writeFileSync(pcb, readFileSync(pcb, "utf8").replace(/\)\n$/, `${TRACK})\n`));
+          const withTrack = drc(pcb);
+          const flagged = (withTrack.report.violations ?? []).some((v) => v.type === "track_width");
+          check(
+            `${label}: min track ${minTrack} mm reaches DRC`,
+            flagged === minTrack > 0.15,
+            `track_width flagged=${flagged}, stderr=${withTrack.stderr.trim()}`,
+          );
         }
-
-        const empty = drc(pcb);
-        check(`${label}: rules load`, !/custom DRC rules failed to load/.test(empty.stderr), empty.stderr.trim());
-        // The only expected error: a new board has no outline yet.
-        const errors = (empty.report.violations ?? []).filter((v) => v.severity === "error" && v.type !== "invalid_outline");
-        check(`${label}: empty board has no DRC errors besides the missing outline`, errors.length === 0, errors.map((v) => v.type).join(", "));
-
-        // A 0.15 mm track: must fail exactly when the template's minimum is above it.
-        const minTrack = resolveFabRules(profile, { tier, layers, copperOuter: defaultChoices(profile).copperOuter }).trackWidth?.mm ?? 0;
-        writeFileSync(pcb, readFileSync(pcb, "utf8").replace(/\)\n$/, `${TRACK})\n`));
-        const withTrack = drc(pcb);
-        const flagged = (withTrack.report.violations ?? []).some((v) => v.type === "track_width");
-        check(
-          `${label}: min track ${minTrack} mm reaches DRC`,
-          flagged === minTrack > 0.15,
-          `track_width flagged=${flagged}, stderr=${withTrack.stderr.trim()}`,
-        );
       }
     }
   }
