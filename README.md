@@ -64,8 +64,9 @@ kicad-wasm/
 
 ## Feature Branches
 
-Curated design docs and research notes for each feature live in
-[`docs/features/<branch-name>/`](docs/features/) (committed).
+Design docs and research notes are not kept in this repo: they moved to
+pcbjam-private (`docs/`) on 2026-10-06. Their history up to then is here.
+Code comments that cite `docs/features/<name>/…` refer to that tree.
 
 `./scripts/create-feature-patches.sh [branch-name]` generates per-branch patches
 (`root.patch`, `kicad.patch`, `wxwidgets.patch`) into a local `features/<branch-name>/`
@@ -89,8 +90,6 @@ cd tests && npm install && npm run test:kicad
 ```
 
 Output: `output/pcbnew.js`, `output/pcbnew.wasm`
-
-See [docs/build.md](docs/build.md) for detailed build documentation.
 
 #### Creating an isolated worktree (with submodule branches)
 
@@ -219,11 +218,10 @@ See [tests/tools/screenshots/README.md](tests/tools/screenshots/README.md).
 
 ## Documentation
 
-See **[docs/README.md](docs/README.md)** for the full documentation map. Highlights:
+The design docs, build notes and debugging guides moved to pcbjam-private
+(`docs/`) on 2026-10-06. What stays next to the code:
 
-- [Build System](docs/build.md) - Docker build details
 - [Docker README](docker/README.md) - Container setup
-- [Debugging Guide](docs/debugging/DEBUG.md) - Asyncify/WASM debugging
 - [Tests README](tests/README.md) - Test infrastructure
 
 ## License

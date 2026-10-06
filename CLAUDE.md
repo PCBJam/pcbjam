@@ -26,7 +26,7 @@ It's okay to add temporary logging that will be removed for debugging.
 
 Don't try to guess what's broken , use debug tools / symbols, supported by the build scripts
 
-Feature docs/patches are in features/<branch-name>/. Run scripts/create-feature-patches.sh to save patches for root, kicad, wxwidgets submodules.
+Run scripts/create-feature-patches.sh to save patches for root, kicad, wxwidgets submodules into features/<branch-name>/ (gitignored, local only). Design docs are not in this repo: they live in pcbjam-private's docs/ (comments citing docs/features/<name>/… point there).
 
 The landing page / website (www.pcbjam.com, with the blog) is no longer in this
 repo: it moved to pcbjam-private (`apps/site`) on 2026-10-06, with its deploy
