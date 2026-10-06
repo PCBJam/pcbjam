@@ -9,7 +9,7 @@
  */
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -83,4 +83,23 @@ export async function moduleDir(tool: Tool): Promise<string> {
     await rename(tmp, join(dir, name));
   }
   return dir;
+}
+
+/**
+ * Download (and verify) every pinned module, optionally copying them flat
+ * into `to` — how an image pre-fills its WebAssembly (`pcbjam-tools fetch
+ * --to /opt/pcbjam/wasm`, then KICAD_TOOLS_WASM_DIR points there).
+ */
+export async function fetchAll(to?: string): Promise<Record<string, string>> {
+  const manifest = await readManifest();
+  const tools = Object.keys(manifest.tools) as Tool[];
+  if (tools.length === 0) throw new Error("this package pins no builds (a dev checkout?) — nothing to fetch");
+  if (to) await mkdir(to, { recursive: true });
+  const out: Record<string, string> = {};
+  for (const tool of tools) {
+    const dir = await moduleDir(tool);
+    out[tool] = manifest.tools[tool]?.ver ?? "";
+    if (to) for (const name of Object.keys(manifest.tools[tool]?.files ?? {})) await copyFile(join(dir, name), join(to, name));
+  }
+  return out;
 }

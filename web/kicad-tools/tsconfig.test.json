@@ -1,5 +1,17 @@
 {
   "extends": "./tsconfig.json",
-  "compilerOptions": { "noEmit": true, "rootDir": "." },
-  "include": ["src", "test", "vitest.config.ts"]
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": ".",
+    "lib": [
+      "ES2022",
+      "DOM"
+    ]
+  },
+  "include": [
+    "src",
+    "test",
+    "vitest.config.ts",
+    "vitest.gates.config.ts"
+  ]
 }

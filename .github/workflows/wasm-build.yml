@@ -408,19 +408,18 @@ jobs:
         working-directory: web
         run: pnpm --filter @pcbjam/standalone test
 
-      # kicad_tools gates (tasks-runner 0001 R2): the corpus lint (fixtures +
-      # shared-codec round-trips — the wrapInBoardEnvelope-class E3 gate,
-      # kicad-validity 0001 §5) and the CLI contract the backend job runner
-      # keys off (exit codes, resave semantics). Both scripts skip when the
-      # artifact is absent, but "all" builds kicad_tools now, so here they
-      # bite. Needs tests npm deps (above) + web workspace deps (the corpus
-      # lint imports the shared codec).
-      - name: kicad_tools corpus lint + CLI contract
+      # kicad_tools gates (tasks-runner 0001 R2), in @pcbjam/kicad-tools and
+      # run through its pcbjam-tools driver like production: the corpus lint
+      # (fixtures + shared-codec round-trips — the wrapInBoardEnvelope-class
+      # E3 gate, kicad-validity 0001 §5), the CLI contract the backend keys
+      # off (exit codes, resave semantics) and the new-project templates.
+      # "all" builds kicad_tools, so a missing build fails here.
+      - name: kicad_tools gates
         if: inputs.run_tests
-        working-directory: tests
-        run: |
-          npm run corpus:lint
-          npm run tools:contract
+        working-directory: web
+        env:
+          PCBJAM_REQUIRE_KICAD_TOOLS: "1"
+        run: pnpm --filter @pcbjam/kicad-tools test:gates
 
       # CDN worker unit tests (findings R-3: range-less GET must be 200, never 206).
       - name: cdn worker unit tests

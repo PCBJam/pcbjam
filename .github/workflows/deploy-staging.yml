@@ -103,6 +103,15 @@ jobs:
           --src output --driver r2 --bucket "$BUCKET" --remote
           --compress br --quality 11
 
+      # The pcbjam-tools CLI for this commit (mcp 0005 C4), pinned to the wasm
+      # just published: the PCBJam staging runner image installs it via
+      # tools/kicad-tools/by-sha/<commit>.json on the staging CDN.
+      - name: Publish the pcbjam-tools package to staging R2
+        run: >
+          node scripts/deploy/publish-kicad-tools.mjs --driver r2 --bucket "$BUCKET" --remote
+          --cdn "$CDN_ORIGIN" --sha "$GITHUB_SHA"
+          --version "$(node -p "require('./web/kicad-tools/package.json').version")-staging.${GITHUB_SHA::12}"
+
       - name: Deploy staging CDN Worker
         run: npx --yes wrangler@4.99.0 deploy --config workers/cdn/wrangler.staging.jsonc
 

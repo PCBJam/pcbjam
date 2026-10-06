@@ -24,12 +24,14 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.test.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:gates": "tsc -p tsconfig.json && vitest run --config vitest.gates.config.ts"
   },
   "optionalDependencies": {
     "sharp": "^0.34.5"
   },
   "devDependencies": {
+    "@pcbjam/shared": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.9.3",
     "vitest": "^3.0.0"

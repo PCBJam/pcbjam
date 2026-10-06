@@ -128,10 +128,12 @@ jobs:
       - name: Publish the pcbjam-tools package to CDN
         # @pcbjam/kicad-tools (mcp 0004 §11.5): pinned to the kicad_tools +
         # occ_service versions just published; tools/kicad-tools/latest.json
-        # is what the MCP's get_local_cli hands to agents. A version already
-        # published with the same bytes is a no-op; different bytes fail (bump
-        # web/kicad-tools/package.json).
-        run: node scripts/deploy/publish-kicad-tools.mjs --driver r2 --bucket "$BUCKET" --remote
+        # is what the MCP's get_local_cli hands to agents; by-sha/<commit>.json
+        # is how the PCBJam runner image finds the build for its pcbjam pin.
+        # The package version is the release tag.
+        run: >
+          node scripts/deploy/publish-kicad-tools.mjs --driver r2 --bucket "$BUCKET" --remote
+          --version "${{ needs.meta.outputs.tag }}" --sha "${{ github.sha }}"
 
   # 3) Build the standalone pinned to this tag's manifest + libs, deploy to Pages.
   deploy-demo:

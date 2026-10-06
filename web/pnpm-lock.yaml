@@ -45,6 +45,9 @@ importers:
 
   kicad-tools:
     devDependencies:
+      '@pcbjam/shared':
+        specifier: workspace:*
+        version: link:../pcbjam-shared
       '@types/node':
         specifier: ^22.0.0
         version: 22.19.19
