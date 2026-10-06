@@ -50,7 +50,7 @@
     // Print-dialog test harness for gerbview. Identical boot to gerbview.html,
     // but it ALSO auto-opens the tiny_tapeout demo board (so the Print dialog has
     // layers to list) and seeds config to suppress the first-run wizard — same
-    // approach as the blog demo (site/public/gerber-demo/boot.js).
+    // approach as the landing page's gerber demo (boot.js, now in pcbjam-private).
     var mainWindow = document.getElementById('main-window');
     var statusText = document.getElementById('status-text');
     var progressBar = document.getElementById('progress-bar');
@@ -125,7 +125,7 @@
       });
 
     // Prefetch the demo board layers (served from ./board/, copied from
-    // site/public/gerber-demo/board) in parallel with the wasm download.
+    // tests/fixtures/gerber-demo-board) in parallel with the wasm download.
     var boardData = null;
     var boardPromise = Promise.all(
       BOARD_FILES.map(function(name) {

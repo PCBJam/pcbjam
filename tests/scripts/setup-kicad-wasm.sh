@@ -119,10 +119,11 @@ else
 fi
 
 # Demo board for the gerbview print test (tests/apps/kicad/gerbview-print.html).
-# Provisioned (not committed; gitignored) from the canonical demo board, same
-# pattern as the wasm artifacts above. gerbview-print.html fetches the subset of
-# layers it needs from ./board/, so copying the whole set is harmless.
-BOARD_SRC="$PROJECT_ROOT/site/public/gerber-demo/board"
+# Provisioned (not committed; gitignored) from tests/fixtures/gerber-demo-board,
+# a copy of the www.pcbjam.com Gerber demo's board, same pattern as the wasm
+# artifacts above. gerbview-print.html fetches the subset of layers it needs
+# from ./board/, so copying the whole set is harmless.
+BOARD_SRC="$PROJECT_ROOT/tests/fixtures/gerber-demo-board"
 if [ -d "$BOARD_SRC" ]; then
     echo "Provisioning gerbview demo board..."
     mkdir -p "$KICAD_TEST/board"

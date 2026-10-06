@@ -59,7 +59,7 @@ wxwidgets-clean/
 /tests/apps/kicad/*.js
 /tests/apps/kicad/*.wasm
 # Demo board for the gerbview print test — provisioned at setup from
-# site/public/gerber-demo/board (see tests/scripts/setup-kicad-wasm.sh), not committed.
+# tests/fixtures/gerber-demo-board (see tests/scripts/setup-kicad-wasm.sh), not committed.
 /tests/apps/kicad/board/
 
 # DOM-port test bundles (mirrored + built by scripts/build-wasm-test.sh --dom)

@@ -226,23 +226,11 @@ See **[docs/README.md](docs/README.md)** for the full documentation map. Highlig
 - [Debugging Guide](docs/debugging/DEBUG.md) - Asyncify/WASM debugging
 - [Tests README](tests/README.md) - Test infrastructure
 
-## Landing page / website
-
-The marketing site and landing page live in [`site/`](site/) (Astro), deployed as
-static assets to Cloudflare R2.
-
-**On every release, bump the build SHA.** `site/src/components/Footer.astro` has a
-hardcoded `BUILD_SHA` constant that is shown in the footer and links to the
-corresponding commit. Because the main-repo commit pins the KiCad and wxWidgets
-submodule revisions implicitly, this is our GPLv3 **corresponding-source** pointer
-(surfaced on `/licenses`). The site is static, so nothing sets it automatically —
-update `BUILD_SHA` by hand to the deployed `pcbjam` commit each time you release.
-
 ## License
 
 KiCad is GPL-3.0. This project follows the same license.
 
 The site combines KiCad (GPLv3) with the wxWidgets fork; the wxWidgets WebAssembly
 port files are LGPL v2 (without the wxWindows binary exception). See the
-`/licenses` page (`site/src/content/legal/licenses.md`) for the full breakdown and
+[`/licenses`](https://www.pcbjam.com/licenses) page for the full breakdown and
 the corresponding-source offer.
