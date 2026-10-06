@@ -1,4 +1,3 @@
-// @ts-check
 /**
  * Schematic and board "shots" (mcp 0004 §11.2): KiCad's own plots, made to
  * look at — cropped to an area, on the editor's background, as PNG. The
@@ -7,30 +6,31 @@
  * crop is a viewBox.
  */
 
-/** Board layer presets (draw order: later on top). */
-export const BOARD_PRESETS = {
+/** Board layer presets (draw order: later on top); null = every enabled layer, KiCad's plot order. */
+export const BOARD_PRESETS: Record<"top" | "bottom" | "copper" | "editor", string[] | null> = {
   top: ["Edge.Cuts", "F.Fab", "F.Cu", "F.SilkS"],
   bottom: ["Edge.Cuts", "B.Fab", "B.Cu", "B.SilkS"],
   copper: ["Edge.Cuts", "B.Cu", "In4.Cu", "In3.Cu", "In2.Cu", "In1.Cu", "F.Cu"],
-  /** null = every enabled layer, KiCad's plot order. */
   editor: null,
 };
+export type BoardPreset = keyof typeof BOARD_PRESETS;
 
 /** Editor backgrounds (KiCad default themes). */
 export const BACKGROUND = { board: "#001023", schematic: "#F5F4EF" };
 
-/** @typedef {{ cx: number, cy: number, halfW: number, halfH: number }} CropMm */
+export interface CropMm {
+  cx: number;
+  cy: number;
+  halfW: number;
+  halfH: number;
+}
 
-/**
- * Crop (page mm) and put a background behind a KiCad plot SVG.
- * @param {string} svg
- * @param {{ crop?: CropMm | null, background?: string | null }} opts
- */
-export function prepareSvg(svg, opts) {
+/** Crop (page mm) and put a background behind a KiCad plot SVG. */
+export function prepareSvg(svg: string, opts: { crop?: CropMm | null; background?: string | null }): string {
   let out = svg;
   const vb = /viewBox="([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)"/.exec(out);
   if (!vb) throw new Error("not a KiCad plot: no viewBox");
-  let [x, y, w, h] = vb.slice(1).map(Number);
+  let [x, y, w, h] = vb.slice(1).map(Number) as [number, number, number, number];
   if (opts.crop) {
     const c = opts.crop;
     [x, y, w, h] = [c.cx - c.halfW, c.cy - c.halfH, 2 * c.halfW, 2 * c.halfH];
@@ -53,12 +53,9 @@ export function prepareSvg(svg, opts) {
 /**
  * SVG → PNG of `widthPx` (keeps the aspect). sharp is an optional
  * dependency: without it only SVG output is available.
- * @param {string} svg
- * @param {number} widthPx
- * @returns {Promise<Uint8Array>}
  */
-export async function rasterize(svg, widthPx) {
-  let sharp;
+export async function rasterize(svg: string, widthPx: number): Promise<Uint8Array> {
+  let sharp: typeof import("sharp");
   try {
     sharp = (await import("sharp")).default;
   } catch {
@@ -72,16 +69,22 @@ export async function rasterize(svg, widthPx) {
   return new Uint8Array(png);
 }
 
-/**
- * Parse "cx,cy,halfW,halfH" (mm).
- * @param {string | undefined} raw
- * @returns {CropMm | null}
- */
-export function parseCrop(raw) {
+/** Parse "cx,cy,halfW,halfH" (mm). */
+export function parseCrop(raw: string | undefined): CropMm | null {
   if (!raw) return null;
   const n = raw.split(",").map(Number);
-  if (n.length !== 4 || n.some((v) => !Number.isFinite(v)) || n[2] <= 0 || n[3] <= 0) {
+  const [cx, cy, halfW, halfH] = n;
+  if (
+    n.length !== 4 ||
+    cx === undefined ||
+    cy === undefined ||
+    halfW === undefined ||
+    halfH === undefined ||
+    n.some((v) => !Number.isFinite(v)) ||
+    halfW <= 0 ||
+    halfH <= 0
+  ) {
     throw new Error(`--crop wants cx,cy,halfW,halfH in mm (got ${raw})`);
   }
-  return { cx: n[0], cy: n[1], halfW: n[2], halfH: n[3] };
+  return { cx, cy, halfW, halfH };
 }

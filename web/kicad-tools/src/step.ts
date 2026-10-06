@@ -1,4 +1,3 @@
-// @ts-check
 /**
  * 3D export through occ_service (mcp 0004 §11.3): the board text plus the
  * 3D model bodies it references go in, STEP (or STEPZ/GLB/STL/BREP/PLY/XAO)
@@ -19,56 +18,76 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { moduleDir } from "./modules.mjs";
+import type { Options } from "./commands.ts";
+import { moduleDir } from "./modules.ts";
 
-const FORMATS = { step: "step", stepz: "stpz", stpz: "stpz", glb: "glb", stl: "stl", brep: "brep", ply: "ply", xao: "xao" };
+const FORMATS: Record<string, string> = {
+  step: "step",
+  stepz: "stpz",
+  stpz: "stpz",
+  glb: "glb",
+  stl: "stl",
+  brep: "brep",
+  ply: "ply",
+  xao: "xao",
+};
 /** Where project-relative model refs are staged (bare relative refs reach
  *  the module's staged-model probe; ${KIPRJMOD} would not). */
 const PROJECT_PREFIX = "kiprjmod";
 
-/** @param {string} board */
-export function modelRefs(board) {
-  return [...new Set([...board.matchAll(/\(model\s+"([^"]+)"/g)].map((m) => m[1]))];
+export type ModelRef = { kind: "lib"; rel: string } | { kind: "project"; rel: string };
+
+interface StagedModel {
+  path: string;
+  bytes: Uint8Array;
 }
 
-/**
- * @param {string} ref
- * @returns {{ kind: "lib", rel: string } | { kind: "project", rel: string } | null}
- */
-export function classifyRef(ref) {
+/** What occ_service's emscripten factory resolves to (the parts used here). */
+interface OccModule {
+  occExport(board: string, job: string, models: StagedModel[]): { ok: boolean; report?: string; bytes: Uint8Array };
+}
+type OccFactory = (opts: {
+  locateFile: (f: string) => string;
+  print: (s: string) => void;
+  printErr: (s: string) => void;
+}) => Promise<OccModule>;
+
+export function modelRefs(board: string): string[] {
+  return [...new Set([...board.matchAll(/\(model\s+"([^"]+)"/g)].map((m) => m[1] as string))];
+}
+
+export function classifyRef(ref: string): ModelRef | null {
   const lib = /^\$[{(][A-Z0-9_]*3DMODEL_DIR[})]\/+(.+)$/.exec(ref) ?? /^\$[{(]KISYS3DMOD[})]\/+(.+)$/.exec(ref);
-  if (lib) return { kind: "lib", rel: lib[1] };
+  if (lib?.[1]) return { kind: "lib", rel: lib[1] };
   const prj = /^\$[{(]KIPRJMOD[})]\/+(.+)$/.exec(ref);
-  if (prj) return { kind: "project", rel: prj[1] };
+  if (prj?.[1]) return { kind: "project", rel: prj[1] };
   return null;
 }
 
-/** @param {string} rel */
-function fallbacks(rel) {
+function fallbacks(rel: string): string[] {
   const m = /^(.*)\.(wrl|wrz|step|stp)$/i.exec(rel);
   if (!m) return [rel];
-  return /wr/i.test(m[2]) ? [rel, `${m[1]}.step`, `${m[1]}.stp`] : [rel, `${m[1]}.wrl`];
+  return /wr/i.test(m[2] ?? "") ? [rel, `${m[1]}.step`, `${m[1]}.stp`] : [rel, `${m[1]}.wrl`];
 }
 
 /**
  * Library models from the model CDN: `<root>/<lib>/manifest` maps
  * `model3d/<name>.<ext>` → { hash }, bodies live at
  * `<root>/../blobs/sha256/<hash>`.
- * @param {string} manifestUrl e.g. https://cdn.pcbjam.com/libs/kicad-models/10.0.3/manifest.json
+ * @param manifestUrl e.g. https://cdn.pcbjam.com/libs/kicad-models/10.0.3/manifest.json
  */
-function cdnModels(manifestUrl) {
+function cdnModels(manifestUrl: string): (rel: string) => Promise<Uint8Array | null> {
   const root = manifestUrl.replace(/\/manifest\.json$/, "");
   const blobs = `${root.replace(/\/[^/]+$/, "")}/blobs/sha256`;
   const cache = join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), "pcbjam", "models", "sha256");
-  /** @type {Map<string, Promise<Record<string, { hash: string }> | null>>} */
-  const libs = new Map();
-  const libManifest = (/** @type {string} */ lib) => {
+  const libs = new Map<string, Promise<Record<string, { hash?: string }> | null>>();
+  const libManifest = (lib: string) => {
     let p = libs.get(lib);
     if (!p) {
       p = fetch(`${root}/${encodeURIComponent(lib)}/manifest`)
         .then(async (r) => {
           if (!r.ok) return null;
-          const m = /** @type {any} */ (await r.json());
+          const m = (await r.json()) as { entries?: Record<string, { hash?: string }> } & Record<string, { hash?: string }>;
           return m.entries ?? m;
         })
         .catch(() => null);
@@ -76,10 +95,10 @@ function cdnModels(manifestUrl) {
     }
     return p;
   };
-  /** @param {string} rel `<lib>.3dshapes/<name>.<ext>` → bytes or null */
+  // `<lib>.3dshapes/<name>.<ext>` → bytes or null
   return async (rel) => {
     const m = /^([^/]+)\.3dshapes\/(.+)$/.exec(rel);
-    if (!m) return null;
+    if (!m?.[1]) return null;
     const entries = await libManifest(m[1]);
     const entry = entries?.[`model3d/${m[2]}`];
     if (!entry?.hash) return null;
@@ -97,12 +116,7 @@ function cdnModels(manifestUrl) {
   };
 }
 
-/**
- * @param {string} boardPath
- * @param {string} outPath
- * @param {Record<string, string>} opts
- */
-export async function stepExport(boardPath, outPath, opts) {
+export async function stepExport(boardPath: string | undefined, outPath: string | undefined, opts: Options): Promise<number> {
   if (!boardPath || !outPath) {
     process.stderr.write("usage: pcbjam-tools step <file.kicad_pcb> <out> [--format step|stepz|glb|stl] [--models dir]\n");
     return 2;
@@ -113,11 +127,10 @@ export async function stepExport(boardPath, outPath, opts) {
     return 2;
   }
   let board = await readFile(boardPath, "utf8");
-  /** @type {Array<{ path: string, bytes: Uint8Array }>} */
-  const models = [];
-  const missing = [];
+  const models: StagedModel[] = [];
+  const missing: string[] = [];
   const manifestUrl = opts["models-manifest"] ?? process.env.PCBJAM_MODELS_MANIFEST_URL;
-  const fromCdn = opts.models === "cdn" ? (manifestUrl ? cdnModels(manifestUrl) : null) : null;
+  const fromCdn = opts.models === "cdn" && manifestUrl ? cdnModels(manifestUrl) : null;
   if (opts.models === "cdn" && !fromCdn) {
     process.stderr.write("--models cdn needs --models-manifest <url> or PCBJAM_MODELS_MANIFEST_URL\n");
     return 2;
@@ -126,7 +139,7 @@ export async function stepExport(boardPath, outPath, opts) {
     const c = classifyRef(ref);
     if (!c) continue;
     if (c.kind === "lib" && fromCdn) {
-      let found = null;
+      let found: StagedModel | null = null;
       for (const rel of fallbacks(c.rel)) {
         const bytes = await fromCdn(rel);
         if (bytes) {
@@ -145,17 +158,17 @@ export async function stepExport(boardPath, outPath, opts) {
       continue;
     }
     const staged = c.kind === "lib" ? hit : `${PROJECT_PREFIX}/${hit}`;
-    models.push({ path: staged, bytes: new Uint8Array(await readFile(join(/** @type {string} */ (base), hit))) });
+    models.push({ path: staged, bytes: new Uint8Array(await readFile(join(base, hit))) });
     if (c.kind === "project") board = board.split(`"${ref}"`).join(`"${PROJECT_PREFIX}/${c.rel}"`);
   }
 
   const dir = await moduleDir("occ_service");
   const require = createRequire(import.meta.url);
-  const factory = require(join(dir, "occ_service.js"));
+  const factory = require(join(dir, "occ_service.js")) as OccFactory;
   const mod = await factory({
-    locateFile: (/** @type {string} */ f) => join(dir, f),
+    locateFile: (f) => join(dir, f),
     print: () => {},
-    printErr: (/** @type {string} */ s) => {
+    printErr: (s) => {
       if (!/(^|: )Debug: /.test(s) && !s.startsWith("[occ_service]")) process.stderr.write(`${s}\n`);
     },
   });

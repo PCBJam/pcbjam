@@ -55,11 +55,24 @@ function main() {
   }
   const manifest = { version: pkg.version, cdn: `${CDN}/${a.prefix}`, tools };
 
-  // Pack a copy with the pinned manifest (the repo keeps the dev manifest).
+  // Pack a copy with the pinned manifest (the repo keeps the dev manifest),
+  // compiled there (TypeScript → dist/; the tarball ships dist/ only). The
+  // compiler comes from the package's own devDependency ranges, so this
+  // needs no workspace install.
   const work = mkdtempSync(join(tmpdir(), "kicad-tools-pack-"));
   try {
-    execFileSync("cp", ["-R", join(PKG_DIR, "src"), join(PKG_DIR, "package.json"), join(PKG_DIR, "README.md"), work]);
+    for (const f of ["src", "package.json", "tsconfig.json", "README.md"]) {
+      execFileSync("cp", ["-R", join(PKG_DIR, f), work]);
+    }
     writeFileSync(join(work, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+    const dev = pkg.devDependencies ?? {};
+    execFileSync(
+      "npm",
+      ["install", "--no-save", "--no-package-lock", "--no-audit", "--no-fund", "--ignore-scripts",
+        `typescript@${dev.typescript}`, `@types/node@${dev["@types/node"]}`],
+      { cwd: work, stdio: "inherit" },
+    );
+    execFileSync("npx", ["tsc", "-p", "tsconfig.json"], { cwd: work, stdio: "inherit" });
     const name = execFileSync("npm", ["pack", "--silent", "--pack-destination", work], { cwd: work, encoding: "utf8" }).trim().split("\n").pop();
     const tgz = readFileSync(join(work, name));
     const sha = sha256hex(tgz);

@@ -1,4 +1,3 @@
-// @ts-check
 /**
  * Where the WebAssembly modules come from (mcp 0004 §11.5):
  *   1. KICAD_TOOLS_WASM_DIR — a directory holding kicad_tools.{js,wasm} (and
@@ -15,22 +14,33 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+/** src/ or dist/ — both sit one level below the package root. */
 const HERE = dirname(fileURLToPath(import.meta.url));
 
-/** @typedef {{ ver: string, files: Record<string, string> }} ToolPin */
-/** @typedef {{ version: string, cdn: string, tools: Record<string, ToolPin> }} Manifest */
+export type Tool = "kicad_tools" | "occ_service";
 
-/** @returns {Promise<Manifest>} */
-export async function readManifest() {
-  return JSON.parse(await readFile(join(HERE, "..", "manifest.json"), "utf8"));
+export interface ToolPin {
+  ver: string;
+  /** file name → "sha256:<hex>" */
+  files: Record<string, string>;
 }
 
-function cacheRoot() {
+export interface Manifest {
+  version: string;
+  cdn: string;
+  tools: Partial<Record<Tool, ToolPin>>;
+}
+
+export async function readManifest(): Promise<Manifest> {
+  return JSON.parse(await readFile(join(HERE, "..", "manifest.json"), "utf8")) as Manifest;
+}
+
+function cacheRoot(): string {
   return process.env.PCBJAM_TOOLS_CACHE ?? join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), "pcbjam", "wasm");
 }
 
 /** Dev fallback: running from the pcbjam repo with a local build. */
-function repoOutputDir() {
+function repoOutputDir(): string | null {
   const dir = join(HERE, "..", "..", "..", "output");
   return existsSync(join(dir, "kicad_tools.js")) ? dir : null;
 }
@@ -38,10 +48,8 @@ function repoOutputDir() {
 /**
  * The directory holding `<tool>.js` + `<tool>.wasm`, downloading and
  * verifying them first when needed.
- * @param {"kicad_tools" | "occ_service"} tool
- * @returns {Promise<string>}
  */
-export async function moduleDir(tool) {
+export async function moduleDir(tool: Tool): Promise<string> {
   const explicit = process.env.KICAD_TOOLS_WASM_DIR;
   if (explicit) {
     if (!existsSync(join(explicit, `${tool}.js`))) {

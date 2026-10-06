@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { parseCrop, prepareSvg } from "../src/shot.mjs";
-import { classifyRef, modelRefs } from "../src/step.mjs";
+import { parseCrop, prepareSvg } from "../src/shot.ts";
+import { classifyRef, modelRefs } from "../src/step.ts";
 
 const PLOT =
   '<?xml version="1.0"?>\n<svg xmlns="http://www.w3.org/2000/svg" width="297.0022mm" height="210.0072mm" viewBox="0.0000 0.0000 297.0022 210.0072">\n<g/></svg>';
