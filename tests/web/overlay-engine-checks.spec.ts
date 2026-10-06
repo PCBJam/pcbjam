@@ -156,9 +156,12 @@ test.describe('guide overlay engine hooks (tutorial round 2)', () => {
       .toBe(true);
 
     const frame = await resolved(page, 'dialog:FOOTPRINT_CHOOSER_FRAME');
-    // Centred, not at the page origin; fully on screen.
-    expect(frame.x).toBeGreaterThan(20);
-    expect(frame.y).toBeGreaterThan(20);
+    // Centred (so not at the page origin) and fully on screen. Centred, not a fixed margin: with
+    // CI's Linux fonts the chooser is 680 px tall in the 720 px viewport, so its centred top is 20.
+    expect(Math.abs(frame.x + frame.width / 2 - viewport.width / 2)).toBeLessThanOrEqual(1);
+    expect(Math.abs(frame.y + frame.height / 2 - viewport.height / 2)).toBeLessThanOrEqual(1);
+    expect(frame.x).toBeGreaterThan(0);
+    expect(frame.y).toBeGreaterThan(0);
     expect(frame.x + frame.width).toBeLessThanOrEqual(viewport.width);
     expect(frame.y + frame.height).toBeLessThanOrEqual(viewport.height);
     await expect(page.locator('.window-titlebar-text', { hasText: /Footprint Chooser/ })).toBeVisible();
