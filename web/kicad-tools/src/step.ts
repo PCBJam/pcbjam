@@ -116,28 +116,40 @@ function cdnModels(manifestUrl: string): (rel: string) => Promise<Uint8Array | n
   };
 }
 
-export async function stepExport(boardPath: string | undefined, outPath: string | undefined, opts: Options): Promise<number> {
-  if (!boardPath || !outPath) {
-    process.stderr.write("usage: pcbjam-tools step <file.kicad_pcb> <out> [--format step|stepz|glb|stl] [--models dir]\n");
-    return 2;
-  }
-  const format = FORMATS[(opts.format ?? "step").toLowerCase()];
-  if (!format) {
-    process.stderr.write(`unknown --format ${opts.format}\n`);
-    return 2;
-  }
+/** The board text ready for occ_service, its staged models and the refs not found. */
+export interface PreparedBoard {
+  board: string;
+  models: StagedModel[];
+  missing: string[];
+}
+
+/**
+ * Read a board and stage the 3D models it references (library models from
+ * `--models <dir>` or the model CDN, project models next to the board).
+ * Throws a usage Error for `--models cdn` without a manifest URL.
+ */
+export async function prepareBoard(boardPath: string, opts: Options): Promise<PreparedBoard> {
   let board = await readFile(boardPath, "utf8");
   const models: StagedModel[] = [];
   const missing: string[] = [];
   const manifestUrl = opts["models-manifest"] ?? process.env.PCBJAM_MODELS_MANIFEST_URL;
   const fromCdn = opts.models === "cdn" && manifestUrl ? cdnModels(manifestUrl) : null;
   if (opts.models === "cdn" && !fromCdn) {
-    process.stderr.write("--models cdn needs --models-manifest <url> or PCBJAM_MODELS_MANIFEST_URL\n");
-    return 2;
+    throw new UsageError("--models cdn needs --models-manifest <url> or PCBJAM_MODELS_MANIFEST_URL");
   }
+  // --models-dir: models fetched by someone else (e.g. the PCBJam runner for
+  // team libraries), laid out as <lib>.3dshapes/<name>; tried before the CDN.
+  const extraDir = opts["models-dir"];
   for (const ref of modelRefs(board)) {
     const c = classifyRef(ref);
     if (!c) continue;
+    if (c.kind === "lib" && extraDir) {
+      const hit = fallbacks(c.rel).find((rel) => existsSync(join(extraDir, rel)));
+      if (hit) {
+        models.push({ path: hit, bytes: new Uint8Array(await readFile(join(extraDir, hit))) });
+        continue;
+      }
+    }
     if (c.kind === "lib" && fromCdn) {
       let found: StagedModel | null = null;
       for (const rel of fallbacks(c.rel)) {
@@ -161,7 +173,20 @@ export async function stepExport(boardPath: string | undefined, outPath: string 
     models.push({ path: staged, bytes: new Uint8Array(await readFile(join(base, hit))) });
     if (c.kind === "project") board = board.split(`"${ref}"`).join(`"${PROJECT_PREFIX}/${c.rel}"`);
   }
+  return { board, models, missing };
+}
 
+/** A bad invocation (exit code 2). */
+export class UsageError extends Error {}
+
+/**
+ * Run occ_service's export (the official JOB_EXPORT_PCB_3D JSON fields).
+ * Returns the bytes, or the module's report on failure.
+ */
+export async function occExport(
+  prepared: PreparedBoard,
+  job: Record<string, unknown>,
+): Promise<{ ok: true; bytes: Uint8Array } | { ok: false; report: string }> {
   const dir = await moduleDir("occ_service");
   const require = createRequire(import.meta.url);
   const factory = require(join(dir, "occ_service.js")) as OccFactory;
@@ -172,15 +197,37 @@ export async function stepExport(boardPath: string | undefined, outPath: string 
       if (!/(^|: )Debug: /.test(s) && !s.startsWith("[occ_service]")) process.stderr.write(`${s}\n`);
     },
   });
-  const res = mod.occExport(board, JSON.stringify({ format, overwrite: true, subst_models: true }), models);
-  const report = String(res.report ?? "");
+  const res = mod.occExport(prepared.board, JSON.stringify({ overwrite: true, subst_models: true, ...job }), prepared.models);
+  return res.ok ? { ok: true, bytes: res.bytes } : { ok: false, report: String(res.report ?? "") };
+}
+
+export async function stepExport(boardPath: string | undefined, outPath: string | undefined, opts: Options): Promise<number> {
+  if (!boardPath || !outPath) {
+    process.stderr.write("usage: pcbjam-tools step <file.kicad_pcb> <out> [--format step|stepz|glb|stl] [--models dir|cdn] [--models-dir dir]\n");
+    return 2;
+  }
+  const format = FORMATS[(opts.format ?? "step").toLowerCase()];
+  if (!format) {
+    process.stderr.write(`unknown --format ${opts.format}\n`);
+    return 2;
+  }
+  let prepared: PreparedBoard;
+  try {
+    prepared = await prepareBoard(boardPath, opts);
+  } catch (err) {
+    if (!(err instanceof UsageError)) throw err;
+    process.stderr.write(`${err.message}\n`);
+    return 2;
+  }
+  const res = await occExport(prepared, { format });
   if (!res.ok) {
-    process.stderr.write(`${boardPath}: export failed\n${report}\n`);
+    process.stderr.write(`${boardPath}: export failed\n${res.report}\n`);
     return 4;
   }
   await writeFile(outPath, res.bytes);
-  for (const ref of missing) process.stderr.write(`missing model: ${ref}\n`);
+  for (const ref of prepared.missing) process.stderr.write(`missing model: ${ref}\n`);
   // The verdict line LAST (callers read the final stderr line as the summary).
+  const { models, missing } = prepared;
   process.stderr.write(
     `${boardPath}: OK -> ${outPath} (${models.length} models${missing.length ? `, ${missing.length} missing` : ""})\n`,
   );

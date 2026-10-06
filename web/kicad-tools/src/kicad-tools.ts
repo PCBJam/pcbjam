@@ -11,9 +11,10 @@ export async function runKicadTools(
   args: string[],
   opts: { inherit?: boolean } = {},
 ): Promise<{ exitCode: number; stderr: string }> {
-  const dir = await moduleDir("kicad_tools");
+  // KICAD_TOOLS_JS: an exact kicad_tools entry (a local build, a stand-in).
+  const js = process.env.KICAD_TOOLS_JS || join(await moduleDir("kicad_tools"), "kicad_tools.js");
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [join(dir, "kicad_tools.js"), ...args], {
+    const child = spawn(process.execPath, [js, ...args], {
       stdio: opts.inherit ? "inherit" : ["ignore", "ignore", "pipe"],
     });
     let stderr = "";
