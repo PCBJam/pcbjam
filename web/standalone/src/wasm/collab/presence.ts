@@ -2,6 +2,7 @@ import type { Awareness } from "y-protocols/awareness";
 import {
   colorForUser,
   PRESENCE_COLORS,
+  presenceKey,
   presenceStateSchema,
   type PresenceState,
   type PresenceUser,
@@ -110,7 +111,7 @@ function lowestFreeColor(
   for (const [clientId, state] of states) {
     if (clientId === ownClientId) continue;
     const parsed = presenceStateSchema.safeParse(state);
-    if (!parsed.success || parsed.data.user.id === ownUserId) continue;
+    if (!parsed.success || (parsed.data.user.id === ownUserId && !parsed.data.agent)) continue;
     const idx = (PRESENCE_COLORS as readonly string[]).indexOf(parsed.data.user.color);
     if (idx >= 0) usage[idx]++;
   }
@@ -279,7 +280,7 @@ export function createPresence(opts: {
       const parsed = presenceStateSchema.safeParse(raw);
       if (!parsed.success) continue;
 
-      if (parsed.data.user.id === user.id) {
+      if (parsed.data.user.id === user.id && !parsed.data.agent) {
         if (parsed.data.user.color !== user.color && clientId < awareness.clientID) {
           user.color = parsed.data.user.color;
           g_claims.set(user.id, user.color);
@@ -325,14 +326,17 @@ export function createPresence(opts: {
   function peers(): PresencePeer[] {
     const byUser = new Map<string, PresencePeer>();
     for (const peer of clients()) {
-      // Another tab of the SAME user isn't a peer — the roster shows other people.
-      if (peer.user.id === user.id) continue;
-      const existing = byUser.get(peer.user.id);
+      // Another tab of the SAME user isn't a peer — the roster shows other
+      // people. An AI agent working for this user is (mcp 0004 §6): its key
+      // differs from the user's own (`presenceKey`).
+      const key = presenceKey(peer);
+      if (key === user.id) continue;
+      const existing = byUser.get(key);
       if (!existing || peer.updatedAt > existing.updatedAt) {
-        byUser.set(peer.user.id, peer);
+        byUser.set(key, peer);
       }
     }
-    return [...byUser.values()].sort((a, b) => a.user.id.localeCompare(b.user.id));
+    return [...byUser.values()].sort((a, b) => presenceKey(a).localeCompare(presenceKey(b)));
   }
 
   const subscribers = new Set<(peers: PresencePeer[]) => void>();

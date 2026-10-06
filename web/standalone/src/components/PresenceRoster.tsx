@@ -1,4 +1,5 @@
 import { Eye } from "lucide-react";
+import { presenceKey } from "@pcbjam/shared";
 import type { PresencePeer } from "@/wasm/collab/presence";
 import type { FollowTarget } from "@/wasm/collab/follow-user";
 import { overlayRowClass } from "@/components/OverlayMenu";
@@ -76,9 +77,10 @@ export function PresenceRoster({
         const elsewhere = p.away ? "away" : sheetLabel(p.sheetPath) || "another sheet";
         return (
           <button
-            key={p.user.id}
+            key={presenceKey(p)}
             type="button"
             data-presence-user={p.user.id}
+            data-presence-agent={p.agent ? p.agent.client : undefined}
             data-presence-elsewhere={here ? undefined : "1"}
             data-presence-following={followed ? "1" : undefined}
             disabled={!followable(p)}
@@ -104,6 +106,15 @@ export function PresenceRoster({
               style={{ backgroundColor: p.user.color }}
             />
             <span className="truncate">{p.user.name}</span>
+            {p.agent && (
+              <span
+                data-testid="presence-ai"
+                title={`AI agent “${p.agent.name}” working for this person — it never acts as them`}
+                className="shrink-0 rounded-full border border-current px-1 text-[9px] uppercase tracking-wide text-violet-500 dark:text-violet-300"
+              >
+                AI
+              </span>
+            )}
             {p.role === "commenter" && (
               <span
                 data-testid="presence-reviewer"

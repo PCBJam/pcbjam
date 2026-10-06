@@ -94,7 +94,11 @@ export function contestedReleases(
  * of the lock derivation. The role is server-verified (the sync worker drops
  * mismatching frames), so this is safe to trust.
  */
-export function isLockingPeer(peer: { role?: string }): boolean {
-  return peer.role !== "commenter";
+export function isLockingPeer(peer: { role?: string; agent?: { editing?: boolean } }): boolean {
+  if (peer.role === "commenter") return false;
+  // mcp 0004 §6: an AI agent's selection is a pointer ("look here") — it
+  // locks only while the agent is writing those items (`agent.editing`).
+  if (peer.agent) return peer.agent.editing === true;
+  return true;
 }
 

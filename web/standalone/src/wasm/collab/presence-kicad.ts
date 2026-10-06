@@ -1,4 +1,4 @@
-import { symbolUuidFromFootprintPath } from "@pcbjam/shared";
+import { presenceKey, symbolUuidFromFootprintPath } from "@pcbjam/shared";
 import { clog } from "./debug";
 import { publishLocalSelection } from "./local-selection";
 import type { PresenceHandle, PresencePeer } from "./presence";
@@ -250,7 +250,8 @@ export function bindKicadPresence(opts: {
       locks?: Array<{ uuid: string; name: string }>;
     } = {
       peers: peers.map((p: PresencePeer) => ({
-        id: p.user.id,
+        // An agent and its person are separate cursors (mcp 0004 §6).
+        id: presenceKey(p),
         name: p.user.name,
         ...(p.role === "commenter" ? { reviewer: true } : {}),
         color: p.user.color,
