@@ -49,12 +49,16 @@ const TOOLS = [
   "calculator",
   "occ_service",
   "ngspice_service",
+  // The headless CLI (mcp 0004 §11.5): not served to the browser — the
+  // @pcbjam/kicad-tools package downloads it (publish-kicad-tools.mjs pins
+  // the version + checksums into the package manifest).
+  "kicad_tools",
 ];
 
 // Files that make up a self-contained tool bundle. `<tool>` is substituted.
 const SHARED_FILES = ["wx.js", "wx-dom.js", "images.tar.gz"];
 const toolFiles = (tool) =>
-  tool === "occ_service" || tool === "ngspice_service"
+  tool === "occ_service" || tool === "ngspice_service" || tool === "kicad_tools"
     ? [`${tool}.wasm`, `${tool}.js`]
     : [`${tool}.wasm`, `${tool}.js`, ...SHARED_FILES];
 

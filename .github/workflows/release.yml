@@ -125,6 +125,13 @@ jobs:
         run: >
           node scripts/deploy/publish-wasm.mjs --tag "${{ needs.meta.outputs.tag }}"
           --src output --driver r2 --bucket "$BUCKET" --remote --compress br --quality 11
+      - name: Publish the pcbjam-tools package to CDN
+        # @pcbjam/kicad-tools (mcp 0004 §11.5): pinned to the kicad_tools +
+        # occ_service versions just published; tools/kicad-tools/latest.json
+        # is what the MCP's get_local_cli hands to agents. A version already
+        # published with the same bytes is a no-op; different bytes fail (bump
+        # web/kicad-tools/package.json).
+        run: node scripts/deploy/publish-kicad-tools.mjs --driver r2 --bucket "$BUCKET" --remote
 
   # 3) Build the standalone pinned to this tag's manifest + libs, deploy to Pages.
   deploy-demo:

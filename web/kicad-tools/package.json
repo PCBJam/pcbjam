@@ -1,0 +1,20 @@
+{
+  "name": "@pcbjam/kicad-tools",
+  "version": "0.1.0",
+  "description": "Headless KiCad for scripts and AI agents: ERC/DRC, lint, exports, schematic and board shots, STEP — one CLI over the kicad_tools and occ_service WebAssembly modules.",
+  "license": "GPL-3.0-or-later",
+  "type": "module",
+  "bin": { "pcbjam-tools": "./src/cli.mjs" },
+  "exports": { ".": "./src/index.mjs" },
+  "files": ["src", "manifest.json", "README.md"],
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "vitest run"
+  },
+  "optionalDependencies": {
+    "sharp": "^0.34.5"
+  },
+  "devDependencies": {
+    "vitest": "^3.0.0"
+  }
+}

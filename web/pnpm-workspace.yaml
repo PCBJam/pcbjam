@@ -2,6 +2,9 @@ packages:
   - "standalone"
   - "backend"
   - "pcbjam-shared"
+  # Headless KiCad CLI driver (GPL; mcp 0004 §11.5) — never in the closed
+  # root workspace: closed code spawns its bin, never imports it.
+  - "kicad-tools"
   # Generic R2⇄IndexedDB sync client (MIT), nested in the shared repo; movable.
   - "pcbjam-shared/sync-client"
 
