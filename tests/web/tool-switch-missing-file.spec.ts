@@ -6,7 +6,9 @@ import { clickMenuBarItem, clickMenuItemByText, stableShot } from '../e2e/utils/
  * Editor" in a project that has no .kicad_pcb must CREATE the templated board
  * and navigate to it (native KiCad opens pcbnew on a new board at the derived
  * path) — not silently no-op (the old behavior: the WasmTool nav hook logged
- * "[nav] no project file found" and returned false).
+ * "[nav] no project file found" and returned false). Like every schematic ⇄
+ * PCB switch, the board opens in a NEW TAB and the schematic tab stays
+ * (cross-probe 0001).
  *
  * The backend demo fixture carries both files, so this spec builds a
  * schematic-only project the way a user does: home page Tools grid →
@@ -66,14 +68,19 @@ test.describe('web app — tool switch creates the missing counterpart', () => {
     await page.waitForURL(/\/@local\/projects\/untitled\/main\.kicad_sch/, { timeout: 30000 });
     await waitForToolReady(page, /main — Schematic Editor/i);
 
-    // The switch. Before the fix nothing happens (no navigation, no dialog),
-    // so the waitForURL below is where this spec fails.
+    // The switch. Before the fix nothing happens (no new tab, no dialog), so
+    // the popup wait below is where this spec fails.
+    const schUrl = page.url();
     expect(await clickMenuBarItem(page, 'Tools'), 'Tools menubar item clickable').toBe(true);
-    await clickMenuItemByText(page, 'Switch to PCB Editor');
+    const [pcb] = await Promise.all([
+      page.waitForEvent('popup', { timeout: 30000 }),
+      clickMenuItemByText(page, 'Switch to PCB Editor'),
+    ]);
 
-    await page.waitForURL(/\/@local\/projects\/untitled\/main\.kicad_pcb/, { timeout: 30000 });
-    await waitForToolReady(page, /main — PCB Editor/i);
+    await expect(pcb).toHaveURL(/\/@local\/projects\/untitled\/main\.kicad_pcb/, { timeout: 30000 });
+    await waitForToolReady(pcb, /main — PCB Editor/i);
+    expect(page.url(), 'the schematic tab stays').toBe(schUrl);
 
-    await stableShot(page, 'web-switch-missing-pcb-created.png');
+    await stableShot(pcb, 'web-switch-missing-pcb-created.png');
   });
 });

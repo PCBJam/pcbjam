@@ -16,6 +16,7 @@ import {
 import { MODELS_LOADING_EVENT, type ModelsLoadingDetail } from "@/wasm/libs/models-bridge";
 import { DOC_REVERTED_EVENT } from "@/wasm/collab/kicad-binding";
 import { addAnnouncedLib } from "@/wasm/libs/runtime-add";
+import { CROSS_PROBE_NOTICE_EVENT, type CrossProbeNotice } from "./cross-probe";
 import { reloadFallbackMsg } from "./ui-helpers";
 
 /** One library's placed items a peer updated (libs 0017 §2b). */
@@ -157,6 +158,9 @@ export function useLibNotices(opts: {
   // The backend rolled this document back to its last valid state
   // (kicad-validity 0001 — DOC_REVERTED_EVENT from the collab binding).
   const [docReverted, setDocReverted] = React.useState<string | null>(null);
+  // Cross-tab cross-probing (cross-probe 0001): "the other editor is open in
+  // another tab", or a blocked popup with an open button.
+  const [crossProbeNotice, setCrossProbeNotice] = React.useState<CrossProbeNotice | null>(null);
   // A peer changed the team's lib SET mid-session (LIB_SET_CHANGED_EVENT —
   // the scope room's `libset` broadcast). The lib table is frozen at boot, so
   // the toast's click action loads the new lib live (addAnnouncedLib), with a
@@ -229,7 +233,11 @@ export function useLibNotices(opts: {
     window.addEventListener(LIB_ITEM_UPDATED_EVENT, onItemUpdated);
     window.addEventListener(LIB_SET_CHANGED_EVENT, onLibSet);
     window.addEventListener(DOC_REVERTED_EVENT, onDocReverted);
+    const onCrossProbe = (e: Event) =>
+      setCrossProbeNotice((e as CustomEvent<CrossProbeNotice>).detail);
+    window.addEventListener(CROSS_PROBE_NOTICE_EVENT, onCrossProbe);
     return () => {
+      window.removeEventListener(CROSS_PROBE_NOTICE_EVENT, onCrossProbe);
       clearTimeout(busyTimer);
       window.removeEventListener(LIB_BUSY_EVENT, onBusy);
       window.removeEventListener(LIB_ERROR_EVENT, onError);
@@ -259,6 +267,13 @@ export function useLibNotices(opts: {
     const t = setTimeout(() => setLibSetNotice(null), 30_000);
     return () => clearTimeout(t);
   }, [libSetNotice]);
+
+  // Auto-dismiss the cross-probe toast; one with a button stays longer.
+  React.useEffect(() => {
+    if (!crossProbeNotice) return;
+    const t = setTimeout(() => setCrossProbeNotice(null), crossProbeNotice.action ? 20_000 : 5_000);
+    return () => clearTimeout(t);
+  }, [crossProbeNotice]);
 
   // Auto-dismiss the doc-reverted toast (longest — the user should see it).
   React.useEffect(() => {
@@ -329,6 +344,7 @@ export function useLibNotices(opts: {
   const dismissLibError = React.useCallback(() => setLibError(null), []);
   const dismissLibUpdate = React.useCallback(() => setLibUpdate(null), []);
   const dismissDocReverted = React.useCallback(() => setDocReverted(null), []);
+  const dismissCrossProbeNotice = React.useCallback(() => setCrossProbeNotice(null), []);
 
   return {
     libBusy,
@@ -340,6 +356,8 @@ export function useLibNotices(opts: {
     onLibSetClick,
     docReverted,
     dismissDocReverted,
+    crossProbeNotice,
+    dismissCrossProbeNotice,
     libLoading,
     modelsSync,
     staleLibItems,

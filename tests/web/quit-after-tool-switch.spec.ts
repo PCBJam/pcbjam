@@ -5,11 +5,10 @@ import { clickMenuBarItem, clickMenuItemByText } from '../e2e/utils/element-trac
  * File → Quit after a tool switch: quitting must land on the project overview.
  *
  * A tool switch (Tools → "Switch to PCB Editor", ExecuteFile →
- * window.kicadWebOpenTool) is a hard location.assign that pushes a history
- * entry. Quit therefore cannot rely on stepping history back: after
- * project → schematic → switch-to-pcb, one history step back is the schematic
- * editor, not the project page. Quit must navigate to the project overview
- * explicitly (WasmTool installQuitHook), wherever the session wandered first.
+ * window.kicadWebOpenTool) opens the PCB editor in a NEW TAB (cross-probe
+ * 0001). That tab's history starts at the editor, so Quit can't step back to
+ * anything: it must navigate to the project overview explicitly (WasmTool
+ * installQuitHook), whichever way the editor was reached.
  *
  * URL + project-page DOM assertions — no screenshots.
  */
@@ -53,7 +52,7 @@ async function quitViaFileMenu(page: Page): Promise<void> {
 }
 
 test.describe('web app — File → Quit after a tool switch', () => {
-  test('quit after switching sch → pcb lands on the project page, not the previous editor', async ({
+  test('quit in the PCB tab a switch opened lands on the project page', async ({
     page,
   }) => {
     test.setTimeout(480000); // two full wasm boots (schematic, then pcbnew)
@@ -68,26 +67,29 @@ test.describe('web app — File → Quit after a tool switch', () => {
     await page.waitForURL(SCH_URL_RE, { timeout: 30000 });
     await waitForToolReady(page, /demo — Schematic Editor/i);
 
-    // Switch to the PCB editor — a hard navigation that stacks a second
-    // editor history entry on top of the schematic one.
+    // Switch to the PCB editor — it opens in a new tab; the schematic stays.
     expect(await clickMenuBarItem(page, 'Tools'), 'Tools menubar item clickable').toBe(true);
-    await clickMenuItemByText(page, 'Switch to PCB Editor');
-    await page.waitForURL(PCB_URL_RE, { timeout: 30000 });
-    await waitForToolReady(page, /demo — PCB Editor/i);
+    const [pcb] = await Promise.all([
+      page.waitForEvent('popup', { timeout: 30000 }),
+      clickMenuItemByText(page, 'Switch to PCB Editor'),
+    ]);
+    await expect(pcb).toHaveURL(PCB_URL_RE, { timeout: 30000 });
+    await waitForToolReady(pcb, /demo — PCB Editor/i);
+    expect(page.url()).toMatch(SCH_URL_RE);
 
-    await quitViaFileMenu(page);
+    await quitViaFileMenu(pcb);
 
     // Must land on the project overview — not back in the schematic editor.
     // Poll the URL instead of waitForURL: the quit flow can supersede its own
     // navigation while the wasm tears down, and Firefox then kills a pending
     // waitForURL with NS_BINDING_ABORTED even though the final URL is right.
     await expect
-      .poll(() => page.url(), { timeout: 30000 })
+      .poll(() => pcb.url(), { timeout: 30000 })
       .toMatch(PROJECT_URL_RE);
     // And the overview must actually render (guards a URL-push-without-render
     // regression, which a URL-only assertion would miss).
     await expect(
-      page.getByRole('link', { name: /Open in Schematic Editor/i }).first()
+      pcb.getByRole('link', { name: /Open in Schematic Editor/i }).first()
     ).toBeVisible({ timeout: 30000 });
   });
 });

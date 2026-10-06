@@ -92,6 +92,10 @@ declare global {
     FS?: EmscriptenFS;
     wxElementRegistry?: WxElementRegistry;
     kicadWebOpenTool?: (toolName: string, fileName: string) => boolean;
+    /** wasm SendCommand → page: a KiCad cross-probe for the other editor (cross-probe 0001). */
+    kicadCrossProbeSend?: (tool: string, cmd: string, explicit: boolean) => boolean;
+    /** Cross-probe counters for the e2e specs. */
+    kicadCrossProbeStats?: () => { opened: number; focused: number; notices: number; executed: number };
     /** wx wasm port → page: the app's main frame was destroyed (File→Quit). */
     wxAppTopWindowClosed?: () => void;
     /** File System Access API (Chromium): writable local-folder sessions. */

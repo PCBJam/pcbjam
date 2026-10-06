@@ -11,6 +11,7 @@ import { currentScope } from "@/lib/config";
 import { defaultFileName, newFileTemplate, withExtension } from "@/lib/new-file";
 import { memfsProjectDir } from "@/wasm/constants";
 import type { ToolFile } from "@/wasm/kicad-runner";
+import { activeCrossProbe, isProbeTool } from "./cross-probe";
 import { markDeliberateNavigation } from "./quit-hook";
 
 const LEGACY_EXTENSION_TOOL: Record<string, Tool> = {
@@ -112,6 +113,18 @@ export function chooseToolFile(
   return candidates[0]?.path;
 }
 
+/** Editor URL for `tool`'s file in this project (cross-probe opens it in a tab). */
+export function projectToolUrl(
+  win: ToolWindow,
+  slug: string,
+  files: ToolFile[],
+  tool: Tool,
+  currentPath?: string,
+): string | null {
+  const path = chooseToolFile(files, tool, undefined, currentPath);
+  return path ? projectPath(currentScope(), slug, path) + win.location.search : null;
+}
+
 export function installToolNavigationHook(
   win: ToolWindow,
   opts: {
@@ -174,6 +187,12 @@ export function installToolNavigationHook(
           );
           await createFile(relPath, bytes);
           opts.log(`[nav] created missing ${nextTool} file ${relPath} -> ${url}`);
+          // Schematic ⇄ PCB opens the other editor in its own tab (cross-probe 0001).
+          const crossProbe = activeCrossProbe();
+          if (isProbeTool(nextTool) && crossProbe?.openOrFocus(nextTool, url)) {
+            pendingCreate = null;
+            return;
+          }
           markDeliberateNavigation();
           win.location.assign(url);
         } catch (e) {
@@ -195,6 +214,10 @@ export function installToolNavigationHook(
         : projectPath(scope, opts.slug, nextPath)) + win.location.search;
 
     opts.log(`[nav] ${rawToolName} ${rawFileName || "(no file)"} -> ${url}`);
+    // Schematic ⇄ PCB: open (or focus) the other editor's tab and keep this
+    // one (cross-probe 0001); every other tool still replaces this page.
+    const crossProbe = activeCrossProbe();
+    if (isProbeTool(nextTool) && crossProbe?.openOrFocus(nextTool, url)) return true;
     markDeliberateNavigation();
     win.location.assign(url);
     return true;

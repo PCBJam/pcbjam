@@ -38,12 +38,16 @@
 #include <wx/aui/framemanager.h>
 #include <kiway.h>
 #include <kiway_player.h>
+#include <frame_type.h>
+#include <mail_type.h>
+#include <kiway_mail.h>
 #include <pcbjam_read_only.h>
 #include <tool/action_toolbar.h>
 #include <tool/tool_action.h>
 #include <nlohmann/json.hpp>
 #include <project.h>
 
+#include "collab_common.h"
 #include "pcbjam_libs_reload.h"
 #include "pcbjam_async_policy.h"
 #include "open_gate.h"
@@ -357,6 +361,58 @@ static bool kicadSetReadOnly( bool aReadOnly )
 
     PCBJAM_READ_ONLY::Set( aReadOnly );
     frame->Prj().SetReadOnly( aReadOnly );
+    return true;
+}
+
+
+// Cross-probe receive (cross-probe 0001): deliver a command another editor tab
+// sent ("$SELECT: …", "$NET: …", "$CLEAR") as Kiway mail, the in-process path
+// the project-manager build uses. Not ExecuteRemoteCommand alone: upstream's
+// socket receiver never handles "$SELECT:" (selection sync only exists as
+// MAIL_SELECTION[_FORCE]), so the standalone socket path can't sync
+// selections. aForce = KiCad's explicit "Select on PCB/Schematic", which
+// applies even when the user turned selection sync off. Queued on the
+// serialized collab coroutine (never a bare embind walk of the model), and
+// refused while a file open is in flight — the sender replays on our "ready".
+static bool kicadCrossProbeExec( std::string aCmd, bool aForce )
+{
+    if( pcbjam_open::busy() )
+        return false;
+
+    KIWAY_PLAYER* frame =
+            wxTheApp ? dynamic_cast<KIWAY_PLAYER*>( wxTheApp->GetTopWindow() ) : nullptr;
+
+    if( !frame )
+        return false;
+
+    pcbjam_collab::runOnCoroutine( frame,
+                                   [frame, aCmd, aForce]()
+                                   {
+                                       std::string payload = aCmd;
+                                       MAIL_T      kind = MAIL_CROSS_PROBE;
+
+                                       if( payload.rfind( "$SELECT:", 0 ) == 0 )
+                                           kind = aForce ? MAIL_SELECTION_FORCE : MAIL_SELECTION;
+
+                                       KIWAY_MAIL_EVENT mail( frame->GetFrameType(), kind, payload );
+                                       frame->KiwayMailIn( mail );
+                                   } );
+    return true;
+}
+
+
+// Test-only (cross-probe 0001 e2e): run a KiCad action by name from the event
+// loop, as a menu click would — e.g. "eeschema.EditorControl.selectOnPCB",
+// which otherwise lives only in the canvas context menu.
+static bool kicadTestRunAction( std::string aName )
+{
+    EDA_BASE_FRAME* frame =
+            wxTheApp ? dynamic_cast<EDA_BASE_FRAME*>( wxTheApp->GetTopWindow() ) : nullptr;
+
+    if( !frame || !frame->GetToolManager() )
+        return false;
+
+    frame->CallAfter( [frame, aName]() { frame->GetToolManager()->RunAction( aName ); } );
     return true;
 }
 
@@ -750,6 +806,10 @@ EMSCRIPTEN_BINDINGS(kicad_editor) {
 
     // Read-only viewer lock (read-only-viewer).
     function("kicadSetReadOnly", &kicadSetReadOnly);
+
+    // Cross-tab cross-probing (cross-probe 0001).
+    function("kicadCrossProbeExec", &kicadCrossProbeExec);
+    function("kicadTestRunAction", &kicadTestRunAction);
 
     // Yjs collaborative bridge entry points — same JS contract as the standalone
     // bundles, dispatched on the active editor frame.

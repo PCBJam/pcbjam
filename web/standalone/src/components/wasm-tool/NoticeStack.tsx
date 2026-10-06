@@ -2,6 +2,7 @@
 import { Loader2 } from "lucide-react";
 import type { SaveBlock } from "@/wasm/save-flow";
 import { libSyncLabel } from "./DownloadConsent";
+import type { CrossProbeNotice } from "./cross-probe";
 import type { LibSetNotice } from "./useLibNotices";
 
 /** The open document was deleted / moved by a collaborator's file op
@@ -35,6 +36,8 @@ export function NoticeStack({
   onLibSetClick,
   docReverted,
   onDismissDocReverted,
+  crossProbeNotice,
+  onDismissCrossProbeNotice,
 }: {
   ready: boolean;
   libSync: { kind: string; done: number; total: number } | null;
@@ -50,6 +53,8 @@ export function NoticeStack({
   onLibSetClick: () => void;
   docReverted: string | null;
   onDismissDocReverted: () => void;
+  crossProbeNotice?: CrossProbeNotice | null;
+  onDismissCrossProbeNotice?: () => void;
 }) {
   return (
     <>
@@ -163,6 +168,34 @@ export function NoticeStack({
           >
             {docReverted}
           </button>
+        )}
+        {crossProbeNotice && (
+          <div
+            data-testid="cross-probe-toast"
+            className="flex max-w-md items-center gap-3 rounded bg-neutral-900/95 px-3 py-2 text-xs text-neutral-100 shadow-lg ring-1 ring-neutral-500/40"
+          >
+            <span>{crossProbeNotice.text}</span>
+            {crossProbeNotice.action && (
+              <button
+                data-testid="cross-probe-toast-action"
+                className="rounded bg-neutral-100 px-2 py-0.5 font-medium text-neutral-900"
+                onClick={() => {
+                  crossProbeNotice.action?.run();
+                  onDismissCrossProbeNotice?.();
+                }}
+              >
+                {crossProbeNotice.action.label}
+              </button>
+            )}
+            <button
+              className="text-neutral-400 hover:text-neutral-100"
+              onClick={onDismissCrossProbeNotice}
+              title="Dismiss"
+              aria-label="Dismiss"
+            >
+              ×
+            </button>
+          </div>
         )}
       </div>
     </>

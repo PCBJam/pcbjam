@@ -26,7 +26,7 @@ import {
 } from "@/lib/config";
 import type { CommentAccess } from "@/lib/read-only-mode";
 import { redirectTargetFor } from "@/lib/redirect";
-import { loadSessionIdentity, seedSessionIdentity } from "@/lib/session-identity";
+import { loadSessionIdentity, seedSessionIdentity, sessionIdentity } from "@/lib/session-identity";
 import { useThemeValue } from "@/lib/theme";
 import { bootKicadTool } from "@/wasm/boot";
 import {
@@ -144,7 +144,16 @@ import {
 } from "@/components/wasm-tool/collab-start";
 import { installQuitHook } from "@/components/wasm-tool/quit-hook";
 import { runDeferredModelPrescan } from "@/wasm/libs/models-bridge";
-import { chooseToolFile, installToolNavigationHook } from "@/components/wasm-tool/tool-navigation";
+import {
+  chooseToolFile,
+  installToolNavigationHook,
+  projectToolUrl,
+} from "@/components/wasm-tool/tool-navigation";
+import {
+  crossProbeChannelName,
+  installCrossProbe,
+  isProbeTool,
+} from "@/components/wasm-tool/cross-probe";
 import { markDeliberateNavigation } from "@/components/wasm-tool/quit-hook";
 import { setActiveEditor } from "@/wasm/active-editor";
 import { publishViewport } from "@/wasm/viewport-store";
@@ -1333,6 +1342,30 @@ export function WasmTool({
         // Identity must be settled before the doc session / presence binds
         // below — effectively instant, it raced the multi-second wasm boot.
         await identityReady;
+        // Cross-tab cross-probing (cross-probe 0001): join the user's
+        // project channel now (as "loading", so a sender never opens a second
+        // tab for us); probes are accepted once the open below settles.
+        const crossProbe = isProbeTool(tool)
+          ? installCrossProbe(win, {
+              tool,
+              channelName: crossProbeChannelName({
+                user: sessionIdentity()?.slug ?? null,
+                scope: currentScope(),
+                slug,
+                copy: copySegment(),
+              }),
+              urlFor: (other) => projectToolUrl(win, slug, files, other, targetPath),
+              exec: (cmd, force) =>
+                Boolean(
+                  (
+                    win.Module as
+                      | { kicadCrossProbeExec?: (c: string, force: boolean) => boolean }
+                      | undefined
+                  )?.kicadCrossProbeExec?.(cmd, force),
+                ),
+              log: append,
+            })?.crossProbe
+          : undefined;
         // Register the save sink before the file opens: from here on, every
         // editor File→Save (MEMFS write) is routed onward through saveBytes.
         // Read-only sessions register neither upload nor the save-driven room
@@ -1467,6 +1500,7 @@ export function WasmTool({
           onFileProgress: (done, total) =>
             setFileSync(done >= total ? null : { done, total }),
         });
+        if (openResult !== "failed") crossProbe?.markReady();
         // Staged: remember the sidecars' bytes so a later sweep uploads only
         // what the editor changed (proposal 21 S6).
         if (!readOnly && saveBytes && tool === "pcbnew" && targetPath) {
@@ -2249,6 +2283,8 @@ export function WasmTool({
         onLibSetClick={notices.onLibSetClick}
         docReverted={notices.docReverted}
         onDismissDocReverted={notices.dismissDocReverted}
+        crossProbeNotice={notices.crossProbeNotice}
+        onDismissCrossProbeNotice={notices.dismissCrossProbeNotice}
       />
 
       </WasmErrorBoundary>
