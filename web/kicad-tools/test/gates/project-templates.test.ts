@@ -42,7 +42,11 @@ afterAll(() => rmSync(root, { recursive: true, force: true }));
 describe.skipIf(!HAVE_CLI)("new KiCad project templates", () => {
   it.each(variants.map((v) => [`${v.profile.id} ${v.tier} ${v.layers}L${v.smallest ? " smallest" : ""}`, v]))(
     "%s loads and enforces its rules",
-    (label, { profile, tier, layers, smallest }) => {
+    async (label, { profile, tier, layers, smallest }) => {
+      // Every case blocks on spawnSync for ~4 s. Yield first so Vitest's
+      // worker RPC is answered between cases: 21 cases back to back on a slow
+      // runner (83 s) tripped its 60 s "Timeout calling onTaskUpdate".
+      await new Promise((resolve) => setImmediate(resolve));
       const dir = path.join(root, label.replace(/\s+/g, "-"));
       mkdirSync(dir, { recursive: true });
       const files = generateKicadProject(
