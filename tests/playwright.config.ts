@@ -141,10 +141,10 @@ export default defineConfig({
   // retries:0 — the suites are deterministic (no blind sleeps or "if element
   // exists" branches; screenshots go through stableShot for the offline gate,
   // not asserted inline), so a failure is a real failure rather than flake to
-  // mask with a retry. The one exception is the release (tag) run, where
-  // release.yml sets PW_E2E_RETRIES=1: its commit already passed this suite on
-  // main, so one retry keeps a single flake in ~940 tests from failing the
-  // release. A retried test is still reported as "flaky" and its first
+  // mask with a retry. The exceptions are pushes to main and the release (tag)
+  // run, where ci-ubicloud.yml / release.yml set PW_E2E_RETRIES=1 (PRs and
+  // staging stay at 0, so flakes surface there first): one retry keeps a single
+  // flake in ~940 tests from blocking the release. A retried test is still reported as "flaky" and its first
   // attempt's trace is kept.
   retries: Number(process.env.PW_E2E_RETRIES) || 0,
   // Parallel workers on CI too (Playwright default ≈ 50% of cores) — the

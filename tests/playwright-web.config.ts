@@ -89,7 +89,7 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   // retries:0 — same determinism doctrine as the merged config (the suite's
   // blind sleeps were replaced with condition waits when it was wired into CI);
-  // one retry on the release (tag) run only (PW_E2E_RETRIES, see the merged config).
+  // one retry on main pushes and the release (tag) run only (PW_E2E_RETRIES, see the merged config).
   retries: Number(process.env.PW_E2E_RETRIES) || 0,
   // Parallel workers (Playwright default ≈ 50% of cores), same as the merged
   // config — the kicad suite already runs 4 workers of giant wasm runtimes on

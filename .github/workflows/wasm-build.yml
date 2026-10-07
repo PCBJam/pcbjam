@@ -37,7 +37,7 @@ on:
         type: boolean
         default: false
       e2e_retries:
-        description: "Playwright retries for the gating e2e suites (0 everywhere except the release run)"
+        description: "Playwright retries for the gating e2e suites (1 on main pushes and the release run, 0 elsewhere)"
         type: number
         default: 0
     secrets:

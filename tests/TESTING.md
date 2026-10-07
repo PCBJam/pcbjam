@@ -64,10 +64,11 @@ only) — not playwright directly. One spec on one engine:
 
 - **`retries: 0`** in both configs (`playwright.config.ts` — the merged wasm-suite config —
   and `playwright-web.config.ts`). A failure is real; don't mask it with a retry.
-- The one exception is the release (tag) run: `release.yml` passes `e2e_retries: 1` to the
-  shared build workflow, which sets `PW_E2E_RETRIES=1` for the two gating suites. The tagged
-  commit already passed with no retries on main, so one retry only keeps a single flaky test
-  from failing the release. The retried test is reported as "flaky" and keeps its first
+- The exceptions are pushes to main and the release (tag) run: `ci-ubicloud.yml` (on a
+  push to main) and `release.yml` pass `e2e_retries: 1` to the shared build workflow, which
+  sets `PW_E2E_RETRIES=1` for the two gating suites. PRs and the staging deploy keep 0, so a
+  flake still shows up there first; on main, one retry keeps a single flaky test in ~940
+  from blocking the tag. The retried test is reported as "flaky" and keeps its first
   attempt's trace — treat it as a bug to fix, not as noise.
 
 ## A test that sits until its timeout

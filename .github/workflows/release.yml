@@ -79,8 +79,8 @@ jobs:
       build_3d_viewer: "ON"
       run_tests: true
       upload_output: true
-      # The tagged commit already passed these suites on main with no retries;
-      # one retry here keeps a single flaky test from failing the release.
+      # The tagged commit already passed these suites on main (also with one
+      # retry); one retry here keeps a single flaky test from failing the release.
       e2e_retries: 1
     secrets:
       # Read-only R2 pair so the screenshot drift report runs on tag builds too

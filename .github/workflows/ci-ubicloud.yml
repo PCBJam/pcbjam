@@ -42,3 +42,7 @@ jobs:
       build_3d_viewer: "ON"
       run_tests: true
       no_cache: ${{ inputs.no_cache || false }}
+      # One retry on a push to main only (PRs and the staging deploy stay at 0):
+      # main runs are the last gate before a tag, and a single Firefox flake
+      # there blocks the release. A retried test is still reported as "flaky".
+      e2e_retries: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && 1 || 0 }}

@@ -4,7 +4,7 @@ README.md details how to run the project
 A lot of native module have to be compiled to wasm, the most complex is wxwidgets
 /kicad and /wxwidgets are git submodules from our own forks
 The e2e tests are in /tests, with a README and WHATWORKS md files
-Test determinism rules (no blind sleeps/ifs, `stableShot` screenshots, retries:0 except one retry on the release run) are in tests/TESTING.md, enforced by `npm run lint:determinism`.
+Test determinism rules (no blind sleeps/ifs, `stableShot` screenshots, retries:0 except one retry on main pushes and the release run) are in tests/TESTING.md, enforced by `npm run lint:determinism`.
 The e2e tests are separated per feature
 Wxwidgets wasm port has hooks for finding positions of UI elements, tests use that
 The test screenshot baselines live in a private R2 bucket (content-addressed by sha256), pinned per engine by the R2-hosted manifest baselines/pcbjam/manifest.json — NOTHING manifest-related is in git; tests/baseline-screenshots/{chromium,firefox}/ is a gitignored local cache — `cd tests && npm run screenshots:fetch-manifest && npm run screenshots:fetch` materializes it (needs the R2 credentials in tests/tools/screenshots/README.md). CI's Linux render is the source of truth (tooling: tests/tools/screenshots/, see its README).
