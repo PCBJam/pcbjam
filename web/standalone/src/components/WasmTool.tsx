@@ -112,7 +112,9 @@ import {
 import { sidecarPathsFor, startSidecarRooms, type SidecarRooms } from "@/wasm/collab/sidecar-rooms";
 import { boardSidecarPaths, createSidecarSweep, type SidecarSweep } from "@/wasm/collab/sidecar-sweep";
 import type * as Y from "yjs";
-import { createOomWatch, respawnInNewTab } from "@/recovery/oom-watch";
+import { createOomWatch, restartViaAirlock } from "@/recovery/oom-watch";
+import { useTabCensus } from "@/recovery/useTabCensus";
+import { isFirefox, type EditorTabInfo } from "@/recovery/tab-census";
 import { MemoryExhaustedDialog } from "@/recovery/MemoryExhaustedDialog";
 import type { SourceDescriptor } from "@/lib/project-source-shared";
 import { SourceChip } from "@/components/SourceChip";
@@ -388,6 +390,13 @@ export function WasmTool({
   const [showLog, setShowLog] = React.useState(false);
   const consolePanelRef = React.useRef<HTMLDivElement>(null);
   const [oomExhausted, setOomExhausted] = React.useState(false);
+  // Tab census (0009): answer other tabs, warn in Firefox about editors sharing
+  // one process, and list them in the out-of-memory dialog.
+  const census = useTabCensus(tool);
+  const [oomOtherTabs, setOomOtherTabs] = React.useState<EditorTabInfo[]>([]);
+  React.useEffect(() => {
+    if (oomExhausted) void census.otherTabs().then(setOomOtherTabs);
+  }, [oomExhausted, census.otherTabs]);
   // Terminal failure, rendered INDEPENDENTLY of `ready`. The boot overlay only
   // exists while `!ready`, so anything that killed the runtime after the editor
   // came up (a wasm abort/trap, a failed staging fetch surfacing late) used to
@@ -2125,7 +2134,9 @@ export function WasmTool({
       >
       {oomExhausted && (
         <MemoryExhaustedDialog
-          onOpenNewTab={() => respawnInNewTab()}
+          firefox={isFirefox()}
+          otherTabs={oomOtherTabs}
+          onRestart={() => restartViaAirlock()}
           onReload={() => window.location.reload()}
         />
       )}
@@ -2285,6 +2296,8 @@ export function WasmTool({
         onDismissDocReverted={notices.dismissDocReverted}
         crossProbeNotice={notices.crossProbeNotice}
         onDismissCrossProbeNotice={notices.dismissCrossProbeNotice}
+        sharedTabs={census.notice}
+        onDismissSharedTabs={census.dismissNotice}
       />
 
       </WasmErrorBoundary>

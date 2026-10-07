@@ -26,6 +26,7 @@ export function BlockingDialog({
   reasons = [],
   primary,
   secondary,
+  children,
 }: {
   title: string;
   description?: string;
@@ -34,6 +35,8 @@ export function BlockingDialog({
   primary?: BlockingAction;
   /** Left-of-primary button. */
   secondary?: BlockingAction;
+  /** Extra content between the reasons and the buttons. */
+  children?: React.ReactNode;
 }) {
   useTrustedPrompt(true);
   return (
@@ -58,6 +61,8 @@ export function BlockingDialog({
             ))}
           </ul>
         )}
+
+        {children}
 
         {(primary || secondary) && (
           <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">

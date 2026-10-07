@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex" />
+    <link rel="icon" href="/favicon.ico" sizes="32x32" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>Restarting the editor — PCBJam</title>
+    <!-- Process airlock (standalone-hardening 0009). Served WITHOUT COOP/COEP
+         (deploy/demo/_headers, vite.config.ts) so the tab leaves Firefox's
+         shared cross-origin-isolated process. Keep this page tiny: no React,
+         no wasm, nothing that holds memory. Theme boot mirrors index.html. -->
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem("pcbjam-theme");
+          if (t !== "light" && t !== "dark") {
+            t = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+          }
+          document.documentElement.classList.toggle("dark", t === "dark");
+        } catch (e) {
+          /* storage/matchMedia unavailable — stay light */
+        }
+      })();
+    </script>
+    <style>
+      :root { --bg: #f7f7f8; --card: #ffffff; --fg: #18181b; --muted: #63636b; --line: #e2e2e6; --accent: #18181b; --accent-fg: #fafafa; }
+      :root.dark { --bg: #0b0b0d; --card: #16161a; --fg: #f4f4f5; --muted: #a1a1aa; --line: #2c2c33; --accent: #f4f4f5; --accent-fg: #18181b; color-scheme: dark; }
+      html, body { height: 100%; }
+      body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; display: grid; place-items: center; padding: 16px; box-sizing: border-box; }
+      main { width: 100%; max-width: 30rem; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 24px; box-sizing: border-box; }
+      h1 { font-size: 18px; margin: 0 0 8px; }
+      p { margin: 0 0 12px; color: var(--muted); }
+      ul { margin: 0 0 12px; padding: 0; list-style: none; display: grid; gap: 6px; }
+      li { border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; overflow-wrap: anywhere; }
+      .count { font-variant-numeric: tabular-nums; color: var(--fg); font-weight: 600; }
+      .actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+      button { font: inherit; border-radius: 6px; padding: 7px 14px; cursor: pointer; border: 1px solid var(--line); background: transparent; color: var(--fg); }
+      button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+      button:focus-visible { outline: 2px solid #3b82f6; outline-offset: 2px; }
+    </style>
+  </head>
+  <body>
+    <main id="airlock" aria-live="polite">
+      <h1>Restarting the editor</h1>
+      <p>Freeing memory…</p>
+    </main>
+    <script type="module" src="/src/recovery/recover-page.ts"></script>
+  </body>
+</html>

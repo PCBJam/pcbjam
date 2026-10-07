@@ -146,6 +146,9 @@ jobs:
           echo "$headers" | grep -qi '^cross-origin-opener-policy: same-origin'
           echo "$headers" | grep -qi '^cross-origin-embedder-policy: require-corp'
           echo "$headers" | grep -qi '^x-robots-tag:.*noindex'
+          # OOM airlock (standalone-hardening 0009): /recover must NOT be isolated.
+          recover=$(curl --fail --retry 12 --retry-delay 5 --retry-all-errors -I "$EDITOR_ORIGIN/recover")
+          if echo "$recover" | grep -qi '^cross-origin-opener-policy:'; then echo "/recover is cross-origin isolated"; exit 1; fi
 
       - name: Verify deployed plugin runtime boundaries
         run: node scripts/deploy/verify-plugin-runtime.mjs web/standalone/src/generated/plugin-runtime.json "$EDITOR_ORIGIN"

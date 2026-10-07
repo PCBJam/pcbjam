@@ -3,10 +3,11 @@
  *
  * The KiCad WASM runtime is process-global and cannot be torn down (see boot.ts:
  * "Reload the page to open another tool"). After an out-of-memory the wasm heap
- * and `Module` are unrecoverable in-context, so the only clean reset is a brand
- * new browsing context — exactly the manual "duplicate the tab, close the dead
- * one" fix. This module automates it, capped at MAX_RETRIES so a genuinely
- * too-small machine stops instead of looping forever.
+ * and `Module` are unrecoverable in-context, so the only clean reset is a fresh
+ * page in a fresh content process. Recovery goes through the /recover airlock
+ * (0009, airlock.ts): a plain reload stays in Firefox's shared cross-origin-
+ * isolated process, which is exactly the one that ran out. Capped at
+ * MAX_RETRIES so a genuinely too-small machine stops instead of looping forever.
  *
  * Two crash modes:
  *   - Mode A (soft abort): JS is still alive — emscripten `abort()` /
@@ -24,10 +25,11 @@
  * `win`/`storage` seams (default to the real `window`/`localStorage`).
  */
 
+import { airlockUrl } from "./airlock";
+
 export const MAX_RETRIES = 2;
 
 const RETRY_PARAM = "oomRetry";
-const STRATEGY_PARAM = "oomStrategy";
 const SENTINEL_PREFIX = "oom:running:";
 
 /** A session alive this long is "healthy" → clear the retry chain. */
@@ -109,11 +111,6 @@ export function createOomWatch(opts: OomWatchOptions): OomWatch {
     const n = Number(raw ?? "0");
     return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
   };
-
-  const strategy = (): "replace" | "newtab" =>
-    new URLSearchParams(win.location.search).get(STRATEGY_PARAM) === "newtab"
-      ? "newtab"
-      : "replace";
 
   // --- sentinel helpers ------------------------------------------------------
 
@@ -201,24 +198,9 @@ export function createOomWatch(opts: OomWatchOptions): OomWatch {
     url.searchParams.set(RETRY_PARAM, String(n + 1));
     clearOwnSentinel(); // the new context writes its own sentinel
 
-    if (strategy() === "newtab") {
-      try {
-        const w = win.open(url.toString(), "_blank");
-        if (w) {
-          // We own the new tab → close ourselves; the new tab is the survivor.
-          // (window.close only reliably works on script-opened windows; on the
-          // very first user-opened tab it may be ignored — acceptable, the new
-          // tab still works.)
-          win.close();
-          return;
-        }
-      } catch {
-        /* popup blocked → fall through to in-place replace */
-      }
-    }
-    // Default + fallback: in-place reload with the bumped counter (fresh heap,
-    // no popup risk).
-    win.location.replace(url.toString());
+    // Through the airlock (0009), never an in-place reload: leaving for a
+    // non-isolated page is what lets Firefox drop the exhausted process.
+    win.location.replace(airlockUrl(url.toString()));
   };
 
   // --- Mode A listeners ------------------------------------------------------
@@ -309,30 +291,13 @@ export function createOomWatch(opts: OomWatchOptions): OomWatch {
 }
 
 /**
- * User-gesture escape hatch for the terminal dialog: open the editor in a brand
- * new tab with a clean retry chain, then close this one.
- *
- * This is deliberately NOT the automatic recovery path: it runs from a real
- * click, so `window.open` is not popup-blocked, and a fresh top-level browsing
- * context is the most reliable way to actually drop the OOM'd wasm heap — an
- * in-place `location.replace` reload does not reliably release it in every
- * browser (notably Firefox). `window.close()` may still be refused on the
- * original, user-opened tab; that's fine — the new tab is the working one and
- * the user can close the old one. Returns whether a new tab was opened.
+ * The terminal dialog's "Restart the editor": the same airlock trip as the
+ * automatic recovery, with a fresh retry chain (this is a manual retry).
  */
-export function respawnInNewTab(win: Window = window): boolean {
+export function restartViaAirlock(win: Window = window): void {
   const url = new URL(win.location.href);
-  url.searchParams.delete(RETRY_PARAM); // fresh chain — this is a manual retry
-  const opened = win.open(url.toString(), "_blank");
-  if (opened) {
-    try {
-      win.close();
-    } catch {
-      /* original tab may refuse to close — new tab is the survivor anyway */
-    }
-    return true;
-  }
-  return false;
+  url.searchParams.delete(RETRY_PARAM);
+  win.location.replace(airlockUrl(url.toString()));
 }
 
 function safeLocalStorage(win: Window): Storage | null {

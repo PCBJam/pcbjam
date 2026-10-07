@@ -76,6 +76,27 @@ function serveWasm(): Plugin {
   };
 }
 
+// The /recover airlock page (standalone-hardening 0009) must NOT be cross-origin
+// isolated: leaving the isolated process is its whole job. Production gets that
+// from deploy/demo/_headers; here the server/preview `headers` would add
+// COOP/COEP to every response, so drop them for this one page and map the
+// extension-less URL (what Cloudflare serves) onto the built recover.html.
+function recoverAirlock(): Plugin {
+  const ISOLATION = new Set(["cross-origin-opener-policy", "cross-origin-embedder-policy"]);
+  const middleware = (server: { middlewares: { use: Function } }) => {
+    server.middlewares.use((req: { url?: string }, res: import("node:http").ServerResponse, next: () => void) => {
+      const [pathname, query] = (req.url ?? "").split("?") as [string, string | undefined];
+      if (pathname !== "/recover" && pathname !== "/recover.html") return next();
+      req.url = `/recover.html${query ? `?${query}` : ""}`;
+      const setHeader = res.setHeader.bind(res);
+      res.setHeader = (name, value) => (ISOLATION.has(String(name).toLowerCase()) ? res : setHeader(name, value));
+      res.setHeader("Cache-Control", "no-store");
+      next();
+    });
+  };
+  return { name: "recover-airlock", configureServer: middleware, configurePreviewServer: middleware };
+}
+
 // Local POC artifacts are fixed trusted runtime files. Publisher UI is served
 // separately on :4318 and must never be made executable on the editor origin.
 function pluginRuntimeAssets(): Plugin {
@@ -156,7 +177,16 @@ fs.mkdirSync(path.resolve(__dirname,'src/generated'),{recursive:true});
 fs.writeFileSync(path.resolve(__dirname,'src/generated/plugin-runtime.json'),JSON.stringify({version:runtime.version,files:Object.keys(runtime.manifest.files)}));
 return {
   define: { 'import.meta.env.VITE_PLUGIN_RUNTIME_BASE': JSON.stringify(runtime.base) },
-  plugins: [pluginRuntimeAssets(), serveWasm(), react()],
+  plugins: [recoverAirlock(), pluginRuntimeAssets(), serveWasm(), react()],
+  build: {
+    rollupOptions: {
+      // recover.html: the OOM process airlock (0009), its own tiny entry.
+      input: {
+        main: path.resolve(__dirname, "index.html"),
+        recover: path.resolve(__dirname, "recover.html"),
+      },
+    },
+  },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),

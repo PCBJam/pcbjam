@@ -4,6 +4,7 @@ import type { SaveBlock } from "@/wasm/save-flow";
 import { libSyncLabel } from "./DownloadConsent";
 import type { CrossProbeNotice } from "./cross-probe";
 import type { LibSetNotice } from "./useLibNotices";
+import type { SharedTabsNotice } from "@/recovery/useTabCensus";
 
 /** The open document was deleted / moved by a collaborator's file op
  *  (project-page 0003): nothing typed from here on can be saved. */
@@ -38,6 +39,8 @@ export function NoticeStack({
   onDismissDocReverted,
   crossProbeNotice,
   onDismissCrossProbeNotice,
+  sharedTabs,
+  onDismissSharedTabs,
 }: {
   ready: boolean;
   libSync: { kind: string; done: number; total: number } | null;
@@ -55,6 +58,9 @@ export function NoticeStack({
   onDismissDocReverted: () => void;
   crossProbeNotice?: CrossProbeNotice | null;
   onDismissCrossProbeNotice?: () => void;
+  /** Firefox: other editor tabs share this tab's process memory (0009). */
+  sharedTabs?: SharedTabsNotice | null;
+  onDismissSharedTabs?: () => void;
 }) {
   return (
     <>
@@ -190,6 +196,29 @@ export function NoticeStack({
             <button
               className="text-neutral-400 hover:text-neutral-100"
               onClick={onDismissCrossProbeNotice}
+              title="Dismiss"
+              aria-label="Dismiss"
+            >
+              ×
+            </button>
+          </div>
+        )}
+        {sharedTabs && (
+          <div
+            data-testid="shared-tabs-toast"
+            className="flex max-w-md items-start gap-3 rounded bg-amber-950/95 px-3 py-2 text-xs text-amber-100 shadow-lg ring-1 ring-amber-500/40"
+          >
+            <span>
+              {sharedTabs.tabs.length === 1
+                ? "You have 1 other PCBJam editor open"
+                : `You have ${sharedTabs.tabs.length} other PCBJam editors open`}{" "}
+              ({sharedTabs.tabs.map((t) => t.title || t.url).join(", ")}). Firefox runs them in one
+              process with one memory budget, so a large design may run out of memory. Close the ones
+              you don't need.
+            </span>
+            <button
+              className="text-amber-300 hover:text-amber-100"
+              onClick={onDismissSharedTabs}
               title="Dismiss"
               aria-label="Dismiss"
             >

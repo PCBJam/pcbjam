@@ -1,56 +1,104 @@
-import { BlockingDialog } from "@/preflight/BlockingDialog";
+import * as React from "react";
+import { BlockingDialog, type BlockingReason } from "@/preflight/BlockingDialog";
+import type { EditorTabInfo } from "./tab-census";
 
 /**
- * Terminal "not enough memory" UI for feature 0002 — shown after the OOM retry
- * chain hits MAX_RETRIES. Reuses 0001's blocking dialog for visual consistency.
+ * Terminal "not enough memory" UI (feature 0002, rewritten for 0009) — shown
+ * after the OOM retry chain hits MAX_RETRIES.
  *
- * Offers two manual actions:
- *   - "Open in a new tab" (primary): a user-gesture respawn in a fresh browsing
- *     context. This sometimes succeeds where the automatic in-place reload did
- *     not, because a brand-new tab is the most reliable way to actually release
- *     the OOM'd wasm heap (an in-place reload doesn't, reliably, in every
- *     browser — notably Firefox).
- *   - "Reload this tab" (secondary): the simple in-place retry.
+ *   - "Restart the editor" (primary): the /recover airlock trip, which leaves
+ *     the browser process that ran out instead of reloading inside it.
+ *   - "Reload this tab" (secondary): the plain in-place retry.
  *
- * Copy is honest about lost unsaved edits (a respawn re-opens the same file but
- * loses in-tab edits not yet synced to the backend / Y.Doc).
+ * Firefox runs every cross-origin-isolated pcbjam.com page (editor, demo,
+ * www demos) in ONE process, so the copy names the open editor tabs (census)
+ * and the `about:processes` way of ending just that process. Pages cannot link
+ * to about: URLs, hence the copy button.
  */
 export function MemoryExhaustedDialog({
-  onOpenNewTab,
+  firefox,
+  otherTabs,
+  onRestart,
   onReload,
 }: {
-  onOpenNewTab?: () => void;
+  firefox: boolean;
+  otherTabs: EditorTabInfo[];
+  onRestart?: () => void;
   onReload?: () => void;
 }) {
+  const reasons: BlockingReason[] = [];
+  if (otherTabs.length > 0) {
+    reasons.push({
+      title: `Close your other editor tabs (${otherTabs.length} open)`,
+      detail: firefox
+        ? `Firefox runs all PCBJam editors in one shared process with one memory budget: ${tabList(otherTabs)}.`
+        : `Each open editor uses memory: ${tabList(otherTabs)}.`,
+    });
+  }
+  if (firefox) {
+    reasons.push({
+      title: "End the PCBJam process",
+      detail:
+        "Close other pcbjam.com tabs, including the demos. If that isn't enough, open about:processes in a new tab, find the row \"https://pcbjam.com (…, cross-origin isolated)\" and end it with its × button. Then restart the editor.",
+    });
+  } else {
+    reasons.push({
+      title: "End the PCBJam process",
+      detail:
+        "Press Shift+Esc to open the browser's task manager, end the PCBJam tab's process, then restart the editor.",
+    });
+  }
+  reasons.push(
+    {
+      title: "Free up memory",
+      detail:
+        "Close other tabs and applications, use a machine with more RAM, or open a smaller design.",
+    },
+    {
+      title: "Unsaved changes",
+      detail: "Edits that weren't synced to the server yet may be lost.",
+    },
+  );
+
   return (
     <BlockingDialog
-      title="Your device ran out of memory"
-      description="The editor tried to recover a few times but kept running out of memory, so it stopped to avoid looping. This design is likely too large for this device's available memory."
-      reasons={[
-        {
-          title: "Try a fresh tab",
-          detail:
-            "Opening the editor in a brand-new browser tab (and closing this one) sometimes frees enough memory to continue — especially in Firefox, where reloading in place may not fully release the previous session's memory.",
-        },
-        {
-          title: "Free up memory",
-          detail:
-            "Close other tabs and applications, use a desktop machine with more RAM, or open a smaller design.",
-        },
-        {
-          title: "Unsaved changes",
-          detail:
-            "Edits that weren't yet synced to the server may be lost. Any older tab left open can still be closed manually.",
-        },
-      ]}
-      primary={
-        onOpenNewTab
-          ? { label: "Open in a new tab", onClick: onOpenNewTab }
-          : undefined
-      }
-      secondary={
-        onReload ? { label: "Reload this tab", onClick: onReload } : undefined
-      }
-    />
+      title="The editor ran out of memory"
+      description="It restarted a few times and ran out of memory again, so it stopped instead of trying forever."
+      reasons={reasons}
+      primary={onRestart ? { label: "Restart the editor", onClick: onRestart } : undefined}
+      secondary={onReload ? { label: "Reload this tab", onClick: onReload } : undefined}
+    >
+      {firefox && <CopyAboutProcesses />}
+    </BlockingDialog>
+  );
+}
+
+function tabList(tabs: EditorTabInfo[]): string {
+  return tabs.map((t) => t.title || t.url).join(", ");
+}
+
+function CopyAboutProcesses() {
+  const [copied, setCopied] = React.useState(false);
+  return (
+    <div className="mt-3 flex items-center gap-2 text-sm">
+      <code
+        data-testid="oom-about-processes"
+        className="select-all rounded bg-muted px-2 py-1 font-mono text-xs"
+      >
+        about:processes
+      </code>
+      <button
+        type="button"
+        className="rounded border px-2 py-1 text-xs hover:bg-muted"
+        onClick={() => {
+          navigator.clipboard?.writeText("about:processes").then(
+            () => setCopied(true),
+            () => setCopied(false),
+          );
+        }}
+      >
+        {copied ? "Copied" : "Copy"}
+      </button>
+    </div>
   );
 }
