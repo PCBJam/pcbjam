@@ -7,6 +7,7 @@
  */
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { deflateSync } from "node:zlib";
 import * as path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { HAVE_CLI, REPO, run } from "./harness.ts";
@@ -14,6 +15,47 @@ import { HAVE_CLI, REPO, run } from "./harness.ts";
 const tmp = mkdtempSync(path.join(tmpdir(), "cli-contract-"));
 const out = (name: string) => path.join(tmp, name);
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
+
+/** A valid PNG of random RGB pixels (does not compress), base64. */
+function noisePng(w: number, h: number): string {
+  const crcTable = Array.from({ length: 256 }, (_, n) => {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    return c >>> 0;
+  });
+  const crc = (buf: Buffer) => {
+    let c = 0xffffffff;
+    for (const b of buf) c = crcTable[(c ^ b) & 0xff]! ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  };
+  const chunk = (type: string, body: Buffer) => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(body.length);
+    const typed = Buffer.concat([Buffer.from(type, "ascii"), body]);
+    const sum = Buffer.alloc(4);
+    sum.writeUInt32BE(crc(typed));
+    return Buffer.concat([len, typed, sum]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr.set([8, 2, 0, 0, 0], 8); // 8-bit RGB
+  const raw = Buffer.alloc((w * 3 + 1) * h);
+  let seed = 1;
+  for (let y = 0; y < h; y++) {
+    raw[y * (w * 3 + 1)] = 0; // filter: none
+    for (let x = 0; x < w * 3; x++) {
+      seed = (seed * 1103515245 + 12345) >>> 0;
+      raw[y * (w * 3 + 1) + 1 + x] = seed >>> 24;
+    }
+  }
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk("IHDR", ihdr),
+    chunk("IDAT", deflateSync(raw)),
+    chunk("IEND", Buffer.alloc(0)),
+  ]).toString("base64");
+}
 
 const version = (file: string) => Number(/\(version (\d+)\)/.exec(readFileSync(file, "utf8"))?.[1] ?? 0);
 
@@ -35,16 +77,55 @@ describe.skipIf(!HAVE_CLI)("kicad_tools CLI contract", () => {
     expect(run(["--lint", produced]).code).toBe(0);
   });
 
-  it("resaves schematics: one file per sheet, each lints clean", () => {
+  // Every caller reads only the entry's own file (kicad-validity 0005), so a
+  // hierarchy is loaded whole but only the entry sheet is written;
+  // --all-sheets keeps the one-file-per-sheet output.
+  it("resaves schematics: the entry sheet only, unless --all-sheets", () => {
     const r = run(["--resave", demoSch, out("sch")]);
     expect(r.code, r.stderr).toBe(0);
     expect(readdirSync(out("sch")).filter((f) => f.endsWith(".kicad_sch"))).toHaveLength(1);
     if (!existsSync(hierSch)) return;
     const h = run(["--resave", hierSch, out("hier")]);
     expect(h.code, h.stderr).toBe(0);
-    const produced = readdirSync(out("hier")).filter((f) => f.endsWith(".kicad_sch"));
+    expect(h.stderr).toContain("(resave, 1 sheet files)");
+    expect(readdirSync(out("hier"))).toEqual([path.basename(hierSch)]);
+    expect(run(["--lint", path.join(out("hier"), path.basename(hierSch))]).code).toBe(0);
+
+    const all = run(["--resave", "--all-sheets", hierSch, out("hier-all")]);
+    expect(all.code, all.stderr).toBe(0);
+    const produced = readdirSync(out("hier-all")).filter((f) => f.endsWith(".kicad_sch"));
     expect(produced.length).toBeGreaterThan(1);
-    for (const f of produced) expect(run(["--lint", path.join(out("hier"), f)]).code, f).toBe(0);
+    for (const f of produced) expect(run(["--lint", path.join(out("hier-all"), f)]).code, f).toBe(0);
+  });
+
+  // FormatStreamData sliced a UTF-8 wxString per 76-char line, which is
+  // quadratic: a 143 KB image took 3 s, a few of them made a sheet resave
+  // take minutes (kicad-validity 0005). The data must come back unchanged.
+  it("writes a large image quickly and byte-for-byte", () => {
+    const data = noisePng(320, 320);
+    const lines: string[] = [];
+    for (let i = 0; i < data.length; i += 76) lines.push(`"${data.slice(i, i + 76)}"`);
+    const sch = out("big-image.kicad_sch");
+    writeFileSync(
+      sch,
+      `(kicad_sch (version 20231120) (generator "eeschema") (generator_version "8.0")
+  (uuid "1c7e2a40-6b1d-4c1e-9f0a-3d4b5c6d7e80") (paper "A4")
+  (lib_symbols)
+  (image (at 100 100) (scale 1) (uuid "2d8f3b51-7c2e-4d2f-8a1b-4e5c6d7e8f91")
+    (data ${lines.join("\n")}))
+  (sheet_instances (path "/" (page "1")))
+)
+`,
+    );
+    const t0 = Date.now();
+    const r = run(["--resave", sch, out("big-image")]);
+    const ms = Date.now() - t0;
+    expect(r.code, r.stderr).toBe(0);
+    const written = readFileSync(path.join(out("big-image"), "big-image.kicad_sch"), "utf8");
+    const back = /\(data\s+((?:"[^"]*"\s*)+)\)/.exec(written)?.[1]?.replace(/["\s]/g, "");
+    expect(back).toBe(data);
+    // ~400 KB of base64: seconds to minutes before the fix, well under 1 s after.
+    expect(ms).toBeLessThan(10_000);
   });
 
   // The headless runtime skips InitPgm(), so each side registers the wx image

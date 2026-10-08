@@ -737,6 +737,12 @@ wxString defaultOutPath( const wxFileName& aIn, const wxString& aSuffix, const w
 // written as-loaded — a format upgrade must not change content.
 // Exit: 0 resaved / 2 usage / 4 load or parse failed / 5 write failed. Only 4
 // means "the input is not valid KiCad" — the upload gate keys off it.
+//
+// Only the entry sheet is written unless --all-sheets was given
+// (kicad-validity 0005): every caller reads just the entry's own file, and
+// the whole hierarchy is still loaded so the entry's instance data is right.
+
+static bool g_resaveAllSheets = false;
 
 int resaveSchematic( const char* aInPath, const wxFileName& aInFn, const wxString& aOutDir )
 {
@@ -763,6 +769,9 @@ int resaveSchematic( const char* aInPath, const wxFileName& aInFn, const wxStrin
 
         wxFileName srcFn( screen->GetFileName() );
         srcFn.MakeAbsolute();
+
+        if( !g_resaveAllSheets && screen != schematic->RootScreen() )
+            continue;
 
         wxString rel;
 
@@ -1253,19 +1262,22 @@ int symConvertMain( int argc, char** argv )
         // Same rationale as --lint: headless runtime, parseable output.
         wxDisableAsserts();
 
-        if( argc < 4 )
+        const int first = ( argc >= 3 && std::strcmp( argv[2], "--all-sheets" ) == 0 ) ? 3 : 2;
+        g_resaveAllSheets = first == 3;
+
+        if( argc < first + 2 )
         {
-            std::fprintf( stderr, "usage: kicad_tools --resave <file> <outdir>\n" );
+            std::fprintf( stderr, "usage: kicad_tools --resave [--all-sheets] <file> <outdir>\n" );
             return 2;
         }
 
         try
         {
-            return runResave( argv[2], argv[3] );
+            return runResave( argv[first], argv[first + 1] );
         }
         catch( const std::exception& e )
         {
-            std::fprintf( stderr, "%s: error: %s\n", argv[2], e.what() );
+            std::fprintf( stderr, "%s: error: %s\n", argv[first], e.what() );
             return 4;
         }
     }
@@ -1284,19 +1296,22 @@ int symConvertMain( int argc, char** argv )
         // rest of the batch. Exit 2 = usage.
         wxDisableAsserts();
 
-        if( argc < 4 )
+        const int first = ( argc >= 3 && std::strcmp( argv[2], "--all-sheets" ) == 0 ) ? 3 : 2;
+        g_resaveAllSheets = first == 3;
+
+        if( argc < first + 2 )
         {
-            std::fprintf( stderr,
-                          "usage: kicad_tools --resave-batch <outdir> <file> [<file>...]\n" );
+            std::fprintf( stderr, "usage: kicad_tools --resave-batch [--all-sheets] <outdir> "
+                                  "<file> [<file>...]\n" );
             return 2;
         }
 
-        for( int n = 3; n < argc; n++ )
+        for( int n = first + 1; n < argc; n++ )
         {
-            const int index = n - 3;
+            const int index = n - first - 1;
             char      sub[32];
             std::snprintf( sub, sizeof( sub ), "/%d", index );
-            const std::string outDir = std::string( argv[2] ) + sub;
+            const std::string outDir = std::string( argv[first] ) + sub;
             int               rc;
 
             try
@@ -1351,8 +1366,8 @@ int symConvertMain( int argc, char** argv )
 
     std::fprintf( stderr, "usage: kicad_tools --convert-lib <input.lib> <output.kicad_sym>\n"
                           "       kicad_tools --lint [--strict] <file> [<file>...]\n"
-                          "       kicad_tools --resave <file> <outdir>\n"
-                          "       kicad_tools --resave-batch <outdir> <file> [<file>...]\n"
+                          "       kicad_tools --resave [--all-sheets] <file> <outdir>\n"
+                          "       kicad_tools --resave-batch [--all-sheets] <outdir> <file> [<file>...]\n"
                           "       kicad_tools --erc [--json] [--strict] <file.kicad_sch> [<out>]\n"
                           "       kicad_tools --netlist [--xml] <file.kicad_sch> [<out>]\n"
                           "       kicad_tools --bom <file.kicad_sch> [<out>]\n"

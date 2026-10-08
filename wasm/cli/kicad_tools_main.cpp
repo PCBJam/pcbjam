@@ -19,13 +19,15 @@
  *                       (.kicad_pcb/.kicad_mod get a FULL parse here — the
  *                       pcbnew parser is linked; the lint driver calls back
  *                       into pcbToolsLintBoard/pcbToolsLintFootprint)
- *     kicad_tools --resave <file> <outdir>
+ *     kicad_tools --resave [--all-sheets] <file> <outdir>
  *                       (full parse + rewrite in the current file-format
  *                       version — kicad-validity 0001; .kicad_pcb via the
- *                       pcbToolsResaveBoard callback, .kicad_sch one file per
- *                       sheet, .kicad_sym/.lib via ConvertLibrary. Exit 4 =
- *                       input invalid, 5 = write failed)
- *     kicad_tools --resave-batch <outdir> <file> [<file>...]
+ *                       pcbToolsResaveBoard callback, .kicad_sch loads the
+ *                       hierarchy but writes only the entry sheet unless
+ *                       --all-sheets (one file per sheet), .kicad_sym/.lib
+ *                       via ConvertLibrary. Exit 4 = input invalid, 5 =
+ *                       write failed)
+ *     kicad_tools --resave-batch [--all-sheets] <outdir> <file> [<file>...]
  *                       (N resaves, one runtime init — bulk-upload
  *                       normalization. Outputs in <outdir>/<index>/; per-file
  *                       verdicts as "RESAVE-BATCH <index> <exit-code>" stderr
