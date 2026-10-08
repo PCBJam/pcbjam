@@ -128,6 +128,9 @@ jobs:
           # keep the /plugin-guide → docs redirects.
           grep -v '^/\*  *\/index\.html  *200' web/standalone/dist/_redirects > web/standalone/dist/_redirects.tmp || true
           mv web/standalone/dist/_redirects.tmp web/standalone/dist/_redirects
+          # The Pages copy of the runtime handler: this Worker runs the same
+          # file as its `main`, and must not upload them as public assets.
+          rm web/standalone/dist/_worker.js web/standalone/dist/_routes.json
 
       - name: Verify immutable plugin runtime assets
         run: node scripts/deploy/verify-plugin-runtime.mjs web/standalone/src/generated/plugin-runtime.json web/standalone/dist

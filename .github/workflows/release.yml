@@ -41,8 +41,10 @@ env:
   PAGES_PROD_BRANCH: production
   # Backed editor deployment (remote mode against the closed API). The closed
   # stack (api./app.pcbjam.com) deploys from the pcbjam-private repo; release
-  # order when both change: pcbjam-private first, then this repo.
+  # order when both change: this repo first (its deploy checks that this editor
+  # serves its plugin runtime and pins this tag's pcbjam-tools), then pcbjam-private.
   EDITOR_PAGES_PROJECT: pcbjam-editor
+  EDITOR_ORIGIN: https://editor.pcbjam.com
   EDITOR_API_BASE: https://api.pcbjam.com
   # Mgmt app origin: non-editor routes on the editor host redirect here
   # (standalone-hardening 0006). The demo build never sets this.
@@ -256,6 +258,9 @@ jobs:
           ${ERRORS_DSN:+--errors-dsn "$ERRORS_DSN" --errors-env production}
           --models-source registry
 
+      - name: Verify immutable plugin runtime assets
+        run: node scripts/deploy/verify-plugin-runtime.mjs web/standalone/src/generated/plugin-runtime.json web/standalone/dist
+
       - name: Ensure Pages project exists
         run: >
           npx --yes wrangler@4 pages project create "$EDITOR_PAGES_PROJECT"
@@ -268,3 +273,13 @@ jobs:
           --project-name "$EDITOR_PAGES_PROJECT"
           --branch "$PAGES_PROD_BRANCH"
           --commit-dirty=true
+
+      # dist/_worker.js answers /plugin-runtime/* (build-editor.mjs). Retried:
+      # a fresh deploy can take a moment to reach every edge.
+      - name: Verify deployed plugin runtime boundaries
+        run: |
+          for attempt in 1 2 3 4 5 6; do
+            node scripts/deploy/verify-plugin-runtime.mjs web/standalone/src/generated/plugin-runtime.json "$EDITOR_ORIGIN" && exit 0
+            sleep 10
+          done
+          exit 1

@@ -16,10 +16,15 @@ import {
   copyFileSync,
   existsSync,
   lstatSync,
+  mkdtempSync,
   renameSync,
   rmSync,
+  writeFileSync,
 } from "node:fs";
-import { join, resolve } from "node:path";
+import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 function parseArgs(argv) {
   const a = {
@@ -85,7 +90,7 @@ function gitSha(cwd) {
   }
 }
 
-function main() {
+async function main() {
   const a = parseArgs(process.argv);
   const repoRoot = resolve(process.cwd());
   const standalone = join(repoRoot, "web/standalone");
@@ -171,8 +176,47 @@ function main() {
   for (const f of ["_headers", "_redirects"]) {
     copyFileSync(join(repoRoot, "deploy/demo", f), join(dist, f));
   }
+  await writePagesRuntimeWorker(standalone, dist);
 
   console.log(`done → ${dist} (ready for: wrangler pages deploy)`);
+}
+
+// Plugin runtime files (pcbjam-private docs/features/plugins/0013): a missing
+// or stale /plugin-runtime/* URL must answer 404, never the SPA index.html the
+// `/*` fallback above serves. Pages advanced mode runs dist/_worker.js, and
+// _routes.json limits it to those URLs; every other request stays static, with
+// _headers/_redirects. It is the handler the staging editor Worker runs
+// (wrangler.staging.jsonc `main`), bundled with its runtime list. A Workers
+// Static Assets deploy must delete both files (deploy-staging.yml does).
+async function writePagesRuntimeWorker(standalone, dist) {
+  const require = createRequire(join(standalone, "package.json"));
+  const vite = join(dirname(require.resolve("vite/package.json")), "dist/node/index.js");
+  const { build } = await import(pathToFileURL(vite).href);
+  const out = mkdtempSync(join(tmpdir(), "pcbjam-pages-worker-"));
+  try {
+    await build({
+      configFile: false,
+      root: standalone,
+      publicDir: false,
+      logLevel: "warn",
+      ssr: { target: "webworker", noExternal: true },
+      build: {
+        ssr: join(standalone, "plugin-assets-worker.ts"),
+        outDir: out,
+        emptyOutDir: true,
+        target: "es2022",
+        minify: false,
+        rollupOptions: { output: { format: "es", entryFileNames: "_worker.js" } },
+      },
+    });
+    copyFileSync(join(out, "_worker.js"), join(dist, "_worker.js"));
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
+  writeFileSync(
+    join(dist, "_routes.json"),
+    JSON.stringify({ version: 1, include: ["/plugin-runtime/*"], exclude: [] }) + "\n",
+  );
 }
 
 function isSymlink(p) {
@@ -183,4 +227,4 @@ function isSymlink(p) {
   }
 }
 
-main();
+await main();
