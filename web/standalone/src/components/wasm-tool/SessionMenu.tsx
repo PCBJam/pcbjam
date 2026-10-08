@@ -230,7 +230,8 @@ export function SessionMenu({
   /** View-only / commenter sessions: navigate to the project's counterpart
    *  document (PCB ⇄ schematic); null when there is none. */
   jumpTool?: { tool: Tool; label: string; onClick: () => void } | null;
-  plugins?: PluginMenuProps;
+  /** `tutorialsOnly`: the session has `tutorials` but not `plugins` (plugins 0021) — no Plugins section. */
+  plugins?: PluginMenuProps & { tutorialsOnly?: boolean };
 }) {
   return (
     <OverlayMenu
@@ -338,7 +339,7 @@ export function SessionMenu({
       )}
 
       {plugins && <TutorialMenu {...plugins} />}
-      {plugins && <PluginMenu {...plugins} />}
+      {plugins && !plugins.tutorialsOnly && <PluginMenu {...plugins} />}
 
       <OverlayMenuSection label="View">
         {onToggleReviewerSelections && (

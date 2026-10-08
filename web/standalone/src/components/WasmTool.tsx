@@ -530,7 +530,11 @@ export function WasmTool({
   // lab turns plugins on without a backend.
   const pluginsOn = useSessionFeature("plugins");
   const tutorialsOn = useSessionFeature("tutorials");
-  const pluginPocEnabled = (pluginsOn || localPluginLab) && (tool === "pcbnew" || tool === "eeschema");
+  // Tutorials run on the plugin machinery without `plugins` (plugins 0021):
+  // the server then lists tutorials only, and the Session menu shows the
+  // Tutorials section without the Plugins one.
+  const tutorialsOnly = !pluginsOn && tutorialsOn && !localPluginLab;
+  const pluginPocEnabled = (pluginsOn || tutorialsOn || localPluginLab) && (tool === "pcbnew" || tool === "eeschema");
   const [pluginView, setPluginView] = React.useState<PluginView>(null);
   const pluginCatalog = usePluginCatalog(ready && pluginPocEnabled);
   // A tutorial just started here (Tutorials menu / web Tutorials page): open its panel.
@@ -2211,7 +2215,7 @@ export function WasmTool({
           onToggleChrome={() => toggleChromeHidden()}
           onShow3D={show3DFn}
           jumpTool={jumpTool}
-          plugins={pluginPocEnabled ? { tool, catalog: pluginCatalog, view: pluginView, onViewChange: setPluginView } : undefined}
+          plugins={pluginPocEnabled ? { tool, catalog: pluginCatalog, view: pluginView, onViewChange: setPluginView, tutorialsOnly } : undefined}
         />
       )}
 
