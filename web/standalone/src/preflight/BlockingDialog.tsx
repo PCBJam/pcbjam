@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Button, type ButtonProps } from "@/components/ui/button";
+import { Button, type ButtonProps } from "@pcbjam/ui";
 import { useTrustedPrompt } from "@/overlay/trusted-prompts";
 
 /**

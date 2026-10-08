@@ -408,6 +408,13 @@ jobs:
         working-directory: web
         run: pnpm --filter @pcbjam/standalone test
 
+      - name: "@pcbjam/ui typecheck and guardrails"
+        if: inputs.run_tests
+        working-directory: web
+        run: |
+          pnpm --filter @pcbjam/ui typecheck
+          pnpm --filter @pcbjam/ui test
+
       # kicad_tools gates (tasks-runner 0001 R2), in @pcbjam/kicad-tools and
       # run through its pcbjam-tools driver like production: the corpus lint
       # (fixtures + shared-codec round-trips — the wrapInBoardEnvelope-class

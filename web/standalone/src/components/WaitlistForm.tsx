@@ -1,8 +1,7 @@
 import * as React from "react";
 import { Loader2 } from "lucide-react";
 import { LANDING_URL, WAITLIST_URL } from "@/lib/config";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Button, Input } from "@pcbjam/ui";
 
 /**
  * Email capture for the standalone home page — a React port of the landing

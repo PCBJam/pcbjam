@@ -1,6 +1,6 @@
 ---
 name: git-feature-finish
-description: Land the current branch across all repos and push. On a FEATURE branch - merge into each repo's main (fast-forward only), push, offer to delete the branch. On a PROTECTED branch (main, or the staging line - root/pcbjam-shared `staging`, kicad/wxwidgets `staging-wasm-port`) - no merge, no delete, just push each repo's branch. Submodules first (kicad, wxwidgets, pcbjam-shared), then root - so the root push includes the pushed submodule SHAs. Stops for confirmation at each merge and push. Usage - "/git-feature-finish".
+description: Land the current branch across all repos and push. On a FEATURE branch - merge into each repo's main (fast-forward only), push, offer to delete the branch. On a PROTECTED branch (main, or the staging line - root/pcbjam-shared/pcbjam-shared-ui `staging`, kicad/wxwidgets `staging-wasm-port`) - no merge, no delete, just push each repo's branch. Submodules first (kicad, wxwidgets, pcbjam-shared, pcbjam-shared-ui), then root - so the root push includes the pushed submodule SHAs. Stops for confirmation at each merge and push. Usage - "/git-feature-finish".
 ---
 
 # git-feature-finish
@@ -16,7 +16,7 @@ branch (`on_protected` in `repo-status.sh`):
 
 Per-repo mains / staging names are in `scripts/git-workflow/repos.sh`
 (root=`main`/`staging`, kicad/wxwidgets=`wasm-port`/`staging-wasm-port`,
-pcbjam-shared=`main`/`staging`; `repo_counterpart_branch` maps root's branch to
+pcbjam-shared and pcbjam-shared-ui=`main`/`staging`; `repo_counterpart_branch` maps root's branch to
 each repo's expected one).
 
 ## Pre-flight (all of these must pass before anything is merged or pushed)
@@ -28,7 +28,7 @@ each repo's expected one).
 5. All participating repos must have `up_to_date_with_base: true` (feature rebased onto latest main, or local staging rebased onto origin/staging). If any isn't, STOP and instruct: "run `/git-feature-sync` first".
 6. None may have `rebase_in_progress: true`. If so, STOP.
 
-## Protected mode — steps, order: kicad, wxwidgets, pcbjam-shared, root
+## Protected mode — steps, order: kicad, wxwidgets, pcbjam-shared, pcbjam-shared-ui, root
 
 For each participating repo:
 

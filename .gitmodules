@@ -10,3 +10,7 @@
 	path = web/pcbjam-shared
 	url = https://github.com/PCBJam/pcbjam-shared.git
 	branch = main
+[submodule "web/pcbjam-shared-ui"]
+	path = web/pcbjam-shared-ui
+	url = https://github.com/PCBJam/pcbjam-shared-ui.git
+	branch = main

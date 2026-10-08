@@ -21,7 +21,7 @@ import { fetchFileBytes, useProject, useSourceDescriptor } from "@/lib/api";
 import { downloadBytes } from "@/lib/download";
 import { localProjectStore } from "@/lib/project-source";
 import { zipFiles } from "@/lib/zip";
-import { Button } from "@/components/ui/button";
+import { Button } from "@pcbjam/ui";
 import { SourceChip } from "@/components/SourceChip";
 import { ToolGrid } from "@/components/ToolGrid";
 import { FileTree } from "@/components/FileTree";

@@ -1,6 +1,6 @@
 import * as React from "react";
 import { Database, Loader2, RefreshCw, Trash2 } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Button } from "@pcbjam/ui";
 
 /**
  * Browser-storage usage for the editor's library caches, by kind, with a

@@ -16,16 +16,16 @@ import {
   newFileTemplate,
   withExtension,
 } from "@/lib/new-file";
-import { Button } from "@/components/ui/button";
 import {
+  Button,
   Dialog,
   DialogContent,
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+  Input,
+  Label,
+} from "@pcbjam/ui";
 
 /**
  * Create-a-new-file dialog for a document editor (mirrors the closed app's

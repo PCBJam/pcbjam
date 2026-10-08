@@ -1,6 +1,6 @@
 import { Moon, Sun } from "lucide-react";
 import { setTheme, useThemeValue } from "@/lib/theme";
-import { Button } from "@/components/ui/button";
+import { Button } from "@pcbjam/ui";
 
 /** Sun/moon theme toggle (comments-ux 0002): flips `<html>.dark` + storage;
  *  theme.ts subscribers (incl. the F4 canvas bridge) follow. */

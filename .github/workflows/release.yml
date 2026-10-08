@@ -162,6 +162,18 @@ jobs:
             "https://api.github.com/repos/PCBJam/pcbjam-shared/tarball/${sha}" \
             | tar xz --strip-components=1 -C web/pcbjam-shared
           test -f web/pcbjam-shared/package.json
+
+      - name: Init pcbjam-shared-ui submodule
+        # @pcbjam/ui, a workspace dependency of web/standalone. Fetched like pcbjam-shared above.
+        env:
+          GH_TOKEN: ${{ secrets.SUBMODULE_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          sha=$(git rev-parse HEAD:web/pcbjam-shared-ui)
+          mkdir -p web/pcbjam-shared-ui
+          curl -fsSL --retry 5 --retry-all-errors -H "Authorization: Bearer ${GH_TOKEN}" \
+            "https://api.github.com/repos/PCBJam/pcbjam-shared-ui/tarball/${sha}" \
+            | tar xz --strip-components=1 -C web/pcbjam-shared-ui
+          test -f web/pcbjam-shared-ui/package.json
       - uses: pnpm/action-setup@v4
         with:
           version: 10.33.0
@@ -234,6 +246,18 @@ jobs:
             "https://api.github.com/repos/PCBJam/pcbjam-shared/tarball/${sha}" \
             | tar xz --strip-components=1 -C web/pcbjam-shared
           test -f web/pcbjam-shared/package.json
+
+      - name: Init pcbjam-shared-ui submodule
+        # @pcbjam/ui, a workspace dependency of web/standalone. Fetched like pcbjam-shared above.
+        env:
+          GH_TOKEN: ${{ secrets.SUBMODULE_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          sha=$(git rev-parse HEAD:web/pcbjam-shared-ui)
+          mkdir -p web/pcbjam-shared-ui
+          curl -fsSL --retry 5 --retry-all-errors -H "Authorization: Bearer ${GH_TOKEN}" \
+            "https://api.github.com/repos/PCBJam/pcbjam-shared-ui/tarball/${sha}" \
+            | tar xz --strip-components=1 -C web/pcbjam-shared-ui
+          test -f web/pcbjam-shared-ui/package.json
       - uses: pnpm/action-setup@v4
         with:
           version: 10.33.0
