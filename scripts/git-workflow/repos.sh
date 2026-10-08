@@ -4,25 +4,28 @@
 #   root  = pcbjam                                main
 #   ├── kicad           (kicad/)                  wasm-port
 #   ├── wxwidgets       (wxwidgets/)              wasm-port
-#   └── pcbjam-shared   (web/pcbjam-shared/)      main   [MIT contract]
+#   ├── pcbjam-shared   (web/pcbjam-shared/)      main   [MIT contract]
+#   └── pcbjam-shared-ui (web/pcbjam-shared-ui/)  main   [MIT @pcbjam/ui]
 #
-# Bash variable names can't contain '-', so pcbjam-shared's KEY is
-# `pcbjam_shared`; its path/display name keep the dash.
+# Bash variable names can't contain '-', so the pcbjam-shared repos' KEYS are
+# `pcbjam_shared` / `pcbjam_shared_ui`; their path/display names keep the dash.
 # Usage: source "$(dirname "$0")/repos.sh"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
-REPOS=(root kicad wxwidgets pcbjam_shared)
+REPOS=(root kicad wxwidgets pcbjam_shared pcbjam_shared_ui)
 
 PATH_root="$ROOT_DIR"
 PATH_kicad="$ROOT_DIR/kicad"
 PATH_wxwidgets="$ROOT_DIR/wxwidgets"
 PATH_pcbjam_shared="$ROOT_DIR/web/pcbjam-shared"
+PATH_pcbjam_shared_ui="$ROOT_DIR/web/pcbjam-shared-ui"
 
 MAIN_root="main"
 MAIN_kicad="wasm-port"
 MAIN_wxwidgets="wasm-port"
 MAIN_pcbjam_shared="main"
+MAIN_pcbjam_shared_ui="main"
 
 # The long-lived STAGING line, one branch per repo (the wasm forks suffix
 # theirs). Protected like main: never merged anywhere, never deleted; "sync"
@@ -31,6 +34,7 @@ STAGING_root="staging"
 STAGING_kicad="staging-wasm-port"
 STAGING_wxwidgets="staging-wasm-port"
 STAGING_pcbjam_shared="staging"
+STAGING_pcbjam_shared_ui="staging"
 
 repo_path() {
     local var="PATH_$1"

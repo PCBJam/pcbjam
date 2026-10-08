@@ -1,6 +1,6 @@
 import * as React from "react";
 import { X } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Button } from "@pcbjam/ui";
 import { BlockingDialog } from "./BlockingDialog";
 import { probeCapabilities, type CapabilityReport } from "./capabilities";
 import { isMobileMode } from "@/lib/mobile-mode";

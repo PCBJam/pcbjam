@@ -12,7 +12,7 @@ import {
   type SourceDescriptor,
 } from "@/lib/project-source-shared";
 import { zipFiles } from "@/lib/zip";
-import { Button } from "@/components/ui/button";
+import { Button } from "@pcbjam/ui";
 import { SourceChip } from "@/components/SourceChip";
 
 /**

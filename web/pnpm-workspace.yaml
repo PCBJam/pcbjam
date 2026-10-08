@@ -2,6 +2,8 @@ packages:
   - "standalone"
   - "backend"
   - "pcbjam-shared"
+  # @pcbjam/ui (MIT): the shared shadcn components, its own repo (ui-components 0001).
+  - "pcbjam-shared-ui"
   # Headless KiCad CLI driver (GPL; mcp 0004 §11.5) — never in the closed
   # root workspace: closed code spawns its bin, never imports it.
   - "kicad-tools"

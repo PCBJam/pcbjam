@@ -1,11 +1,11 @@
 ---
 name: git-feature-commit
-description: Commit staged + unstaged work across all 5 repos. Submodules first (kicad, wxwidgets, binaryen, pcbjam-shared), then root with submodule pointer bumps. Asks the user to approve each commit separately and shows the pointer diff for the root commit. Usage - "/git-feature-commit [message]".
+description: Commit staged + unstaged work across all 5 repos. Submodules first (kicad, wxwidgets, binaryen, pcbjam-shared, pcbjam-shared-ui), then root with submodule pointer bumps. Asks the user to approve each commit separately and shows the pointer diff for the root commit. Usage - "/git-feature-commit [message]".
 ---
 
 # git-feature-commit
 
-Commit work-in-progress across root + kicad + wxwidgets + binaryen + pcbjam-shared in the correct order: **submodules first, then root** (so the root commit captures the new submodule pointers).
+Commit work-in-progress across root + kicad + wxwidgets + binaryen + pcbjam-shared + pcbjam-shared-ui in the correct order: **submodules first, then root** (so the root commit captures the new submodule pointers).
 
 ## Arguments
 
@@ -20,7 +20,7 @@ Optional positional message string. If omitted, ask the user for a message via `
    - `git -C <path> diff --stat HEAD`
    so the user sees the full picture before being asked to commit anything.
 
-3. **Submodule commits — kicad, then wxwidgets, then binaryen, then pcbjam-shared.** For each submodule:
+3. **Submodule commits — kicad, then wxwidgets, then binaryen, then pcbjam-shared, then pcbjam-shared-ui.** For each submodule:
    - If `git -C <path> status --porcelain` is empty AND no staged changes, print "kicad: no changes, skipping" and continue.
    - Otherwise, prose-ask: "Commit kicad with message `<msg>`? Type `y`, `n`, or `edit` to change the message."
    - On `y`: `git -C <path> add -A && git -C <path> commit -m "<msg>"` (auto-allowed).
@@ -28,12 +28,12 @@ Optional positional message string. If omitted, ask the user for a message via `
    - On `n`: skip and continue.
 
 4. **Root commit (last).** After submodules:
-   - Stage submodule pointer bumps explicitly: `git -C <root> add kicad wxwidgets binaryen web/pcbjam-shared` (only stages the gitlink pointer change if a submodule has a new HEAD).
-   - Stage other root changes: `git -C <root> add -A -- ':!kicad' ':!wxwidgets' ':!binaryen' ':!web/pcbjam-shared' ':!features'` (exclude submodule trees and features/ patch dir).
+   - Stage submodule pointer bumps explicitly: `git -C <root> add kicad wxwidgets binaryen web/pcbjam-shared web/pcbjam-shared-ui` (only stages the gitlink pointer change if a submodule has a new HEAD).
+   - Stage other root changes: `git -C <root> add -A -- ':!kicad' ':!wxwidgets' ':!binaryen' ':!web/pcbjam-shared' ':!web/pcbjam-shared-ui' ':!features'` (exclude submodule trees and features/ patch dir).
    - Check what's staged: `git -C <root> diff --cached --stat`. If nothing is staged, print "root: no changes, skipping" and stop.
    - Show the user:
      - `git -C <root> diff --cached --stat` (overview)
-     - `git -C <root> diff --cached -- kicad wxwidgets binaryen web/pcbjam-shared` (the raw pointer-bump diff — the user wants to eyeball this every time)
+     - `git -C <root> diff --cached -- kicad wxwidgets binaryen web/pcbjam-shared web/pcbjam-shared-ui` (the raw pointer-bump diff — the user wants to eyeball this every time)
    - Prose-ask: "Commit root with message `<msg>`? `y`/`n`/`edit`."
    - On `y`: `git -C <root> commit -m "<msg>"`.
 

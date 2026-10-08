@@ -5,7 +5,7 @@ import {
   type Tool,
 } from "@pcbjam/shared";
 import { ArrowLeft, ExternalLink, FolderOpen, Library } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Button } from "@pcbjam/ui";
 import { ToolGrid } from "@/components/ToolGrid";
 import { FileTree } from "@/components/FileTree";
 

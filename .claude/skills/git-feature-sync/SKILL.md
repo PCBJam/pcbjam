@@ -1,11 +1,11 @@
 ---
 name: git-feature-sync
-description: Rebase the current branch onto its base in all repos (root + kicad + wxwidgets + pcbjam-shared). On a feature branch the base is each repo's main; on a PROTECTED branch (main, or the staging line - root/pcbjam-shared `staging`, kicad/wxwidgets `staging-wasm-port`) the base is that same branch on origin, i.e. local staging commits are rebased onto remote staging. Naturally re-runnable - after the user resolves a conflict manually and runs `git rebase --continue`, re-invoke the skill and it picks up where it stopped. Usage - "/git-feature-sync".
+description: Rebase the current branch onto its base in all repos (root + kicad + wxwidgets + pcbjam-shared + pcbjam-shared-ui). On a feature branch the base is each repo's main; on a PROTECTED branch (main, or the staging line - root/pcbjam-shared/pcbjam-shared-ui `staging`, kicad/wxwidgets `staging-wasm-port`) the base is that same branch on origin, i.e. local staging commits are rebased onto remote staging. Naturally re-runnable - after the user resolves a conflict manually and runs `git rebase --continue`, re-invoke the skill and it picks up where it stopped. Usage - "/git-feature-sync".
 ---
 
 # git-feature-sync
 
-Rebase the current branch onto its base in root, kicad, wxwidgets and pcbjam-shared. The base is `repo-status.sh`'s `base` field:
+Rebase the current branch onto its base in root, kicad, wxwidgets, pcbjam-shared and pcbjam-shared-ui. The base is `repo-status.sh`'s `base` field:
 
 - **Feature branch** → the repo's main (`origin/main` / `origin/wasm-port`).
 - **Protected branch** (`on_protected: true` — main or the staging line) → the same branch on origin: root `staging` onto `origin/staging`, kicad `staging-wasm-port` onto `origin/staging-wasm-port`, … This is how local staging commits catch up with what CI/others pushed to staging.
@@ -37,7 +37,7 @@ So after the user resolves a conflict manually + runs `git rebase --continue` in
 
 4. **Determine work plan.** For each participating repo, mark "needs rebase" if `up_to_date_with_base: false`. If none does, print "all repos already up to date with their bases" and stop cleanly.
 
-5. **Execute per repo** in order [root, kicad, wxwidgets, pcbjam-shared]. Skip any repo that was skipped in step 3 or has `up_to_date_with_base: true`. For each repo that needs rebase:
+5. **Execute per repo** in order [root, kicad, wxwidgets, pcbjam-shared, pcbjam-shared-ui]. Skip any repo that was skipped in step 3 or has `up_to_date_with_base: true`. For each repo that needs rebase:
    - Prose-announce: "About to rebase <repo> (`<branch>`, <ahead> local commit(s)) onto `origin/<base>` (<behind> new) — proceed?"
    - `git -C <path> rebase origin/<base>` (origins were already fetched in step 1; hits the `ask` permission). With `ahead == 0` this is a plain fast-forward.
    - If the rebase command exits non-zero (conflict), STOP and emit the handoff message (see below).
@@ -46,7 +46,7 @@ So after the user resolves a conflict manually + runs `git rebase --continue` in
 6. **After all repos succeed:** submodule pointers can be stale in two directions now:
    - a rebased SUBMODULE moved its SHA → root shows the entry modified; suggest `/git-feature-commit "sync: bump submodule pointers after rebase"`.
    - a fast-forwarded ROOT (protected mode) now records a submodule SHA the checkout hasn't reached → fixed by that submodule's own rebase in this same run (submodules come after root in the order). If one still differs afterwards, report it — `git submodule update` would detach it, so that is the user's call.
-   Check `git status --short` for changed `kicad` / `wxwidgets` / `web/pcbjam-shared` entries and report. Do NOT auto-commit.
+   Check `git status --short` for changed `kicad` / `wxwidgets` / `web/pcbjam-shared` / `web/pcbjam-shared-ui` entries and report. Do NOT auto-commit.
 
 ## Conflict handoff message — use this exact shape
 
