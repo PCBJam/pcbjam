@@ -28,6 +28,7 @@ import { cn } from "@/lib/utils";
  *                        size="row", plus overlayPressedClass if it shows a
  *                        pressed look).
  *   overlayFieldClass  — a text field (Input / Textarea) on the glass.
+ *   overlayKbdClass    — a shortcut hint (Kbd) at the end of a row.
  *
  * Children compose these instead of inventing their own chrome. Two deliberate
  * exceptions stay self-styled because they are shared with light-background
@@ -42,6 +43,13 @@ export const overlayRowClass =
   "text-neutral-800 transition-colors hover:bg-black/5 " +
   "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-black/30 " +
   "dark:text-white/90 dark:hover:bg-white/10 dark:focus-visible:ring-white/40";
+
+/**
+ * A shortcut hint on the glass, for @pcbjam/ui's Kbd (⌘\ beside "Hide UI", Esc while placing).
+ * 16px tall, the row's line height, so a row with a hint is as tall as one without.
+ */
+export const overlayKbdClass =
+  "h-4 rounded bg-black/10 px-1.5 font-mono text-[10px] text-neutral-500 dark:bg-white/10 dark:text-white/50";
 
 /** A row toggle's pressed look (Toggle sets data-state="on" while pressed). */
 export const overlayPressedClass = "data-[state=on]:bg-black/10 dark:data-[state=on]:bg-white/10";

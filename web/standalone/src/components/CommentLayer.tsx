@@ -1,6 +1,6 @@
 import * as React from "react";
 import { createPortal } from "react-dom";
-import { overlayFieldClass, overlayPressedClass, overlayRowClass } from "@/components/OverlayMenu";
+import { overlayFieldClass, overlayKbdClass, overlayPressedClass, overlayRowClass } from "@/components/OverlayMenu";
 import {
   threadMentionsUnread,
   threadUnreadCount,
@@ -43,7 +43,7 @@ import { noteEmojiUsed, quickEmojis } from "@/lib/emoji-quick";
 import { cachedCollaborators, collaborators, mergeCandidates } from "@/lib/mentions";
 import { copyLabel, currentCopyRef } from "@/lib/copy-context";
 import { ancestryLabel, ancestryStore } from "@/lib/git-provenance";
-import { Badge, Checkbox, Textarea, Tip, Toggle } from "@pcbjam/ui";
+import { Badge, Checkbox, Kbd, Textarea, Tip, Toggle } from "@pcbjam/ui";
 import { cn } from "@/lib/utils";
 
 /**
@@ -412,9 +412,7 @@ export function CommentLayer({
               >
                 <MessageSquarePlus size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
                 <span>{mode ? "Placing comment…" : "Add comment"}</span>
-                <span className="ml-auto text-[10px] text-neutral-400 dark:text-white/40">
-                  {mode ? "Esc" : ""}
-                </span>
+                {mode && <Kbd className={cn("ml-auto", overlayKbdClass)}>Esc</Kbd>}
               </Toggle>
             </Tip>
             )}

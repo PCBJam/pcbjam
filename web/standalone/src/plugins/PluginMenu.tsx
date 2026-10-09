@@ -29,8 +29,7 @@ export function PluginMenu({ tool, catalog, view, onViewChange }: PluginMenuProp
         {catalog.plugins.filter(plugin => plugin.source !== 'tutorial').map(plugin => {
           const compatible = plugin.manifest.surfaces.includes('editor:' + tool);
           return <Tip content={compatible ? plugin.manifest.name : plugin.manifest.name + ' · Available in another editor'} key={pluginKey(plugin)}><Toggle variant="ghost" size="row" disabled={!compatible || plugin.enabled===false}
-            // A disabled row keeps its pointer events: its tooltip says why it is off.
-            className={cn(overlayRowClass, 'disabled:pointer-events-auto disabled:cursor-not-allowed disabled:opacity-40')}
+            className={cn(overlayRowClass, 'disabled:cursor-not-allowed disabled:opacity-40')}
             pressed={selected === pluginKey(plugin)}
             onClick={() => open({ kind: 'plugin', id: pluginKey(plugin) })}>
             <Puzzle size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />

@@ -19,12 +19,12 @@ import type { PresencePeer } from "@/wasm/collab/presence";
 import type { FollowTarget } from "@/wasm/collab/follow-user";
 import { PresenceRoster } from "@/components/PresenceRoster";
 import { SourceChip } from "@/components/SourceChip";
-import { OverlayMenu, OverlayMenuSection, overlayPressedClass, overlayRowClass } from "@/components/OverlayMenu";
+import { OverlayMenu, OverlayMenuSection, overlayKbdClass, overlayPressedClass, overlayRowClass } from "@/components/OverlayMenu";
 import { CHROME_HOTKEY_LABEL } from "./ui-helpers";
 import type { StaleLibEntry } from "./useLibNotices";
 import { PluginMenu, type PluginMenuProps } from "@/plugins/PluginMenu";
 import { TutorialMenu } from "@/plugins/TutorialMenu";
-import { Tip, Toggle } from "@pcbjam/ui";
+import { Kbd, Tip, Toggle } from "@pcbjam/ui";
 import { cn } from "@/lib/utils";
 
 /**
@@ -455,9 +455,7 @@ export function SessionMenu({
                 <EyeOff size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
               )}
               <span>{chromeHidden ? "Show UI" : "Hide UI"}</span>
-              <kbd className="ml-auto rounded bg-black/10 px-1.5 py-0.5 text-[10px] font-medium text-neutral-500 dark:bg-white/10 dark:text-white/50">
-                {CHROME_HOTKEY_LABEL}
-              </kbd>
+              <Kbd className={cn("ml-auto", overlayKbdClass)}>{CHROME_HOTKEY_LABEL}</Kbd>
             </Toggle>
           </Tip>
         )}
