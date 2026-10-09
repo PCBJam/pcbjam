@@ -16,7 +16,7 @@ import { downloadBytes } from "@/lib/download";
 import { importFileList, importFsaFolder } from "@/lib/import-folder";
 import { localProjectStore } from "@/lib/project-source";
 import { isDocumentTool } from "@/lib/new-file";
-import { Button, Input } from "@pcbjam/ui";
+import { Button, Input, Badge } from "@pcbjam/ui";
 import { ToolGrid } from "@/components/ToolGrid";
 import { ProjectsSection } from "@/components/ProjectsSection";
 import { WaitlistForm } from "@/components/WaitlistForm";
@@ -232,9 +232,9 @@ export function HomePage() {
     <div className="container max-w-3xl py-10">
       <h1 className="flex items-center gap-2.5 text-2xl font-semibold tracking-tight">
         PCBJam
-        <span className="rounded-full border border-amber-500/50 bg-amber-500/10 px-2.5 py-0.5 text-xs font-medium text-amber-600 dark:text-amber-400">
+        <Badge tone="warning" shape="pill">
           Early-access alpha
-        </span>
+        </Badge>
         <ThemeToggle className="ml-auto" />
       </h1>
       <p className="mb-8 text-sm text-muted-foreground">

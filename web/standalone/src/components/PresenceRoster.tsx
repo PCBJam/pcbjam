@@ -3,6 +3,7 @@ import { presenceKey } from "@pcbjam/shared";
 import type { PresencePeer } from "@/wasm/collab/presence";
 import type { FollowTarget } from "@/wasm/collab/follow-user";
 import { overlayRowClass } from "@/components/OverlayMenu";
+import { Badge } from "@pcbjam/ui";
 
 /**
  * "Who else is in this file" (collab-presence 0001/0003), as a readable LIST.
@@ -107,22 +108,29 @@ export function PresenceRoster({
             />
             <span className="truncate">{p.user.name}</span>
             {p.agent && (
-              <span
+              <Badge
                 data-testid="presence-ai"
                 title={`AI agent “${p.agent.name}” working for this person — it never acts as them`}
-                className="shrink-0 rounded-full border border-current px-1 text-[9px] uppercase tracking-wide text-violet-500 dark:text-violet-300"
+                tone="preview"
+                variant="outline"
+                size="sm"
+                shape="pill"
+                className="px-1 text-[9px] uppercase tracking-wide"
               >
                 AI
-              </span>
+              </Badge>
             )}
             {p.role === "commenter" && (
-              <span
+              <Badge
                 data-testid="presence-reviewer"
                 title="Reviewer (commenter): sees the board, comments, never locks items"
-                className="shrink-0 rounded-full border border-current px-1 text-[9px] uppercase tracking-wide text-neutral-400 dark:text-white/40"
+                variant="outline"
+                size="sm"
+                shape="pill"
+                className="px-1 text-[9px] uppercase tracking-wide"
               >
                 reviewer
-              </span>
+              </Badge>
             )}
             {!here && (
               <span className="ml-auto shrink-0 truncate text-[10px] text-neutral-400 dark:text-white/40">
