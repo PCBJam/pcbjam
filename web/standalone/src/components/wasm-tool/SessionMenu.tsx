@@ -24,6 +24,7 @@ import { CHROME_HOTKEY_LABEL } from "./ui-helpers";
 import type { StaleLibEntry } from "./useLibNotices";
 import { PluginMenu, type PluginMenuProps } from "@/plugins/PluginMenu";
 import { TutorialMenu } from "@/plugins/TutorialMenu";
+import { Tip } from "@pcbjam/ui";
 
 /**
  * Behind-the-library state (libs 0017 §2b/2c): placed items a peer updated in
@@ -291,39 +292,42 @@ export function SessionMenu({
             </div>
           )}
           {readOnly && jumpTool && (
-            <button
-              data-testid="jump-tool"
-              data-tool={jumpTool.tool}
-              title={`${jumpTool.label} of this project`}
-              onClick={jumpTool.onClick}
-              className={overlayRowClass}
-            >
-              <ArrowRightLeft size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
-              <span>{jumpTool.label}</span>
-            </button>
+            <Tip content={`${jumpTool.label} of this project`}>
+              <button
+                data-testid="jump-tool"
+                data-tool={jumpTool.tool}
+                onClick={jumpTool.onClick}
+                className={overlayRowClass}
+              >
+                <ArrowRightLeft size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
+                <span>{jumpTool.label}</span>
+              </button>
+            </Tip>
           )}
           {readOnly && commentAccess === "none" && onToggleReaderComments && (
-            <button
-              data-testid="reader-comments-toggle"
-              aria-pressed={!!readerComments}
-              title="Show other people's comments on this document"
-              onClick={onToggleReaderComments}
-              className={`${overlayRowClass} ${readerComments ? "bg-black/10 dark:bg-white/10" : ""}`}
-            >
-              <MessageSquare size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
-              <span>{readerComments ? "Hide comments" : "Show comments"}</span>
-            </button>
+            <Tip content="Show other people's comments on this document">
+              <button
+                data-testid="reader-comments-toggle"
+                aria-pressed={!!readerComments}
+                onClick={onToggleReaderComments}
+                className={`${overlayRowClass} ${readerComments ? "bg-black/10 dark:bg-white/10" : ""}`}
+              >
+                <MessageSquare size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
+                <span>{readerComments ? "Hide comments" : "Show comments"}</span>
+              </button>
+            </Tip>
           )}
           {onChangeMobileMode && (
-            <button
-              data-testid="mobile-mode-change"
-              title="Choose again: view only, comment only or the full editor (reloads)"
-              onClick={onChangeMobileMode}
-              className={overlayRowClass}
-            >
-              <Smartphone size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
-              <span>{readOnly ? "Open the full editor…" : "Lighter mode (view / comment)…"}</span>
-            </button>
+            <Tip content="Choose again: view only, comment only or the full editor (reloads)">
+              <button
+                data-testid="mobile-mode-change"
+                onClick={onChangeMobileMode}
+                className={overlayRowClass}
+              >
+                <Smartphone size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
+                <span>{readOnly ? "Open the full editor…" : "Lighter mode (view / comment)…"}</span>
+              </button>
+            </Tip>
           )}
         </OverlayMenuSection>
       )}
@@ -343,115 +347,123 @@ export function SessionMenu({
 
       <OverlayMenuSection label="View">
         {onToggleReviewerSelections && (
-          <button
-            data-testid="reviewer-selections-toggle"
-            aria-pressed={reviewerSelections !== false}
-            title="Show or hide reviewers' selection outlines (their cursors stay)"
-            onClick={onToggleReviewerSelections}
-            className={`${overlayRowClass} ${reviewerSelections !== false ? "bg-black/10 dark:bg-white/10" : ""}`}
-          >
-            <Eye size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
-            <span>{reviewerSelections !== false ? "Hide reviewer selections" : "Show reviewer selections"}</span>
-          </button>
+          <Tip content="Show or hide reviewers' selection outlines (their cursors stay)">
+            <button
+              data-testid="reviewer-selections-toggle"
+              aria-pressed={reviewerSelections !== false}
+              onClick={onToggleReviewerSelections}
+              className={`${overlayRowClass} ${reviewerSelections !== false ? "bg-black/10 dark:bg-white/10" : ""}`}
+            >
+              <Eye size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
+              <span>{reviewerSelections !== false ? "Hide reviewer selections" : "Show reviewer selections"}</span>
+            </button>
+          </Tip>
         )}
         {/* Viewer panels (viewer-panels): canvas-only stand-ins for the
             chrome-hidden wx panes — available to viewers and to editors
             in hide-UI mode alike. */}
         {effectiveChromeHidden && hasLayers && (
-          <button
-            data-testid="layers-panel-toggle"
-            aria-pressed={layersOpen}
-            className={overlayRowClass}
-            title="Board layers — visibility and active layer"
-            onClick={() => setLayersOpen(!layersOpen)}
-          >
-            <Layers size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
-            <span>{layersOpen ? "Hide layers" : "Layers"}</span>
-          </button>
+          <Tip content="Board layers — visibility and active layer">
+            <button
+              data-testid="layers-panel-toggle"
+              aria-pressed={layersOpen}
+              className={overlayRowClass}
+              onClick={() => setLayersOpen(!layersOpen)}
+            >
+              <Layers size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
+              <span>{layersOpen ? "Hide layers" : "Layers"}</span>
+            </button>
+          </Tip>
         )}
         {effectiveChromeHidden && hasSheets && (
-          <button
-            data-testid="sheet-panel-toggle"
-            aria-pressed={sheetsOpen}
-            className={overlayRowClass}
-            title="Schematic sheets — navigate the hierarchy"
-            onClick={() => setSheetsOpen(!sheetsOpen)}
-          >
-            <ListTree size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
-            <span>{sheetsOpen ? "Hide sheets" : "Sheets"}</span>
-          </button>
+          <Tip content="Schematic sheets — navigate the hierarchy">
+            <button
+              data-testid="sheet-panel-toggle"
+              aria-pressed={sheetsOpen}
+              className={overlayRowClass}
+              onClick={() => setSheetsOpen(!sheetsOpen)}
+            >
+              <ListTree size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
+              <span>{sheetsOpen ? "Hide sheets" : "Sheets"}</span>
+            </button>
+          </Tip>
         )}
         {effectiveChromeHidden && (tool === "pcbnew" || tool === "eeschema") && (
-          <button
-            data-testid="inspector-panel-toggle"
-            aria-pressed={inspectorOpen}
-            className={overlayRowClass}
-            title="Properties of the selected items"
-            onClick={() => setInspectorOpen(!inspectorOpen)}
-          >
-            <Crosshair size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
-            <span>{inspectorOpen ? "Hide inspector" : "Inspector"}</span>
-          </button>
+          <Tip content="Properties of the selected items">
+            <button
+              data-testid="inspector-panel-toggle"
+              aria-pressed={inspectorOpen}
+              className={overlayRowClass}
+              onClick={() => setInspectorOpen(!inspectorOpen)}
+            >
+              <Crosshair size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
+              <span>{inspectorOpen ? "Hide inspector" : "Inspector"}</span>
+            </button>
+          </Tip>
         )}
         {hasImport && !readOnly && (
-          <button
-            data-testid="import-panel-toggle"
-            aria-pressed={importOpen}
-            className={overlayRowClass}
-            title="POC: add a symbol / footprint from a local file to the canvas"
-            onClick={() => setImportOpen(!importOpen)}
-          >
-            <FilePlus size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
-            <span>{importOpen ? "Hide import" : "Import from file"}</span>
-          </button>
+          <Tip content="POC: add a symbol / footprint from a local file to the canvas">
+            <button
+              data-testid="import-panel-toggle"
+              aria-pressed={importOpen}
+              className={overlayRowClass}
+              onClick={() => setImportOpen(!importOpen)}
+            >
+              <FilePlus size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
+              <span>{importOpen ? "Hide import" : "Import from file"}</span>
+            </button>
+          </Tip>
         )}
         {tool === "pcbnew" && onShow3D && (
-          <button
-            data-testid="show-3d-viewer"
-            className={overlayRowClass}
-            title="Open the 3D viewer"
-            onClick={onShow3D}
-          >
-            <Box size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
-            <span>3D viewer</span>
-          </button>
+          <Tip content="Open the 3D viewer">
+            <button
+              data-testid="show-3d-viewer"
+              className={overlayRowClass}
+              onClick={onShow3D}
+            >
+              <Box size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
+              <span>3D viewer</span>
+            </button>
+          </Tip>
         )}
         {canToggleChrome && !readOnly && (
-          <button
-            data-testid="chrome-toggle"
-            aria-pressed={chromeHidden}
-            className={overlayRowClass}
-            title={`${chromeHidden ? "Show" : "Hide"} UI (${CHROME_HOTKEY_LABEL})`}
-            onClick={onToggleChrome}
-          >
-            {chromeHidden ? (
-              <PanelsTopLeft size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
-            ) : (
-              <EyeOff size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
-            )}
-            <span>{chromeHidden ? "Show UI" : "Hide UI"}</span>
-            <kbd className="ml-auto rounded bg-black/10 px-1.5 py-0.5 text-[10px] font-medium text-neutral-500 dark:bg-white/10 dark:text-white/50">
-              {CHROME_HOTKEY_LABEL}
-            </kbd>
-          </button>
+          <Tip content={`${chromeHidden ? "Show" : "Hide"} UI (${CHROME_HOTKEY_LABEL})`}>
+            <button
+              data-testid="chrome-toggle"
+              aria-pressed={chromeHidden}
+              className={overlayRowClass}
+              onClick={onToggleChrome}
+            >
+              {chromeHidden ? (
+                <PanelsTopLeft size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
+              ) : (
+                <EyeOff size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
+              )}
+              <span>{chromeHidden ? "Show UI" : "Hide UI"}</span>
+              <kbd className="ml-auto rounded bg-black/10 px-1.5 py-0.5 text-[10px] font-medium text-neutral-500 dark:bg-white/10 dark:text-white/50">
+                {CHROME_HOTKEY_LABEL}
+              </kbd>
+            </button>
+          </Tip>
         )}
         {/* Light/dark toggle (comments-ux 0002): flips the shell theme;
             the F4 effect in WasmTool re-themes the GAL canvas through the
             bridge. Available to viewers too — theming isn't editing. */}
-        <button
-          data-testid="overlay-theme-toggle"
-          aria-pressed={theme === "dark"}
-          className={overlayRowClass}
-          title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
-          onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-        >
-          {theme === "dark" ? (
-            <Sun size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
-          ) : (
-            <Moon size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
-          )}
-          <span>{theme === "dark" ? "Light mode" : "Dark mode"}</span>
-        </button>
+        <Tip content={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}>
+          <button
+            data-testid="overlay-theme-toggle"
+            aria-pressed={theme === "dark"}
+            className={overlayRowClass}
+            onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+          >
+            {theme === "dark" ? (
+              <Sun size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
+            ) : (
+              <Moon size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
+            )}
+            <span>{theme === "dark" ? "Light mode" : "Dark mode"}</span>
+          </button>
+        </Tip>
       </OverlayMenuSection>
     </OverlayMenu>
   );

@@ -1,6 +1,7 @@
 import * as React from "react";
 import { ChevronDown, ChevronRight, Eye, EyeOff, X } from "lucide-react";
 import { useDraggablePanel } from "@/components/useDraggablePanel";
+import { Tip } from "@pcbjam/ui";
 
 /**
  * Floating layer panel (viewer-panels): the canvas-only replacement for the
@@ -173,26 +174,28 @@ export function LayerPanel({
         onPointerMove={(e) => void drag.onPointerMove(e)}
         onPointerUp={() => void drag.onPointerUp()}
       >
-        <button
-          data-testid="layers-panel-collapse"
-          aria-expanded={!collapsed}
-          title={collapsed ? "Expand" : "Collapse to header"}
-          onPointerDown={(e) => e.stopPropagation()}
-          onClick={() => setCollapsed(!collapsed)}
-          className="rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
-        >
-          {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
-        </button>
-        <span>Layers</span>
-        <span className="ml-auto flex items-center gap-0.5" onPointerDown={(e) => e.stopPropagation()}>
+        <Tip content={collapsed ? "Expand" : "Collapse to header"}>
           <button
-            data-testid="layers-panel-close"
-            title="Close"
-            onClick={onClose}
+            data-testid="layers-panel-collapse"
+            aria-expanded={!collapsed}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={() => setCollapsed(!collapsed)}
             className="rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
           >
-            <X size={14} />
+            {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
           </button>
+        </Tip>
+        <span>Layers</span>
+        <span className="ml-auto flex items-center gap-0.5" onPointerDown={(e) => e.stopPropagation()}>
+          <Tip content="Close">
+            <button
+              data-testid="layers-panel-close"
+              onClick={onClose}
+              className="rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
+            >
+              <X size={14} />
+            </button>
+          </Tip>
         </span>
       </div>
 
@@ -219,29 +222,31 @@ export function LayerPanel({
                 className="h-3 w-3 shrink-0 rounded-sm ring-1 ring-inset ring-black/20 dark:ring-white/25"
                 style={l.color ? { backgroundColor: l.color } : undefined}
               />
-              <button
-                data-testid="layer-visibility"
-                aria-pressed={l.visible}
-                title={l.visible ? `Hide ${l.name}` : `Show ${l.name}`}
-                onClick={() => setVisible(l.id, !l.visible)}
-                className={`rounded p-0.5 hover:bg-black/5 dark:hover:bg-white/10 ${
-                  l.visible
-                    ? "text-neutral-600 dark:text-white/70"
-                    : "text-neutral-300 dark:text-white/25"
-                }`}
-              >
-                {l.visible ? <Eye size={13} /> : <EyeOff size={13} />}
-              </button>
-              <button
-                data-testid="layer-activate"
-                className="min-w-0 flex-1 text-left hover:text-sky-600 dark:hover:text-sky-300"
-                title={`Make ${l.name} the active layer`}
-                onClick={() => setActive(l.id)}
-              >
-                <span className={`block truncate ${state.active === l.id ? "font-semibold" : ""}`}>
-                  {l.name}
-                </span>
-              </button>
+              <Tip content={l.visible ? `Hide ${l.name}` : `Show ${l.name}`}>
+                <button
+                  data-testid="layer-visibility"
+                  aria-pressed={l.visible}
+                  onClick={() => setVisible(l.id, !l.visible)}
+                  className={`rounded p-0.5 hover:bg-black/5 dark:hover:bg-white/10 ${
+                    l.visible
+                      ? "text-neutral-600 dark:text-white/70"
+                      : "text-neutral-300 dark:text-white/25"
+                  }`}
+                >
+                  {l.visible ? <Eye size={13} /> : <EyeOff size={13} />}
+                </button>
+              </Tip>
+              <Tip content={`Make ${l.name} the active layer`}>
+                <button
+                  data-testid="layer-activate"
+                  className="min-w-0 flex-1 text-left hover:text-sky-600 dark:hover:text-sky-300"
+                  onClick={() => setActive(l.id)}
+                >
+                  <span className={`block truncate ${state.active === l.id ? "font-semibold" : ""}`}>
+                    {l.name}
+                  </span>
+                </button>
+              </Tip>
             </div>
           ))}
         </div>

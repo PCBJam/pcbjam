@@ -11,6 +11,7 @@ import { isCanvasWork, isTargetAction, pointInRect, stepUseKey } from "./target-
 import { startOverlayTracking } from "./tracker";
 import type { OverlayButton, TargetState } from "./types";
 import { glCanvasRect, type CssRect } from "@/wasm/canvas-coords";
+import { Tip } from "@pcbjam/ui";
 
 /**
  * The overlay layer (overlay-system 0002 M1): spotlight, target ring and the
@@ -299,52 +300,54 @@ export function OverlayHost({ tool }: { tool: string }) {
               </div>
               {/* The grip, not the whole header: a header-wide handle would swallow clicks in a strip
                   right beside the target, where the work happens. */}
-              <button
-                type="button"
-                aria-label="Move the card"
-                title="Drag to move the card"
-                data-testid="overlay-grip"
-                onPointerDown={(e) => {
-                  if (e.button !== 0 || !layout) return;
-                  e.preventDefault();
-                  e.currentTarget.setPointerCapture(e.pointerId);
-                  drag.current = { pointer: e.pointerId, dx: e.clientX - layout.x, dy: e.clientY - layout.y };
-                }}
-                onPointerMove={(e) => {
-                  const d = drag.current;
-                  if (!d || d.pointer !== e.pointerId || !card) return;
-                  // No button held: a drag that lost its release (the card re-rendered away) is over.
-                  if ((e.buttons & 1) === 0) {
-                    drag.current = null;
-                    return;
-                  }
-                  const at = placeMoved({ x: e.clientX - d.dx, y: e.clientY - d.dy }, card, view);
-                  setMoved({ x: at.x, y: at.y });
-                }}
-                onPointerUp={endDrag}
-                onPointerCancel={endDrag}
-                onLostPointerCapture={endDrag}
-                className={cn(
-                  "pointer-events-auto cursor-grab touch-none rounded p-0.5 text-neutral-400 hover:bg-black/5 hover:text-neutral-900 active:cursor-grabbing dark:text-white/50 dark:hover:bg-white/10 dark:hover:text-white",
-                  !moved && step.closable === false && "-mr-1",
-                )}
-              >
-                <GripHorizontal className="h-4 w-4" />
-              </button>
-              {moved && (
+              <Tip content="Drag to move the card">
                 <button
                   type="button"
-                  aria-label="Put the card back"
-                  title="Put the card back"
-                  data-testid="overlay-put-back"
-                  onClick={() => setMoved(null)}
+                  aria-label="Move the card"
+                  data-testid="overlay-grip"
+                  onPointerDown={(e) => {
+                    if (e.button !== 0 || !layout) return;
+                    e.preventDefault();
+                    e.currentTarget.setPointerCapture(e.pointerId);
+                    drag.current = { pointer: e.pointerId, dx: e.clientX - layout.x, dy: e.clientY - layout.y };
+                  }}
+                  onPointerMove={(e) => {
+                    const d = drag.current;
+                    if (!d || d.pointer !== e.pointerId || !card) return;
+                    // No button held: a drag that lost its release (the card re-rendered away) is over.
+                    if ((e.buttons & 1) === 0) {
+                      drag.current = null;
+                      return;
+                    }
+                    const at = placeMoved({ x: e.clientX - d.dx, y: e.clientY - d.dy }, card, view);
+                    setMoved({ x: at.x, y: at.y });
+                  }}
+                  onPointerUp={endDrag}
+                  onPointerCancel={endDrag}
+                  onLostPointerCapture={endDrag}
                   className={cn(
-                    "pointer-events-auto rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white",
-                    step.closable === false && "-mr-1",
+                    "pointer-events-auto cursor-grab touch-none rounded p-0.5 text-neutral-400 hover:bg-black/5 hover:text-neutral-900 active:cursor-grabbing dark:text-white/50 dark:hover:bg-white/10 dark:hover:text-white",
+                    !moved && step.closable === false && "-mr-1",
                   )}
                 >
-                  <LocateFixed className="h-4 w-4" />
+                  <GripHorizontal className="h-4 w-4" />
                 </button>
+              </Tip>
+              {moved && (
+                <Tip content="Put the card back">
+                  <button
+                    type="button"
+                    aria-label="Put the card back"
+                    data-testid="overlay-put-back"
+                    onClick={() => setMoved(null)}
+                    className={cn(
+                      "pointer-events-auto rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white",
+                      step.closable === false && "-mr-1",
+                    )}
+                  >
+                    <LocateFixed className="h-4 w-4" />
+                  </button>
+                </Tip>
               )}
               {step.closable !== false && (
                 <button

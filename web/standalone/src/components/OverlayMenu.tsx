@@ -1,6 +1,7 @@
 import * as React from "react";
 import { AlertTriangle, Users } from "lucide-react";
 import { useDraggablePanel } from "@/components/useDraggablePanel";
+import { Tip } from "@pcbjam/ui";
 
 /**
  * Unified overlay menu (collab-presence 0010): the single circular icon that
@@ -138,52 +139,53 @@ export function OverlayMenu({
 
   return (
     <div ref={rootRef} className="absolute z-50" style={style}>
-      <button
-        type="button"
-        data-testid="overlay-menu-fab"
-        aria-expanded={open}
-        title="Session menu — drag to move"
-        onPointerDown={onFabPointerDown}
-        onPointerMove={onFabPointerMove}
-        onPointerUp={onFabPointerUp}
-        className={`relative flex h-9 w-9 items-center justify-center rounded-full shadow-lg ring-1 ring-inset transition-colors ${
-          open
-            ? "bg-sky-600 text-white ring-sky-300/40"
-            : "bg-white/90 text-neutral-700 ring-black/15 backdrop-blur-sm hover:bg-white " +
-              "dark:bg-neutral-950/80 dark:text-white dark:ring-white/15 dark:hover:bg-neutral-900/90"
-        }`}
-        style={{ touchAction: "none" }}
-      >
-        <Users size={16} />
-        {badge > 0 && (
-          <span
-            data-testid="overlay-menu-badge"
-            className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-sky-500 px-1 text-[10px] font-semibold text-white"
-          >
-            {badge}
-          </span>
-        )}
-        {alert && (
-          <span
-            data-testid="overlay-menu-alert"
-            title="Some of what you see is behind the latest library state — open the session menu"
-            className="absolute -bottom-1 -left-1 flex h-4 w-4 items-center justify-center rounded-full bg-amber-400 text-neutral-900 ring-1 ring-white/70 dark:ring-neutral-950"
-          >
-            <AlertTriangle size={10} strokeWidth={2.5} />
-          </span>
-        )}
-        {unread > 0 && (
-          <span
-            data-testid="overlay-menu-unread-badge"
-            title={unreadMention ? "Unread comments — you were mentioned" : "Unread comments"}
-            className={`absolute -bottom-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-semibold text-white ${
-              unreadMention ? "bg-rose-500" : "bg-amber-500"
-            }`}
-          >
-            {unread}
-          </span>
-        )}
-      </button>
+      <Tip content="Session menu — drag to move">
+        <button
+          type="button"
+          data-testid="overlay-menu-fab"
+          aria-expanded={open}
+          onPointerDown={onFabPointerDown}
+          onPointerMove={onFabPointerMove}
+          onPointerUp={onFabPointerUp}
+          className={`relative flex h-9 w-9 items-center justify-center rounded-full shadow-lg ring-1 ring-inset transition-colors ${
+            open
+              ? "bg-sky-600 text-white ring-sky-300/40"
+              : "bg-white/90 text-neutral-700 ring-black/15 backdrop-blur-sm hover:bg-white " +
+                "dark:bg-neutral-950/80 dark:text-white dark:ring-white/15 dark:hover:bg-neutral-900/90"
+          }`}
+          style={{ touchAction: "none" }}
+        >
+          <Users size={16} />
+          {badge > 0 && (
+            <span
+              data-testid="overlay-menu-badge"
+              className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-sky-500 px-1 text-[10px] font-semibold text-white"
+            >
+              {badge}
+            </span>
+          )}
+          {alert && (
+            <span
+              data-testid="overlay-menu-alert"
+              title="Some of what you see is behind the latest library state — open the session menu"
+              className="absolute -bottom-1 -left-1 flex h-4 w-4 items-center justify-center rounded-full bg-amber-400 text-neutral-900 ring-1 ring-white/70 dark:ring-neutral-950"
+            >
+              <AlertTriangle size={10} strokeWidth={2.5} />
+            </span>
+          )}
+          {unread > 0 && (
+            <span
+              data-testid="overlay-menu-unread-badge"
+              title={unreadMention ? "Unread comments — you were mentioned" : "Unread comments"}
+              className={`absolute -bottom-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-semibold text-white ${
+                unreadMention ? "bg-rose-500" : "bg-amber-500"
+              }`}
+            >
+              {unread}
+            </span>
+          )}
+        </button>
+      </Tip>
 
       {open && (
         <div

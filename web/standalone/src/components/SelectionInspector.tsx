@@ -14,6 +14,7 @@ import {
   subscribeLocalSelection,
 } from "@/wasm/collab/local-selection";
 import { netNameResolver, summarizeItem, type ItemSummary } from "@/lib/item-summary";
+import { Tip } from "@pcbjam/ui";
 
 /**
  * Floating selection inspector (viewer-panels): read-only properties of the
@@ -134,16 +135,17 @@ export function SelectionInspector({
         onPointerMove={(e) => void drag.onPointerMove(e)}
         onPointerUp={() => void drag.onPointerUp()}
       >
-        <button
-          data-testid="inspector-panel-collapse"
-          aria-expanded={!collapsed}
-          title={collapsed ? "Expand" : "Collapse to header"}
-          onPointerDown={(e) => e.stopPropagation()}
-          onClick={() => setCollapsed(!collapsed)}
-          className="rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
-        >
-          {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
-        </button>
+        <Tip content={collapsed ? "Expand" : "Collapse to header"}>
+          <button
+            data-testid="inspector-panel-collapse"
+            aria-expanded={!collapsed}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={() => setCollapsed(!collapsed)}
+            className="rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
+          >
+            {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+          </button>
+        </Tip>
         <span>
           Inspector
           {count > 0 && (
@@ -153,14 +155,15 @@ export function SelectionInspector({
           )}
         </span>
         <span className="ml-auto flex items-center gap-0.5" onPointerDown={(e) => e.stopPropagation()}>
-          <button
-            data-testid="inspector-panel-close"
-            title="Close"
-            onClick={onClose}
-            className="rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
-          >
-            <X size={14} />
-          </button>
+          <Tip content="Close">
+            <button
+              data-testid="inspector-panel-close"
+              onClick={onClose}
+              className="rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
+            >
+              <X size={14} />
+            </button>
+          </Tip>
         </span>
       </div>
 

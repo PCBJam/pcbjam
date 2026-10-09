@@ -18,7 +18,7 @@ import {
   buildInteractiveImport,
   hasInteractivePlacement,
 } from "@/wasm/import-item";
-import { Combobox } from "@pcbjam/ui";
+import { Combobox, Tip } from "@pcbjam/ui";
 
 /**
  * POC "plugin" sidebar (import-item): pick a `.kicad_sym` / `.kicad_mod` from
@@ -216,21 +216,24 @@ export function ImportItemPanel({
         onPointerMove={(e) => void drag.onPointerMove(e)}
         onPointerUp={() => void drag.onPointerUp()}
       >
-        <button
-          aria-expanded={!collapsed}
-          title={collapsed ? "Expand" : "Collapse to header"}
-          onPointerDown={(e) => e.stopPropagation()}
-          onClick={() => setCollapsed(!collapsed)}
-          className={iconBtn}
-        >
-          {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
-        </button>
+        <Tip content={collapsed ? "Expand" : "Collapse to header"}>
+          <button
+            aria-expanded={!collapsed}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={() => setCollapsed(!collapsed)}
+            className={iconBtn}
+          >
+            {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+          </button>
+        </Tip>
         <FilePlus size={14} className="text-neutral-400 dark:text-white/50" />
         <span>Import from file</span>
         <span className="ml-auto" onPointerDown={(e) => e.stopPropagation()}>
-          <button data-testid="import-panel-close" title="Close" onClick={onClose} className={iconBtn}>
-            <X size={14} />
-          </button>
+          <Tip content="Close">
+            <button data-testid="import-panel-close" onClick={onClose} className={iconBtn}>
+              <X size={14} />
+            </button>
+          </Tip>
         </span>
       </div>
 

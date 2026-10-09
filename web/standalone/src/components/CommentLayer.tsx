@@ -43,7 +43,7 @@ import { noteEmojiUsed, quickEmojis } from "@/lib/emoji-quick";
 import { cachedCollaborators, collaborators, mergeCandidates } from "@/lib/mentions";
 import { copyLabel, currentCopyRef } from "@/lib/copy-context";
 import { ancestryLabel, ancestryStore } from "@/lib/git-provenance";
-import { Checkbox } from "@pcbjam/ui";
+import { Checkbox, Tip } from "@pcbjam/ui";
 
 /**
  * DOM half of the hybrid comment pins (collab-presence 0005): the GAL overlay
@@ -396,64 +396,67 @@ export function CommentLayer({
               </div>
             )}
             {cmode !== "read" && (
-            <button
-              data-testid="comment-mode-toggle"
-              aria-pressed={mode}
-              title={mode ? "Cancel (Esc)" : "Click the canvas to place a pin"}
-              onClick={() => {
-                if (hidden) toggleHidden();
-                setMode((m) => !m);
-                setDraft(null);
-              }}
-              className={`${overlayRowClass} ${mode ? "bg-amber-500/20 text-amber-600 dark:text-amber-200" : ""}`}
-            >
-              <MessageSquarePlus size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
-              <span>{mode ? "Placing comment…" : "Add comment"}</span>
-              <span className="ml-auto text-[10px] text-neutral-400 dark:text-white/40">
-                {mode ? "Esc" : ""}
-              </span>
-            </button>
+            <Tip content={mode ? "Cancel (Esc)" : "Click the canvas to place a pin"}>
+              <button
+                data-testid="comment-mode-toggle"
+                aria-pressed={mode}
+                onClick={() => {
+                  if (hidden) toggleHidden();
+                  setMode((m) => !m);
+                  setDraft(null);
+                }}
+                className={`${overlayRowClass} ${mode ? "bg-amber-500/20 text-amber-600 dark:text-amber-200" : ""}`}
+              >
+                <MessageSquarePlus size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
+                <span>{mode ? "Placing comment…" : "Add comment"}</span>
+                <span className="ml-auto text-[10px] text-neutral-400 dark:text-white/40">
+                  {mode ? "Esc" : ""}
+                </span>
+              </button>
+            </Tip>
             )}
 
-            <button
-              data-testid="comment-panel-toggle"
-              aria-pressed={panel}
-              title="Show every comment in this file"
-              onClick={() => setPanel((p) => !p)}
-              className={`${overlayRowClass} ${panel ? "bg-black/10 dark:bg-white/10" : ""}`}
-            >
-              <List size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
-              <span>{panel ? "Close comments panel" : "Open comments panel"}</span>
-              <span className="ml-auto flex items-center gap-1 text-[10px] text-neutral-400 dark:text-white/40">
-                {unreadThreads > 0 && (
-                  <span
-                    data-testid="comment-unread-badge"
-                    title={mentioned ? "Unread comments — you were mentioned" : "Unread comments"}
-                    className={`flex h-4 min-w-4 items-center justify-center rounded-full px-1 font-semibold text-white ${
-                      mentioned ? "bg-rose-500" : "bg-amber-500"
-                    }`}
-                  >
-                    {unreadThreads}
-                  </span>
-                )}
-                {threads.length}
-              </span>
-            </button>
+            <Tip content="Show every comment in this file">
+              <button
+                data-testid="comment-panel-toggle"
+                aria-pressed={panel}
+                onClick={() => setPanel((p) => !p)}
+                className={`${overlayRowClass} ${panel ? "bg-black/10 dark:bg-white/10" : ""}`}
+              >
+                <List size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
+                <span>{panel ? "Close comments panel" : "Open comments panel"}</span>
+                <span className="ml-auto flex items-center gap-1 text-[10px] text-neutral-400 dark:text-white/40">
+                  {unreadThreads > 0 && (
+                    <span
+                      data-testid="comment-unread-badge"
+                      title={mentioned ? "Unread comments — you were mentioned" : "Unread comments"}
+                      className={`flex h-4 min-w-4 items-center justify-center rounded-full px-1 font-semibold text-white ${
+                        mentioned ? "bg-rose-500" : "bg-amber-500"
+                      }`}
+                    >
+                      {unreadThreads}
+                    </span>
+                  )}
+                  {threads.length}
+                </span>
+              </button>
+            </Tip>
 
-            <button
-              data-testid="comment-visibility-toggle"
-              aria-pressed={!hidden}
-              title={hidden ? "Show the pins on the canvas" : "Hide the pins on the canvas"}
-              onClick={toggleHidden}
-              className={overlayRowClass}
-            >
-              {hidden ? (
-                <EyeOff size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
-              ) : (
-                <Eye size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
-              )}
-              <span>{hidden ? "Show pins" : "Hide pins"}</span>
-            </button>
+            <Tip content={hidden ? "Show the pins on the canvas" : "Hide the pins on the canvas"}>
+              <button
+                data-testid="comment-visibility-toggle"
+                aria-pressed={!hidden}
+                onClick={toggleHidden}
+                className={overlayRowClass}
+              >
+                {hidden ? (
+                  <EyeOff size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
+                ) : (
+                  <Eye size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
+                )}
+                <span>{hidden ? "Show pins" : "Hide pins"}</span>
+              </button>
+            </Tip>
           </div>
 
         </>,
@@ -520,44 +523,44 @@ export function CommentLayer({
         const bubbleD = 2 * pinR * cssRatio + 4;
         const hitD = Math.max(26, bubbleD + 8);
         return (
-          <button
-            key={t.id}
-            data-testid="comment-pin"
-            data-thread-id={t.id}
-            title={`${authorLabel(t).text}: ${t.messages[0]?.body ?? ""}${t.detached ? " (detached)" : ""} — drag to move`}
-            onPointerDown={onPinPointerDown(t)}
-            onPointerMove={onPinPointerMove}
-            onPointerUp={onPinPointerUp(t)}
-            className={`group absolute z-30 -translate-x-1/2 -translate-y-1/2 ${
-              drag?.id === t.id ? "cursor-grabbing" : "cursor-grab"
-            }`}
-            style={{
-              left: css.x,
-              top: css.y,
-              width: hitD,
-              height: hitD,
-              background: "transparent",
-              touchAction: "none",
-            }}
-          >
-            {/* Highlight sized + shaped like the GAL bubble (round, sharp
-                bottom-left corner), always slightly padded from the hit
-                area: a hugging soft wash + outline reads as "this pin",
-                not a detached circle. */}
-            <span
-              className={`pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 transition-opacity ${
-                drag?.id === t.id
-                  ? "bg-sky-400/25 ring-2 ring-sky-500 dark:ring-sky-300"
-                  : "opacity-0 group-hover:opacity-100 bg-sky-400/15 ring-2 ring-sky-500/70 dark:ring-sky-300/70"
+          <Tip content={`${authorLabel(t).text}: ${t.messages[0]?.body ?? ""}${t.detached ? " (detached)" : ""} — drag to move`} key={t.id}>
+            <button
+              data-testid="comment-pin"
+              data-thread-id={t.id}
+              onPointerDown={onPinPointerDown(t)}
+              onPointerMove={onPinPointerMove}
+              onPointerUp={onPinPointerUp(t)}
+              className={`group absolute z-30 -translate-x-1/2 -translate-y-1/2 ${
+                drag?.id === t.id ? "cursor-grabbing" : "cursor-grab"
               }`}
               style={{
-                width: bubbleD + 4,
-                height: bubbleD + 4,
-                borderRadius: "9999px",
-                borderBottomLeftRadius: 0,
+                left: css.x,
+                top: css.y,
+                width: hitD,
+                height: hitD,
+                background: "transparent",
+                touchAction: "none",
               }}
-            />
-          </button>
+            >
+              {/* Highlight sized + shaped like the GAL bubble (round, sharp
+                  bottom-left corner), always slightly padded from the hit
+                  area: a hugging soft wash + outline reads as "this pin",
+                  not a detached circle. */}
+              <span
+                className={`pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 transition-opacity ${
+                  drag?.id === t.id
+                    ? "bg-sky-400/25 ring-2 ring-sky-500 dark:ring-sky-300"
+                    : "opacity-0 group-hover:opacity-100 bg-sky-400/15 ring-2 ring-sky-500/70 dark:ring-sky-300/70"
+                }`}
+                style={{
+                  width: bubbleD + 4,
+                  height: bubbleD + 4,
+                  borderRadius: "9999px",
+                  borderBottomLeftRadius: 0,
+                }}
+              />
+            </button>
+          </Tip>
         );
       })}
 
@@ -738,63 +741,68 @@ function CommentsPanel({
         onPointerMove={(e) => void drag.onPointerMove(e)}
         onPointerUp={() => void drag.onPointerUp()}
       >
-        <button
-          data-testid="comments-panel-collapse"
-          aria-expanded={!collapsed}
-          title={collapsed ? "Expand" : "Collapse to header"}
-          onPointerDown={(e) => e.stopPropagation()}
-          onClick={() => setCollapsed(!collapsed)}
-          className="rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
-        >
-          {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
-        </button>
+        <Tip content={collapsed ? "Expand" : "Collapse to header"}>
+          <button
+            data-testid="comments-panel-collapse"
+            aria-expanded={!collapsed}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={() => setCollapsed(!collapsed)}
+            className="rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
+          >
+            {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+          </button>
+        </Tip>
         <span>Comments ({threads.length})</span>
         <span
           className="ml-auto flex items-center gap-0.5"
           onPointerDown={(e) => e.stopPropagation()}
         >
-          <button
-            data-testid="comments-panel-add"
-            aria-pressed={mode}
-            title={mode ? "Cancel placing (Esc)" : "Add comment — click the canvas to place a pin"}
-            onClick={onToggleMode}
-            className={`rounded p-0.5 hover:bg-black/5 hover:text-neutral-900 dark:hover:bg-white/10 dark:hover:text-white ${
-              mode ? "bg-amber-500/20 text-amber-600 dark:text-amber-200" : "text-neutral-500 dark:text-white/60"
-            }`}
-          >
-            <MessageSquarePlus size={14} />
-          </button>
-          <button
-            data-testid="comments-panel-pins"
-            aria-pressed={!pinsHidden}
-            title={pinsHidden ? "Show the pins on the canvas" : "Hide the pins on the canvas"}
-            onClick={onTogglePins}
-            className="rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
-          >
-            {pinsHidden ? <EyeOff size={14} /> : <Eye size={14} />}
-          </button>
-          {threads.some((t) => threadUnreadCount(t, currentUser) > 0) && (
+          <Tip content={mode ? "Cancel placing (Esc)" : "Add comment — click the canvas to place a pin"}>
             <button
-              data-testid="comments-mark-all-seen"
-              title="Mark all as seen"
-              onClick={() => {
-                for (const t of threads) {
-                  if (threadUnreadCount(t, currentUser) > 0) controller.markSeen(t.id);
-                }
-              }}
+              data-testid="comments-panel-add"
+              aria-pressed={mode}
+              onClick={onToggleMode}
+              className={`rounded p-0.5 hover:bg-black/5 hover:text-neutral-900 dark:hover:bg-white/10 dark:hover:text-white ${
+                mode ? "bg-amber-500/20 text-amber-600 dark:text-amber-200" : "text-neutral-500 dark:text-white/60"
+              }`}
+            >
+              <MessageSquarePlus size={14} />
+            </button>
+          </Tip>
+          <Tip content={pinsHidden ? "Show the pins on the canvas" : "Hide the pins on the canvas"}>
+            <button
+              data-testid="comments-panel-pins"
+              aria-pressed={!pinsHidden}
+              onClick={onTogglePins}
               className="rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
             >
-              <CheckCheck size={14} />
+              {pinsHidden ? <EyeOff size={14} /> : <Eye size={14} />}
             </button>
+          </Tip>
+          {threads.some((t) => threadUnreadCount(t, currentUser) > 0) && (
+            <Tip content="Mark all as seen">
+              <button
+                data-testid="comments-mark-all-seen"
+                onClick={() => {
+                  for (const t of threads) {
+                    if (threadUnreadCount(t, currentUser) > 0) controller.markSeen(t.id);
+                  }
+                }}
+                className="rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
+              >
+                <CheckCheck size={14} />
+              </button>
+            </Tip>
           )}
-          <button
-            data-testid="comments-panel-close"
-            title="Close"
-            onClick={onClose}
-            className="rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
-          >
-            <X size={14} />
-          </button>
+          <Tip content="Close">
+            <button
+              data-testid="comments-panel-close"
+              onClick={onClose}
+              className="rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
+            >
+              <X size={14} />
+            </button>
+          </Tip>
         </span>
       </div>
 
@@ -822,16 +830,17 @@ function CommentsPanel({
         {sorted.map((t) => row(t, "comment-panel-item"))}
         {detached.length > 0 && (
           <div data-testid="comments-detached-section" className="border-t border-black/10 dark:border-white/10">
-            <button
-              data-testid="comments-detached-summary"
-              aria-expanded={detachedOpen}
-              onClick={() => setDetachedOpen(!detachedOpen)}
-              title="Threads whose anchor item is gone from this document — they stay here until moved or resolved"
-              className="flex w-full items-center gap-1 px-3 py-1.5 text-left text-[11px] text-neutral-600 hover:bg-black/5 dark:text-white/70 dark:hover:bg-white/10"
-            >
-              {detachedOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-              <span>Not on this revision ({detached.length})</span>
-            </button>
+            <Tip content="Threads whose anchor item is gone from this document — they stay here until moved or resolved">
+              <button
+                data-testid="comments-detached-summary"
+                aria-expanded={detachedOpen}
+                onClick={() => setDetachedOpen(!detachedOpen)}
+                className="flex w-full items-center gap-1 px-3 py-1.5 text-left text-[11px] text-neutral-600 hover:bg-black/5 dark:text-white/70 dark:hover:bg-white/10"
+              >
+                {detachedOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                <span>Not on this revision ({detached.length})</span>
+              </button>
+            </Tip>
             {detachedOpen && (
               <>
                 <label
@@ -1007,35 +1016,36 @@ function MessageReactions({
   return (
     <div className="mt-1 flex flex-wrap items-center gap-1">
       {entries.map(([emoji, slugs]) => (
+        <Tip content={slugs.join(", ")} key={emoji}>
+          <button
+            data-testid="comment-reaction-chip"
+            data-emoji={emoji}
+            onClick={() => onToggle(emoji)}
+            className={`flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[11px] ring-1 ring-inset ${
+              slugs.includes(currentUser)
+                ? "bg-sky-500/20 ring-sky-500/50 dark:bg-sky-500/25 dark:ring-sky-300/50"
+                : "bg-black/5 ring-black/15 hover:bg-black/10 dark:bg-white/5 dark:ring-white/15 dark:hover:bg-white/10"
+            }`}
+          >
+            <span>{emoji}</span>
+            <span className="text-neutral-600 dark:text-white/70">{slugs.length}</span>
+          </button>
+        </Tip>
+      ))}
+      <Tip content="Add reaction">
         <button
-          key={emoji}
-          data-testid="comment-reaction-chip"
-          data-emoji={emoji}
-          title={slugs.join(", ")}
-          onClick={() => onToggle(emoji)}
-          className={`flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[11px] ring-1 ring-inset ${
-            slugs.includes(currentUser)
-              ? "bg-sky-500/20 ring-sky-500/50 dark:bg-sky-500/25 dark:ring-sky-300/50"
-              : "bg-black/5 ring-black/15 hover:bg-black/10 dark:bg-white/5 dark:ring-white/15 dark:hover:bg-white/10"
+          data-testid="comment-react"
+          onClick={(e) => {
+            const r = e.currentTarget.getBoundingClientRect();
+            setPicker((p) => (p ? null : { kind: "quick", x: r.x, y: r.bottom }));
+          }}
+          className={`rounded-full p-1 text-neutral-400 ring-1 ring-inset ring-black/15 hover:bg-black/5 hover:text-neutral-900 dark:text-white/50 dark:ring-white/15 dark:hover:bg-white/10 dark:hover:text-white ${
+            entries.length ? "" : "opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
           }`}
         >
-          <span>{emoji}</span>
-          <span className="text-neutral-600 dark:text-white/70">{slugs.length}</span>
+          <SmilePlus size={12} />
         </button>
-      ))}
-      <button
-        data-testid="comment-react"
-        title="Add reaction"
-        onClick={(e) => {
-          const r = e.currentTarget.getBoundingClientRect();
-          setPicker((p) => (p ? null : { kind: "quick", x: r.x, y: r.bottom }));
-        }}
-        className={`rounded-full p-1 text-neutral-400 ring-1 ring-inset ring-black/15 hover:bg-black/5 hover:text-neutral-900 dark:text-white/50 dark:ring-white/15 dark:hover:bg-white/10 dark:hover:text-white ${
-          entries.length ? "" : "opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
-        }`}
-      >
-        <SmilePlus size={12} />
-      </button>
+      </Tip>
 
       {picker?.kind === "quick" &&
         createPortal(
@@ -1049,27 +1059,28 @@ function MessageReactions({
             }}
           >
             {quickEmojis().map((e) => (
-              <button
-                key={e}
-                data-emoji={e}
-                title={`React ${e}`}
-                onClick={() => {
-                  onToggle(e);
-                  setPicker(null);
-                }}
-                className="rounded px-1 text-sm hover:bg-black/5 dark:hover:bg-white/10"
-              >
-                {e}
-              </button>
+              <Tip content={`React ${e}`} key={e}>
+                <button
+                  data-emoji={e}
+                  onClick={() => {
+                    onToggle(e);
+                    setPicker(null);
+                  }}
+                  className="rounded px-1 text-sm hover:bg-black/5 dark:hover:bg-white/10"
+                >
+                  {e}
+                </button>
+              </Tip>
             ))}
-            <button
-              data-testid="comment-react-more"
-              title="All emoji…"
-              onClick={() => setPicker((p) => (p ? { ...p, kind: "full" } : p))}
-              className="rounded px-1 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
-            >
-              <Plus size={14} />
-            </button>
+            <Tip content="All emoji…">
+              <button
+                data-testid="comment-react-more"
+                onClick={() => setPicker((p) => (p ? { ...p, kind: "full" } : p))}
+                className="rounded px-1 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
+              >
+                <Plus size={14} />
+              </button>
+            </Tip>
           </div>,
           document.body,
         )}
@@ -1191,21 +1202,24 @@ function ThreadPopover({
           </button>
           )}
           {thread.createdBy === currentUser && controller.canManageThread(thread) && (
-            <button
-              data-testid="comment-delete-thread"
-              title="Delete thread"
-              onClick={() => {
-                controller.deleteThread(thread.id);
-                onClose();
-              }}
-              className="rounded px-1.5 py-0.5 text-[11px] text-red-300 ring-1 ring-inset ring-red-400/40 hover:bg-red-500/20"
-            >
-              Delete
-            </button>
+            <Tip content="Delete thread">
+              <button
+                data-testid="comment-delete-thread"
+                onClick={() => {
+                  controller.deleteThread(thread.id);
+                  onClose();
+                }}
+                className="rounded px-1.5 py-0.5 text-[11px] text-red-300 ring-1 ring-inset ring-red-400/40 hover:bg-red-500/20"
+              >
+                Delete
+              </button>
+            </Tip>
           )}
-          <button onClick={onClose} title="Close" className="text-neutral-500 hover:text-neutral-900 dark:text-white/60 dark:hover:text-white">
-            <X size={14} />
-          </button>
+          <Tip content="Close">
+            <button onClick={onClose} className="text-neutral-500 hover:text-neutral-900 dark:text-white/60 dark:hover:text-white">
+              <X size={14} />
+            </button>
+          </Tip>
         </div>
       </div>
 
@@ -1228,19 +1242,20 @@ function ThreadPopover({
                 !m.moderation &&
                 m.author !== currentUser && (
                   <span className="ml-auto hidden gap-1 group-hover:flex">
-                    <button
-                      data-testid="comment-report"
-                      title="Report this comment to the PCBJam admins"
-                      onClick={() => {
-                        setReported((r) => ({ ...r, [m.id]: "sending" }));
-                        void controller.report(thread.id, m.id, "spam").then((ok) =>
-                          setReported((r) => ({ ...r, [m.id]: ok ? "sent" : "failed" })),
-                        );
-                      }}
-                      className="text-[10px] text-neutral-500 hover:text-neutral-900 dark:text-white/60 dark:hover:text-white"
-                    >
-                      {reported[m.id] === "sent" ? "reported" : reported[m.id] === "sending" ? "reporting…" : "report"}
-                    </button>
+                    <Tip content="Report this comment to the PCBJam admins">
+                      <button
+                        data-testid="comment-report"
+                        onClick={() => {
+                          setReported((r) => ({ ...r, [m.id]: "sending" }));
+                          void controller.report(thread.id, m.id, "spam").then((ok) =>
+                            setReported((r) => ({ ...r, [m.id]: ok ? "sent" : "failed" })),
+                          );
+                        }}
+                        className="text-[10px] text-neutral-500 hover:text-neutral-900 dark:text-white/60 dark:hover:text-white"
+                      >
+                        {reported[m.id] === "sent" ? "reported" : reported[m.id] === "sending" ? "reporting…" : "report"}
+                      </button>
+                    </Tip>
                   </span>
                 )}
               {controller.canEditMessage(thread, m.id) && (
