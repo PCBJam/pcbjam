@@ -1,5 +1,6 @@
 import { Cloud, CloudOff, HardDrive } from "lucide-react";
 import type { SourceKind, SourceDescriptor } from "@/lib/project-source-shared";
+import { Tip } from "@pcbjam/ui";
 
 /**
  * A small chip that says — explicitly — where a project lives and whether saves
@@ -48,23 +49,25 @@ export function SourceChip({
 
   if (tone === "muted") {
     return (
-      <span
-        title={descriptor.description}
-        className={`inline-flex items-center gap-2 text-xs font-medium text-neutral-800 dark:text-white/90 ${className}`}
-      >
-        <Icon size={14} className={`shrink-0 ${MUTED_TONES[descriptor.kind]}`} />
-        {descriptor.label}
-      </span>
+      <Tip content={descriptor.description}>
+        <span
+          className={`inline-flex items-center gap-2 text-xs font-medium text-neutral-800 dark:text-white/90 ${className}`}
+        >
+          <Icon size={14} className={`shrink-0 ${MUTED_TONES[descriptor.kind]}`} />
+          {descriptor.label}
+        </span>
+      </Tip>
     );
   }
 
   return (
-    <span
-      title={descriptor.description}
-      className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium shadow-sm ring-1 ring-inset ${TONES[descriptor.kind]} ${className}`}
-    >
-      <Icon size={13} />
-      {descriptor.label}
-    </span>
+    <Tip content={descriptor.description}>
+      <span
+        className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium shadow-sm ring-1 ring-inset ${TONES[descriptor.kind]} ${className}`}
+      >
+        <Icon size={13} />
+        {descriptor.label}
+      </span>
+    </Tip>
   );
 }

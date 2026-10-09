@@ -165,39 +165,40 @@ export function LayerPanel({
     >
       {/* Header = drag handle. Interactive children stop pointerdown so they
           don't start a drag. */}
-      <div
-        data-testid="layers-panel-header"
-        className="flex cursor-grab select-none items-center gap-2 px-3 py-2 text-xs font-semibold active:cursor-grabbing"
-        style={{ touchAction: "none" }}
-        title="Layers — drag to move"
-        onPointerDown={(e) => drag.onPointerDown(e, rootRef.current!.getBoundingClientRect())}
-        onPointerMove={(e) => void drag.onPointerMove(e)}
-        onPointerUp={() => void drag.onPointerUp()}
-      >
-        <Tip content={collapsed ? "Expand" : "Collapse to header"}>
-          <button
-            data-testid="layers-panel-collapse"
-            aria-expanded={!collapsed}
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={() => setCollapsed(!collapsed)}
-            className="rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
-          >
-            {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
-          </button>
-        </Tip>
-        <span>Layers</span>
-        <span className="ml-auto flex items-center gap-0.5" onPointerDown={(e) => e.stopPropagation()}>
-          <Tip content="Close">
+      <Tip content="Layers — drag to move">
+        <div
+          data-testid="layers-panel-header"
+          className="flex cursor-grab select-none items-center gap-2 px-3 py-2 text-xs font-semibold active:cursor-grabbing"
+          style={{ touchAction: "none" }}
+          onPointerDown={(e) => drag.onPointerDown(e, rootRef.current!.getBoundingClientRect())}
+          onPointerMove={(e) => void drag.onPointerMove(e)}
+          onPointerUp={() => void drag.onPointerUp()}
+        >
+          <Tip content={collapsed ? "Expand" : "Collapse to header"}>
             <button
-              data-testid="layers-panel-close"
-              onClick={onClose}
+              data-testid="layers-panel-collapse"
+              aria-expanded={!collapsed}
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={() => setCollapsed(!collapsed)}
               className="rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
             >
-              <X size={14} />
+              {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
             </button>
           </Tip>
-        </span>
-      </div>
+          <span>Layers</span>
+          <span className="ml-auto flex items-center gap-0.5" onPointerDown={(e) => e.stopPropagation()}>
+            <Tip content="Close">
+              <button
+                data-testid="layers-panel-close"
+                onClick={onClose}
+                className="rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
+              >
+                <X size={14} />
+              </button>
+            </Tip>
+          </span>
+        </div>
+      </Tip>
 
       {!collapsed && (
         <div data-testid="layers-panel-list" className="max-h-[60vh] overflow-y-auto pb-1">

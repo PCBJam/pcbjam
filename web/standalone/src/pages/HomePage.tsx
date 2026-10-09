@@ -16,7 +16,7 @@ import { downloadBytes } from "@/lib/download";
 import { importFileList, importFsaFolder } from "@/lib/import-folder";
 import { localProjectStore } from "@/lib/project-source";
 import { isDocumentTool } from "@/lib/new-file";
-import { Button, Input, Badge } from "@pcbjam/ui";
+import { Button, Input, Badge, Tip } from "@pcbjam/ui";
 import { ToolGrid } from "@/components/ToolGrid";
 import { ProjectsSection } from "@/components/ProjectsSection";
 import { WaitlistForm } from "@/components/WaitlistForm";
@@ -409,19 +409,19 @@ function LibGroup({
           )}
           <div className="flex max-h-72 flex-wrap gap-2 overflow-y-auto">
             {shown.map((lib) => (
-              <a
-                key={lib.id}
-                href={`${libPath(currentScope(), lib.id)}?tool=${tool}`}
-                title={lib.description ?? undefined}
-                className="inline-flex h-fit items-center gap-1.5 rounded-md border px-2.5 py-1 text-sm hover:bg-accent"
-              >
-                {lib.name}
-                {lib.itemCount !== undefined && (
-                  <span className="text-xs text-muted-foreground">
-                    {lib.itemCount}
-                  </span>
-                )}
-              </a>
+              <Tip content={lib.description ?? undefined} key={lib.id}>
+                <a
+                  href={`${libPath(currentScope(), lib.id)}?tool=${tool}`}
+                  className="inline-flex h-fit items-center gap-1.5 rounded-md border px-2.5 py-1 text-sm hover:bg-accent"
+                >
+                  {lib.name}
+                  {lib.itemCount !== undefined && (
+                    <span className="text-xs text-muted-foreground">
+                      {lib.itemCount}
+                    </span>
+                  )}
+                </a>
+              </Tip>
             ))}
             {shown.length === 0 && (
               <p className="text-sm text-muted-foreground">No matches.</p>

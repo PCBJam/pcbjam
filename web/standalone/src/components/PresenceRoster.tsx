@@ -110,29 +110,31 @@ export function PresenceRoster({
               />
               <span className="truncate">{p.user.name}</span>
               {p.agent && (
-                <Badge
-                  data-testid="presence-ai"
-                  title={`AI agent “${p.agent.name}” working for this person — it never acts as them`}
-                  tone="preview"
-                  variant="outline"
-                  size="sm"
-                  shape="pill"
-                  className="px-1 text-[9px] uppercase tracking-wide"
-                >
-                  AI
-                </Badge>
+                <Tip content={`AI agent “${p.agent.name}” working for this person — it never acts as them`}>
+                  <Badge
+                    data-testid="presence-ai"
+                    tone="preview"
+                    variant="outline"
+                    size="sm"
+                    shape="pill"
+                    className="px-1 text-[9px] uppercase tracking-wide"
+                  >
+                    AI
+                  </Badge>
+                </Tip>
               )}
               {p.role === "commenter" && (
-                <Badge
-                  data-testid="presence-reviewer"
-                  title="Reviewer (commenter): sees the board, comments, never locks items"
-                  variant="outline"
-                  size="sm"
-                  shape="pill"
-                  className="px-1 text-[9px] uppercase tracking-wide"
-                >
-                  reviewer
-                </Badge>
+                <Tip content="Reviewer (commenter): sees the board, comments, never locks items">
+                  <Badge
+                    data-testid="presence-reviewer"
+                    variant="outline"
+                    size="sm"
+                    shape="pill"
+                    className="px-1 text-[9px] uppercase tracking-wide"
+                  >
+                    reviewer
+                  </Badge>
+                </Tip>
               )}
               {!here && (
                 <span className="ml-auto shrink-0 truncate text-[10px] text-neutral-400 dark:text-white/40">
