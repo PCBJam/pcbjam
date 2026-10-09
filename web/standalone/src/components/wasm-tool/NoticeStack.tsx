@@ -5,6 +5,7 @@ import { libSyncLabel } from "./DownloadConsent";
 import type { CrossProbeNotice } from "./cross-probe";
 import type { LibSetNotice } from "./useLibNotices";
 import type { SharedTabsNotice } from "@/recovery/useTabCensus";
+import { Tip } from "@pcbjam/ui";
 
 /** The open document was deleted / moved by a collaborator's file op
  *  (project-page 0003): nothing typed from here on can be saved. */
@@ -130,50 +131,54 @@ export function NoticeStack({
       <div className="absolute left-1/2 top-3 z-40 flex -translate-x-1/2 flex-col items-center gap-2">
         {/* Library error (e.g. a backend 404 on open) — auto-dismisses. */}
         {libError && (
-          <button
-            className="max-w-md rounded bg-red-950/95 px-3 py-2 text-center text-xs text-red-100 shadow-lg ring-1 ring-red-500/40"
-            onClick={onDismissLibError}
-            title="Dismiss"
-          >
-            {libError}
-          </button>
+          <Tip content="Dismiss">
+            <button
+              className="max-w-md rounded bg-red-950/95 px-3 py-2 text-center text-xs text-red-100 shadow-lg ring-1 ring-red-500/40"
+              onClick={onDismissLibError}
+            >
+              {libError}
+            </button>
+          </Tip>
         )}
 
         {/* A collaborator updated a symbol PLACED in this document — auto-dismisses. */}
         {libUpdate && (
-          <button
-            data-testid="lib-update-toast"
-            className="max-w-md rounded bg-amber-950/95 px-3 py-2 text-center text-xs text-amber-100 shadow-lg ring-1 ring-amber-500/40"
-            onClick={onDismissLibUpdate}
-            title="Dismiss"
-          >
-            {libUpdate}
-          </button>
+          <Tip content="Dismiss">
+            <button
+              data-testid="lib-update-toast"
+              className="max-w-md rounded bg-amber-950/95 px-3 py-2 text-center text-xs text-amber-100 shadow-lg ring-1 ring-amber-500/40"
+              onClick={onDismissLibUpdate}
+            >
+              {libUpdate}
+            </button>
+          </Tip>
         )}
 
         {/* A peer changed the team's lib set — click loads the new lib live
             (kicadLibsAddEntry bridge), falling back to a reload offer. */}
         {libSetNotice && (
-          <button
-            data-testid="lib-set-toast"
-            className="max-w-md rounded bg-sky-950/95 px-3 py-2 text-center text-xs text-sky-100 shadow-lg ring-1 ring-sky-500/40"
-            onClick={onLibSetClick}
-            title={libSetNotice.mode === "reload" ? "Reload" : "Load the new library"}
-          >
-            {libSetNotice.message}
-          </button>
+          <Tip content={libSetNotice.mode === "reload" ? "Reload" : "Load the new library"}>
+            <button
+              data-testid="lib-set-toast"
+              className="max-w-md rounded bg-sky-950/95 px-3 py-2 text-center text-xs text-sky-100 shadow-lg ring-1 ring-sky-500/40"
+              onClick={onLibSetClick}
+            >
+              {libSetNotice.message}
+            </button>
+          </Tip>
         )}
 
         {/* Backend rolled this doc back to the last valid state (kicad-validity). */}
         {docReverted && (
-          <button
-            data-testid="doc-reverted-toast"
-            className="max-w-md rounded bg-orange-950/95 px-3 py-2 text-center text-xs text-orange-100 shadow-lg ring-1 ring-orange-500/40"
-            onClick={onDismissDocReverted}
-            title="Dismiss"
-          >
-            {docReverted}
-          </button>
+          <Tip content="Dismiss">
+            <button
+              data-testid="doc-reverted-toast"
+              className="max-w-md rounded bg-orange-950/95 px-3 py-2 text-center text-xs text-orange-100 shadow-lg ring-1 ring-orange-500/40"
+              onClick={onDismissDocReverted}
+            >
+              {docReverted}
+            </button>
+          </Tip>
         )}
         {crossProbeNotice && (
           <div
@@ -193,14 +198,15 @@ export function NoticeStack({
                 {crossProbeNotice.action.label}
               </button>
             )}
-            <button
-              className="text-neutral-400 hover:text-neutral-100"
-              onClick={onDismissCrossProbeNotice}
-              title="Dismiss"
-              aria-label="Dismiss"
-            >
-              ×
-            </button>
+            <Tip content="Dismiss">
+              <button
+                className="text-neutral-400 hover:text-neutral-100"
+                onClick={onDismissCrossProbeNotice}
+                aria-label="Dismiss"
+              >
+                ×
+              </button>
+            </Tip>
           </div>
         )}
         {sharedTabs && (
@@ -216,14 +222,15 @@ export function NoticeStack({
               process with one memory budget, so a large design may run out of memory. Close the ones
               you don't need.
             </span>
-            <button
-              className="text-amber-300 hover:text-amber-100"
-              onClick={onDismissSharedTabs}
-              title="Dismiss"
-              aria-label="Dismiss"
-            >
-              ×
-            </button>
+            <Tip content="Dismiss">
+              <button
+                className="text-amber-300 hover:text-amber-100"
+                onClick={onDismissSharedTabs}
+                aria-label="Dismiss"
+              >
+                ×
+              </button>
+            </Tip>
           </div>
         )}
       </div>

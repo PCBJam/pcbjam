@@ -74,7 +74,8 @@ test('unread badges: create → badge for the peer only → open clears → repl
   await expect(pageB.getByTestId('comment-unread-dot')).toHaveCount(0);
 
   // bob replies from his open popover → alice (popover closed first) unreads.
-  await page.getByTestId('comment-popover').getByTitle('Close').click();
+  // The close button's name comes from its tooltip (Tip labels icon-only triggers).
+  await page.getByTestId('comment-popover').getByRole('button', { name: 'Close', exact: true }).click();
   await pageB.getByTestId('comment-reply').fill('now you have mail');
   await pageB.getByTestId('comment-reply').press('Enter');
   await expect(page.getByTestId('overlay-menu-unread-badge')).toHaveText('1', {

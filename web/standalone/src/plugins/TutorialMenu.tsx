@@ -5,6 +5,7 @@ import { hostedPlugins, pluginKey } from './plugin-catalog';
 import { useSessionFeature } from '@/lib/session-identity';
 import type { PluginMenuProps } from './PluginMenu';
 import { listTutorials, startTutorial, tutorialUrl, TUTORIAL_LEVEL, type Tutorial } from './tutorials';
+import { Tip } from "@pcbjam/ui";
 
 /** "Open here": sized to its label. The shared row class is full width and would cover the title. */
 const openHereClass =
@@ -46,16 +47,17 @@ export function TutorialMenu({ tool, catalog, onViewChange }: PluginMenuProps) {
       {list?.map(tutorial => {
         const here = catalog.plugins.find(p => p.pluginId === tutorial.pluginId && p.manifest.surfaces.includes('editor:' + tool));
         return <div key={tutorial.slug} className="flex items-center gap-1">
-          <button type="button" className={overlayRowClass + ' min-w-0 flex-1 disabled:opacity-60'} disabled={!!busy}
-            title={`${tutorial.summary ? tutorial.summary + ' · ' : ''}Starts in a new project`} onClick={() => void start(tutorial)}>
-            {busy === tutorial.slug
-              ? <Loader2 size={14} className="shrink-0 animate-spin text-neutral-400 dark:text-white/50" />
-              : <GraduationCap size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />}
-            <span className="flex min-w-0 flex-1 flex-col">
-              <span className="truncate">{tutorial.title}</span>
-              <span className="truncate text-[10px] text-neutral-400 dark:text-white/40">{TUTORIAL_LEVEL[tutorial.level] ?? tutorial.level} · {tutorial.minutes} min</span>
-            </span>
-          </button>
+          <Tip content={`${tutorial.summary ? tutorial.summary + ' · ' : ''}Starts in a new project`}>
+            <button type="button" className={overlayRowClass + ' min-w-0 flex-1 disabled:opacity-60'} disabled={!!busy} onClick={() => void start(tutorial)}>
+              {busy === tutorial.slug
+                ? <Loader2 size={14} className="shrink-0 animate-spin text-neutral-400 dark:text-white/50" />
+                : <GraduationCap size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />}
+              <span className="flex min-w-0 flex-1 flex-col">
+                <span className="truncate">{tutorial.title}</span>
+                <span className="truncate text-[10px] text-neutral-400 dark:text-white/40">{TUTORIAL_LEVEL[tutorial.level] ?? tutorial.level} · {tutorial.minutes} min</span>
+              </span>
+            </button>
+          </Tip>
           {here && <button type="button" className={openHereClass} disabled={!!busy}
             aria-label={`Open ${tutorial.title} in this project`}
             onClick={() => { onViewChange({ kind: 'plugin', id: pluginKey(here) }); closeMenu(); }}>Open here</button>}

@@ -3,7 +3,7 @@ import { presenceKey } from "@pcbjam/shared";
 import type { PresencePeer } from "@/wasm/collab/presence";
 import type { FollowTarget } from "@/wasm/collab/follow-user";
 import { overlayRowClass } from "@/components/OverlayMenu";
-import { Badge } from "@pcbjam/ui";
+import { Badge, Tip } from "@pcbjam/ui";
 
 /**
  * "Who else is in this file" (collab-presence 0001/0003), as a readable LIST.
@@ -77,16 +77,9 @@ export function PresenceRoster({
         const followed = isFollowed(p);
         const elsewhere = p.away ? "away" : sheetLabel(p.sheetPath) || "another sheet";
         return (
-          <button
+          <Tip
             key={presenceKey(p)}
-            type="button"
-            data-presence-user={p.user.id}
-            data-presence-agent={p.agent ? p.agent.client : undefined}
-            data-presence-elsewhere={here ? undefined : "1"}
-            data-presence-following={followed ? "1" : undefined}
-            disabled={!followable(p)}
-            onClick={() => toggleFollow(p)}
-            title={
+            content={
               here
                 ? onFollow
                   ? followed
@@ -97,57 +90,67 @@ export function PresenceRoster({
                   ? `${p.user.name} — away`
                   : `${p.user.name} — on ${elsewhere}`
             }
-            className={`${overlayRowClass} ${
-              followed ? "bg-black/10 dark:bg-white/10" : ""
-            } ${here ? "" : "cursor-default opacity-50 hover:bg-transparent"}`}
           >
-            <span
-              aria-hidden
-              className="h-2.5 w-2.5 shrink-0 rounded-full ring-1 ring-inset ring-black/40"
-              style={{ backgroundColor: p.user.color }}
-            />
-            <span className="truncate">{p.user.name}</span>
-            {p.agent && (
-              <Badge
-                data-testid="presence-ai"
-                title={`AI agent “${p.agent.name}” working for this person — it never acts as them`}
-                tone="preview"
-                variant="outline"
-                size="sm"
-                shape="pill"
-                className="px-1 text-[9px] uppercase tracking-wide"
-              >
-                AI
-              </Badge>
-            )}
-            {p.role === "commenter" && (
-              <Badge
-                data-testid="presence-reviewer"
-                title="Reviewer (commenter): sees the board, comments, never locks items"
-                variant="outline"
-                size="sm"
-                shape="pill"
-                className="px-1 text-[9px] uppercase tracking-wide"
-              >
-                reviewer
-              </Badge>
-            )}
-            {!here && (
-              <span className="ml-auto shrink-0 truncate text-[10px] text-neutral-400 dark:text-white/40">
-                {p.away ? "away" : `on ${elsewhere}`}
-              </span>
-            )}
-            {here && followed && (
-              <span className="ml-auto flex shrink-0 items-center gap-1 text-[10px] font-medium text-neutral-600 dark:text-white/70">
-                <Eye size={12} /> Stop
-              </span>
-            )}
-            {here && !followed && followable(p) && (
-              <span className="ml-auto shrink-0 text-[10px] text-neutral-400 dark:text-white/35">
-                Follow
-              </span>
-            )}
-          </button>
+            <button
+              type="button"
+              data-presence-user={p.user.id}
+              data-presence-agent={p.agent ? p.agent.client : undefined}
+              data-presence-elsewhere={here ? undefined : "1"}
+              data-presence-following={followed ? "1" : undefined}
+              disabled={!followable(p)}
+              onClick={() => toggleFollow(p)}
+              className={`${overlayRowClass} ${
+                followed ? "bg-black/10 dark:bg-white/10" : ""
+              } ${here ? "" : "cursor-default opacity-50 hover:bg-transparent"}`}
+            >
+              <span
+                aria-hidden
+                className="h-2.5 w-2.5 shrink-0 rounded-full ring-1 ring-inset ring-black/40"
+                style={{ backgroundColor: p.user.color }}
+              />
+              <span className="truncate">{p.user.name}</span>
+              {p.agent && (
+                <Badge
+                  data-testid="presence-ai"
+                  title={`AI agent “${p.agent.name}” working for this person — it never acts as them`}
+                  tone="preview"
+                  variant="outline"
+                  size="sm"
+                  shape="pill"
+                  className="px-1 text-[9px] uppercase tracking-wide"
+                >
+                  AI
+                </Badge>
+              )}
+              {p.role === "commenter" && (
+                <Badge
+                  data-testid="presence-reviewer"
+                  title="Reviewer (commenter): sees the board, comments, never locks items"
+                  variant="outline"
+                  size="sm"
+                  shape="pill"
+                  className="px-1 text-[9px] uppercase tracking-wide"
+                >
+                  reviewer
+                </Badge>
+              )}
+              {!here && (
+                <span className="ml-auto shrink-0 truncate text-[10px] text-neutral-400 dark:text-white/40">
+                  {p.away ? "away" : `on ${elsewhere}`}
+                </span>
+              )}
+              {here && followed && (
+                <span className="ml-auto flex shrink-0 items-center gap-1 text-[10px] font-medium text-neutral-600 dark:text-white/70">
+                  <Eye size={12} /> Stop
+                </span>
+              )}
+              {here && !followed && followable(p) && (
+                <span className="ml-auto shrink-0 text-[10px] text-neutral-400 dark:text-white/35">
+                  Follow
+                </span>
+              )}
+            </button>
+          </Tip>
         );
       })}
       {peers.length > MAX_ROWS && (

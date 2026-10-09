@@ -11,6 +11,7 @@ import {
   RadioGroup,
   RadioGroupItem,
   Checkbox,
+  Tip,
 } from "@pcbjam/ui";
 
 /**
@@ -260,13 +261,14 @@ export function PresenceTuner({ mod, tool }: { mod: TunerModule; tool: string })
 
   if (!open) {
     return (
-      <button
-        title="Presence style tuner"
-        onClick={() => setOpen(true)}
-        className="absolute left-3 top-12 z-40 flex h-8 w-8 items-center justify-center rounded-full bg-fuchsia-700 text-white shadow-lg"
-      >
-        <Palette size={15} />
-      </button>
+      <Tip content="Presence style tuner">
+        <button
+          onClick={() => setOpen(true)}
+          className="absolute left-3 top-12 z-40 flex h-8 w-8 items-center justify-center rounded-full bg-fuchsia-700 text-white shadow-lg"
+        >
+          <Palette size={15} />
+        </button>
+      </Tip>
     );
   }
 

@@ -12,7 +12,7 @@ import {
   type SourceDescriptor,
 } from "@/lib/project-source-shared";
 import { zipFiles } from "@/lib/zip";
-import { Button } from "@pcbjam/ui";
+import { Button, Tip } from "@pcbjam/ui";
 import { SourceChip } from "@/components/SourceChip";
 
 /**
@@ -79,35 +79,38 @@ export function ProjectsSection() {
       <div className="divide-y rounded-lg border">
         {local.map((p) => (
           <ProjectRow key={p.id} project={p} descriptor={SOURCE_DESCRIPTORS.local}>
-            <Button
-              variant="ghost"
-              size="sm"
-              title="Download .zip"
-              disabled={busy === p.slug}
-              onClick={() => void exportZip(p.slug)}
-            >
-              {busy === p.slug ? (
-                <Loader2 className="animate-spin" size={15} />
-              ) : (
-                <Download size={15} />
-              )}
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              title="Rename"
-              onClick={() => void rename(p.slug, p.name)}
-            >
-              <Pencil size={15} />
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              title="Delete"
-              onClick={() => void remove(p.slug, p.name)}
-            >
-              <Trash2 size={15} />
-            </Button>
+            <Tip content="Download .zip">
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={busy === p.slug}
+                onClick={() => void exportZip(p.slug)}
+              >
+                {busy === p.slug ? (
+                  <Loader2 className="animate-spin" size={15} />
+                ) : (
+                  <Download size={15} />
+                )}
+              </Button>
+            </Tip>
+            <Tip content="Rename">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => void rename(p.slug, p.name)}
+              >
+                <Pencil size={15} />
+              </Button>
+            </Tip>
+            <Tip content="Delete">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => void remove(p.slug, p.name)}
+              >
+                <Trash2 size={15} />
+              </Button>
+            </Tip>
           </ProjectRow>
         ))}
 

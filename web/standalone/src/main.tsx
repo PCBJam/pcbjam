@@ -1,7 +1,7 @@
 import ReactDOM from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter } from "react-router-dom";
-import { DialogEventsProvider } from "@pcbjam/ui";
+import { DialogEventsProvider, TooltipProvider } from "@pcbjam/ui";
 import App from "./App";
 import { openTrustedPrompt } from "./overlay/trusted-prompts";
 import { initAnalytics } from "./lib/analytics";
@@ -38,13 +38,16 @@ const queryClient = new QueryClient({
 // instantiate a 175–338 MB KiCad wasm twice — enough to OOM the tab (and the
 // runtime is process-global anyway; see src/wasm/boot.ts). The tool view must
 // instantiate exactly once per navigation.
-// An open Dialog counts as a trusted prompt, which pauses the guide overlay.
+// An open Dialog counts as a trusted prompt, which pauses the guide overlay. One TooltipProvider
+// for every Tip, so moving between toolbar buttons shows the next tooltip without the delay.
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <QueryClientProvider client={queryClient}>
     <DialogEventsProvider onContentMount={openTrustedPrompt}>
-      <BrowserRouter>
-        <App />
-      </BrowserRouter>
+      <TooltipProvider delayDuration={400}>
+        <BrowserRouter>
+          <App />
+        </BrowserRouter>
+      </TooltipProvider>
     </DialogEventsProvider>
   </QueryClientProvider>,
 );

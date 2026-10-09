@@ -21,7 +21,7 @@ import { fetchFileBytes, useProject, useSourceDescriptor } from "@/lib/api";
 import { downloadBytes } from "@/lib/download";
 import { localProjectStore } from "@/lib/project-source";
 import { zipFiles } from "@/lib/zip";
-import { Button } from "@pcbjam/ui";
+import { Button, Tip } from "@pcbjam/ui";
 import { SourceChip } from "@/components/SourceChip";
 import { ToolGrid } from "@/components/ToolGrid";
 import { FileTree } from "@/components/FileTree";
@@ -118,13 +118,14 @@ export function ProjectView() {
     return (
       <>
         {isLocal && (
-          <button
-            className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-sm hover:bg-accent"
-            title="Download this file"
-            onClick={() => void downloadOne(path)}
-          >
-            <Download size={14} />
-          </button>
+          <Tip content="Download this file">
+            <button
+              className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-sm hover:bg-accent"
+              onClick={() => void downloadOne(path)}
+            >
+              <Download size={14} />
+            </button>
+          </Tip>
         )}
         {tool && (
           <a

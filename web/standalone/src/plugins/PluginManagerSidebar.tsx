@@ -21,6 +21,7 @@ import { useTrustedPrompt } from '@/overlay/trusted-prompts';
 import { pluginSheetAdapter, pluginTourAdapter } from '@/overlay/plugin-tours';
 import { pluginPartSaver, type PluginPartSummary } from './plugin-parts';
 import { panelToReopen, readPluginPanel, rememberPluginPanel } from './panel-memory';
+import { Tip } from "@pcbjam/ui";
 
 interface InspectorHost {
   mountEditorPlugin(container: HTMLElement, options: {
@@ -256,7 +257,9 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
     {open && <aside aria-label="Plugins sidebar" className="absolute inset-y-0 right-0 z-[55] flex flex-col border-l border-black/10 bg-white text-neutral-900 shadow-2xl dark:border-white/15 dark:bg-neutral-950 dark:text-white" style={{ width: 'min(360px, 90vw)' }}>
       <header className="flex h-14 shrink-0 items-center gap-2 border-b border-black/10 px-4 dark:border-white/10">
         <Puzzle size={17} className="text-sky-500" /><h2 className="flex-1 text-sm font-semibold">Plugins</h2>
-        <button type="button" title="Close plugins" aria-label="Close plugins" onClick={onClose} className="rounded p-2 hover:bg-black/5 dark:hover:bg-white/10"><X size={17} /></button>
+        <Tip content="Close plugins">
+          <button type="button" aria-label="Close plugins" onClick={onClose} className="rounded p-2 hover:bg-black/5 dark:hover:bg-white/10"><X size={17} /></button>
+        </Tip>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 text-xs">
         <a href={`${PLUGIN_DOCS_URL}/plugins/`} target="_blank" rel="noopener noreferrer" className="mb-4 flex w-fit items-center gap-1.5 rounded text-sky-600 hover:underline dark:text-sky-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4"><BookOpen size={14} /> Developer guide <ExternalLink size={12} aria-hidden="true" /></a>
@@ -313,7 +316,9 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
             <button className={button} disabled={busy || !compatible(plugin) || plugin.enabled===false} onClick={() => openPlugin(pluginKey(plugin))}>Open</button>
             {hostedPlugins && <button className={button} disabled={busy} onClick={async()=>{setBusy(true);try{await (await packageHost()).setPluginEnabled(plugin,plugin.enabled===false);await refresh();}catch(error){setNotice((error as Error).message);}finally{setBusy(false);}}}>{plugin.enabled===false?'Enable':'Disable'}</button>}
             {hostedPlugins && <button className={button} disabled={busy} onClick={()=>setResetCandidate(plugin)}>Reset data</button>}
-            <button className={button} disabled={busy} onClick={() => void remove(plugin)} title={'Remove ' + plugin.manifest.name} aria-label={'Remove ' + plugin.manifest.name}><Trash2 size={14} /></button>
+            <Tip content={'Remove ' + plugin.manifest.name}>
+              <button className={button} disabled={busy} onClick={() => void remove(plugin)} aria-label={'Remove ' + plugin.manifest.name}><Trash2 size={14} /></button>
+            </Tip>
           </div>)}
         </section>
         {(notice || catalog.error) && <p role="alert" className="mt-3 text-amber-700 dark:text-amber-200">{notice || catalog.error}</p>}

@@ -1,6 +1,7 @@
 import * as React from "react";
 import { ChevronDown, ChevronRight, FileText, X } from "lucide-react";
 import { useDraggablePanel } from "@/components/useDraggablePanel";
+import { Tip } from "@pcbjam/ui";
 
 /**
  * Floating sheet navigator (sheet-panel): the canvas-only stand-in for the
@@ -181,16 +182,17 @@ export function SheetPanel({
         onPointerMove={(e) => void drag.onPointerMove(e)}
         onPointerUp={() => void drag.onPointerUp()}
       >
-        <button
-          data-testid="sheet-panel-collapse"
-          aria-expanded={!collapsed}
-          title={collapsed ? "Expand" : "Collapse to header"}
-          onPointerDown={(e) => e.stopPropagation()}
-          onClick={() => setCollapsed(!collapsed)}
-          className="rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
-        >
-          {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
-        </button>
+        <Tip content={collapsed ? "Expand" : "Collapse to header"}>
+          <button
+            data-testid="sheet-panel-collapse"
+            aria-expanded={!collapsed}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={() => setCollapsed(!collapsed)}
+            className="rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
+          >
+            {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+          </button>
+        </Tip>
         <span>Sheets</span>
         {state && state.sheets.length > 1 && (
           <span className="text-[10px] font-normal text-neutral-400 dark:text-white/40">
@@ -198,14 +200,15 @@ export function SheetPanel({
           </span>
         )}
         <span className="ml-auto flex items-center gap-0.5" onPointerDown={(e) => e.stopPropagation()}>
-          <button
-            data-testid="sheet-panel-close"
-            title="Close"
-            onClick={onClose}
-            className="rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
-          >
-            <X size={14} />
-          </button>
+          <Tip content="Close">
+            <button
+              data-testid="sheet-panel-close"
+              onClick={onClose}
+              className="rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
+            >
+              <X size={14} />
+            </button>
+          </Tip>
         </span>
       </div>
 
@@ -224,32 +227,32 @@ export function SheetPanel({
           {state?.sheets.map((s) => {
             const active = state.current === s.path;
             return (
-              <button
-                key={s.path}
-                data-testid="sheet-row"
-                data-sheet-path={s.path}
-                data-active={active || undefined}
-                aria-current={active ? "page" : undefined}
-                title={`${fileLabel(s.file)} — page ${s.page}`}
-                onClick={() => enter(s.path)}
-                className={`flex w-full items-center gap-2 border-t border-black/5 px-3 py-1 text-left text-xs hover:text-sky-600 dark:border-white/5 dark:hover:text-sky-300 ${
-                  active ? "bg-sky-500/10 dark:bg-sky-400/10" : ""
-                }`}
-                style={{ paddingLeft: 12 + Math.min(s.depth, 8) * 12 }}
-              >
-                <FileText
-                  size={13}
-                  className={`shrink-0 ${
-                    active ? "text-sky-600 dark:text-sky-300" : "text-neutral-400 dark:text-white/40"
+              <Tip content={`${fileLabel(s.file)} — page ${s.page}`} key={s.path}>
+                <button
+                  data-testid="sheet-row"
+                  data-sheet-path={s.path}
+                  data-active={active || undefined}
+                  aria-current={active ? "page" : undefined}
+                  onClick={() => enter(s.path)}
+                  className={`flex w-full items-center gap-2 border-t border-black/5 px-3 py-1 text-left text-xs hover:text-sky-600 dark:border-white/5 dark:hover:text-sky-300 ${
+                    active ? "bg-sky-500/10 dark:bg-sky-400/10" : ""
                   }`}
-                />
-                <span className={`min-w-0 flex-1 truncate ${active ? "font-semibold" : ""}`}>
-                  {s.name || fileLabel(s.file)}
-                </span>
-                <span className="shrink-0 tabular-nums text-[10px] text-neutral-400 dark:text-white/40">
-                  {s.page}
-                </span>
-              </button>
+                  style={{ paddingLeft: 12 + Math.min(s.depth, 8) * 12 }}
+                >
+                  <FileText
+                    size={13}
+                    className={`shrink-0 ${
+                      active ? "text-sky-600 dark:text-sky-300" : "text-neutral-400 dark:text-white/40"
+                    }`}
+                  />
+                  <span className={`min-w-0 flex-1 truncate ${active ? "font-semibold" : ""}`}>
+                    {s.name || fileLabel(s.file)}
+                  </span>
+                  <span className="shrink-0 tabular-nums text-[10px] text-neutral-400 dark:text-white/40">
+                    {s.page}
+                  </span>
+                </button>
+              </Tip>
             );
           })}
         </div>
