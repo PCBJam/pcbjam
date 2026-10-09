@@ -25,6 +25,11 @@ import {
   DialogTitle,
   Input,
   Label,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
 } from "@pcbjam/ui";
 
 /**
@@ -141,20 +146,19 @@ export function NewFileDialog({
           {homeMode && (
             <div>
               <Label htmlFor="newfile-project">Project</Label>
-              <select
-                id="newfile-project"
-                className="mt-1 h-9 w-full rounded-md border bg-transparent px-3 text-sm"
-                value={target}
-                disabled={busy}
-                onChange={(e) => setTarget(e.target.value)}
-              >
-                <option value={NEW}>New project…</option>
-                {(localQ.data ?? []).map((p) => (
-                  <option key={p.slug} value={p.slug}>
-                    {p.name}
-                  </option>
-                ))}
-              </select>
+              <Select value={target} disabled={busy} onValueChange={setTarget}>
+                <SelectTrigger id="newfile-project" className="mt-1">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NEW}>New project…</SelectItem>
+                  {(localQ.data ?? []).map((p) => (
+                    <SelectItem key={p.slug} value={p.slug}>
+                      {p.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
           )}
           {homeMode && target === NEW && (
