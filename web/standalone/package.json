@@ -11,6 +11,7 @@
     "preview": "vite preview",
     "e2e:preview": "node scripts/build-preview.mjs",
     "typecheck": "tsc --noEmit",
+    "lint:ui": "node ../pcbjam-shared-ui/tools/ui-rule.mjs src ui-rule-baseline.json",
     "test": "vitest run",
     "test:watch": "vitest"
   },
