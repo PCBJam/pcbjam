@@ -1,7 +1,7 @@
 import * as React from "react";
 import { ChevronDown, ChevronRight, Eye, EyeOff, X } from "lucide-react";
 import { useDraggablePanel } from "@/components/useDraggablePanel";
-import { Tip } from "@pcbjam/ui";
+import { Tip, Toggle } from "@pcbjam/ui";
 
 /**
  * Floating layer panel (viewer-panels): the canvas-only replacement for the
@@ -224,18 +224,16 @@ export function LayerPanel({
                 style={l.color ? { backgroundColor: l.color } : undefined}
               />
               <Tip content={l.visible ? `Hide ${l.name}` : `Show ${l.name}`}>
-                <button
+                <Toggle
                   data-testid="layer-visibility"
-                  aria-pressed={l.visible}
-                  onClick={() => setVisible(l.id, !l.visible)}
-                  className={`rounded p-0.5 hover:bg-black/5 dark:hover:bg-white/10 ${
-                    l.visible
-                      ? "text-neutral-600 dark:text-white/70"
-                      : "text-neutral-300 dark:text-white/25"
-                  }`}
+                  variant="ghost"
+                  size="xs"
+                  pressed={l.visible}
+                  onPressedChange={(visible) => setVisible(l.id, visible)}
+                  className="text-neutral-300 hover:bg-black/5 dark:text-white/25 dark:hover:bg-white/10 data-[state=on]:text-neutral-600 dark:data-[state=on]:text-white/70"
                 >
                   {l.visible ? <Eye size={13} /> : <EyeOff size={13} />}
-                </button>
+                </Toggle>
               </Tip>
               <Tip content={`Make ${l.name} the active layer`}>
                 <button

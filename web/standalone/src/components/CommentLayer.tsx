@@ -1,6 +1,6 @@
 import * as React from "react";
 import { createPortal } from "react-dom";
-import { overlayRowClass } from "@/components/OverlayMenu";
+import { overlayFieldClass, overlayPressedClass, overlayRowClass } from "@/components/OverlayMenu";
 import {
   threadMentionsUnread,
   threadUnreadCount,
@@ -43,7 +43,8 @@ import { noteEmojiUsed, quickEmojis } from "@/lib/emoji-quick";
 import { cachedCollaborators, collaborators, mergeCandidates } from "@/lib/mentions";
 import { copyLabel, currentCopyRef } from "@/lib/copy-context";
 import { ancestryLabel, ancestryStore } from "@/lib/git-provenance";
-import { Checkbox, Tip } from "@pcbjam/ui";
+import { Checkbox, Textarea, Tip, Toggle } from "@pcbjam/ui";
+import { cn } from "@/lib/utils";
 
 /**
  * DOM half of the hybrid comment pins (collab-presence 0005): the GAL overlay
@@ -397,31 +398,35 @@ export function CommentLayer({
             )}
             {cmode !== "read" && (
             <Tip content={mode ? "Cancel (Esc)" : "Click the canvas to place a pin"}>
-              <button
+              <Toggle
                 data-testid="comment-mode-toggle"
-                aria-pressed={mode}
-                onClick={() => {
+                variant="ghost"
+                size="row"
+                pressed={mode}
+                onPressedChange={(on) => {
                   if (hidden) toggleHidden();
-                  setMode((m) => !m);
+                  setMode(on);
                   setDraft(null);
                 }}
-                className={`${overlayRowClass} ${mode ? "bg-amber-500/20 text-amber-600 dark:text-amber-200" : ""}`}
+                className={cn(overlayRowClass, "data-[state=on]:bg-amber-500/20")}
               >
                 <MessageSquarePlus size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
                 <span>{mode ? "Placing comment…" : "Add comment"}</span>
                 <span className="ml-auto text-[10px] text-neutral-400 dark:text-white/40">
                   {mode ? "Esc" : ""}
                 </span>
-              </button>
+              </Toggle>
             </Tip>
             )}
 
             <Tip content="Show every comment in this file">
-              <button
+              <Toggle
                 data-testid="comment-panel-toggle"
-                aria-pressed={panel}
-                onClick={() => setPanel((p) => !p)}
-                className={`${overlayRowClass} ${panel ? "bg-black/10 dark:bg-white/10" : ""}`}
+                variant="ghost"
+                size="row"
+                pressed={panel}
+                onPressedChange={setPanel}
+                className={cn(overlayRowClass, overlayPressedClass)}
               >
                 <List size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
                 <span>{panel ? "Close comments panel" : "Open comments panel"}</span>
@@ -440,14 +445,16 @@ export function CommentLayer({
                   )}
                   {threads.length}
                 </span>
-              </button>
+              </Toggle>
             </Tip>
 
             <Tip content={hidden ? "Show the pins on the canvas" : "Hide the pins on the canvas"}>
-              <button
+              <Toggle
                 data-testid="comment-visibility-toggle"
-                aria-pressed={!hidden}
-                onClick={toggleHidden}
+                variant="ghost"
+                size="row"
+                pressed={!hidden}
+                onPressedChange={toggleHidden}
                 className={overlayRowClass}
               >
                 {hidden ? (
@@ -456,7 +463,7 @@ export function CommentLayer({
                   <Eye size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
                 )}
                 <span>{hidden ? "Show pins" : "Hide pins"}</span>
-              </button>
+              </Toggle>
             </Tip>
           </div>
 
@@ -758,26 +765,28 @@ function CommentsPanel({
             onPointerDown={(e) => e.stopPropagation()}
           >
             <Tip content={mode ? "Cancel placing (Esc)" : "Add comment — click the canvas to place a pin"}>
-              <button
+              <Toggle
                 data-testid="comments-panel-add"
-                aria-pressed={mode}
-                onClick={onToggleMode}
-                className={`rounded p-0.5 hover:bg-black/5 hover:text-neutral-900 dark:hover:bg-white/10 dark:hover:text-white ${
-                  mode ? "bg-amber-500/20 text-amber-600 dark:text-amber-200" : "text-neutral-500 dark:text-white/60"
-                }`}
+                variant="ghost"
+                size="xs"
+                pressed={mode}
+                onPressedChange={onToggleMode}
+                className="text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white data-[state=on]:bg-amber-500/20 data-[state=on]:text-amber-600 dark:data-[state=on]:text-amber-200"
               >
                 <MessageSquarePlus size={14} />
-              </button>
+              </Toggle>
             </Tip>
             <Tip content={pinsHidden ? "Show the pins on the canvas" : "Hide the pins on the canvas"}>
-              <button
+              <Toggle
                 data-testid="comments-panel-pins"
-                aria-pressed={!pinsHidden}
-                onClick={onTogglePins}
-                className="rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
+                variant="ghost"
+                size="xs"
+                pressed={!pinsHidden}
+                onPressedChange={onTogglePins}
+                className="text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
               >
                 {pinsHidden ? <EyeOff size={14} /> : <Eye size={14} />}
-              </button>
+              </Toggle>
             </Tip>
             {threads.some((t) => threadUnreadCount(t, currentUser) > 0) && (
               <Tip content="Mark all as seen">
@@ -904,7 +913,7 @@ function Composer({
         onSubmit={submit}
         getCandidates={getCandidates}
         placeholder="Add a comment… (@ to mention)"
-        className="h-16 w-full resize-none rounded bg-black/5 p-2 text-xs text-neutral-900 placeholder-neutral-400 outline-none dark:bg-white/10 dark:text-white dark:placeholder-white/40"
+        className="h-16 w-full resize-none rounded bg-black/5 p-2 text-xs text-neutral-900 placeholder:text-neutral-400 outline-none dark:bg-white/10 dark:text-white dark:placeholder:text-white/40"
       />
       <div className="mt-1 flex justify-end gap-2">
         <button onClick={onCancel} className="rounded px-2 py-1 text-xs text-neutral-600 hover:bg-black/5 dark:text-white/70 dark:hover:bg-white/10">
@@ -1282,7 +1291,7 @@ function ThreadPopover({
             </div>
             {editing?.id === m.id ? (
               <div className="mt-1">
-                <textarea
+                <Textarea
                   autoFocus
                   value={editing.body}
                   onChange={(e) => setEditing({ id: m.id, body: e.target.value })}
@@ -1293,7 +1302,10 @@ function ThreadPopover({
                       setEditing(null);
                     }
                   }}
-                  className="h-12 w-full resize-none rounded bg-black/5 p-1.5 text-xs text-neutral-900 outline-none dark:bg-white/10 dark:text-white"
+                  className={cn(
+                    overlayFieldClass,
+                    "h-12 w-full resize-none rounded bg-black/5 p-1.5 text-xs text-neutral-900 outline-none dark:bg-white/10 dark:text-white",
+                  )}
                 />
               </div>
             ) : m.moderation ? (
@@ -1338,7 +1350,7 @@ function ThreadPopover({
           onSubmit={sendReply}
           getCandidates={getCandidates}
           placeholder="Reply… (@ to mention)"
-          className="w-full rounded bg-black/5 px-2 py-1.5 text-xs text-neutral-900 placeholder-neutral-400 outline-none dark:bg-white/10 dark:text-white dark:placeholder-white/40"
+          className="w-full rounded bg-black/5 px-2 py-1.5 text-xs text-neutral-900 placeholder:text-neutral-400 outline-none dark:bg-white/10 dark:text-white dark:placeholder:text-white/40"
         />
         )}
       </div>

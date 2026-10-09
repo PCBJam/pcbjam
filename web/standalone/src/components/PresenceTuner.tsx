@@ -11,8 +11,11 @@ import {
   RadioGroup,
   RadioGroupItem,
   Checkbox,
+  Textarea,
   Tip,
 } from "@pcbjam/ui";
+import { overlayFieldClass } from "@/components/OverlayMenu";
+import { cn } from "@/lib/utils";
 
 /**
  * DEV-TIME presence style tuner (VITE_PRESENCE_TUNER=1): live-patches the wasm
@@ -466,11 +469,14 @@ function ColorsSection({
               </button>
             ))}
           </div>
-          <textarea
+          <Textarea
             value={paletteText}
             onChange={(e) => setPaletteText(e.target.value)}
             placeholder="#ef4444, #22c55e, …"
-            className="h-12 w-full resize-none rounded bg-white/10 p-1 font-mono text-[10px] text-white outline-none"
+            className={cn(
+              overlayFieldClass,
+              "h-12 w-full resize-none rounded bg-white/10 p-1 font-mono text-[10px] text-white placeholder:text-gray-400 outline-none",
+            )}
           />
           <div className="flex items-center gap-2">
             <button

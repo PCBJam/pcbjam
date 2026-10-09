@@ -1,6 +1,9 @@
 import * as React from "react";
 import type { Collaborator } from "@pcbjam/shared";
+import { Input, Textarea } from "@pcbjam/ui";
+import { overlayFieldClass } from "@/components/OverlayMenu";
 import { filterCandidates } from "@/lib/mentions";
+import { cn } from "@/lib/utils";
 
 /**
  * Text input/textarea with `@`-mention autocomplete (comments-ux 0001 E).
@@ -146,21 +149,21 @@ export function MentionInput({
     onKeyDown,
     placeholder,
     autoFocus,
-    className,
+    className: cn(overlayFieldClass, className),
     "data-testid": testId,
   };
 
   return (
     <div className="relative w-full">
       {multiline ? (
-        <textarea
+        <Textarea
           {...shared}
           ref={(el) => {
             inputRef.current = el;
           }}
         />
       ) : (
-        <input
+        <Input
           {...shared}
           ref={(el) => {
             inputRef.current = el;
