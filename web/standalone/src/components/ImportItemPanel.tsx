@@ -18,6 +18,7 @@ import {
   buildInteractiveImport,
   hasInteractivePlacement,
 } from "@/wasm/import-item";
+import { Combobox } from "@pcbjam/ui";
 
 /**
  * POC "plugin" sidebar (import-item): pick a `.kicad_sym` / `.kicad_mod` from
@@ -282,18 +283,15 @@ export function ImportItemPanel({
               {picked.kind === "symbol" && picked.names.length > 1 && (
                 <label className="flex items-center gap-2">
                   <span className="text-neutral-500 dark:text-white/50">Symbol</span>
-                  <select
+                  <Combobox
                     data-testid="import-symbol-select"
-                    className="min-w-0 flex-1 rounded border border-neutral-300 bg-white px-1 py-0.5 dark:border-white/20 dark:bg-neutral-900"
+                    className="h-7 min-w-0 flex-1 px-2 text-xs"
                     value={symbol}
-                    onChange={(e) => setSymbol(e.target.value)}
-                  >
-                    {picked.names.map((n) => (
-                      <option key={n} value={n}>
-                        {n}
-                      </option>
-                    ))}
-                  </select>
+                    onValueChange={setSymbol}
+                    searchPlaceholder="Search symbols…"
+                    emptyText="No symbol matches."
+                    options={picked.names.map((n) => ({ value: n, label: n }))}
+                  />
                 </label>
               )}
             </div>

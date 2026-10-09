@@ -2,6 +2,7 @@ import * as React from "react";
 import { setPinRadiusPx } from "@/wasm/collab/pin-geometry";
 import { PRESENCE_COLORS } from "@pcbjam/shared";
 import { Palette, X } from "lucide-react";
+import { Select as UiSelect, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@pcbjam/ui";
 
 /**
  * DEV-TIME presence style tuner (VITE_PRESENCE_TUNER=1): live-patches the wasm
@@ -559,17 +560,18 @@ function Select({
   return (
     <label className="flex items-center gap-2">
       <span className="w-24 shrink-0 text-white/60">{label}</span>
-      <select
-        value={value}
-        onChange={(e) => onChange(Number(e.target.value))}
-        className="flex-1 rounded bg-white/10 px-1 py-0.5 text-white"
-      >
-        {options.map((o, i) => (
-          <option key={o} value={i} className="bg-neutral-900">
-            {o}
-          </option>
-        ))}
-      </select>
+      <UiSelect value={String(value)} onValueChange={(v) => onChange(Number(v))}>
+        <SelectTrigger className="h-7 flex-1 border-white/20 bg-white/10 px-1 text-white">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {options.map((o, i) => (
+            <SelectItem key={o} value={String(i)}>
+              {o}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </UiSelect>
     </label>
   );
 }
