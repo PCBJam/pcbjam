@@ -1,6 +1,7 @@
 import * as React from "react";
 import { ChevronRight, CornerLeftUp, Folder } from "lucide-react";
 import { formatBytes } from "@/lib/utils";
+import { Button } from "@pcbjam/ui";
 
 export interface TreeFile {
   path: string;
@@ -64,25 +65,29 @@ export function FileTree({
     <div>
       {/* Breadcrumb */}
       <div className="mb-2 flex flex-wrap items-center gap-1 text-sm text-muted-foreground">
-        <button
+        <Button
           type="button"
-          className="hover:text-foreground hover:underline"
+          variant="link"
+          size="text"
+          className="hover:text-foreground"
           onClick={() => setDir("")}
         >
           root
-        </button>
+        </Button>
         {segs.map((s, i) => {
           const upto = segs.slice(0, i + 1).join("/") + "/";
           return (
             <React.Fragment key={upto}>
               <ChevronRight size={13} className="opacity-50" />
-              <button
+              <Button
                 type="button"
-                className="font-mono hover:text-foreground hover:underline"
+                variant="link"
+                size="text"
+                className="font-mono hover:text-foreground"
                 onClick={() => setDir(upto)}
               >
                 {s}
-              </button>
+              </Button>
             </React.Fragment>
           );
         })}

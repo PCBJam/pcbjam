@@ -1,6 +1,6 @@
 {
   "src/components/CommentLayer.tsx": 18,
-  "src/components/FileTree.tsx": 4,
+  "src/components/FileTree.tsx": 2,
   "src/components/ImportItemPanel.tsx": 3,
   "src/components/LayerPanel.tsx": 3,
   "src/components/LocalProjectView.tsx": 2,
