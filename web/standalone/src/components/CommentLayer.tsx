@@ -43,7 +43,7 @@ import { noteEmojiUsed, quickEmojis } from "@/lib/emoji-quick";
 import { cachedCollaborators, collaborators, mergeCandidates } from "@/lib/mentions";
 import { copyLabel, currentCopyRef } from "@/lib/copy-context";
 import { ancestryLabel, ancestryStore } from "@/lib/git-provenance";
-import { Checkbox, Textarea, Tip, Toggle } from "@pcbjam/ui";
+import { Badge, Checkbox, Textarea, Tip, Toggle } from "@pcbjam/ui";
 import { cn } from "@/lib/utils";
 
 /**
@@ -433,14 +433,14 @@ export function CommentLayer({
                 <span className="ml-auto flex items-center gap-1 text-[10px] text-neutral-400 dark:text-white/40">
                   {unreadThreads > 0 && (
                     <Tip content={mentioned ? "Unread comments — you were mentioned" : "Unread comments"}>
-                      <span
+                      <Badge
                         data-testid="comment-unread-badge"
-                        className={`flex h-4 min-w-4 items-center justify-center rounded-full px-1 font-semibold text-white ${
-                          mentioned ? "bg-rose-500" : "bg-amber-500"
-                        }`}
+                        size="count"
+                        variant="solid"
+                        className={cn("text-white", mentioned ? "bg-rose-500" : "bg-amber-500")}
                       >
                         {unreadThreads}
-                      </span>
+                      </Badge>
                     </Tip>
                   )}
                   {threads.length}

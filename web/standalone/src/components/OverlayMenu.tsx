@@ -1,7 +1,8 @@
 import * as React from "react";
 import { AlertTriangle, Users } from "lucide-react";
 import { useDraggablePanel } from "@/components/useDraggablePanel";
-import { Tip } from "@pcbjam/ui";
+import { Badge, Tip } from "@pcbjam/ui";
+import { cn } from "@/lib/utils";
 
 /**
  * Unified overlay menu (collab-presence 0010): the single circular icon that
@@ -175,12 +176,14 @@ export function OverlayMenu({
         >
           <Users size={16} />
           {badge > 0 && (
-            <span
+            <Badge
               data-testid="overlay-menu-badge"
-              className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-sky-500 px-1 text-[10px] font-semibold text-white"
+              size="count"
+              variant="solid"
+              className="absolute -right-1 -top-1 bg-sky-500 text-white"
             >
               {badge}
-            </span>
+            </Badge>
           )}
           {alert && (
             <Tip content="Some of what you see is behind the latest library state — open the session menu">
@@ -194,14 +197,14 @@ export function OverlayMenu({
           )}
           {unread > 0 && (
             <Tip content={unreadMention ? "Unread comments — you were mentioned" : "Unread comments"}>
-              <span
+              <Badge
                 data-testid="overlay-menu-unread-badge"
-                className={`absolute -bottom-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-semibold text-white ${
-                  unreadMention ? "bg-rose-500" : "bg-amber-500"
-                }`}
+                size="count"
+                variant="solid"
+                className={cn("absolute -bottom-1 -right-1 text-white", unreadMention ? "bg-rose-500" : "bg-amber-500")}
               >
                 {unread}
-              </span>
+              </Badge>
             </Tip>
           )}
         </button>
