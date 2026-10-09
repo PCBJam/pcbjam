@@ -2296,6 +2296,7 @@ export function WasmTool({
         onDismissLibUpdate={notices.dismissLibUpdate}
         libSetNotice={notices.libSetNotice}
         onLibSetClick={notices.onLibSetClick}
+        onDismissLibSet={notices.dismissLibSetNotice}
         docReverted={notices.docReverted}
         onDismissDocReverted={notices.dismissDocReverted}
         crossProbeNotice={notices.crossProbeNotice}

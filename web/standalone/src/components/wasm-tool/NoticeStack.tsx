@@ -5,7 +5,8 @@ import { libSyncLabel } from "./DownloadConsent";
 import type { CrossProbeNotice } from "./cross-probe";
 import type { LibSetNotice } from "./useLibNotices";
 import type { SharedTabsNotice } from "@/recovery/useTabCensus";
-import { Tip } from "@pcbjam/ui";
+import { toast, type ExternalToast } from "@pcbjam/ui";
+import * as React from "react";
 
 /** The open document was deleted / moved by a collaborator's file op
  *  (project-page 0003): nothing typed from here on can be saved. */
@@ -19,9 +20,10 @@ export interface FileGoneNotice {
 /**
  * Every transient notice the running editor shows over the canvas: the
  * bottom-left progress badges (lib pre-sync, 3D models), the busy pill, the
- * durable save-blocked banner and the top-center toast column (lib error,
- * placed-item update, lib-set change, doc revert). State + timers live in
- * useLibNotices; this is the render.
+ * durable save-blocked banner and the toasts (lib error, placed-item update,
+ * lib-set change, doc revert, cross-probe, shared tabs; Sonner, from the
+ * Toaster at the app root). State + timers live in useLibNotices; this is the
+ * render.
  */
 export function NoticeStack({
   ready,
@@ -36,6 +38,7 @@ export function NoticeStack({
   onDismissLibUpdate,
   libSetNotice,
   onLibSetClick,
+  onDismissLibSet,
   docReverted,
   onDismissDocReverted,
   crossProbeNotice,
@@ -55,6 +58,7 @@ export function NoticeStack({
   onDismissLibUpdate: () => void;
   libSetNotice: LibSetNotice | null;
   onLibSetClick: () => void;
+  onDismissLibSet?: () => void;
   docReverted: string | null;
   onDismissDocReverted: () => void;
   crossProbeNotice?: CrossProbeNotice | null;
@@ -63,6 +67,67 @@ export function NoticeStack({
   sharedTabs?: SharedTabsNotice | null;
   onDismissSharedTabs?: () => void;
 }) {
+  // Library error (e.g. a backend 404 on open) — auto-dismisses.
+  useNoticeToast("lib-error", libError, (message, o) => toast.error(message, { ...o, testId: "lib-error-toast" }), onDismissLibError);
+  // A collaborator updated a symbol PLACED in this document — auto-dismisses.
+  useNoticeToast("lib-update", libUpdate, (message, o) => toast.warning(message, { ...o, testId: "lib-update-toast" }), onDismissLibUpdate);
+  // A peer changed the team's lib set — the action loads the new lib live
+  // (kicadLibsAddEntry bridge), falling back to a reload offer.
+  useNoticeToast(
+    "lib-set",
+    libSetNotice,
+    (notice, o) =>
+      toast.info(notice.message, {
+        ...o,
+        testId: "lib-set-toast",
+        action: {
+          label: notice.mode === "reload" ? "Reload" : "Load library",
+          // The click turns the notice into a reload offer when live loading fails, so the
+          // toast stays up; the notice's state decides when it goes.
+          onClick: (event) => {
+            event.preventDefault();
+            onLibSetClick();
+          },
+        },
+      }),
+    onDismissLibSet,
+  );
+  // Backend rolled this doc back to the last valid state (kicad-validity).
+  useNoticeToast("doc-reverted", docReverted, (message, o) => toast.warning(message, { ...o, testId: "doc-reverted-toast" }), onDismissDocReverted);
+  useNoticeToast(
+    "cross-probe",
+    crossProbeNotice,
+    (notice, o) =>
+      toast(notice.text, {
+        ...o,
+        testId: "cross-probe-toast",
+        action: notice.action && {
+          label: notice.action.label,
+          onClick: (event) => {
+            event.preventDefault();
+            notice.action?.run();
+            onDismissCrossProbeNotice?.();
+          },
+        },
+      }),
+    onDismissCrossProbeNotice,
+  );
+  // Firefox: other editor tabs share this tab's process memory (0009) — stays until closed.
+  useNoticeToast(
+    "shared-tabs",
+    sharedTabs,
+    (notice, o) =>
+      toast.warning(
+        `${
+          notice.tabs.length === 1
+            ? "You have 1 other PCBJam editor open"
+            : `You have ${notice.tabs.length} other PCBJam editors open`
+        } (${notice.tabs.map((t) => t.title || t.url).join(", ")}). Firefox runs them in one process with one memory budget, so a large design may run out of memory. Close the ones you don't need.`,
+        { ...o, testId: "shared-tabs-toast" },
+      ),
+    onDismissSharedTabs,
+  );
+
   return (
     <>
       {/* Lib pre-sync warming IDB after the editor opened (big set) — the ONLY
@@ -125,115 +190,49 @@ export function NoticeStack({
           )}
         </div>
       )}
-
-      {/* Top-center toast column: simultaneous notices stack instead of
-          overlapping (they all used to render at the same absolute spot). */}
-      <div className="absolute left-1/2 top-3 z-40 flex -translate-x-1/2 flex-col items-center gap-2">
-        {/* Library error (e.g. a backend 404 on open) — auto-dismisses. */}
-        {libError && (
-          <Tip content="Dismiss">
-            <button
-              className="max-w-md rounded bg-red-950/95 px-3 py-2 text-center text-xs text-red-100 shadow-lg ring-1 ring-red-500/40"
-              onClick={onDismissLibError}
-            >
-              {libError}
-            </button>
-          </Tip>
-        )}
-
-        {/* A collaborator updated a symbol PLACED in this document — auto-dismisses. */}
-        {libUpdate && (
-          <Tip content="Dismiss">
-            <button
-              data-testid="lib-update-toast"
-              className="max-w-md rounded bg-amber-950/95 px-3 py-2 text-center text-xs text-amber-100 shadow-lg ring-1 ring-amber-500/40"
-              onClick={onDismissLibUpdate}
-            >
-              {libUpdate}
-            </button>
-          </Tip>
-        )}
-
-        {/* A peer changed the team's lib set — click loads the new lib live
-            (kicadLibsAddEntry bridge), falling back to a reload offer. */}
-        {libSetNotice && (
-          <Tip content={libSetNotice.mode === "reload" ? "Reload" : "Load the new library"}>
-            <button
-              data-testid="lib-set-toast"
-              className="max-w-md rounded bg-sky-950/95 px-3 py-2 text-center text-xs text-sky-100 shadow-lg ring-1 ring-sky-500/40"
-              onClick={onLibSetClick}
-            >
-              {libSetNotice.message}
-            </button>
-          </Tip>
-        )}
-
-        {/* Backend rolled this doc back to the last valid state (kicad-validity). */}
-        {docReverted && (
-          <Tip content="Dismiss">
-            <button
-              data-testid="doc-reverted-toast"
-              className="max-w-md rounded bg-orange-950/95 px-3 py-2 text-center text-xs text-orange-100 shadow-lg ring-1 ring-orange-500/40"
-              onClick={onDismissDocReverted}
-            >
-              {docReverted}
-            </button>
-          </Tip>
-        )}
-        {crossProbeNotice && (
-          <div
-            data-testid="cross-probe-toast"
-            className="flex max-w-md items-center gap-3 rounded bg-neutral-900/95 px-3 py-2 text-xs text-neutral-100 shadow-lg ring-1 ring-neutral-500/40"
-          >
-            <span>{crossProbeNotice.text}</span>
-            {crossProbeNotice.action && (
-              <button
-                data-testid="cross-probe-toast-action"
-                className="rounded bg-neutral-100 px-2 py-0.5 font-medium text-neutral-900"
-                onClick={() => {
-                  crossProbeNotice.action?.run();
-                  onDismissCrossProbeNotice?.();
-                }}
-              >
-                {crossProbeNotice.action.label}
-              </button>
-            )}
-            <Tip content="Dismiss">
-              <button
-                className="text-neutral-400 hover:text-neutral-100"
-                onClick={onDismissCrossProbeNotice}
-                aria-label="Dismiss"
-              >
-                ×
-              </button>
-            </Tip>
-          </div>
-        )}
-        {sharedTabs && (
-          <div
-            data-testid="shared-tabs-toast"
-            className="flex max-w-md items-start gap-3 rounded bg-amber-950/95 px-3 py-2 text-xs text-amber-100 shadow-lg ring-1 ring-amber-500/40"
-          >
-            <span>
-              {sharedTabs.tabs.length === 1
-                ? "You have 1 other PCBJam editor open"
-                : `You have ${sharedTabs.tabs.length} other PCBJam editors open`}{" "}
-              ({sharedTabs.tabs.map((t) => t.title || t.url).join(", ")}). Firefox runs them in one
-              process with one memory budget, so a large design may run out of memory. Close the ones
-              you don't need.
-            </span>
-            <Tip content="Dismiss">
-              <button
-                className="text-amber-300 hover:text-amber-100"
-                onClick={onDismissSharedTabs}
-                aria-label="Dismiss"
-              >
-                ×
-              </button>
-            </Tip>
-          </div>
-        )}
-      </div>
     </>
+  );
+}
+
+let toastSerial = 0;
+
+/**
+ * Mirrors one notice into a toast. The notice's owner (useLibNotices, the tab census) keeps its
+ * state and auto-dismiss timer, so the toast never closes on its own: it shows while the notice
+ * is set, updates in place when the notice changes, and goes when it clears. Closing the toast
+ * (its ×, or a swipe) clears the notice through `onDismiss`.
+ */
+function useNoticeToast<T>(
+  key: string,
+  notice: T | null | undefined,
+  show: (notice: T, options: ExternalToast) => void,
+  onDismiss?: () => void,
+) {
+  const latest = React.useRef({ show, onDismiss });
+  latest.current = { show, onDismiss };
+  // A fresh id each time the notice appears, so a toast still animating out can neither swallow
+  // the next one nor, when its own close lands late, clear it.
+  const idRef = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    if (notice == null) {
+      if (idRef.current) toast.dismiss(idRef.current);
+      idRef.current = null;
+      return;
+    }
+    const id = (idRef.current ??= `${key}-${++toastSerial}`);
+    latest.current.show(notice, {
+      id,
+      duration: Infinity,
+      closeButton: true,
+      onDismiss: (t) => {
+        if (t.id === idRef.current) latest.current.onDismiss?.();
+      },
+    });
+  }, [key, notice]);
+  React.useEffect(
+    () => () => {
+      if (idRef.current) toast.dismiss(idRef.current);
+    },
+    [],
   );
 }
