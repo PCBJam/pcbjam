@@ -343,6 +343,7 @@ export function useLibNotices(opts: {
 
   const dismissLibError = React.useCallback(() => setLibError(null), []);
   const dismissLibUpdate = React.useCallback(() => setLibUpdate(null), []);
+  const dismissLibSetNotice = React.useCallback(() => setLibSetNotice(null), []);
   const dismissDocReverted = React.useCallback(() => setDocReverted(null), []);
   const dismissCrossProbeNotice = React.useCallback(() => setCrossProbeNotice(null), []);
 
@@ -354,6 +355,7 @@ export function useLibNotices(opts: {
     dismissLibUpdate,
     libSetNotice,
     onLibSetClick,
+    dismissLibSetNotice,
     docReverted,
     dismissDocReverted,
     crossProbeNotice,

@@ -1,7 +1,7 @@
 import ReactDOM from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter } from "react-router-dom";
-import { DialogEventsProvider, TooltipProvider } from "@pcbjam/ui";
+import { DialogEventsProvider, Toaster, TooltipProvider } from "@pcbjam/ui";
 import App from "./App";
 import { openTrustedPrompt } from "./overlay/trusted-prompts";
 import { initAnalytics } from "./lib/analytics";
@@ -39,7 +39,8 @@ const queryClient = new QueryClient({
 // runtime is process-global anyway; see src/wasm/boot.ts). The tool view must
 // instantiate exactly once per navigation.
 // An open Dialog counts as a trusted prompt, which pauses the guide overlay. One TooltipProvider
-// for every Tip, so moving between toolbar buttons shows the next tooltip without the delay.
+// for every Tip, so moving between toolbar buttons shows the next tooltip without the delay. One
+// Toaster for every toast (the editor's notices), top-center where the notice column used to be.
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <QueryClientProvider client={queryClient}>
     <DialogEventsProvider onContentMount={openTrustedPrompt}>
@@ -47,6 +48,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
         <BrowserRouter>
           <App />
         </BrowserRouter>
+        <Toaster position="top-center" offset={12} />
       </TooltipProvider>
     </DialogEventsProvider>
   </QueryClientProvider>,
