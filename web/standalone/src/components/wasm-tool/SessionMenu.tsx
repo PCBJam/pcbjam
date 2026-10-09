@@ -19,12 +19,13 @@ import type { PresencePeer } from "@/wasm/collab/presence";
 import type { FollowTarget } from "@/wasm/collab/follow-user";
 import { PresenceRoster } from "@/components/PresenceRoster";
 import { SourceChip } from "@/components/SourceChip";
-import { OverlayMenu, OverlayMenuSection, overlayRowClass } from "@/components/OverlayMenu";
+import { OverlayMenu, OverlayMenuSection, overlayPressedClass, overlayRowClass } from "@/components/OverlayMenu";
 import { CHROME_HOTKEY_LABEL } from "./ui-helpers";
 import type { StaleLibEntry } from "./useLibNotices";
 import { PluginMenu, type PluginMenuProps } from "@/plugins/PluginMenu";
 import { TutorialMenu } from "@/plugins/TutorialMenu";
-import { Tip } from "@pcbjam/ui";
+import { Tip, Toggle } from "@pcbjam/ui";
+import { cn } from "@/lib/utils";
 
 /**
  * Behind-the-library state (libs 0017 §2b/2c): placed items a peer updated in
@@ -306,15 +307,17 @@ export function SessionMenu({
           )}
           {readOnly && commentAccess === "none" && onToggleReaderComments && (
             <Tip content="Show other people's comments on this document">
-              <button
+              <Toggle
                 data-testid="reader-comments-toggle"
-                aria-pressed={!!readerComments}
-                onClick={onToggleReaderComments}
-                className={`${overlayRowClass} ${readerComments ? "bg-black/10 dark:bg-white/10" : ""}`}
+                variant="ghost"
+                size="row"
+                pressed={!!readerComments}
+                onPressedChange={onToggleReaderComments}
+                className={cn(overlayRowClass, overlayPressedClass)}
               >
                 <MessageSquare size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
                 <span>{readerComments ? "Hide comments" : "Show comments"}</span>
-              </button>
+              </Toggle>
             </Tip>
           )}
           {onChangeMobileMode && (
@@ -348,15 +351,17 @@ export function SessionMenu({
       <OverlayMenuSection label="View">
         {onToggleReviewerSelections && (
           <Tip content="Show or hide reviewers' selection outlines (their cursors stay)">
-            <button
+            <Toggle
               data-testid="reviewer-selections-toggle"
-              aria-pressed={reviewerSelections !== false}
-              onClick={onToggleReviewerSelections}
-              className={`${overlayRowClass} ${reviewerSelections !== false ? "bg-black/10 dark:bg-white/10" : ""}`}
+              variant="ghost"
+              size="row"
+              pressed={reviewerSelections !== false}
+              onPressedChange={onToggleReviewerSelections}
+              className={cn(overlayRowClass, overlayPressedClass)}
             >
               <Eye size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
               <span>{reviewerSelections !== false ? "Hide reviewer selections" : "Show reviewer selections"}</span>
-            </button>
+            </Toggle>
           </Tip>
         )}
         {/* Viewer panels (viewer-panels): canvas-only stand-ins for the
@@ -364,54 +369,62 @@ export function SessionMenu({
             in hide-UI mode alike. */}
         {effectiveChromeHidden && hasLayers && (
           <Tip content="Board layers — visibility and active layer">
-            <button
+            <Toggle
               data-testid="layers-panel-toggle"
-              aria-pressed={layersOpen}
+              variant="ghost"
+              size="row"
+              pressed={layersOpen}
+              onPressedChange={setLayersOpen}
               className={overlayRowClass}
-              onClick={() => setLayersOpen(!layersOpen)}
             >
               <Layers size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
               <span>{layersOpen ? "Hide layers" : "Layers"}</span>
-            </button>
+            </Toggle>
           </Tip>
         )}
         {effectiveChromeHidden && hasSheets && (
           <Tip content="Schematic sheets — navigate the hierarchy">
-            <button
+            <Toggle
               data-testid="sheet-panel-toggle"
-              aria-pressed={sheetsOpen}
+              variant="ghost"
+              size="row"
+              pressed={sheetsOpen}
+              onPressedChange={setSheetsOpen}
               className={overlayRowClass}
-              onClick={() => setSheetsOpen(!sheetsOpen)}
             >
               <ListTree size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
               <span>{sheetsOpen ? "Hide sheets" : "Sheets"}</span>
-            </button>
+            </Toggle>
           </Tip>
         )}
         {effectiveChromeHidden && (tool === "pcbnew" || tool === "eeschema") && (
           <Tip content="Properties of the selected items">
-            <button
+            <Toggle
               data-testid="inspector-panel-toggle"
-              aria-pressed={inspectorOpen}
+              variant="ghost"
+              size="row"
+              pressed={inspectorOpen}
+              onPressedChange={setInspectorOpen}
               className={overlayRowClass}
-              onClick={() => setInspectorOpen(!inspectorOpen)}
             >
               <Crosshair size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
               <span>{inspectorOpen ? "Hide inspector" : "Inspector"}</span>
-            </button>
+            </Toggle>
           </Tip>
         )}
         {hasImport && !readOnly && (
           <Tip content="POC: add a symbol / footprint from a local file to the canvas">
-            <button
+            <Toggle
               data-testid="import-panel-toggle"
-              aria-pressed={importOpen}
+              variant="ghost"
+              size="row"
+              pressed={importOpen}
+              onPressedChange={setImportOpen}
               className={overlayRowClass}
-              onClick={() => setImportOpen(!importOpen)}
             >
               <FilePlus size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
               <span>{importOpen ? "Hide import" : "Import from file"}</span>
-            </button>
+            </Toggle>
           </Tip>
         )}
         {tool === "pcbnew" && onShow3D && (
@@ -428,11 +441,13 @@ export function SessionMenu({
         )}
         {canToggleChrome && !readOnly && (
           <Tip content={`${chromeHidden ? "Show" : "Hide"} UI (${CHROME_HOTKEY_LABEL})`}>
-            <button
+            <Toggle
               data-testid="chrome-toggle"
-              aria-pressed={chromeHidden}
+              variant="ghost"
+              size="row"
+              pressed={chromeHidden}
+              onPressedChange={onToggleChrome}
               className={overlayRowClass}
-              onClick={onToggleChrome}
             >
               {chromeHidden ? (
                 <PanelsTopLeft size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
@@ -443,18 +458,20 @@ export function SessionMenu({
               <kbd className="ml-auto rounded bg-black/10 px-1.5 py-0.5 text-[10px] font-medium text-neutral-500 dark:bg-white/10 dark:text-white/50">
                 {CHROME_HOTKEY_LABEL}
               </kbd>
-            </button>
+            </Toggle>
           </Tip>
         )}
         {/* Light/dark toggle (comments-ux 0002): flips the shell theme;
             the F4 effect in WasmTool re-themes the GAL canvas through the
             bridge. Available to viewers too — theming isn't editing. */}
         <Tip content={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}>
-          <button
+          <Toggle
             data-testid="overlay-theme-toggle"
-            aria-pressed={theme === "dark"}
+            variant="ghost"
+            size="row"
+            pressed={theme === "dark"}
+            onPressedChange={(dark) => setTheme(dark ? "dark" : "light")}
             className={overlayRowClass}
-            onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
           >
             {theme === "dark" ? (
               <Sun size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
@@ -462,7 +479,7 @@ export function SessionMenu({
               <Moon size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
             )}
             <span>{theme === "dark" ? "Light mode" : "Dark mode"}</span>
-          </button>
+          </Toggle>
         </Tip>
       </OverlayMenuSection>
     </OverlayMenu>

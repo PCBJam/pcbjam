@@ -22,7 +22,11 @@ import { Tip } from "@pcbjam/ui";
  * below are the fix and the contract:
  *
  *   OverlayMenuSection — a labelled group, separated from its neighbours.
- *   overlayRowClass    — the shared row shape for anything interactive.
+ *   overlayRowClass    — the shared row shape for anything interactive
+ *                        (a toggle row is @pcbjam/ui's Toggle, variant="ghost"
+ *                        size="row", plus overlayPressedClass if it shows a
+ *                        pressed look).
+ *   overlayFieldClass  — a text field (Input / Textarea) on the glass.
  *
  * Children compose these instead of inventing their own chrome. Two deliberate
  * exceptions stay self-styled because they are shared with light-background
@@ -37,6 +41,20 @@ export const overlayRowClass =
   "text-neutral-800 transition-colors hover:bg-black/5 " +
   "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-black/30 " +
   "dark:text-white/90 dark:hover:bg-white/10 dark:focus-visible:ring-white/40";
+
+/** A row toggle's pressed look (Toggle sets data-state="on" while pressed). */
+export const overlayPressedClass = "data-[state=on]:bg-black/10 dark:data-[state=on]:bg-white/10";
+
+/**
+ * A text field on the glass, for @pcbjam/ui's Input and Textarea: no border,
+ * shadow or focus ring of their own (the caret shows focus), and a bare
+ * field's inline box. The call site adds the tint, padding, height and
+ * placeholder colour. (The ring colours go transparent too: a zero-width
+ * white ring offset still tints Firefox's rounded corners.)
+ */
+export const overlayFieldClass =
+  "inline-block h-auto min-h-0 rounded border-0 shadow-none " +
+  "focus-visible:ring-0 focus-visible:ring-transparent focus-visible:ring-offset-transparent";
 
 /** A labelled group. `label` is omitted for the first/unnamed group. */
 export function OverlayMenuSection({
