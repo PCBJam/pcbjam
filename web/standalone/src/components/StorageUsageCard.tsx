@@ -1,6 +1,6 @@
 import * as React from "react";
 import { Database, Loader2, RefreshCw, Trash2 } from "lucide-react";
-import { Button } from "@pcbjam/ui";
+import { Button, Table, TableBody, TableRow, TableCell } from "@pcbjam/ui";
 
 /**
  * Browser-storage usage for the editor's library caches, by kind, with a
@@ -182,21 +182,21 @@ export function StorageUsageCard() {
         </p>
       ) : (
         <div className="space-y-2">
-          <table className="w-full max-w-md text-sm">
-            <tbody>
+          <Table className="w-full max-w-md text-sm">
+            <TableBody>
               {rows!.map(([label, usage]) => (
-                <tr key={label} className="border-b last:border-b-0">
-                  <td className="py-1.5 text-muted-foreground">{label}</td>
-                  <td className="py-1.5 text-right tabular-nums">
+                <TableRow key={label} className="border-b last:border-b-0">
+                  <TableCell className="py-1.5 text-muted-foreground">{label}</TableCell>
+                  <TableCell className="py-1.5 text-right tabular-nums">
                     {usage.items.toLocaleString()} items
-                  </td>
-                  <td className="py-1.5 text-right font-medium tabular-nums">
+                  </TableCell>
+                  <TableCell className="py-1.5 text-right font-medium tabular-nums">
                     {formatBytes(usage.bytes)}
-                  </td>
-                </tr>
+                  </TableCell>
+                </TableRow>
               ))}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
           {data.originUsage !== null && (
             <p className="text-xs text-muted-foreground">
               Site total (all caches): {formatBytes(data.originUsage)}
