@@ -21,7 +21,7 @@ import { useTrustedPrompt } from '@/overlay/trusted-prompts';
 import { pluginSheetAdapter, pluginTourAdapter } from '@/overlay/plugin-tours';
 import { pluginPartSaver, type PluginPartSummary } from './plugin-parts';
 import { panelToReopen, readPluginPanel, rememberPluginPanel } from './panel-memory';
-import { Tip } from "@pcbjam/ui";
+import { Code, Tip } from "@pcbjam/ui";
 
 interface InspectorHost {
   mountEditorPlugin(container: HTMLElement, options: {
@@ -373,7 +373,7 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
         <p>{active?.manifest.name} adds <strong>{prompt.part.displayName}</strong> to your team library{prompt.part.place ? ' and places it on the schematic' : ''}.</p>
         <p className="my-2 text-neutral-500 dark:text-white/60">
           {[prompt.part.symbol && `symbol ${prompt.part.symbol}`, prompt.part.footprint && `footprint ${prompt.part.footprint}`].filter(Boolean).join(' + ')}
-          {' · '}{prompt.part.bytes.toLocaleString()} bytes, saved to <code>{prompt.part.library}</code>{prompt.part.place ? '; you then click the canvas to place it.' : '; nothing is placed.'}
+          {' · '}{prompt.part.bytes.toLocaleString()} bytes, saved to <Code>{prompt.part.library}</Code>{prompt.part.place ? '; you then click the canvas to place it.' : '; nothing is placed.'}
         </p>
         <button className={button} onClick={() => prompt.finish(true)}>{prompt.part.place ? 'Save and place' : 'Save to library'}</button>{' '}<button className={button} onClick={() => prompt.finish(false)}>Cancel</button>
       </section>}

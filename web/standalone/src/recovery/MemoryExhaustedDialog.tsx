@@ -1,6 +1,7 @@
 import * as React from "react";
 import { BlockingDialog, type BlockingReason } from "@/preflight/BlockingDialog";
 import type { EditorTabInfo } from "./tab-census";
+import { Code } from "@pcbjam/ui";
 
 /**
  * Terminal "not enough memory" UI (feature 0002, rewritten for 0009) — shown
@@ -81,12 +82,9 @@ function CopyAboutProcesses() {
   const [copied, setCopied] = React.useState(false);
   return (
     <div className="mt-3 flex items-center gap-2 text-sm">
-      <code
-        data-testid="oom-about-processes"
-        className="select-all rounded bg-muted px-2 py-1 font-mono text-xs"
-      >
+      <Code data-testid="oom-about-processes" className="select-all px-2 py-1">
         about:processes
-      </code>
+      </Code>
       <button
         type="button"
         className="rounded border px-2 py-1 text-xs hover:bg-muted"
