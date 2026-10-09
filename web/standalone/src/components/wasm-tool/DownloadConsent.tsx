@@ -7,6 +7,7 @@ import { fetchWasmStoredSize, hasAnyWasmDownload, type WasmMeta } from "@/wasm/w
 import type { LibsSource, LibsSyncState } from "@/wasm/libs/source";
 import { LIB_KIND_FOR_TOOL } from "./ui-helpers";
 import { useTrustedPrompt } from "@/overlay/trusted-prompts";
+import { Checkbox } from "@pcbjam/ui";
 
 /** What the download-consent dialog quotes (standalone-load-ux 0001). */
 export interface ConsentInfo {
@@ -236,10 +237,9 @@ export function DownloadConsent({
           )}
       </ul>
       <label className="flex cursor-pointer items-center gap-2 text-xs text-white/60">
-        <input
-          type="checkbox"
+        <Checkbox
           checked={always}
-          onChange={(e) => setAlways(e.target.checked)}
+          onCheckedChange={(checked) => setAlways(checked === true)}
           className="accent-white/80"
         />
         Always download without asking

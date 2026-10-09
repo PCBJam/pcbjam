@@ -43,6 +43,7 @@ import { noteEmojiUsed, quickEmojis } from "@/lib/emoji-quick";
 import { cachedCollaborators, collaborators, mergeCandidates } from "@/lib/mentions";
 import { copyLabel, currentCopyRef } from "@/lib/copy-context";
 import { ancestryLabel, ancestryStore } from "@/lib/git-provenance";
+import { Checkbox } from "@pcbjam/ui";
 
 /**
  * DOM half of the hybrid comment pins (collab-presence 0005): the GAL overlay
@@ -802,11 +803,10 @@ function CommentsPanel({
           className="flex items-center gap-1.5 border-t border-black/10 px-3 py-1.5 text-[11px] font-normal text-neutral-600 dark:border-white/10 dark:text-white/70"
           onPointerDown={(e) => e.stopPropagation()}
         >
-          <input
+          <Checkbox
             data-testid="comment-show-resolved"
-            type="checkbox"
             checked={showResolved}
-            onChange={(e) => onShowResolved(e.target.checked)}
+            onCheckedChange={(checked) => onShowResolved(checked === true)}
           />
           show resolved
         </label>
@@ -838,11 +838,10 @@ function CommentsPanel({
                   className="flex items-center gap-1.5 px-3 pb-1.5 text-[11px] font-normal text-neutral-600 dark:text-white/70"
                   onPointerDown={(e) => e.stopPropagation()}
                 >
-                  <input
+                  <Checkbox
                     data-testid="comments-detached-toggle"
-                    type="checkbox"
                     checked={detachedPins}
-                    onChange={(e) => onDetachedPins(e.target.checked)}
+                    onCheckedChange={(checked) => onDetachedPins(checked === true)}
                   />
                   show detached pins
                 </label>

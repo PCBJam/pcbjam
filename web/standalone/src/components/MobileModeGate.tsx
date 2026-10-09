@@ -9,6 +9,7 @@ import {
   rememberMobileMode,
   rememberedMobileMode,
 } from "@/lib/mobile-mode-choice";
+import { Checkbox } from "@pcbjam/ui";
 
 /**
  * Mobile session-mode gate (mobile 0002). Sits between the boot payload and
@@ -151,11 +152,10 @@ function MobileModeDialog({
           ))}
         </div>
         <label className="mt-4 flex items-center gap-2 text-sm text-muted-foreground">
-          <input
-            type="checkbox"
+          <Checkbox
             data-testid="mobile-mode-remember"
             checked={remember}
-            onChange={(e) => setRemember(e.target.checked)}
+            onCheckedChange={(checked) => setRemember(checked === true)}
             className="h-4 w-4"
           />
           Remember on this device
