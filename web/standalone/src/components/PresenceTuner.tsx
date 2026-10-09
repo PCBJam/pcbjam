@@ -2,7 +2,16 @@ import * as React from "react";
 import { setPinRadiusPx } from "@/wasm/collab/pin-geometry";
 import { PRESENCE_COLORS } from "@pcbjam/shared";
 import { Palette, X } from "lucide-react";
-import { Select as UiSelect, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@pcbjam/ui";
+import {
+  Select as UiSelect,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  RadioGroup,
+  RadioGroupItem,
+  Checkbox,
+} from "@pcbjam/ui";
 
 /**
  * DEV-TIME presence style tuner (VITE_PRESENCE_TUNER=1): live-patches the wasm
@@ -417,14 +426,14 @@ function ColorsSection({
         Recolors the canvas overlay (boxes, cursors, pins). Roster avatars keep
         the sender colors.
       </p>
-      <div className="mb-1 flex gap-2">
+      <RadioGroup className="mb-1 flex gap-2" value={mode} onValueChange={(v) => setMode(v as typeof mode)}>
         {(["per-user", "fixed", "palette"] as const).map((m) => (
           <label key={m} className="flex items-center gap-1">
-            <input type="radio" checked={mode === m} onChange={() => setMode(m)} />
+            <RadioGroupItem value={m} className="border-white/60" />
             <span className={mode === m ? "text-white" : "text-white/60"}>{m}</span>
           </label>
         ))}
-      </div>
+      </RadioGroup>
 
       {mode === "fixed" && (
         <div className="mb-1 flex items-center gap-2">
@@ -541,7 +550,7 @@ function Check({ label, v, onChange }: { label: string; v: boolean; onChange: (v
   return (
     <label className="flex items-center gap-2">
       <span className="w-24 shrink-0 text-white/60">{label}</span>
-      <input type="checkbox" checked={v} onChange={(e) => onChange(e.target.checked)} />
+      <Checkbox checked={v} onCheckedChange={(checked) => onChange(checked === true)} />
     </label>
   );
 }
