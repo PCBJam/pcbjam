@@ -415,6 +415,13 @@ jobs:
           pnpm --filter @pcbjam/ui typecheck
           pnpm --filter @pcbjam/ui test
 
+      # The UI rule (ui-components 0001 D7): only @pcbjam/ui styles a raw <button>, <select>,
+      # <input> or <textarea>. Fails on a new one; the baseline of older ones may only go down.
+      - name: UI rule (no new raw styled controls)
+        if: inputs.run_tests
+        working-directory: web
+        run: pnpm --filter @pcbjam/standalone lint:ui
+
       # kicad_tools gates (tasks-runner 0001 R2), in @pcbjam/kicad-tools and
       # run through its pcbjam-tools driver like production: the corpus lint
       # (fixtures + shared-codec round-trips — the wrapInBoardEnvelope-class
