@@ -312,7 +312,7 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
           {!plugins.some(plugin => plugin.source !== 'tutorial') && <p className="text-neutral-500 dark:text-white/60">{catalog.loaded ? 'No added plugins yet.' : 'Loading plugins…'}</p>}
           {/* Tutorials live in the Tutorials menu, not among the user's plugins. */}
           {plugins.filter(plugin => plugin.source !== 'tutorial').map(plugin => <div key={pluginKey(plugin)} className="flex items-center gap-2 border-b border-black/5 py-3 last:border-0 dark:border-white/5">
-            <div className="min-w-0 flex-1"><p className="truncate font-medium" title={plugin.manifest.name}>{plugin.manifest.name}</p><p className="mt-1 text-neutral-500 dark:text-white/50">{plugin.manifest.version}{plugin.source === 'marketplace' ? ' · From the marketplace' : ''}{compatible(plugin) ? '' : ' · Available in another editor'}</p></div>
+            <div className="min-w-0 flex-1"><Tip content={plugin.manifest.name}><p className="truncate font-medium">{plugin.manifest.name}</p></Tip><p className="mt-1 text-neutral-500 dark:text-white/50">{plugin.manifest.version}{plugin.source === 'marketplace' ? ' · From the marketplace' : ''}{compatible(plugin) ? '' : ' · Available in another editor'}</p></div>
             <button className={button} disabled={busy || !compatible(plugin) || plugin.enabled===false} onClick={() => openPlugin(pluginKey(plugin))}>Open</button>
             {hostedPlugins && <button className={button} disabled={busy} onClick={async()=>{setBusy(true);try{await (await packageHost()).setPluginEnabled(plugin,plugin.enabled===false);await refresh();}catch(error){setNotice((error as Error).message);}finally{setBusy(false);}}}>{plugin.enabled===false?'Enable':'Disable'}</button>}
             {hostedPlugins && <button className={button} disabled={busy} onClick={()=>setResetCandidate(plugin)}>Reset data</button>}
@@ -326,7 +326,9 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
     </aside>}
     {selected && <PluginFloatingPanel key={panelStorageKey} storageKey={panelStorageKey} preferredSize={isProvider(active) ? PROVIDER_PANEL_SIZE : active?.manifest.uiSize} title={title} forceExpanded={!!prompt} hidden={panelHidden && !prompt} collapseSignal={collapseSignal} onRestart={restart} onClose={closePanel}>
       <div className="max-h-[55%] shrink-0 overflow-y-auto border-b border-black/10 px-3 py-2 text-xs dark:border-white/10">
-        <p className="truncate text-neutral-500 dark:text-white/60" title={fileName}>{fileName} · {selection.uuids.length} selected</p>
+        <Tip content={fileName}>
+          <p className="truncate text-neutral-500 dark:text-white/60">{fileName} · {selection.uuids.length} selected</p>
+        </Tip>
       {prompt?.kind === 'file' && <section aria-label="Plugin file request" className="mt-3 rounded border border-sky-500/40 p-3">
         <p className="mb-2">{active?.manifest.name} wants a file you choose.</p>
         <input type="file" aria-label="Choose file for plugin" accept={prompt.extensions.join(',')} className="max-w-full text-xs" onChange={event => { const file = event.target.files?.[0]; if (file) prompt.finish(file); }} />

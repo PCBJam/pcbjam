@@ -427,15 +427,16 @@ export function CommentLayer({
                 <span>{panel ? "Close comments panel" : "Open comments panel"}</span>
                 <span className="ml-auto flex items-center gap-1 text-[10px] text-neutral-400 dark:text-white/40">
                   {unreadThreads > 0 && (
-                    <span
-                      data-testid="comment-unread-badge"
-                      title={mentioned ? "Unread comments — you were mentioned" : "Unread comments"}
-                      className={`flex h-4 min-w-4 items-center justify-center rounded-full px-1 font-semibold text-white ${
-                        mentioned ? "bg-rose-500" : "bg-amber-500"
-                      }`}
-                    >
-                      {unreadThreads}
-                    </span>
+                    <Tip content={mentioned ? "Unread comments — you were mentioned" : "Unread comments"}>
+                      <span
+                        data-testid="comment-unread-badge"
+                        className={`flex h-4 min-w-4 items-center justify-center rounded-full px-1 font-semibold text-white ${
+                          mentioned ? "bg-rose-500" : "bg-amber-500"
+                        }`}
+                      >
+                        {unreadThreads}
+                      </span>
+                    </Tip>
                   )}
                   {threads.length}
                 </span>
@@ -695,26 +696,25 @@ function CommentsPanel({
       className="block w-full border-t border-black/10 px-3 py-2 text-left text-xs hover:bg-black/5 dark:border-white/10 dark:hover:bg-white/10"
     >
       <span className="flex items-center gap-1">
-        <span
-          className="font-semibold"
-          style={{ color: controller.colorFor(t.createdBy) }}
-          title={authorLabel(t).title}
-        >
-          {authorLabel(t).text}
-        </span>{" "}
+        <Tip content={authorLabel(t).title}>
+          <span className="font-semibold" style={{ color: controller.colorFor(t.createdBy) }}>
+            {authorLabel(t).text}
+          </span>
+        </Tip>{" "}
         <span className="text-neutral-500 dark:text-white/50">
           {timeAgo(lastActivity(t))} ago
           {t.resolved ? " · resolved" : ""}
           {t.messages.length > 1 ? ` · ${t.messages.length - 1} repl${t.messages.length === 2 ? "y" : "ies"}` : ""}
         </span>
         {threadUnreadCount(t, currentUser) > 0 && (
-          <span
-            data-testid="comment-unread-dot"
-            title={threadMentionsUnread(t, currentUser) ? "Unread — you were mentioned" : "Unread"}
-            className={`ml-auto h-2 w-2 shrink-0 rounded-full ${
-              threadMentionsUnread(t, currentUser) ? "bg-rose-400" : "bg-amber-400"
-            }`}
-          />
+          <Tip content={threadMentionsUnread(t, currentUser) ? "Unread — you were mentioned" : "Unread"}>
+            <span
+              data-testid="comment-unread-dot"
+              className={`ml-auto h-2 w-2 shrink-0 rounded-full ${
+                threadMentionsUnread(t, currentUser) ? "bg-rose-400" : "bg-amber-400"
+              }`}
+            />
+          </Tip>
         )}
       </span>
       <span className="mt-0.5 block truncate text-neutral-800 dark:text-white/90">
@@ -732,79 +732,80 @@ function CommentsPanel({
     >
       {/* Header = drag handle. Interactive children stop pointerdown so they
           don't start a drag. */}
-      <div
-        data-testid="comments-panel-header"
-        className="flex cursor-grab select-none items-center gap-2 px-3 py-2 text-xs font-semibold active:cursor-grabbing"
-        style={{ touchAction: "none" }}
-        title="Comments — drag to move"
-        onPointerDown={(e) => drag.onPointerDown(e, rootRef.current!.getBoundingClientRect())}
-        onPointerMove={(e) => void drag.onPointerMove(e)}
-        onPointerUp={() => void drag.onPointerUp()}
-      >
-        <Tip content={collapsed ? "Expand" : "Collapse to header"}>
-          <button
-            data-testid="comments-panel-collapse"
-            aria-expanded={!collapsed}
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={() => setCollapsed(!collapsed)}
-            className="rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
-          >
-            {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
-          </button>
-        </Tip>
-        <span>Comments ({threads.length})</span>
-        <span
-          className="ml-auto flex items-center gap-0.5"
-          onPointerDown={(e) => e.stopPropagation()}
+      <Tip content="Comments — drag to move">
+        <div
+          data-testid="comments-panel-header"
+          className="flex cursor-grab select-none items-center gap-2 px-3 py-2 text-xs font-semibold active:cursor-grabbing"
+          style={{ touchAction: "none" }}
+          onPointerDown={(e) => drag.onPointerDown(e, rootRef.current!.getBoundingClientRect())}
+          onPointerMove={(e) => void drag.onPointerMove(e)}
+          onPointerUp={() => void drag.onPointerUp()}
         >
-          <Tip content={mode ? "Cancel placing (Esc)" : "Add comment — click the canvas to place a pin"}>
+          <Tip content={collapsed ? "Expand" : "Collapse to header"}>
             <button
-              data-testid="comments-panel-add"
-              aria-pressed={mode}
-              onClick={onToggleMode}
-              className={`rounded p-0.5 hover:bg-black/5 hover:text-neutral-900 dark:hover:bg-white/10 dark:hover:text-white ${
-                mode ? "bg-amber-500/20 text-amber-600 dark:text-amber-200" : "text-neutral-500 dark:text-white/60"
-              }`}
-            >
-              <MessageSquarePlus size={14} />
-            </button>
-          </Tip>
-          <Tip content={pinsHidden ? "Show the pins on the canvas" : "Hide the pins on the canvas"}>
-            <button
-              data-testid="comments-panel-pins"
-              aria-pressed={!pinsHidden}
-              onClick={onTogglePins}
+              data-testid="comments-panel-collapse"
+              aria-expanded={!collapsed}
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={() => setCollapsed(!collapsed)}
               className="rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
             >
-              {pinsHidden ? <EyeOff size={14} /> : <Eye size={14} />}
+              {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
             </button>
           </Tip>
-          {threads.some((t) => threadUnreadCount(t, currentUser) > 0) && (
-            <Tip content="Mark all as seen">
+          <span>Comments ({threads.length})</span>
+          <span
+            className="ml-auto flex items-center gap-0.5"
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            <Tip content={mode ? "Cancel placing (Esc)" : "Add comment — click the canvas to place a pin"}>
               <button
-                data-testid="comments-mark-all-seen"
-                onClick={() => {
-                  for (const t of threads) {
-                    if (threadUnreadCount(t, currentUser) > 0) controller.markSeen(t.id);
-                  }
-                }}
-                className="rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
+                data-testid="comments-panel-add"
+                aria-pressed={mode}
+                onClick={onToggleMode}
+                className={`rounded p-0.5 hover:bg-black/5 hover:text-neutral-900 dark:hover:bg-white/10 dark:hover:text-white ${
+                  mode ? "bg-amber-500/20 text-amber-600 dark:text-amber-200" : "text-neutral-500 dark:text-white/60"
+                }`}
               >
-                <CheckCheck size={14} />
+                <MessageSquarePlus size={14} />
               </button>
             </Tip>
-          )}
-          <Tip content="Close">
-            <button
-              data-testid="comments-panel-close"
-              onClick={onClose}
-              className="rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
-            >
-              <X size={14} />
-            </button>
-          </Tip>
-        </span>
-      </div>
+            <Tip content={pinsHidden ? "Show the pins on the canvas" : "Hide the pins on the canvas"}>
+              <button
+                data-testid="comments-panel-pins"
+                aria-pressed={!pinsHidden}
+                onClick={onTogglePins}
+                className="rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
+              >
+                {pinsHidden ? <EyeOff size={14} /> : <Eye size={14} />}
+              </button>
+            </Tip>
+            {threads.some((t) => threadUnreadCount(t, currentUser) > 0) && (
+              <Tip content="Mark all as seen">
+                <button
+                  data-testid="comments-mark-all-seen"
+                  onClick={() => {
+                    for (const t of threads) {
+                      if (threadUnreadCount(t, currentUser) > 0) controller.markSeen(t.id);
+                    }
+                  }}
+                  className="rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
+                >
+                  <CheckCheck size={14} />
+                </button>
+              </Tip>
+            )}
+            <Tip content="Close">
+              <button
+                data-testid="comments-panel-close"
+                onClick={onClose}
+                className="rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
+              >
+                <X size={14} />
+              </button>
+            </Tip>
+          </span>
+        </div>
+      </Tip>
 
       {!collapsed && (
         <label
@@ -950,17 +951,17 @@ function MentionBody({
     if (!slug || !known.has(slug) || match.index === undefined) continue;
     parts.push(body.slice(last, match.index));
     parts.push(
-      <span
-        key={match.index}
-        data-testid="comment-mention"
-        data-slug={slug}
-        title={`@${slug}`}
-        className={`rounded px-0.5 font-medium ${
-          slug === currentUser ? "bg-amber-500/25 text-amber-700 dark:text-amber-300" : "bg-sky-500/15 text-sky-700 dark:bg-sky-500/20 dark:text-sky-300"
-        }`}
-      >
-        {match[0]}
-      </span>,
+      <Tip content={`@${slug}`} key={match.index}>
+        <span
+          data-testid="comment-mention"
+          data-slug={slug}
+          className={`rounded px-0.5 font-medium ${
+            slug === currentUser ? "bg-amber-500/25 text-amber-700 dark:text-amber-300" : "bg-sky-500/15 text-sky-700 dark:bg-sky-500/20 dark:text-sky-300"
+          }`}
+        >
+          {match[0]}
+        </span>
+      </Tip>,
     );
     last = match.index + match[0].length;
   }
@@ -1126,17 +1127,19 @@ function ProvenanceLine({ provenance }: { provenance: { headCommit?: string; dir
   );
   const label = ancestryLabel(rel);
   return (
-    <span data-testid="comment-introduced-at" title={sha}>
-      {" · "}
-      {provenance.dirtyAtWrite ? "written on uncommitted changes based at " : "introduced at "}
-      <span className="font-mono">{sha.slice(0, 7)}</span>
-      {label && (
-        <span data-testid="comment-ancestry" data-relation={rel ?? undefined}>
-          {" "}
-          ({label})
-        </span>
-      )}
-    </span>
+    <Tip content={sha}>
+      <span data-testid="comment-introduced-at">
+        {" · "}
+        {provenance.dirtyAtWrite ? "written on uncommitted changes based at " : "introduced at "}
+        <span className="font-mono">{sha.slice(0, 7)}</span>
+        {label && (
+          <span data-testid="comment-ancestry" data-relation={rel ?? undefined}>
+            {" "}
+            ({label})
+          </span>
+        )}
+      </span>
+    </Tip>
   );
 }
 
@@ -1227,13 +1230,11 @@ function ThreadPopover({
         {thread.messages.map((m) => (
           <div key={m.id} data-testid="comment-message" className="group px-3 py-2 text-xs">
             <div className="flex items-baseline gap-2">
-              <span
-                className="font-semibold"
-                style={{ color: controller.colorFor(m.author) }}
-                title={authorLabel(m).title}
-              >
-                {authorLabel(m).text}
-              </span>
+              <Tip content={authorLabel(m).title}>
+                <span className="font-semibold" style={{ color: controller.colorFor(m.author) }}>
+                  {authorLabel(m).text}
+                </span>
+              </Tip>
               <span className="text-[10px] text-neutral-400 dark:text-white/40">
                 {timeAgo(m.createdAt)} ago{m.editedAt ? " · edited" : ""}
               </span>

@@ -126,46 +126,47 @@ export function SelectionInspector({
     >
       {/* Header = drag handle. Interactive children stop pointerdown so they
           don't start a drag. */}
-      <div
-        data-testid="inspector-panel-header"
-        className="flex cursor-grab select-none items-center gap-2 px-3 py-2 text-xs font-semibold active:cursor-grabbing"
-        style={{ touchAction: "none" }}
-        title="Inspector — drag to move"
-        onPointerDown={(e) => drag.onPointerDown(e, rootRef.current!.getBoundingClientRect())}
-        onPointerMove={(e) => void drag.onPointerMove(e)}
-        onPointerUp={() => void drag.onPointerUp()}
-      >
-        <Tip content={collapsed ? "Expand" : "Collapse to header"}>
-          <button
-            data-testid="inspector-panel-collapse"
-            aria-expanded={!collapsed}
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={() => setCollapsed(!collapsed)}
-            className="rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
-          >
-            {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
-          </button>
-        </Tip>
-        <span>
-          Inspector
-          {count > 0 && (
-            <span className="ml-1 font-normal text-neutral-400 dark:text-white/40">
-              ({count})
-            </span>
-          )}
-        </span>
-        <span className="ml-auto flex items-center gap-0.5" onPointerDown={(e) => e.stopPropagation()}>
-          <Tip content="Close">
+      <Tip content="Inspector — drag to move">
+        <div
+          data-testid="inspector-panel-header"
+          className="flex cursor-grab select-none items-center gap-2 px-3 py-2 text-xs font-semibold active:cursor-grabbing"
+          style={{ touchAction: "none" }}
+          onPointerDown={(e) => drag.onPointerDown(e, rootRef.current!.getBoundingClientRect())}
+          onPointerMove={(e) => void drag.onPointerMove(e)}
+          onPointerUp={() => void drag.onPointerUp()}
+        >
+          <Tip content={collapsed ? "Expand" : "Collapse to header"}>
             <button
-              data-testid="inspector-panel-close"
-              onClick={onClose}
+              data-testid="inspector-panel-collapse"
+              aria-expanded={!collapsed}
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={() => setCollapsed(!collapsed)}
               className="rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
             >
-              <X size={14} />
+              {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
             </button>
           </Tip>
-        </span>
-      </div>
+          <span>
+            Inspector
+            {count > 0 && (
+              <span className="ml-1 font-normal text-neutral-400 dark:text-white/40">
+                ({count})
+              </span>
+            )}
+          </span>
+          <span className="ml-auto flex items-center gap-0.5" onPointerDown={(e) => e.stopPropagation()}>
+            <Tip content="Close">
+              <button
+                data-testid="inspector-panel-close"
+                onClick={onClose}
+                className="rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
+              >
+                <X size={14} />
+              </button>
+            </Tip>
+          </span>
+        </div>
+      </Tip>
 
       {!collapsed && (
         <div data-testid="inspector-panel-list" className="max-h-[60vh] overflow-y-auto pb-1">
@@ -186,9 +187,11 @@ export function SelectionInspector({
               data-item-type={s.type}
               className="border-t border-black/5 px-3 py-2 dark:border-white/5"
             >
-              <div className="truncate text-xs font-semibold" title={s.title}>
-                {s.title}
-              </div>
+              <Tip content={s.title}>
+                <div className="truncate text-xs font-semibold">
+                  {s.title}
+                </div>
+              </Tip>
               {s.rows.map((r, i) => (
                 <div key={i} className="mt-0.5 flex items-baseline gap-2 text-[11px]">
                   <span className="w-20 shrink-0 text-neutral-400 dark:text-white/40">

@@ -2,6 +2,7 @@ import * as React from "react";
 import { ExternalLink, Github } from "lucide-react";
 import { APP_GIT_SHA, APP_TAG, LANDING_URL, REPO_URL } from "@/lib/config";
 import { anyDialogOpen, onEditorEvent } from "@/overlay/editor-events";
+import { Tip } from "@pcbjam/ui";
 
 /**
  * Small bottom-right overlay showing this build's version + a link to the
@@ -57,35 +58,38 @@ export function VersionBadge() {
       data-testid="version-badge"
       className="fixed bottom-3 right-3 z-20 flex items-center gap-2 rounded bg-black/70 px-2.5 py-1 font-mono text-[11px] text-white/80 shadow"
     >
-      <a
-        href={versionUrl}
-        target="_blank"
-        rel="noreferrer"
-        title={versionTitle}
-        className="hover:text-white"
-      >
-        pcbjam {tag}
-      </a>
+      <Tip content={versionTitle}>
+        <a
+          href={versionUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="hover:text-white"
+        >
+          pcbjam {tag}
+        </a>
+      </Tip>
       <span className="text-white/30">·</span>
-      <a
-        href={REPO_URL}
-        target="_blank"
-        rel="noreferrer"
-        title="Source on GitHub"
-        className="inline-flex items-center gap-1 hover:text-white"
-      >
-        <Github size={12} /> source
-      </a>
+      <Tip content="Source on GitHub">
+        <a
+          href={REPO_URL}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-1 hover:text-white"
+        >
+          <Github size={12} /> source
+        </a>
+      </Tip>
       <span className="text-white/30">·</span>
-      <a
-        href={LANDING_URL}
-        target="_blank"
-        rel="noreferrer"
-        title="PCBJam — product page"
-        className="inline-flex items-center gap-1 hover:text-white"
-      >
-        pcbjam.com <ExternalLink size={11} />
-      </a>
+      <Tip content="PCBJam — product page">
+        <a
+          href={LANDING_URL}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-1 hover:text-white"
+        >
+          pcbjam.com <ExternalLink size={11} />
+        </a>
+      </Tip>
     </div>
   );
 }

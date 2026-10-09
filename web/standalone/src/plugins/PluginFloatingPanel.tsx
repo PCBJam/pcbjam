@@ -35,31 +35,35 @@ export function PluginFloatingPanel({ title, storageKey, preferredSize, forceExp
       // stays mounted, so the plugin keeps running.
       display: hidden ? 'none' : undefined,
     }}>
-    <div data-testid="plugin-panel-header" title={title + ' — drag to move'}
-      className="flex h-10 shrink-0 cursor-grab select-none items-center gap-2 px-3 text-xs font-semibold active:cursor-grabbing"
-      style={{ touchAction: 'none' }}
-      onPointerDown={event => layout.onPointerDown(event, 'drag')}
-      onPointerMove={layout.onPointerMove}
-      onPointerUp={layout.finish}
-      onPointerCancel={layout.finish}
-      onLostPointerCapture={layout.finish}>
-      <Tip content={collapsed ? 'Expand' : 'Collapse to header'}>
-        <button type="button" className={iconButton} aria-expanded={!collapsed}
-          aria-label={collapsed ? 'Expand plugin' : 'Collapse plugin'}
-          disabled={forceExpanded} onPointerDown={event => event.stopPropagation()} onClick={() => setCollapsed(value => !value)}>
-          {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
-        </button>
-      </Tip>
-      <span className="min-w-0 flex-1 truncate" title={title}>{title}</span>
-      <span className="flex gap-0.5" onPointerDown={event => event.stopPropagation()}>
-        <Tip content="Restart plugin">
-          <button type="button" className={iconButton} aria-label="Restart plugin" onClick={onRestart}><RotateCcw size={14} /></button>
+    <Tip content={title + ' — drag to move'}>
+      <div data-testid="plugin-panel-header"
+        className="flex h-10 shrink-0 cursor-grab select-none items-center gap-2 px-3 text-xs font-semibold active:cursor-grabbing"
+        style={{ touchAction: 'none' }}
+        onPointerDown={event => layout.onPointerDown(event, 'drag')}
+        onPointerMove={layout.onPointerMove}
+        onPointerUp={layout.finish}
+        onPointerCancel={layout.finish}
+        onLostPointerCapture={layout.finish}>
+        <Tip content={collapsed ? 'Expand' : 'Collapse to header'}>
+          <button type="button" className={iconButton} aria-expanded={!collapsed}
+            aria-label={collapsed ? 'Expand plugin' : 'Collapse plugin'}
+            disabled={forceExpanded} onPointerDown={event => event.stopPropagation()} onClick={() => setCollapsed(value => !value)}>
+            {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+          </button>
         </Tip>
-        <Tip content="Close plugin">
-          <button type="button" className={iconButton} aria-label="Close plugin" onClick={onClose}><X size={16} /></button>
+        <Tip content={title}>
+          <span className="min-w-0 flex-1 truncate">{title}</span>
         </Tip>
-      </span>
-    </div>
+        <span className="flex gap-0.5" onPointerDown={event => event.stopPropagation()}>
+          <Tip content="Restart plugin">
+            <button type="button" className={iconButton} aria-label="Restart plugin" onClick={onRestart}><RotateCcw size={14} /></button>
+          </Tip>
+          <Tip content="Close plugin">
+            <button type="button" className={iconButton} aria-label="Close plugin" onClick={onClose}><X size={16} /></button>
+          </Tip>
+        </span>
+      </div>
+    </Tip>
     <div className={collapsed ? 'hidden' : 'flex min-h-0 flex-1 flex-col'} style={{ pointerEvents: layout.interacting ? 'none' : undefined }}>{children}</div>
     {!collapsed && <>
       <span id={resizeHint} className="sr-only">Drag to resize, or use the arrow keys. Hold Shift for larger steps.</span>

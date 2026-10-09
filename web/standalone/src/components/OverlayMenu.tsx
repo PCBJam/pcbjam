@@ -165,24 +165,26 @@ export function OverlayMenu({
             </span>
           )}
           {alert && (
-            <span
-              data-testid="overlay-menu-alert"
-              title="Some of what you see is behind the latest library state — open the session menu"
-              className="absolute -bottom-1 -left-1 flex h-4 w-4 items-center justify-center rounded-full bg-amber-400 text-neutral-900 ring-1 ring-white/70 dark:ring-neutral-950"
-            >
-              <AlertTriangle size={10} strokeWidth={2.5} />
-            </span>
+            <Tip content="Some of what you see is behind the latest library state — open the session menu">
+              <span
+                data-testid="overlay-menu-alert"
+                className="absolute -bottom-1 -left-1 flex h-4 w-4 items-center justify-center rounded-full bg-amber-400 text-neutral-900 ring-1 ring-white/70 dark:ring-neutral-950"
+              >
+                <AlertTriangle size={10} strokeWidth={2.5} />
+              </span>
+            </Tip>
           )}
           {unread > 0 && (
-            <span
-              data-testid="overlay-menu-unread-badge"
-              title={unreadMention ? "Unread comments — you were mentioned" : "Unread comments"}
-              className={`absolute -bottom-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-semibold text-white ${
-                unreadMention ? "bg-rose-500" : "bg-amber-500"
-              }`}
-            >
-              {unread}
-            </span>
+            <Tip content={unreadMention ? "Unread comments — you were mentioned" : "Unread comments"}>
+              <span
+                data-testid="overlay-menu-unread-badge"
+                className={`absolute -bottom-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-semibold text-white ${
+                  unreadMention ? "bg-rose-500" : "bg-amber-500"
+                }`}
+              >
+                {unread}
+              </span>
+            </Tip>
           )}
         </button>
       </Tip>

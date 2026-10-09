@@ -207,35 +207,36 @@ export function ImportItemPanel({
       className="absolute z-40 flex w-72 flex-col overflow-hidden rounded-xl bg-white/95 text-neutral-900 shadow-2xl ring-1 ring-inset ring-black/10 backdrop-blur-sm dark:bg-neutral-950/90 dark:text-white dark:ring-white/15"
       style={style}
     >
-      <div
-        data-testid="import-panel-header"
-        className="flex cursor-grab select-none items-center gap-2 px-3 py-2 text-xs font-semibold active:cursor-grabbing"
-        style={{ touchAction: "none" }}
-        title="Import from file — drag to move"
-        onPointerDown={(e) => drag.onPointerDown(e, rootRef.current!.getBoundingClientRect())}
-        onPointerMove={(e) => void drag.onPointerMove(e)}
-        onPointerUp={() => void drag.onPointerUp()}
-      >
-        <Tip content={collapsed ? "Expand" : "Collapse to header"}>
-          <button
-            aria-expanded={!collapsed}
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={() => setCollapsed(!collapsed)}
-            className={iconBtn}
-          >
-            {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
-          </button>
-        </Tip>
-        <FilePlus size={14} className="text-neutral-400 dark:text-white/50" />
-        <span>Import from file</span>
-        <span className="ml-auto" onPointerDown={(e) => e.stopPropagation()}>
-          <Tip content="Close">
-            <button data-testid="import-panel-close" onClick={onClose} className={iconBtn}>
-              <X size={14} />
+      <Tip content="Import from file — drag to move">
+        <div
+          data-testid="import-panel-header"
+          className="flex cursor-grab select-none items-center gap-2 px-3 py-2 text-xs font-semibold active:cursor-grabbing"
+          style={{ touchAction: "none" }}
+          onPointerDown={(e) => drag.onPointerDown(e, rootRef.current!.getBoundingClientRect())}
+          onPointerMove={(e) => void drag.onPointerMove(e)}
+          onPointerUp={() => void drag.onPointerUp()}
+        >
+          <Tip content={collapsed ? "Expand" : "Collapse to header"}>
+            <button
+              aria-expanded={!collapsed}
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={() => setCollapsed(!collapsed)}
+              className={iconBtn}
+            >
+              {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
             </button>
           </Tip>
-        </span>
-      </div>
+          <FilePlus size={14} className="text-neutral-400 dark:text-white/50" />
+          <span>Import from file</span>
+          <span className="ml-auto" onPointerDown={(e) => e.stopPropagation()}>
+            <Tip content="Close">
+              <button data-testid="import-panel-close" onClick={onClose} className={iconBtn}>
+                <X size={14} />
+              </button>
+            </Tip>
+          </span>
+        </div>
+      </Tip>
 
       {!collapsed && (
         <div className="flex flex-col gap-2 px-3 pb-3 text-xs">
@@ -279,10 +280,12 @@ export function ImportItemPanel({
 
           {picked && (
             <div className="flex flex-col gap-1.5">
-              <div className="truncate" title={picked.fileName}>
-                <span className="text-neutral-500 dark:text-white/50">File: </span>
-                {picked.fileName}
-              </div>
+              <Tip content={picked.fileName}>
+                <div className="truncate">
+                  <span className="text-neutral-500 dark:text-white/50">File: </span>
+                  {picked.fileName}
+                </div>
+              </Tip>
               {picked.kind === "symbol" && picked.names.length > 1 && (
                 <label className="flex items-center gap-2">
                   <span className="text-neutral-500 dark:text-white/50">Symbol</span>
