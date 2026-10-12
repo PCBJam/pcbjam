@@ -3,7 +3,7 @@ import { ExternalLink, Plus, Puzzle } from 'lucide-react';
 import { APP_URL } from '@/lib/config';
 import { OverlayMenuSection, overlayRowClass, useCloseOverlayMenu } from '@/components/OverlayMenu';
 import { BUILTIN, hostedPlugins, pluginKey, type PluginCatalog, type PluginView } from './plugin-catalog';
-import { Tip, Toggle } from "@pcbjam/ui";
+import { Button, Tip, Toggle } from "@pcbjam/ui";
 import { cn } from "@/lib/utils";
 
 export interface PluginMenuProps {
@@ -47,9 +47,9 @@ export function PluginMenu({ tool, catalog, view, onViewChange }: PluginMenuProp
         <ExternalLink size={12} aria-hidden="true" className="text-neutral-400 dark:text-white/40" />
       </a>}
       {/* Private uploads are for accounts with developer access. */}
-      {catalog.developer && <button type="button" className={overlayRowClass} onClick={() => open({ kind: 'manager' })}>
+      {catalog.developer && <Button type="button" variant="plain" size="row" className={overlayRowClass} onClick={() => open({ kind: 'manager' })}>
         <Plus size={14} className="shrink-0 text-neutral-400 dark:text-white/50" /><span>Add plugin…</span>
-      </button>}
+      </Button>}
     </div>
   </OverlayMenuSection>;
 }

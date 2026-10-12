@@ -24,7 +24,7 @@ import { CHROME_HOTKEY_LABEL } from "./ui-helpers";
 import type { StaleLibEntry } from "./useLibNotices";
 import { PluginMenu, type PluginMenuProps } from "@/plugins/PluginMenu";
 import { TutorialMenu } from "@/plugins/TutorialMenu";
-import { Kbd, Tip, Toggle } from "@pcbjam/ui";
+import { Button, Kbd, Tip, Toggle } from "@pcbjam/ui";
 import { cn } from "@/lib/utils";
 
 /**
@@ -294,15 +294,17 @@ export function SessionMenu({
           )}
           {readOnly && jumpTool && (
             <Tip content={`${jumpTool.label} of this project`}>
-              <button
+              <Button
                 data-testid="jump-tool"
                 data-tool={jumpTool.tool}
                 onClick={jumpTool.onClick}
+                variant="plain"
+                size="row"
                 className={overlayRowClass}
               >
                 <ArrowRightLeft size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
                 <span>{jumpTool.label}</span>
-              </button>
+              </Button>
             </Tip>
           )}
           {readOnly && commentAccess === "none" && onToggleReaderComments && (
@@ -322,14 +324,16 @@ export function SessionMenu({
           )}
           {onChangeMobileMode && (
             <Tip content="Choose again: view only, comment only or the full editor (reloads)">
-              <button
+              <Button
                 data-testid="mobile-mode-change"
                 onClick={onChangeMobileMode}
+                variant="plain"
+                size="row"
                 className={overlayRowClass}
               >
                 <Smartphone size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
                 <span>{readOnly ? "Open the full editor…" : "Lighter mode (view / comment)…"}</span>
-              </button>
+              </Button>
             </Tip>
           )}
         </OverlayMenuSection>
@@ -429,14 +433,16 @@ export function SessionMenu({
         )}
         {tool === "pcbnew" && onShow3D && (
           <Tip content="Open the 3D viewer">
-            <button
+            <Button
               data-testid="show-3d-viewer"
+              variant="plain"
+              size="row"
               className={overlayRowClass}
               onClick={onShow3D}
             >
               <Box size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
               <span>3D viewer</span>
-            </button>
+            </Button>
           </Tip>
         )}
         {canToggleChrome && !readOnly && (
