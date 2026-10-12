@@ -2,6 +2,7 @@
 import { Loader2 } from "lucide-react";
 import { setAutoDownloadEnabled } from "@/wasm/wasm-assets";
 import { DownloadConsent, DownloadProgress, libSyncLabel, type ConsentInfo } from "./DownloadConsent";
+import { Button } from "@pcbjam/ui";
 
 /**
  * Boot overlay — covers the big WASM download/compile freeze until the tool
@@ -30,18 +31,19 @@ export function BootOverlay({
   slow: boolean;
 }) {
   return (
-    <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-3 bg-[#1a1a2e] text-white">
+    <div className="dark absolute inset-0 z-30 flex flex-col items-center justify-center gap-3 bg-[#1a1a2e] text-white">
       {status.startsWith("Error") ? (
         <>
           <p className="max-w-md px-6 text-center font-mono text-sm text-red-300">
             {status}
           </p>
-          <button
-            className="rounded border border-white/30 px-3 py-1 text-xs hover:bg-white/10"
+          <Button
+            variant="outline"
+            size="xs"
             onClick={() => window.location.reload()}
           >
             Reload
-          </button>
+          </Button>
         </>
       ) : consent ? (
         <DownloadConsent
@@ -84,12 +86,13 @@ export function BootOverlay({
                 This is taking longer than usual — a slow connection, or
                 something may be wrong. You can keep waiting, or reload.
               </p>
-              <button
-                className="rounded border border-white/30 px-3 py-1 text-xs hover:bg-white/10"
+              <Button
+                variant="outline"
+                size="xs"
                 onClick={() => window.location.reload()}
               >
                 Reload
-              </button>
+              </Button>
             </>
           )}
         </>

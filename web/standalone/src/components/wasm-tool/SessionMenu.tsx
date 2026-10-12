@@ -74,24 +74,26 @@ export function StaleLibsRow({
         )}
       </ul>
       <div className="ml-6 flex gap-2">
-        <button
+        <Button
           type="button"
           data-testid="update-from-library"
           disabled={updating || readOnly}
           onClick={onUpdate}
-          className="inline-flex items-center gap-1 rounded bg-amber-500 px-2 py-0.5 text-[11px] font-medium text-neutral-900 hover:bg-amber-400 disabled:opacity-50"
+          size="xs"
+          className="bg-warning text-background hover:bg-warning/90"
         >
           <RefreshCw size={11} className={updating ? "animate-spin" : ""} />
           Update from library
-        </button>
-        <button
+        </Button>
+        <Button
           type="button"
           data-testid="stale-libs-dismiss"
           onClick={onDismiss}
-          className="rounded px-2 py-0.5 text-[11px] text-neutral-500 hover:bg-black/5 dark:text-white/50 dark:hover:bg-white/10"
+          variant="ghost"
+          size="xs"
         >
           Dismiss
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -112,18 +114,20 @@ export function FollowBanner({
   return (
     <div
       data-testid="follow-banner"
-      className="absolute left-1/2 top-3 z-20 flex -translate-x-1/2 items-center gap-2 rounded-full bg-black/70 px-3 py-1 text-xs text-white shadow-sm ring-1 ring-inset ring-white/20"
+      className="dark absolute left-1/2 top-3 z-20 flex -translate-x-1/2 items-center gap-2 rounded-full bg-black/70 px-3 py-1 text-xs text-white shadow-sm ring-1 ring-inset ring-white/20"
     >
       <span>
         Following <span className="font-semibold">{target.name}</span> — move to stop
       </span>
-      <button
+      <Button
         type="button"
-        className="rounded-full bg-white/15 px-2 py-0.5 font-medium hover:bg-white/25"
+        variant="secondary"
+        size="xs"
+        className="h-6 rounded-full"
         onClick={onStop}
       >
         Stop
-      </button>
+      </Button>
     </div>
   );
 }

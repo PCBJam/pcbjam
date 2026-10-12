@@ -530,12 +530,14 @@ export function CommentLayer({
         const hitD = Math.max(26, bubbleD + 8);
         return (
           <Tip content={`${authorLabel(t).text}: ${t.messages[0]?.body ?? ""}${t.detached ? " (detached)" : ""} — drag to move`} key={t.id}>
-            <button
+            <Button
               data-testid="comment-pin"
               data-thread-id={t.id}
               onPointerDown={onPinPointerDown(t)}
               onPointerMove={onPinPointerMove}
               onPointerUp={onPinPointerUp(t)}
+              variant="plain"
+              size="text"
               className={`group absolute z-30 -translate-x-1/2 -translate-y-1/2 ${
                 drag?.id === t.id ? "cursor-grabbing" : "cursor-grab"
               }`}
@@ -565,7 +567,7 @@ export function CommentLayer({
                   borderBottomLeftRadius: 0,
                 }}
               />
-            </button>
+            </Button>
           </Tip>
         );
       })}
@@ -924,16 +926,16 @@ function Composer({
         className="h-16 w-full resize-none rounded bg-black/5 p-2 text-xs text-neutral-900 placeholder:text-neutral-400 outline-none dark:bg-white/10 dark:text-white dark:placeholder:text-white/40"
       />
       <div className="mt-1 flex justify-end gap-2">
-        <button onClick={onCancel} className="rounded px-2 py-1 text-xs text-neutral-600 hover:bg-black/5 dark:text-white/70 dark:hover:bg-white/10">
+        <Button onClick={onCancel} variant="ghost" size="xs">
           Cancel
-        </button>
-        <button
+        </Button>
+        <Button
           data-testid="comment-submit"
           onClick={submit}
-          className="rounded bg-sky-600 px-2 py-1 text-xs text-white hover:bg-sky-500"
+          size="xs"
         >
           Comment
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -1035,34 +1037,35 @@ function MessageReactions({
     <div className="mt-1 flex flex-wrap items-center gap-1">
       {entries.map(([emoji, slugs]) => (
         <Tip content={slugs.join(", ")} key={emoji}>
-          <button
+          <Toggle
             data-testid="comment-reaction-chip"
             data-emoji={emoji}
             onClick={() => onToggle(emoji)}
-            className={`flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[11px] ring-1 ring-inset ${
-              slugs.includes(currentUser)
-                ? "bg-sky-500/20 ring-sky-500/50 dark:bg-sky-500/25 dark:ring-sky-300/50"
-                : "bg-black/5 ring-black/15 hover:bg-black/10 dark:bg-white/5 dark:ring-white/15 dark:hover:bg-white/10"
-            }`}
+            variant="outline"
+            size="xs"
+            pressed={slugs.includes(currentUser)}
+            className="h-6 rounded-full text-[11px] font-normal"
           >
             <span>{emoji}</span>
-            <span className="text-neutral-600 dark:text-white/70">{slugs.length}</span>
-          </button>
+            <span className="text-muted-foreground">{slugs.length}</span>
+          </Toggle>
         </Tip>
       ))}
       <Tip content="Add reaction">
-        <button
+        <Button
           data-testid="comment-react"
           onClick={(e) => {
             const r = e.currentTarget.getBoundingClientRect();
             setPicker((p) => (p ? null : { kind: "quick", x: r.x, y: r.bottom }));
           }}
-          className={`rounded-full p-1 text-neutral-400 ring-1 ring-inset ring-black/15 hover:bg-black/5 hover:text-neutral-900 dark:text-white/50 dark:ring-white/15 dark:hover:bg-white/10 dark:hover:text-white ${
+          variant="outline"
+          size="icon-xs"
+          className={`rounded-full p-1 text-muted-foreground ${
             entries.length ? "" : "opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
           }`}
         >
           <SmilePlus size={12} />
-        </button>
+        </Button>
       </Tip>
 
       {picker?.kind === "quick" &&
@@ -1078,26 +1081,30 @@ function MessageReactions({
           >
             {quickEmojis().map((e) => (
               <Tip content={`React ${e}`} key={e}>
-                <button
+                <Button
                   data-emoji={e}
                   onClick={() => {
                     onToggle(e);
                     setPicker(null);
                   }}
-                  className="rounded px-1 text-sm hover:bg-black/5 dark:hover:bg-white/10"
+                  variant="ghost"
+                  size="text"
+                  className="rounded px-1 text-sm"
                 >
                   {e}
-                </button>
+                </Button>
               </Tip>
             ))}
             <Tip content="All emoji…">
-              <button
+              <Button
                 data-testid="comment-react-more"
                 onClick={() => setPicker((p) => (p ? { ...p, kind: "full" } : p))}
-                className="rounded px-1 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
+                variant="ghost"
+                size="icon-xs"
+                className="px-1 text-muted-foreground"
               >
                 <Plus size={14} />
-              </button>
+              </Button>
             </Tip>
           </div>,
           document.body,
@@ -1213,26 +1220,29 @@ function ThreadPopover({
         </span>
         <div className="flex items-center gap-2">
           {controller.canManageThread(thread) && (
-          <button
+          <Button
             data-testid="comment-resolve"
             onClick={() => controller.setResolved(thread.id, !thread.resolved)}
-            className="rounded px-1.5 py-0.5 text-[11px] text-neutral-700 ring-1 ring-inset ring-black/20 hover:bg-black/5 dark:text-white/80 dark:ring-white/25 dark:hover:bg-white/10"
+            variant="outline"
+            size="xs"
           >
             {thread.resolved ? "Reopen" : "Resolve"}
-          </button>
+          </Button>
           )}
           {thread.createdBy === currentUser && controller.canManageThread(thread) && (
             <Tip content="Delete thread">
-              <button
+              <Button
                 data-testid="comment-delete-thread"
                 onClick={() => {
                   controller.deleteThread(thread.id);
                   onClose();
                 }}
-                className="rounded px-1.5 py-0.5 text-[11px] text-red-300 ring-1 ring-inset ring-red-400/40 hover:bg-red-500/20"
+                variant="outline"
+                size="xs"
+                className="text-danger hover:text-danger"
               >
                 Delete
-              </button>
+              </Button>
             </Tip>
           )}
           <Tip content="Close">
@@ -1261,7 +1271,7 @@ function ThreadPopover({
                 m.author !== currentUser && (
                   <span className="ml-auto hidden gap-1 group-hover:flex">
                     <Tip content="Report this comment to the PCBJam admins">
-                      <button
+                      <Button
                         data-testid="comment-report"
                         onClick={() => {
                           setReported((r) => ({ ...r, [m.id]: "sending" }));
@@ -1269,31 +1279,37 @@ function ThreadPopover({
                             setReported((r) => ({ ...r, [m.id]: ok ? "sent" : "failed" })),
                           );
                         }}
-                        className="text-[10px] text-neutral-500 hover:text-neutral-900 dark:text-white/60 dark:hover:text-white"
+                        variant="link"
+                        size="text"
+                        className="text-[10px] text-muted-foreground hover:text-foreground"
                       >
                         {reported[m.id] === "sent" ? "reported" : reported[m.id] === "sending" ? "reporting…" : "report"}
-                      </button>
+                      </Button>
                     </Tip>
                   </span>
                 )}
               {controller.canEditMessage(thread, m.id) && (
                 <span className="ml-auto hidden gap-1 group-hover:flex">
-                  <button
+                  <Button
                     data-testid="comment-edit"
                     onClick={() => setEditing({ id: m.id, body: m.body })}
-                    className="text-[10px] text-neutral-500 hover:text-neutral-900 dark:text-white/60 dark:hover:text-white"
+                    variant="link"
+                    size="text"
+                    className="text-[10px] text-muted-foreground hover:text-foreground"
                   >
                     edit
-                  </button>
-                  <button
+                  </Button>
+                  <Button
                     data-testid="comment-remove"
                     onClick={() => {
                       if (controller.remove(thread.id, m.id) === "thread-deleted") onClose();
                     }}
-                    className="text-[10px] text-red-300/80 hover:text-red-300"
+                    variant="link"
+                    size="text"
+                    className="text-[10px] text-danger"
                   >
                     delete
-                  </button>
+                  </Button>
                 </span>
               )}
             </div>

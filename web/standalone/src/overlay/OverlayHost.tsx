@@ -371,20 +371,17 @@ export function OverlayHost({ tool }: { tool: string }) {
             {buttons.length > 0 && (
               <div className="mt-3 flex items-center justify-end gap-2">
                 {buttons.map((b) => (
-                  <button
+                  <Button
                     key={b}
                     type="button"
                     data-testid={`overlay-${b}`}
                     onClick={() => pressButton(b)}
-                    className={cn(
-                      "pointer-events-auto rounded-md px-3 py-1 text-xs font-medium",
-                      b === "next"
-                        ? "bg-sky-600 text-white hover:bg-sky-500"
-                        : "text-neutral-600 hover:bg-black/5 dark:text-white/70 dark:hover:bg-white/10",
-                    )}
+                    variant={b === "next" ? "default" : "ghost"}
+                    size="xs"
+                    className="pointer-events-auto"
                   >
                     {BUTTON_LABEL[b]}
-                  </button>
+                  </Button>
                 ))}
               </div>
             )}

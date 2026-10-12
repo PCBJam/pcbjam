@@ -7,7 +7,7 @@ import { fetchWasmStoredSize, hasAnyWasmDownload, type WasmMeta } from "@/wasm/w
 import type { LibsSource, LibsSyncState } from "@/wasm/libs/source";
 import { LIB_KIND_FOR_TOOL } from "./ui-helpers";
 import { useTrustedPrompt } from "@/overlay/trusted-prompts";
-import { Checkbox } from "@pcbjam/ui";
+import { Button, Checkbox } from "@pcbjam/ui";
 
 /** What the download-consent dialog quotes (standalone-load-ux 0001). */
 export interface ConsentInfo {
@@ -244,13 +244,13 @@ export function DownloadConsent({
         />
         Always download without asking
       </label>
-      <button
+      <Button
         data-testid="consent-accept"
-        className="rounded bg-white/90 px-4 py-1.5 text-sm font-medium text-[#1a1a2e] hover:bg-white"
+        size="default"
         onClick={() => onAccept(always)}
       >
         Download &amp; open
-      </button>
+      </Button>
     </div>
   );
 }

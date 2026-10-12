@@ -1,7 +1,7 @@
 import * as React from "react";
 import { AlertTriangle, Users } from "lucide-react";
 import { useDraggablePanel } from "@/components/useDraggablePanel";
-import { Badge, Tip } from "@pcbjam/ui";
+import { Badge, Button, Tip } from "@pcbjam/ui";
 import { cn } from "@/lib/utils";
 
 /**
@@ -175,19 +175,16 @@ export function OverlayMenu({
   return (
     <div ref={rootRef} className="absolute z-50" style={style}>
       <Tip content="Session menu — drag to move">
-        <button
+        <Button
           type="button"
           data-testid="overlay-menu-fab"
           aria-expanded={open}
           onPointerDown={onFabPointerDown}
           onPointerMove={onFabPointerMove}
           onPointerUp={onFabPointerUp}
-          className={`relative flex h-9 w-9 items-center justify-center rounded-full shadow-lg ring-1 ring-inset transition-colors ${
-            open
-              ? "bg-sky-600 text-white ring-sky-300/40"
-              : "bg-white/90 text-neutral-700 ring-black/15 backdrop-blur-sm hover:bg-white " +
-                "dark:bg-neutral-950/80 dark:text-white dark:ring-white/15 dark:hover:bg-neutral-900/90"
-          }`}
+          variant={open ? "default" : "outline"}
+          size="icon"
+          className="relative rounded-full shadow-lg"
           style={{ touchAction: "none" }}
         >
           <Users size={16} />
@@ -223,7 +220,7 @@ export function OverlayMenu({
               </Badge>
             </Tip>
           )}
-        </button>
+        </Button>
       </Tip>
 
       {open && (

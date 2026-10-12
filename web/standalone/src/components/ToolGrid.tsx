@@ -9,6 +9,7 @@ import {
   type LucideIcon,
   Workflow,
 } from "lucide-react";
+import { Button } from "@pcbjam/ui";
 
 /** Icon per tool — KiCad-launcher style. */
 const TOOL_ICONS: Record<Tool, LucideIcon> = {
@@ -54,15 +55,17 @@ export function ToolGrid({ onLaunch }: { onLaunch: (tool: Tool) => void }) {
       {orderedTools().map((tool) => {
         const Icon = TOOL_ICONS[tool] ?? Component;
         return (
-          <button
+          <Button
             key={tool}
             type="button"
             onClick={() => onLaunch(tool)}
-            className="flex flex-col items-center gap-2 rounded-lg border bg-card p-4 text-center transition-colors hover:bg-accent"
+            variant="outline"
+            size="row"
+            className="h-auto flex-col items-center justify-center gap-2 rounded-lg p-4 text-center"
           >
             <Icon size={28} className="text-muted-foreground" />
             <span className="text-sm font-medium">{TOOL_LABELS[tool]}</span>
-          </button>
+          </Button>
         );
       })}
     </div>
