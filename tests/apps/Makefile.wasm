@@ -177,6 +177,7 @@ all: minimal_test.html \
      $(S)/toolbar/toolbar_test.html \
      $(S)/secondary-frame/secondary-frame_test.html \
      $(S)/combopopup/combopopup_test.html \
+     $(S)/combo-shadow/combo-shadow_test.html \
      $(S)/grid/grid_test.html \
      $(S)/dialog/dialog_test.html \
      $(S)/timer/timer_test.html \
@@ -440,6 +441,15 @@ $(S)/combopopup/combopopup_test.html: $(S)/combopopup/combopopup_test.o $(WX_COR
 	$(CXX) $< $(LDFLAGS_NOGL) --pre-js $(JS) --shell-file $(HTML) -o $@
 
 combopopup: $(S)/combopopup/combopopup_test.html
+
+# Canvas-drawn combo popup over a dialog's DOM inputs (libs 0020 P17)
+$(S)/combo-shadow/combo-shadow_test.o: $(S)/combo-shadow/combo-shadow_test.cpp
+	$(CXX) -c $(CXXFLAGS) $< -o $@
+
+$(S)/combo-shadow/combo-shadow_test.html: $(S)/combo-shadow/combo-shadow_test.o $(WX_CORE_LIB) $(JS_FILES)
+	$(CXX) $< $(LDFLAGS_NOGL) --pre-js $(JS) --shell-file $(HTML) -o $@
+
+combo-shadow: $(S)/combo-shadow/combo-shadow_test.html
 
 # Grid test (no GL)
 $(S)/grid/grid_test.o: $(S)/grid/grid_test.cpp
@@ -976,7 +986,7 @@ clean:
 	rm -f $(S)/*/*_test*.html $(S)/*/*_test*.js $(S)/*/*_test*.wasm
 	rm -f $(S)/*/*_repro*.html $(S)/*/*_repro*.js $(S)/*/*_repro*.wasm
 
-.PHONY: all clean menu contextmenu scrollbar clipboard textdataobj filedialog layout aui toolbar grid dialog timer tree dataview htmlwin stc print dnd propgrid pickers collapsible listctrl infobar dataviewvirtual auinotebook wizard gridedit calendar gridrenderers printpreview bitmapbuttons specialized validators ownerdrawn popup xml wasmedge fontenum textdecor bitmask regions maximize earlysize selectheight uipolish threadpool logerror retinascale coroutine coroutine-nested asyncify-races notebook radiogroups collapse-relayout
+.PHONY: all clean combo-shadow menu contextmenu scrollbar clipboard textdataobj filedialog layout aui toolbar grid dialog timer tree dataview htmlwin stc print dnd propgrid pickers collapsible listctrl infobar dataviewvirtual auinotebook wizard gridedit calendar gridrenderers printpreview bitmapbuttons specialized validators ownerdrawn popup xml wasmedge fontenum textdecor bitmask regions maximize earlysize selectheight uipolish threadpool logerror retinascale coroutine coroutine-nested asyncify-races notebook radiogroups collapse-relayout
 
 # === Coroutine pthread variant — historically reproduced the KiCad coroutine x pthreads crash ===
 # Same modal-free harness as `coroutine`, but compiled/linked with pthreads to match
