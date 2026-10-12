@@ -63,10 +63,27 @@ for (const [name, metadata] of Object.entries(manifest.files)) {
   assert.equal(sha(bytes), metadata.sha256, name);
 }
 if (remote) {
+  // A plugin with direct sites (plugins 0022 M3): the same Worker bytes, connect-src limited
+  // to exactly the sites in the path.
+  const net = await fetch(new URL(`${prefix}net/api.example.com/package-worker.js`, target), {
+    redirect: "error",
+    signal: AbortSignal.timeout(20000),
+  });
+  assert.equal(net.status, 200, "net Worker");
+  assert.equal(
+    net.headers.get("content-security-policy"),
+    "default-src 'none'; script-src 'wasm-unsafe-eval'; connect-src https://api.example.com; worker-src 'none'; object-src 'none'; base-uri 'none'",
+    "net Worker CSP"
+  );
+  assert.equal(net.headers.get("cross-origin-embedder-policy"), "require-corp");
+  assert.equal(sha(Buffer.from(await net.arrayBuffer())), manifest.files["package-worker.js"].sha256, "net Worker bytes");
   for (const missing of [
     `${prefix}missing.js`,
     `${prefix}package-worker.js?unversioned=1`,
     `/plugin-runtime/${"0".repeat(64)}/package-worker.js`,
+    `${prefix}net/files.example.org,api.example.com/package-worker.js`,
+    `${prefix}net/api.pcbjam.com/package-worker.js`,
+    `${prefix}net/api.example.com/quickjs.wasm`,
   ]) {
     const response = await fetch(new URL(missing, target), {
       redirect: "error",
@@ -78,5 +95,5 @@ if (remote) {
   }
 }
 console.log(
-  `Verified plugin runtime ${receipt.version}: ${Object.keys(manifest.files).length} exact artifacts${remote ? ", deployed security headers and missing-asset handling" : ""}.`
+  `Verified plugin runtime ${receipt.version}: ${Object.keys(manifest.files).length} exact artifacts${remote ? ", deployed security headers, the per-plugin Worker policy and missing-asset handling" : ""}.`
 );

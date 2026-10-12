@@ -4,6 +4,7 @@ import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vite";
 import { buildPluginRuntime, WORKER_CSP } from '@pcbjam/plugin-platform/build.mjs';
 import { brandHtml } from "./src/lib/brand-html";
+import { sitesFromSegment, workerCsp } from '@pcbjam/plugin-platform/network-contract.mjs';
 
 /**
  * Serve /wasm assets from public/wasm (the link-wasm.mjs symlink) in BOTH the
@@ -98,17 +99,27 @@ function recoverAirlock(): Plugin {
   return { name: "recover-airlock", configureServer: middleware, configurePreviewServer: middleware };
 }
 
+// A versioned runtime file, or the Worker of a plugin that may call sites directly
+// (plugins 0022 M3): net/<sites>/package-worker.js is package-worker.js with connect-src
+// limited to those sites, as plugin-assets-worker.ts serves it. null: not a valid path.
+function runtimeFile(url: string): { version: string; name: string; sites: string[] } | null {
+  const match = /^\/plugin-runtime\/([a-f0-9]{64})\/(?:net\/([^/]+)\/)?([a-z.-]+)$/.exec(url);
+  if (!match) return null;
+  const sites = match[2] === undefined ? [] : match[3] === 'package-worker.js' ? sitesFromSegment(match[2]) : null;
+  return sites ? { version: match[1]!, name: match[3]!, sites } : null;
+}
+
 // Local POC artifacts are fixed trusted runtime files. Publisher UI is served
 // separately on :4318 and must never be made executable on the editor origin.
 function pluginRuntimeAssets(): Plugin {
   const middleware = (server: { middlewares: { use: Function } }) => {
     server.middlewares.use((req: { url?: string; method?: string }, res: import('node:http').ServerResponse, next: () => void) => {
       if (req.url?.startsWith('/plugin-runtime/')) {
-        res.setHeader('Content-Security-Policy', WORKER_CSP);
+        const url = req.url.split('?')[0]!, file = runtimeFile(url);
+        res.setHeader('Content-Security-Policy', workerCsp(file?.sites ?? []));
         res.setHeader('X-Content-Type-Options', 'nosniff');
         res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
-        const url = req.url.split('?')[0]!;
-        if (/^\/plugin-runtime\/[a-f0-9]{64}\//.test(url) && !fs.existsSync(path.resolve(__dirname,'public'+url))) {
+        if (/^\/plugin-runtime\/[a-f0-9]{64}\//.test(url) && (!file || !fs.existsSync(path.resolve(__dirname, 'public/plugin-runtime', file.version, file.name)))) {
           res.writeHead(404);res.end('Runtime asset unavailable');return;
         }
       }
@@ -128,11 +139,11 @@ function pluginRuntimeAssets(): Plugin {
         // refuses `import()` of a /public .js file ("copied as-is"), which is how
         // the editor loads package-host.js; production static hosting has no
         // such step.
-        const versioned = /^([a-f0-9]{64})\/([a-z.-]+)$/.exec(name);
+        const versioned = runtimeFile(url);
         if (versioned) {
           if (req.method !== "GET") { res.writeHead(404); res.end(); return; }
           const type = name.endsWith(".wasm") ? "application/wasm" : name.endsWith(".json") ? "application/json" : "text/javascript";
-          fs.readFile(path.resolve(__dirname, "public/plugin-runtime", versioned[1]!, versioned[2]!), (error, bytes) => {
+          fs.readFile(path.resolve(__dirname, "public/plugin-runtime", versioned.version, versioned.name), (error, bytes) => {
             if (error) { res.writeHead(404); res.end("Runtime asset unavailable"); return; }
             res.setHeader("Content-Type", type);
             res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
@@ -142,7 +153,7 @@ function pluginRuntimeAssets(): Plugin {
             res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
             res.setHeader("Cross-Origin-Embedder-Policy", "require-corp");
             res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
-            if (/worker\.js$/.test(versioned[2]!)) res.setHeader("Content-Security-Policy", WORKER_CSP);
+            if (/worker\.js$/.test(versioned.name)) res.setHeader("Content-Security-Policy", workerCsp(versioned.sites));
             res.end(bytes);
           });
           return;
@@ -164,7 +175,7 @@ function pluginRuntimeAssets(): Plugin {
           res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
           res.setHeader("Cross-Origin-Embedder-Policy", "require-corp");
           res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
-          if (name === "worker.js" || name === "package-worker.js") res.setHeader("Content-Security-Policy", "default-src 'none'; script-src 'wasm-unsafe-eval'; connect-src 'none'; worker-src 'none'; object-src 'none'; base-uri 'none'");
+          if (name === "worker.js" || name === "package-worker.js") res.setHeader("Content-Security-Policy", WORKER_CSP);
           res.end(bytes);
         });
       });

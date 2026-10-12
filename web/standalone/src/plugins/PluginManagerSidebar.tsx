@@ -16,6 +16,7 @@ import { verifyPluginAccount } from './verify-account';
 import { mountRemoteProvider, type PartRequest } from '@/remote-provider/host';
 import { savePartAndPlace } from '@/libs/save-part';
 import { providerPermissions } from '@pcbjam/plugin-platform/remote-provider-contract.mjs';
+import { directPermissions } from '@pcbjam/plugin-platform/network-contract.mjs';
 import { KICAD_VERSION_DIR } from '@/wasm/constants';
 import { useTrustedPrompt } from '@/overlay/trusted-prompts';
 import { pluginSheetAdapter, pluginTourAdapter } from '@/overlay/plugin-tours';
@@ -162,6 +163,8 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
         instance = await host.mountPackagePlugin(target, {
           plugin: active, signal: abort.signal, documents, authorize,
           localChecks: hostedPlugins && sessionFeature('pluginLocalChecks'),
+          // Sites the plugin declared and the user granted, reachable from its Worker (plugins 0022 M3).
+          network: hostedPlugins && sessionFeature('pluginNetwork'),
           // Published releases from content-hash URLs, no activation (plugins 0022 M2).
           hashServing: hostedPlugins && sessionFeature('pluginHashServing') && active.published ? catalog.hashAccount() ?? undefined : undefined,
           // Dev only: the local plugin lab's UI origin when it is not on the default :4318.
@@ -279,7 +282,8 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
           <h3 className="font-semibold">Install {candidate.manifest.name} {candidate.manifest.version}?</h3>
           <p className="mt-2">{candidate.manifest.description}</p>
           <p className="mt-2 text-amber-700 dark:text-amber-200">{hostedPlugins ? "Private upload · Publisher not verified" : "Local package · Publisher not verified"}</p>
-          <ul className="my-2 list-disc space-y-1 pl-4">{candidate.manifest.permissions.map(permission => <li key={permission}>{{ ...permissions, ...(isProvider(candidate) ? providerPermissions(candidate.manifest.provider!.origin) : {}) }[permission] ?? permission}</li>)}</ul>
+          <ul className="my-2 list-disc space-y-1 pl-4">{candidate.manifest.permissions.map(permission => <li key={permission}>{{ ...permissions, ...(isProvider(candidate) ? providerPermissions(candidate.manifest.provider!.origin) : {}), ...directPermissions(candidate.manifest.network) }[permission] ?? permission}</li>)}</ul>
+          {!!candidate.manifest.network?.length && <p className="mb-2 break-all">Sends data directly from your browser to {candidate.manifest.network.map(site => new URL(site).hostname).join(', ')}.</p>}
           {isProvider(candidate)
             ? <p className="mb-3 text-neutral-500 dark:text-white/60">This is a parts provider: its own website opens inside PCBJam. It cannot read your project; parts you pick are downloaded through PCBJam, checked, and saved to a team library named after the provider.</p>
             : <p className="mb-3 text-neutral-500 dark:text-white/60">Install only code you trust. Custom UI receives the data returned by its plugin logic.</p>}

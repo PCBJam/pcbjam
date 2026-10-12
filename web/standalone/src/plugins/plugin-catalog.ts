@@ -31,6 +31,8 @@ export interface Descriptor {
     permissions: string[];
     uiSize?: { width: number; height: number };
     endpoints?: Record<string,{origin:string;paths:string[];methods:('GET'|'POST')[];auth:'none'|'pcbjam-user'}>;
+    /** HTTPS sites the plugin calls directly from its Worker (plugins 0022 M3). */
+    network?: string[];
     provider?: { origin: string };
   };
 }
@@ -84,6 +86,7 @@ export interface PackageHost {
       authorize?(signal: AbortSignal): Promise<void>;
       onAuthorizationReady?(check: (method: string) => Promise<void>): void;
       localChecks?: boolean;
+      network?: boolean;
       hashServing?: { userId: string; uiOrigin: string; placementEnabled: boolean };
       selectItems?(ids: string[], signal: AbortSignal): Promise<{ selected: string[]; held: string[]; missing: string[] }>;
       saveFile?(
