@@ -50,6 +50,9 @@ function parseArgs(argv) {
     // Companion mgmt app origin; set ⇒ non-editor routes redirect there
     // (standalone-hardening 0006). Omitted ⇒ every route renders locally.
     appBase: null,
+    // Where the brand lives (e.g. https://app.pcbjam.com/brand); set ⇒ the page links its
+    // stylesheet, icons and social image (ui-components 0001 §4.3). Omitted ⇒ neutral.
+    brandBase: null,
   };
   for (let i = 2; i < argv.length; i++) {
     const next = () => argv[++i];
@@ -65,6 +68,7 @@ function parseArgs(argv) {
       case "--errors-dsn": a.errorsDsn = next(); break;
       case "--errors-env": a.errorsEnv = next(); break;
       case "--app-base": a.appBase = next(); break;
+      case "--brand-base": a.brandBase = next(); break;
       default: throw new Error(`unknown arg: ${argv[i]}`);
     }
   }
@@ -75,6 +79,7 @@ function parseArgs(argv) {
   a.repo = a.repo.replace(/\/+$/, "");
   a.yjsEndpoint = (a.yjsEndpoint || a.apiBase).replace(/\/+$/, "");
   if (a.appBase) a.appBase = a.appBase.replace(/\/+$/, "");
+  if (a.brandBase) a.brandBase = a.brandBase.replace(/\/+$/, "");
   return a;
 }
 
@@ -140,6 +145,7 @@ async function main() {
     // Non-editor surfaces bounce to the mgmt app (mirror of the closed repo's
     // VITE_STANDALONE_URL pointing the other way).
     ...(a.appBase ? { VITE_APP_URL: a.appBase } : {}),
+    ...(a.brandBase ? { VITE_BRAND_BASE: a.brandBase } : {}),
   };
 
   console.log(`build-editor: tag=${a.tag} api=${a.apiBase} cdn=${a.cdn}`);
@@ -153,6 +159,7 @@ async function main() {
   console.log(`  VITE_PLAUSIBLE_SRC=${env.VITE_PLAUSIBLE_SRC || "(off)"}`);
   console.log(`  VITE_ERRORS_DSN=${env.VITE_ERRORS_DSN ? `(set, env=${env.VITE_ERRORS_ENV})` : "(off)"}`);
   console.log(`  VITE_APP_URL=${env.VITE_APP_URL || "(unset — no non-editor redirect)"}`);
+  console.log(`  VITE_BRAND_BASE=${env.VITE_BRAND_BASE || "(unset - neutral look)"}`);
 
   // Keep the dev-only WASM symlink out of the bundle (CDN serves it).
   const hadWasm = existsSync(publicWasm) || isSymlink(publicWasm);
