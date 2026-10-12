@@ -4,7 +4,7 @@
     {
       "slug": "demo-board",
       "name": "Demo Board",
-      "description": "A small example board. Open the PCB or schematic, edit it, and Save downloads the result to your machine — no account, no backend.",
+      "description": "A small example board. Open the PCB or schematic, edit it, and Save downloads the result to your machine - no account, no backend.",
       "root": "tests/fixtures/demo",
       "files": ["demo.kicad_pcb", "demo.kicad_sch", "demo.kicad_wks"]
     }
