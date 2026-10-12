@@ -294,12 +294,12 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
             <p>{backend.methods?.join(', ')}: {backend.paths?.join(', ')}</p>
             <p>This plugin can send data it is allowed to read to this backend.</p>
             <p>{backend.auth==='pcbjam-user'?'The backend can recognize you using a stable ID unique to this plugin. Your email and PCBJam account ID are not shared.':'No PCBJam identity is attached.'}</p>
-            <p>{backend.ready?'Approved by PCBJam':backend.status==='approved'?'Awaiting PCBJam setup or renewed domain verification.':'Not ready: '+backend.status+' — ask PCBJam to review this backend.'}</p>
+            <p>{backend.ready?'Approved by PCBJam':backend.status==='approved'?'Awaiting PCBJam setup or renewed domain verification.':'Not ready: '+backend.status+' - ask PCBJam to review this backend.'}</p>
             <p className="mt-1 break-all text-[10px]">Plugin: {candidate.pluginId}</p>
           </div>)}
           {candidate.backends?.filter(b => b.kind === 'remote-provider').map(backend=><div key={backend.endpoint} className="my-3 rounded border border-amber-500/40 p-2">
             <p className="break-all font-semibold">{backend.origin}</p>
-            <p>{backend.ready?'Approved by PCBJam':backend.status==='approved'?'Awaiting PCBJam setup.':'Not ready: '+backend.status+' — ask PCBJam to review this provider.'}</p>
+            <p>{backend.ready?'Approved by PCBJam':backend.status==='approved'?'Awaiting PCBJam setup.':'Not ready: '+backend.status+' - ask PCBJam to review this provider.'}</p>
             <p className="mt-1 break-all text-[10px]">Package: {candidate.pluginId}</p>
           </div>)}
           <Button variant="outline" size="xs" disabled={busy || candidate.backends?.some(b=>!b.ready)} onClick={() => void install()}>Install plugin</Button>{' '}<Button variant="outline" size="xs" disabled={busy} onClick={() => setCandidate(null)}>Cancel</Button>

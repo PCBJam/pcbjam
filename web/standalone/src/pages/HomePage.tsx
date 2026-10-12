@@ -239,8 +239,8 @@ export function HomePage() {
       </h1>
       <p className="mb-8 text-sm text-muted-foreground">
         {staticMode
-          ? "Edit KiCad files in your browser — open an example below or your own local folder. Nothing is uploaded; Save downloads to your machine."
-          : "Open KiCad files in the browser — from a backend, or straight from a local folder."}
+          ? "Edit KiCad files in your browser - open an example below or your own local folder. Nothing is uploaded; Save downloads to your machine."
+          : "Open KiCad files in the browser - from a backend, or straight from a local folder."}
       </p>
 
       {/* --- Local folder --- */}
@@ -250,8 +250,8 @@ export function HomePage() {
         </h2>
         <p className="mb-4 text-sm text-muted-foreground">
           {localEnabled
-            ? "No upload — a copy is imported into this browser as an editable project (your original files aren't touched). Save persists here; export anytime with Download .zip."
-            : "No upload — files stay in your browser. Pick a folder containing a KiCad project."}
+            ? "No upload - a copy is imported into this browser as an editable project (your original files aren't touched). Save persists here; export anytime with Download .zip."
+            : "No upload - files stay in your browser. Pick a folder containing a KiCad project."}
         </p>
         {window.showDirectoryPicker ? (
           <Button

@@ -278,7 +278,7 @@ export async function startSiblingRestage(opts: {
           // can't be merged. Drop it (no flush — its content is the OLD
           // epoch) and re-dial while a peer still has the sheet open.
           if (destroyed || watches.get(sheetPath) !== watch) return;
-          log(`[sibling] ${sheetPath} was replaced server-side — re-syncing`);
+          log(`[sibling] ${sheetPath} was replaced server-side - re-syncing`);
           closeNow(sheetPath, watch, false);
           if (wanted(sheetPath)) {
             const fresh: Watch = {};
@@ -346,7 +346,7 @@ export async function startSiblingRestage(opts: {
     () => [...watches.values()].map((w) => w.session),
   );
   log(
-    `[sibling] presence-scoped watch over ${sheetPaths.length} sheet(s) — ` +
+    `[sibling] presence-scoped watch over ${sheetPaths.length} sheet(s) - ` +
       `connecting only while a peer has one open`,
   );
 

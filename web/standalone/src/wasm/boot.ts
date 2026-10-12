@@ -603,7 +603,7 @@ async function doBoot(opts: BootOptions): Promise<void> {
     canvas.addEventListener(
       "webglcontextlost",
       (e) => {
-        onStatus("WebGL context lost — reload the page.");
+        onStatus("WebGL context lost - reload the page.");
         e.preventDefault();
       },
       false,

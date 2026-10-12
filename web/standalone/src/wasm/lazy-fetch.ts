@@ -65,7 +65,7 @@ export function makeSyncFolderFetch(
     } else if (res.status !== 404) {
       throw new Error(`folder download failed (${res.status}): ${dir || "/"}`);
     } else {
-      opts.log(`[lazy] no folder route on this backend — loading ${want.size} file(s) one by one`);
+      opts.log(`[lazy] no folder route on this backend - loading ${want.size} file(s) one by one`);
     }
     // Left out by the response's size cap, or a backend without the route.
     for (const path of want) {

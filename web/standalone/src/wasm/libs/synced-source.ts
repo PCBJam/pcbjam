@@ -252,7 +252,7 @@ export function syncedLibsSource(
         } catch (e) {
           selfPushed.delete(path);
           if (e instanceof SyncRoomMovedError && attempt === 0) {
-            log(`[synced] room moved for lib ${libId} — re-resolving stack`);
+            log(`[synced] room moved for lib ${libId} - re-resolving stack`);
             opts.onStackMoved?.(libId);
             const stale = opened;
             opened = null;
@@ -528,7 +528,7 @@ export function syncedScopeLibsSource(
           `${Math.ceil(missing.length / SYNC_STACKS_BATCH_MAX)} request(s)`,
       );
     } catch (err) {
-      opts.log?.(`[synced] batch resolve unavailable (${String(err)}) — falling back per-lib`);
+      opts.log?.(`[synced] batch resolve unavailable (${String(err)}) - falling back per-lib`);
     }
   }
 

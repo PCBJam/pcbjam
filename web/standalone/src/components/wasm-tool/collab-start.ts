@@ -50,7 +50,7 @@ export function seedDocFromMemfs(
     if (typeof text !== "string") return undefined;
     return fileToDoc(text);
   } catch (err) {
-    cwarn("seed: fileToDoc failed — falling back to editor-snapshot seed", err);
+    cwarn("seed: fileToDoc failed - falling back to editor-snapshot seed", err);
     return undefined;
   }
 }
@@ -92,7 +92,7 @@ export async function maybeConnectDocSession(
   // items-only check makes a joining tab refetch the stale file instead of
   // materializing the shared doc's current state.
   if (!ydocHasState(session.doc) || ydocIsHollow(session.doc)) {
-    opts.log(`[ydoc] room ${room} is empty — falling back to the API fetch (will file-seed)`);
+    opts.log(`[ydoc] room ${room} is empty - falling back to the API fetch (will file-seed)`);
     return { session };
   }
   try {
@@ -104,7 +104,7 @@ export async function maybeConnectDocSession(
     opts.log(`[ydoc] materialized ${opts.targetPath} from room ${room} (${text.length} chars)`);
     return { session, targetBytes: new TextEncoder().encode(text) };
   } catch (err) {
-    cwarn("ydoc: materialize failed — falling back to the API fetch", err);
+    cwarn("ydoc: materialize failed - falling back to the API fetch", err);
     return { session };
   }
 }
@@ -150,18 +150,18 @@ export async function maybeStartCollab(
   // session (Y.Doc-load path) ignores the opt-out: the doc IS the data source,
   // so detaching would silently drop every edit.
   if (!opts.collabSession && (collabParam === "0" || collabParam === "false")) {
-    clog("disabled (?collab=0) — skipping");
+    clog("disabled (?collab=0) - skipping");
     return undefined;
   }
   if (!COLLAB_TOOLS.has(opts.tool)) {
-    clog(`tool ${opts.tool} has no collab bridge — skipping`);
+    clog(`tool ${opts.tool} has no collab bridge - skipping`);
     return undefined;
   }
   if (typeof mod?.kicadCollabSnapshotItems !== "function") {
     cwarn(
       "BRIDGE NOT PRESENT: Module.kicadCollabSnapshotItems is",
       typeof mod?.kicadCollabSnapshotItems,
-      `— the loaded ${opts.tool}.wasm predates the v2 items bridge (ysync 0008 Stage C). Rebuild + \`npm run setup:kicad\` and restart the dev server.`,
+      `- the loaded ${opts.tool}.wasm predates the v2 items bridge (ysync 0008 Stage C). Rebuild + \`npm run setup:kicad\` and restart the dev server.`,
     );
     return undefined;
   }
@@ -239,14 +239,14 @@ export async function startSheetCollab(
   const mod = win.Module;
 
   if (!opts.session && (collabParam === "0" || collabParam === "false")) {
-    clog("[sheet] collab disabled (?collab=0) — skipping");
+    clog("[sheet] collab disabled (?collab=0) - skipping");
     return undefined;
   }
   if (typeof mod?.kicadCollabSnapshotItems !== "function") {
     cwarn(
       "[sheet] BRIDGE NOT PRESENT: Module.kicadCollabSnapshotItems is",
       typeof mod?.kicadCollabSnapshotItems,
-      "— the loaded eeschema.wasm predates the items+sheet bridge (subschema Phase 0). Rebuild + `npm run setup:kicad` and restart the dev server.",
+      "- the loaded eeschema.wasm predates the items+sheet bridge (subschema Phase 0). Rebuild + `npm run setup:kicad` and restart the dev server.",
     );
     return undefined;
   }
@@ -306,7 +306,7 @@ export async function startSheetCollab(
     if (rel) {
       manager.switchTo(rel).catch((err: unknown) => {
         opts.log(
-          `[sheet] ${rel} needs a newer app version — collab disabled for this sheet: ${String(err)}`,
+          `[sheet] ${rel} needs a newer app version - collab disabled for this sheet: ${String(err)}`,
         );
         opts.onStatus("Collab: version skew on this sheet");
       });

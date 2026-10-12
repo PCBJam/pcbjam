@@ -180,11 +180,11 @@ export function NoticeStack({
               <a data-testid="file-gone-open" className="underline" href={fileGone.movedTo.href}>
                 Open it there
               </a>{" "}
-              — edits made here are no longer saved.
+              - edits made here are no longer saved.
             </>
           ) : (
             <>
-              {fileGone.path} was deleted by {fileGone.by ?? "a collaborator"} — edits made here are no
+              {fileGone.path} was deleted by {fileGone.by ?? "a collaborator"} - edits made here are no
               longer saved.
             </>
           )}

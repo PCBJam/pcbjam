@@ -21,7 +21,7 @@ export function FatalOverlay({ message }: { message: string }) {
         {message}
       </p>
       <p className="max-w-md px-6 text-center font-mono text-xs text-blue-200/60">
-        The console below records what was loading when this happened —
+        The console below records what was loading when this happened -
         please copy it into a bug report.
       </p>
       <div className="flex gap-2">

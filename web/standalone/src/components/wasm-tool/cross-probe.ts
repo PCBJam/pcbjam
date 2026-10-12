@@ -152,7 +152,7 @@ export function createCrossProbe(opts: CrossProbeOptions): CrossProbe {
 
   const openNew = (to: ProbeTool, url: string | null) => {
     if (!url) {
-      opts.log(`[cross-probe] no ${to} file in this project — nothing to open`);
+      opts.log(`[cross-probe] no ${to} file in this project - nothing to open`);
       pending = null;
       return;
     }

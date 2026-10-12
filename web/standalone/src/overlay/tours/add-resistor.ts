@@ -45,7 +45,7 @@ export const ADD_RESISTOR: TourDef = parseTourDef({
       id: "done",
       target: "new:Device:R",
       title: "That's your first resistor",
-      text: "Symbols are the parts of your schematic. Next you would wire it up — press Esc to stop placing, then Next to finish.",
+      text: "Symbols are the parts of your schematic. Next you would wire it up - press Esc to stop placing, then Next to finish.",
       until: { next: true },
     },
   ],

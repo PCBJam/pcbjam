@@ -94,7 +94,7 @@ function ciTestScripts(): string[] {
   }
   if (!names.size) {
     throw new Error(
-      `no "npm run test:…" invocations found under ${WORKFLOWS_DIR} — ` +
+      `no "npm run test:…" invocations found under ${WORKFLOWS_DIR} - ` +
         'either CI stopped running tests or this lint\'s scrape regex rotted'
     );
   }

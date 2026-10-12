@@ -30,7 +30,7 @@ const quitDispatcher = () => {
   // destroyed. When that happens unexpectedly (2026-08-03: a guarded-off
   // settle-window dispatch cascaded into a silent frame close), the stack is
   // the only artifact that says WHO closed it — keep it in every log.
-  console.warn("[quit] wxAppTopWindowClosed invoked — top window destroyed", new Error("quit-origin").stack);
+  console.warn("[quit] wxAppTopWindowClosed invoked - top window destroyed", new Error("quit-origin").stack);
   activeQuitHook?.();
 };
 
@@ -92,7 +92,7 @@ export function installQuitHook(
     // aborted by that continuing teardown — so hand it to a fresh task once the
     // wasm stack has unwound.
     setTimeout(() => {
-      opts.log(`[quit] editor closed — going to ${opts.exitUrl}`);
+      opts.log(`[quit] editor closed - going to ${opts.exitUrl}`);
       win.location.assign(opts.exitUrl);
     }, 0);
   };

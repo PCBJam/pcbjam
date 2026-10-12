@@ -44,7 +44,7 @@ export function LibLoadingOverlay({ libLoading }: { libLoading: LibLoadingState 
       )}
       <p className="max-w-sm px-6 text-center font-mono text-xs text-white/40">
         Moving the library set into the editor. The first open can take a
-        moment — it's cached after this.
+        moment - it's cached after this.
       </p>
     </div>
   );

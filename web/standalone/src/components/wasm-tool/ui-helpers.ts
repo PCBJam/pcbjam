@@ -5,7 +5,7 @@ import type { LibSetChangedDetail } from "@/wasm/libs/source";
 /** The libset toast's message once live-loading failed and reload is the offer. */
 export function reloadFallbackMsg(notice: { detail: LibSetChangedDetail }): string {
   const label = notice.detail.name ? `"${notice.detail.name}"` : "the new library";
-  return `Couldn't load ${label} into the running session — click to reload the editor.`;
+  return `Couldn't load ${label} into the running session - click to reload the editor.`;
 }
 
 // Tools with the v2 items bridge (kicadCollabSnapshotItems/ApplyItems embind exports).

@@ -166,7 +166,7 @@ export function LayerPanel({
     >
       {/* Header = drag handle. Interactive children stop pointerdown so they
           don't start a drag. */}
-      <Tip content="Layers — drag to move">
+      <Tip content="Layers - drag to move">
         <div
           data-testid="layers-panel-header"
           className="flex cursor-grab select-none items-center gap-2 px-3 py-2 text-xs font-semibold active:cursor-grabbing"

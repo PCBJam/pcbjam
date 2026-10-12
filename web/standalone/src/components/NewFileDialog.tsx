@@ -185,7 +185,7 @@ export function NewFileDialog({
               }}
             />
             <p className="mt-1 text-xs text-muted-foreground">
-              Created in the project, then opened in the editor — saves persist
+              Created in the project, then opened in the editor - saves persist
               back to it.
             </p>
           </div>

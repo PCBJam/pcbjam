@@ -36,7 +36,7 @@ export function PluginFloatingPanel({ title, storageKey, preferredSize, forceExp
       // stays mounted, so the plugin keeps running.
       display: hidden ? 'none' : undefined,
     }}>
-    <Tip content={title + ' — drag to move'}>
+    <Tip content={title + ' - drag to move'}>
       <div data-testid="plugin-panel-header"
         className="flex h-10 shrink-0 cursor-grab select-none items-center gap-2 px-3 text-xs font-semibold active:cursor-grabbing"
         style={{ touchAction: 'none' }}

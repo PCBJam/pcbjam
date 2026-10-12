@@ -101,7 +101,7 @@ export function startDriftDetection(opts: DriftDetectOptions): DriftDetector {
   const saveName = SAVE_FN[opts.tool];
   const rawSave = opts.mod[saveName];
   if (typeof rawSave !== "function") {
-    log(`[drift] ${saveName} unavailable on this build — drift detection off`);
+    log(`[drift] ${saveName} unavailable on this build - drift detection off`);
     return { stop() {} };
   }
   // Bind to a non-optional type so the nested computeDrift closure can invoke it.

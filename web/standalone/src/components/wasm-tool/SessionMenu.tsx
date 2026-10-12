@@ -117,7 +117,7 @@ export function FollowBanner({
       className="dark absolute left-1/2 top-3 z-20 flex -translate-x-1/2 items-center gap-2 rounded-full bg-black/70 px-3 py-1 text-xs text-white shadow-sm ring-1 ring-inset ring-white/20"
     >
       <span>
-        Following <span className="font-semibold">{target.name}</span> — move to stop
+        Following <span className="font-semibold">{target.name}</span> - move to stop
       </span>
       <Button
         type="button"
@@ -376,7 +376,7 @@ export function SessionMenu({
             chrome-hidden wx panes — available to viewers and to editors
             in hide-UI mode alike. */}
         {effectiveChromeHidden && hasLayers && (
-          <Tip content="Board layers — visibility and active layer">
+          <Tip content="Board layers - visibility and active layer">
             <Toggle
               data-testid="layers-panel-toggle"
               variant="ghost"
@@ -391,7 +391,7 @@ export function SessionMenu({
           </Tip>
         )}
         {effectiveChromeHidden && hasSheets && (
-          <Tip content="Schematic sheets — navigate the hierarchy">
+          <Tip content="Schematic sheets - navigate the hierarchy">
             <Toggle
               data-testid="sheet-panel-toggle"
               variant="ghost"

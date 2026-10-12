@@ -274,7 +274,7 @@ export function bindKicadPresence(opts: {
     snapshot.locks = remoteLocks(self, lockClients);
     const release = contestedReleases(self, lockClients);
     if (release && mod.kicadCollabReleaseSelection) {
-      clog("presence-kicad: lost selection tiebreak to", release.holder, "—", release.uuids);
+      clog("presence-kicad: lost selection tiebreak to", release.holder, "-", release.uuids);
       mod.kicadCollabReleaseSelection(JSON.stringify(release.uuids), release.holder);
     }
     // Cross-app peers (0006): rendered as ghost outlines on the mapped items.

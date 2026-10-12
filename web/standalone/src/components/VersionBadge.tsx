@@ -48,7 +48,7 @@ export function VersionBadge() {
       ? `${REPO_URL}/releases/tag/${APP_TAG}`
       : REPO_URL;
   const versionTitle = APP_GIT_SHA
-    ? `commit ${APP_GIT_SHA.slice(0, 12)} — GPL corresponding source`
+    ? `commit ${APP_GIT_SHA.slice(0, 12)} - GPL corresponding source`
     : APP_TAG
       ? `release ${APP_TAG}`
       : "source repository";
@@ -80,7 +80,7 @@ export function VersionBadge() {
         </a>
       </Tip>
       <span className="text-white/30">·</span>
-      <Tip content="PCBJam — product page">
+      <Tip content="PCBJam - product page">
         <a
           href={LANDING_URL}
           target="_blank"

@@ -300,7 +300,7 @@ export function createPresence(opts: {
         );
         g_claims.set(user.id, user.color);
         patch({ user: { ...user } });
-        clog("presence: color collision — re-claimed", user.color);
+        clog("presence: color collision - re-claimed", user.color);
         return;
       }
     }

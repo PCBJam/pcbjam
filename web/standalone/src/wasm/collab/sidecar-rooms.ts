@@ -139,7 +139,7 @@ export async function startSidecarRooms(opts: {
         opts.log(`[sidecar-room] watching ${path}`);
       } catch (err) {
         // No room ⇒ the file keeps the plain upload path (isRoomPath false).
-        cwarn(`[sidecar-room] ${path}: connect failed — keeping the upload path`, err);
+        cwarn(`[sidecar-room] ${path}: connect failed - keeping the upload path`, err);
       }
     }),
   );

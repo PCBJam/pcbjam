@@ -124,7 +124,7 @@ export function ProjectsSection() {
               ? staticMode
                 ? `Couldn't load the example gallery (${(primaryQ.error as Error).message}). Open a local folder above to start.`
                 : `No backend reachable (${(primaryQ.error as Error).message}). Open a local folder above, or configure VITE_API_BASE_URL.`
-              : "No projects yet — open a local folder above to start. Files stay in this browser; export anytime with Download .zip."}
+              : "No projects yet - open a local folder above to start. Files stay in this browser; export anytime with Download .zip."}
           </div>
         )}
       </div>

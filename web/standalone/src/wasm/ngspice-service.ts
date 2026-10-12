@@ -311,7 +311,7 @@ export function installNgspiceService(
           if (slot.failed || workerSlot !== slot) return;
           const why =
             `ngspice_service boot timed out after ${bootTimeoutMs} ms`;
-          log(`[ngspice] ${why} — resetting service`);
+          log(`[ngspice] ${why} - resetting service`);
           retireWorker(slot, why);
         }, bootTimeoutMs);
       });
@@ -365,7 +365,7 @@ export function installNgspiceService(
         // make the next request boot a fresh worker.
         const failWorker = (detail: string) => {
           const why = `ngspice_service crashed: ${detail}`;
-          log(`[ngspice] worker error: ${detail} — resetting service`);
+          log(`[ngspice] worker error: ${detail} - resetting service`);
           retireWorker(slot, why);
         };
         worker.onerror = (e) => failWorker(e.message || "worker error");
@@ -420,7 +420,7 @@ export function installNgspiceService(
         if (pending.get(id)?.generation !== slot.generation) return;
         const why =
           `ngspice_service response timed out after ${responseTimeoutMs} ms`;
-        log(`[ngspice] ${why} — resetting service`);
+        log(`[ngspice] ${why} - resetting service`);
         retireWorker(slot, why);
       }, responseTimeoutMs);
       pending.set(id, { generation: slot.generation, resolve, timer });

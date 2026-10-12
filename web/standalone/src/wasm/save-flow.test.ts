@@ -304,7 +304,7 @@ describe("registerSaveHook persistence ordering", () => {
     expect(onBlocked).toHaveBeenCalledWith({
       relPath: "board.kicad_pcb",
       kind: "unknown",
-      message: "Save state unknown: board.kicad_pcb — reload or save a copy",
+      message: "Save state unknown: board.kicad_pcb - reload or save a copy",
     });
     win.kicadCollab!.onSave!(`${PROJ}/board.kicad_pcb`);
     expect(onSaved).toHaveBeenCalledTimes(2);

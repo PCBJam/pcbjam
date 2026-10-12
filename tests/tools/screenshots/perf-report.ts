@@ -128,7 +128,7 @@ function fmtFps(fps: Fps[], key: 'fps' | 'galFps' = 'fps'): string {
     return [1, 4, 6].map((t) => {
         const hit = fps.find((f) => f.throttle === t);
         const v = hit?.[key];
-        return v === undefined ? '–' : Math.round(v);
+        return v === undefined ? '-' : Math.round(v);
     }).join('/');
 }
 

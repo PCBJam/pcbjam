@@ -91,7 +91,7 @@ export function LocalProjectView({
           <FolderOpen size={22} /> {name}
         </h1>
         <p className="text-sm text-muted-foreground">
-          local folder — files stay in your browser
+          local folder - files stay in your browser
         </p>
       </div>
 
