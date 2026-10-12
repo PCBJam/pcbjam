@@ -3,6 +3,7 @@ import * as path from "node:path";
 import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vite";
 import { buildPluginRuntime, WORKER_CSP } from '@pcbjam/plugin-platform/build.mjs';
+import { brandHtml } from "./src/lib/brand-html";
 
 /**
  * Serve /wasm assets from public/wasm (the link-wasm.mjs symlink) in BOTH the
@@ -171,13 +172,28 @@ function pluginRuntimeAssets(): Plugin {
   };
 }
 
+/**
+ * Runtime branding (ui-components 0001, section 4.3): with VITE_BRAND_BASE set (build-editor.mjs
+ * --brand-base) the main page links the brand from there; unset, it stays neutral. See
+ * src/lib/brand-html.ts. The OOM airlock page (recover.html) stays as it is.
+ */
+function brand(): Plugin {
+  return {
+    name: "pcbjam-brand",
+    transformIndexHtml: {
+      order: "post",
+      handler: (html, ctx) => (ctx.path === "/index.html" ? brandHtml(html, process.env.VITE_BRAND_BASE) : html),
+    },
+  };
+}
+
 export default defineConfig(async () => {
 const runtime = await buildPluginRuntime(path.resolve(__dirname, 'public/plugin-runtime'));
 fs.mkdirSync(path.resolve(__dirname,'src/generated'),{recursive:true});
 fs.writeFileSync(path.resolve(__dirname,'src/generated/plugin-runtime.json'),JSON.stringify({version:runtime.version,files:Object.keys(runtime.manifest.files)}));
 return {
   define: { 'import.meta.env.VITE_PLUGIN_RUNTIME_BASE': JSON.stringify(runtime.base) },
-  plugins: [recoverAirlock(), pluginRuntimeAssets(), serveWasm(), react()],
+  plugins: [recoverAirlock(), pluginRuntimeAssets(), serveWasm(), react(), brand()],
   build: {
     rollupOptions: {
       // recover.html: the OOM process airlock (0009), its own tiny entry.
