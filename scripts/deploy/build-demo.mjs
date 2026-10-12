@@ -40,6 +40,9 @@ function parseArgs(argv) {
     // editor, and mixing them would drown the editor's real regressions.
     errorsDsn: null,
     errorsEnv: "demo",
+    // Where the brand lives; set ⇒ the page links it (ui-components 0001 §4.3), as the editor
+    // build does. Omitted ⇒ the demo stays neutral.
+    brandBase: null,
   };
   for (let i = 2; i < argv.length; i++) {
     const next = () => argv[++i];
@@ -59,6 +62,7 @@ function parseArgs(argv) {
       case "--plausible": a.plausible = next(); break;
       case "--errors-dsn": a.errorsDsn = next(); break;
       case "--errors-env": a.errorsEnv = next(); break;
+      case "--brand-base": a.brandBase = next(); break;
       default: throw new Error(`unknown arg: ${argv[i]}`);
     }
   }
@@ -66,6 +70,7 @@ function parseArgs(argv) {
   a.cdn = a.cdn.replace(/\/+$/, "");
   a.repo = a.repo.replace(/\/+$/, "");
   a.landing = a.landing.replace(/\/+$/, "");
+  if (a.brandBase) a.brandBase = a.brandBase.replace(/\/+$/, "");
   // The cross-origin demo POSTs the waitlist to the marketing site's endpoint (a
   // Cloudflare Pages Function). Always target the canonical www host: a CORS
   // preflight cannot follow a redirect, so aiming at a host that might ever
@@ -140,6 +145,7 @@ function main() {
     ...(a.errorsDsn
       ? { VITE_ERRORS_DSN: a.errorsDsn, VITE_ERRORS_ENV: a.errorsEnv }
       : {}),
+    ...(a.brandBase ? { VITE_BRAND_BASE: a.brandBase } : {}),
   };
 
   console.log(`build-demo: tag=${a.tag} cdn=${a.cdn}`);
@@ -152,6 +158,7 @@ function main() {
   console.log(`  VITE_LANDING_URL=${env.VITE_LANDING_URL} VITE_WAITLIST_URL=${env.VITE_WAITLIST_URL}`);
   console.log(`  VITE_PLAUSIBLE_SRC=${env.VITE_PLAUSIBLE_SRC || "(off)"}`);
   console.log(`  VITE_ERRORS_DSN=${env.VITE_ERRORS_DSN ? `(set, env=${env.VITE_ERRORS_ENV})` : "(off)"}`);
+  console.log(`  VITE_BRAND_BASE=${env.VITE_BRAND_BASE || "(unset - neutral look)"}`);
 
   // Keep the dev-only WASM symlink out of the bundle (it'd copy 100s of MB into
   // dist/; the CDN serves it). In CI it isn't present, so this is a no-op there.
