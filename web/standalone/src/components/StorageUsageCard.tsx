@@ -171,7 +171,7 @@ export function StorageUsageCard() {
         <Database size={16} /> Storage
       </h2>
       <p className="mb-4 text-sm text-muted-foreground">
-        Library data cached in this browser. Everything re-downloads on demand —
+        Library data cached in this browser. Everything re-downloads on demand -
         clearing is always safe. 3D models are fetched per board, so their cache
         is the one worth reclaiming.
       </p>

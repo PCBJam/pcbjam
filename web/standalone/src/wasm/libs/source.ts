@@ -489,7 +489,7 @@ export function installLibsProvider(
           const body = await source.getItemBody(id, kind, arg);
           if (body === null) {
             emitLibError(
-              `Couldn't open "${arg}" — the backend has no body for it (404).`,
+              `Couldn't open "${arg}" - the backend has no body for it (404).`,
             );
           }
           return body;

@@ -105,7 +105,7 @@ export function createFollow(opts: {
     const leader = leaderState();
     if (!leader) {
       // Leader left the room — follow ends (their awareness state expired).
-      clog("follow: leader left —", target.name);
+      clog("follow: leader left -", target.name);
       stop();
       return;
     }
@@ -169,12 +169,12 @@ export function createFollow(opts: {
         // The canvas changed size and took the view with it (KiCad's
         // "created by an older version" bar appearing after load ended
         // follows in CI): fit the followed region into the new canvas.
-        clog("follow: canvas resized — refitting", target.name);
+        clog("follow: canvas resized - refitting", target.name);
         sawEcho = false;
         fit(applied.cx, applied.cy, applied.halfW, applied.halfH);
         return;
       }
-      clog("follow: local input — stopped following", target.name);
+      clog("follow: local input - stopped following", target.name);
       stop();
     },
     destroy() {

@@ -175,7 +175,7 @@ export function installOccService(
           if (slot.failed || workerSlot !== slot) return;
           const report =
             `occ_service boot timed out after ${bootTimeoutMs} ms`;
-          log(`[occ] ${report} — resetting service`);
+          log(`[occ] ${report} - resetting service`);
           retireWorker(slot, report);
         }, bootTimeoutMs);
       });
@@ -201,12 +201,12 @@ export function installOccService(
         // callbacks from this retired worker cannot resolve its requests.
         worker.onerror = (e) => {
           const report = `occ_service crashed: ${e.message || "worker error"}`;
-          log(`[occ] worker error: ${e.message || "worker error"} — resetting service`);
+          log(`[occ] worker error: ${e.message || "worker error"} - resetting service`);
           retireWorker(slot, report);
         };
         worker.onmessageerror = () => {
           const report = "occ_service transport failed: message decode failed";
-          log("[occ] worker message decode failed — resetting service");
+          log("[occ] worker message decode failed - resetting service");
           retireWorker(slot, report);
         };
 
@@ -275,7 +275,7 @@ export function installOccService(
         if (pending.get(id)?.generation !== slot.generation) return;
         const report =
           `occ_service response timed out after ${responseTimeoutMs} ms`;
-        log(`[occ] ${report} — resetting service`);
+        log(`[occ] ${report} - resetting service`);
         retireWorker(slot, report);
       }, responseTimeoutMs);
       pending.set(id, { generation: slot.generation, resolve, timer });
@@ -341,13 +341,13 @@ export function installOccService(
     }
     if (outcome.kind === "failed") {
       const note =
-        `model prefetch failed — exported without models: ${String(outcome.error)}`;
+        `model prefetch failed - exported without models: ${String(outcome.error)}`;
       log(`[occ] ${note}`);
       return { models: [], note };
     }
     const models = [...progress.models];
     const note =
-      `model prefetch timed out after ${modelPrefetchTimeoutMs} ms — ` +
+      `model prefetch timed out after ${modelPrefetchTimeoutMs} ms - ` +
       `${progress.totalRefs - models.length} of ${progress.totalRefs} model(s) omitted`;
     log(`[occ] ${note}`);
     return { models, note };

@@ -329,7 +329,7 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
     // for the newer path binds the right room. The room stays warm (parked).
     const superseded = (): boolean => {
       if (requestedPath === sheetPath) return false;
-      clog(`[sheet] switch to ${sheetPath} superseded by ${requestedPath} — not binding`);
+      clog(`[sheet] switch to ${sheetPath} superseded by ${requestedPath} - not binding`);
       return true;
     };
 
@@ -472,7 +472,7 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
   function invalidate(sheetPath: string): void {
     const room = rooms.get(sheetPath);
     if (!room || sheetPath === activePath || room.binding) return;
-    log(`[sheet] ${sheetPath} replaced at rest — dropping the parked room`);
+    log(`[sheet] ${sheetPath} replaced at rest - dropping the parked room`);
     try {
       room.detachWatch?.();
       room.session.provider.destroy();
@@ -561,7 +561,7 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
     // re-upserts the editor's snapshot, which already contains this edit. A
     // partial write here would leave a doc that looks seeded but is not.
     if (!room.seeded && (!ydocHasState(room.doc) || ydocIsHollow(room.doc))) {
-      clog(`[sheet] off-sheet edit: ${sheetPath} skipped (room never seeded — first bind carries it)`);
+      clog(`[sheet] off-sheet edit: ${sheetPath} skipped (room never seeded - first bind carries it)`);
       return;
     }
     const wire = parseItemsWireDelta(json);

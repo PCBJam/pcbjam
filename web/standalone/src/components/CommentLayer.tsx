@@ -430,7 +430,7 @@ export function CommentLayer({
                 <span>{panel ? "Close comments panel" : "Open comments panel"}</span>
                 <span className="ml-auto flex items-center gap-1 text-[10px] text-neutral-400 dark:text-white/40">
                   {unreadThreads > 0 && (
-                    <Tip content={mentioned ? "Unread comments — you were mentioned" : "Unread comments"}>
+                    <Tip content={mentioned ? "Unread comments - you were mentioned" : "Unread comments"}>
                       <Badge
                         data-testid="comment-unread-badge"
                         size="count"
@@ -529,7 +529,7 @@ export function CommentLayer({
         const bubbleD = 2 * pinR * cssRatio + 4;
         const hitD = Math.max(26, bubbleD + 8);
         return (
-          <Tip content={`${authorLabel(t).text}: ${t.messages[0]?.body ?? ""}${t.detached ? " (detached)" : ""} — drag to move`} key={t.id}>
+          <Tip content={`${authorLabel(t).text}: ${t.messages[0]?.body ?? ""}${t.detached ? " (detached)" : ""} - drag to move`} key={t.id}>
             <Button
               data-testid="comment-pin"
               data-thread-id={t.id}
@@ -716,7 +716,7 @@ function CommentsPanel({
           {t.messages.length > 1 ? ` · ${t.messages.length - 1} repl${t.messages.length === 2 ? "y" : "ies"}` : ""}
         </span>
         {threadUnreadCount(t, currentUser) > 0 && (
-          <Tip content={threadMentionsUnread(t, currentUser) ? "Unread — you were mentioned" : "Unread"}>
+          <Tip content={threadMentionsUnread(t, currentUser) ? "Unread - you were mentioned" : "Unread"}>
             <span
               data-testid="comment-unread-dot"
               className={`ml-auto h-2 w-2 shrink-0 rounded-full ${
@@ -741,7 +741,7 @@ function CommentsPanel({
     >
       {/* Header = drag handle. Interactive children stop pointerdown so they
           don't start a drag. */}
-      <Tip content="Comments — drag to move">
+      <Tip content="Comments - drag to move">
         <div
           data-testid="comments-panel-header"
           className="flex cursor-grab select-none items-center gap-2 px-3 py-2 text-xs font-semibold active:cursor-grabbing"
@@ -768,7 +768,7 @@ function CommentsPanel({
             className="ml-auto flex items-center gap-0.5"
             onPointerDown={(e) => e.stopPropagation()}
           >
-            <Tip content={mode ? "Cancel placing (Esc)" : "Add comment — click the canvas to place a pin"}>
+            <Tip content={mode ? "Cancel placing (Esc)" : "Add comment - click the canvas to place a pin"}>
               <Toggle
                 data-testid="comments-panel-add"
                 variant="ghost"
@@ -842,13 +842,13 @@ function CommentsPanel({
       <div data-testid="comments-panel-list" className="max-h-[60vh] overflow-y-auto">
         {sorted.length === 0 && detached.length === 0 && (
           <p className="px-3 pb-3 text-xs text-neutral-500 dark:text-white/50">
-            {total === 0 ? "No comments yet." : "Nothing to show — check the resolved filter."}
+            {total === 0 ? "No comments yet." : "Nothing to show - check the resolved filter."}
           </p>
         )}
         {sorted.map((t) => row(t, "comment-panel-item"))}
         {detached.length > 0 && (
           <div data-testid="comments-detached-section" className="border-t border-black/10 dark:border-white/10">
-            <Tip content="Threads whose anchor item is gone from this document — they stay here until moved or resolved">
+            <Tip content="Threads whose anchor item is gone from this document - they stay here until moved or resolved">
               <Button
                 data-testid="comments-detached-summary"
                 aria-expanded={detachedOpen}

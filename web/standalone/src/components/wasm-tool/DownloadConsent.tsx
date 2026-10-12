@@ -118,13 +118,13 @@ function libNowDetail(s: LibsSyncState | null): string {
   // No warmth answer at all: say only what stays true regardless of counts —
   // the warm-up runs alongside the editor download and finishes in the
   // background, so "downloaded now" would overpromise as well as vague.
-  if (!s || s.total === 0) return `${base} — fetched in the background`;
+  if (!s || s.total === 0) return `${base} - fetched in the background`;
   const cold = s.total - s.warm;
   if (cold === 0) {
-    return `${base} — ${libCount(s.total)} already here, just checked for updates`;
+    return `${base} - ${libCount(s.total)} already here, just checked for updates`;
   }
-  if (s.warm === 0) return `${base} — downloads ${libCount(s.total)}`;
-  return `${base} — downloads ${libCount(cold)}, checks all ${s.total} for updates`;
+  if (s.warm === 0) return `${base} - downloads ${libCount(s.total)}`;
+  return `${base} - downloads ${libCount(cold)}, checks all ${s.total} for updates`;
 }
 
 /**
@@ -136,7 +136,7 @@ function libLaterDetail(s: LibsSyncState | null): string {
   const base = "downloaded later, only if you use them";
   if (!s || s.total === 0) return base;
   const cold = s.total - s.warm;
-  if (cold === 0) return `${libCount(s.total)} already here — nothing to download`;
+  if (cold === 0) return `${libCount(s.total)} already here - nothing to download`;
   return `${base} (${libCount(cold)} not here yet)`;
 }
 
@@ -211,8 +211,8 @@ export function DownloadConsent({
       <p className="text-center text-sm text-white/70">
         PCBJam runs KiCad fully in your browser.{" "}
         {info.update
-          ? "This release ships a new editor build, so it needs downloading again — it's cached after that."
-          : "Opening this tool downloads it once — repeat visits load from your browser's cache."}
+          ? "This release ships a new editor build, so it needs downloading again - it's cached after that."
+          : "Opening this tool downloads it once - repeat visits load from your browser's cache."}
       </p>
       <ul className="w-full rounded-lg bg-white/5 px-4 py-1">
         {row(
@@ -267,7 +267,7 @@ export function DownloadConsent({
 export function libSyncLabel(s: { kind: string; done: number; total: number }): string {
   const total = String(s.total);
   const done = String(Math.min(s.done, s.total)).padStart(total.length, " ");
-  return `Checking ${s.kind} libraries — ${done}/${total}`;
+  return `Checking ${s.kind} libraries - ${done}/${total}`;
 }
 
 /**

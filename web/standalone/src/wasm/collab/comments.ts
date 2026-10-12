@@ -578,7 +578,7 @@ export function createComments(opts: {
       timer = undefined;
       recompute();
       pushPins();
-      clog("comments: rebound to", filePath, "—", cache.length, "thread(s)");
+      clog("comments: rebound to", filePath, "-", cache.length, "thread(s)");
       for (const cb of docSubscribers) cb(filter);
       for (const cb of subscribers) cb(cache);
     },

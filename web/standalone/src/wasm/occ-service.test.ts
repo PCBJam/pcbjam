@@ -218,7 +218,7 @@ describe("OCC service worker lifetime", () => {
     await expect(request).resolves.toEqual({
       ok: true,
       report: "exported\nmodel prefetch timed out after "
-        + `${TEST_MODEL_PREFETCH_TIMEOUT_MS} ms — 0 of 0 model(s) omitted`,
+        + `${TEST_MODEL_PREFETCH_TIMEOUT_MS} ms - 0 of 0 model(s) omitted`,
       fileName: undefined,
     });
     expect(vi.getTimerCount()).toBe(0);
@@ -260,7 +260,7 @@ describe("OCC service worker lifetime", () => {
     await expect(request).resolves.toEqual({
       ok: true,
       report: "Export complete.\nmodel prefetch timed out after "
-        + `${TEST_MODEL_PREFETCH_TIMEOUT_MS} ms — 1 of 3 model(s) omitted`,
+        + `${TEST_MODEL_PREFETCH_TIMEOUT_MS} ms - 1 of 3 model(s) omitted`,
       fileName: undefined,
     });
     expect(vi.getTimerCount()).toBe(0);

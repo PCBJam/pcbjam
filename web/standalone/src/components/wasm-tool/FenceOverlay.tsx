@@ -15,7 +15,7 @@ export const FENCE_TITLE = "This working copy was updated.";
 export const FENCE_BODY = "Reload to continue; unsent edits stay in this tab.";
 /** The save-flow status line while fenced (also the not-committed outcome). */
 export const FENCE_SAVE_MESSAGE =
-  "Save skipped: this working copy was updated — reload to continue";
+  "Save skipped: this working copy was updated - reload to continue";
 
 export function FenceOverlay() {
   return (

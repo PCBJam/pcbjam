@@ -164,7 +164,7 @@ export async function installOccServiceStub(
                     slot.bootTimer = setTimeout(() => {
                         if (slot.failed || workerSlot !== slot) return;
                         const why = `occ_service boot timed out after ${bootDeadlineMs} ms`;
-                        console.log(`[TEST-OCC] ${why} — resetting service`);
+                        console.log(`[TEST-OCC] ${why} - resetting service`);
                         retireWorker(slot, why);
                     }, bootDeadlineMs);
                 });

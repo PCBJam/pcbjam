@@ -91,7 +91,7 @@ export function ImportItemPanel({
     setSymbol(names[0] ?? "");
     setStatus(
       kind === wanted
-        ? { kind: "info", text: `${file.name} ready — ${kind === "symbol" ? `${names.length} symbol(s)` : "footprint"}.` }
+        ? { kind: "info", text: `${file.name} ready - ${kind === "symbol" ? `${names.length} symbol(s)` : "footprint"}.` }
         : { kind: "err", text: `${file.name} is a ${kind}; this is ${tool}. Open the ${kind === "symbol" ? "schematic" : "board"} to place it.` },
     );
   };
@@ -126,7 +126,7 @@ export function ImportItemPanel({
   const add = () => {
     if (!picked || picked.kind !== wanted) return;
     if (mod.kicadOpenFileBusy?.()) {
-      setStatus({ kind: "err", text: "The editor is still loading — try again in a moment." });
+      setStatus({ kind: "err", text: "The editor is still loading - try again in a moment." });
       return;
     }
     // Editor builds with interactive placement: the item hangs off the pointer
@@ -138,7 +138,7 @@ export function ImportItemPanel({
         const r = buildInteractiveImport(picked, symbol || undefined);
         const res = JSON.parse(mod.kicadPlaceImportedItem(r.sexpr)) as { ok?: boolean; error?: string };
         if (res.ok) {
-          setStatus({ kind: "info", text: `${r.label} is on the cursor — click on the canvas to place it (Esc to cancel).` });
+          setStatus({ kind: "info", text: `${r.label} is on the cursor - click on the canvas to place it (Esc to cancel).` });
         } else {
           setStatus({ kind: "err", text: res.error ?? "The editor refused the placement." });
         }
@@ -206,7 +206,7 @@ export function ImportItemPanel({
       className="absolute z-40 flex w-72 flex-col overflow-hidden rounded-xl bg-white/95 text-neutral-900 shadow-2xl ring-1 ring-inset ring-black/10 backdrop-blur-sm dark:bg-neutral-950/90 dark:text-white dark:ring-white/15"
       style={style}
     >
-      <Tip content="Import from file — drag to move">
+      <Tip content="Import from file - drag to move">
         <div
           data-testid="import-panel-header"
           className="flex cursor-grab select-none items-center gap-2 px-3 py-2 text-xs font-semibold active:cursor-grabbing"

@@ -67,7 +67,7 @@ export function BootOverlay({
               MB figures would read as 155 big downloads. */}
           {fileSync && fileSync.total > 0 && (
             <p className="whitespace-pre font-mono text-xs text-white/50">
-              Project files — {String(fileSync.done).padStart(String(fileSync.total).length, " ")}/{fileSync.total}
+              Project files - {String(fileSync.done).padStart(String(fileSync.total).length, " ")}/{fileSync.total}
             </p>
           )}
           {libSync && (
@@ -77,13 +77,13 @@ export function BootOverlay({
           )}
           <p className="font-mono text-xs text-white/40">
             {warmBoot
-              ? "Loading from your browser's cache — no download needed."
-              : "Downloading the editor — it's cached for future visits."}
+              ? "Loading from your browser's cache - no download needed."
+              : "Downloading the editor - it's cached for future visits."}
           </p>
           {slow && (
             <>
               <p className="max-w-sm px-6 text-center font-mono text-xs text-amber-300/90">
-                This is taking longer than usual — a slow connection, or
+                This is taking longer than usual - a slow connection, or
                 something may be wrong. You can keep waiting, or reload.
               </p>
               <Button

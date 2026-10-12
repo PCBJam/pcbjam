@@ -212,7 +212,7 @@ export function ProjectView() {
               <FileTree
                 files={data.files}
                 renderActions={renderFileActions}
-                emptyText="No files yet — use the Tools above to create one."
+                emptyText="No files yet - use the Tools above to create one."
               />
             </>
           )}

@@ -124,7 +124,7 @@ export function createFilesHintRouter(opts: FilesWatchOptions) {
   const handle = (seq: number, changes: GatewayFileChange[]): void => {
     if (destroyed) return;
     if (lastSeq !== null && seq !== lastSeq + 1) {
-      opts.log(`[files] hint seq gap (${lastSeq} → ${seq}) — listing is stale`);
+      opts.log(`[files] hint seq gap (${lastSeq} → ${seq}) - listing is stale`);
       opts.onListingStale?.();
     }
     lastSeq = seq;

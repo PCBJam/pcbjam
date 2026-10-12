@@ -347,7 +347,7 @@ function remoteProjectSource(): ProjectSource {
         // ignores the result; a live caller must treat it as ambiguous.
         return {
           kind: "unknown",
-          message: `Save state unknown: ${relPath} — reload or save a copy`,
+          message: `Save state unknown: ${relPath} - reload or save a copy`,
         };
       }
       const responseRevision = rememberResponseRevision(slug, relPath, res);
@@ -368,7 +368,7 @@ function remoteProjectSource(): ProjectSource {
             : 0);
         return {
           kind: "conflict",
-          message: `Save conflict: ${relPath} (local base ${expectedRevision}, server ${currentRevision}) — reload or merge, or save a copy`,
+          message: `Save conflict: ${relPath} (local base ${expectedRevision}, server ${currentRevision}) - reload or merge, or save a copy`,
         };
       }
       if (!res.ok) {
@@ -383,7 +383,7 @@ function remoteProjectSource(): ProjectSource {
             }
           : {
               kind: "unknown",
-              message: `Save state unknown (${res.status}): ${relPath} — reload or save a copy`,
+              message: `Save state unknown (${res.status}): ${relPath} - reload or save a copy`,
             };
       }
       let savedRevision: number | undefined;
@@ -407,20 +407,20 @@ function remoteProjectSource(): ProjectSource {
       ) {
         return {
           kind: "unknown",
-          message: `Save returned inconsistent revisions for ${relPath} — reload or save a copy`,
+          message: `Save returned inconsistent revisions for ${relPath} - reload or save a copy`,
         };
       }
       const committedRevision = savedRevision ?? responseRevision;
       if (committedRevision === undefined) {
         return {
           kind: "unknown",
-          message: `Save committed without a revision: ${relPath} — reload or save a copy`,
+          message: `Save committed without a revision: ${relPath} - reload or save a copy`,
         };
       }
       if (committedRevision <= expectedRevision) {
         return {
           kind: "unknown",
-          message: `Save returned a non-advancing revision for ${relPath} — reload or save a copy`,
+          message: `Save returned a non-advancing revision for ${relPath} - reload or save a copy`,
         };
       }
       baseRevisions.set(key, committedRevision);

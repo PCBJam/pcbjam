@@ -174,7 +174,7 @@ export function SheetPanel({
     >
       {/* Header = drag handle. Interactive children stop pointerdown so they
           don't start a drag. */}
-      <Tip content="Sheets — drag to move">
+      <Tip content="Sheets - drag to move">
         <div
           data-testid="sheet-panel-header"
           className="flex cursor-grab select-none items-center gap-2 px-3 py-2 text-xs font-semibold active:cursor-grabbing"
@@ -233,7 +233,7 @@ export function SheetPanel({
           {state?.sheets.map((s) => {
             const active = state.current === s.path;
             return (
-              <Tip content={`${fileLabel(s.file)} — page ${s.page}`} key={s.path}>
+              <Tip content={`${fileLabel(s.file)} - page ${s.page}`} key={s.path}>
                 <Button
                   data-testid="sheet-row"
                   data-sheet-path={s.path}

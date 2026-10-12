@@ -59,7 +59,7 @@ function buildDom(): void {
 
   const hint = doc.createElement("div");
   hint.textContent =
-    "The console below records what was loading when this happened — please copy it into a bug report.";
+    "The console below records what was loading when this happened - please copy it into a bug report.";
   hint.style.cssText = "font-size:11px;color:#bfdbfe99;max-width:520px;text-align:center;";
 
   const reload = doc.createElement("button");

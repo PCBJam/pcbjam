@@ -75,7 +75,7 @@ export async function startCrossAppPresence(opts: {
   try {
     provider = await connectProvider(doc, opts.provider, { room });
   } catch (err) {
-    clog("cross-app: provider connect failed —", String(err));
+    clog("cross-app: provider connect failed -", String(err));
     doc.destroy();
     return undefined;
   }

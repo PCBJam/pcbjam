@@ -175,11 +175,11 @@ async function waitForOpenSettled(
       settleTimeoutMs,
     );
     if (!settled) {
-      log("[open] load chain never settled (kicadOpenFileBusy stuck) — giving up");
+      log("[open] load chain never settled (kicadOpenFileBusy stuck) - giving up");
       return false;
     }
     if (busyFn.call(mod)) {
-      log("[open] modal dialog during load — proceeding so it stays answerable");
+      log("[open] modal dialog during load - proceeding so it stays answerable");
     } else {
       log("[open] load chain settled (kicadOpenFileBusy cleared)");
     }

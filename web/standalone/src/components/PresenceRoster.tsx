@@ -83,12 +83,12 @@ export function PresenceRoster({
               here
                 ? onFollow
                   ? followed
-                    ? `${p.user.name} — click to stop following`
-                    : `${p.user.name} — click to follow their view`
+                    ? `${p.user.name} - click to stop following`
+                    : `${p.user.name} - click to follow their view`
                   : p.user.name
                 : p.away
-                  ? `${p.user.name} — away`
-                  : `${p.user.name} — on ${elsewhere}`
+                  ? `${p.user.name} - away`
+                  : `${p.user.name} - on ${elsewhere}`
             }
           >
             <Button
@@ -112,7 +112,7 @@ export function PresenceRoster({
               />
               <span className="truncate">{p.user.name}</span>
               {p.agent && (
-                <Tip content={`AI agent “${p.agent.name}” working for this person — it never acts as them`}>
+                <Tip content={`AI agent “${p.agent.name}” working for this person - it never acts as them`}>
                   <Badge
                     data-testid="presence-ai"
                     tone="preview"

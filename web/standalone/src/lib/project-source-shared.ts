@@ -27,7 +27,7 @@ export const SOURCE_DESCRIPTORS: Record<SourceKind, SourceDescriptor> = {
     kind: "remote-rw",
     writable: true,
     label: "Cloud",
-    description: "Stored on the backend — your saves are uploaded there.",
+    description: "Stored on the backend - your saves are uploaded there.",
   },
   "remote-ro": {
     kind: "remote-ro",
@@ -36,14 +36,14 @@ export const SOURCE_DESCRIPTORS: Record<SourceKind, SourceDescriptor> = {
     writable: false,
     label: "Demo",
     description:
-      "A demo project — open it and your edits become a local copy you can save and export.",
+      "A demo project - open it and your edits become a local copy you can save and export.",
   },
   local: {
     kind: "local",
     writable: true,
     label: "Local",
     description:
-      "Stored in this browser — saves persist here across visits. Export with Download .zip.",
+      "Stored in this browser - saves persist here across visits. Export with Download .zip.",
   },
 };
 

@@ -516,7 +516,7 @@ export function bindKicadCollab(
       foldLibDefs(resolved);
       return JSON.stringify(resolved);
     } catch (err) {
-      cwarn("resolveItems failed — applying the payload as sent", err);
+      cwarn("resolveItems failed - applying the payload as sent", err);
       return json;
     }
   });
@@ -530,7 +530,7 @@ export function bindKicadCollab(
   const repairLayout = (why: string): void => {
     if (readOnly || destroyed) return;
     try {
-      if (repairLayoutY(doc, ORIGIN)) clog(`layout repaired (duplicate header groups) — ${why}`);
+      if (repairLayoutY(doc, ORIGIN)) clog(`layout repaired (duplicate header groups) - ${why}`);
     } catch (err) {
       cwarn("layout repair failed", err);
     }
@@ -691,7 +691,7 @@ export function bindKicadCollab(
         // A viewer never authors a room. The editor keeps showing the file it
         // opened; when a writer later seeds this room, the (now-open) UP
         // observer streams their state in.
-        clog("seed: read-only viewer on an empty room — not seeding");
+        clog("seed: read-only viewer on an empty room - not seeding");
         return;
       }
       // First tab, file-seeded: write the FULL doc (meta + layout + items) so
@@ -715,7 +715,7 @@ export function bindKicadCollab(
           detachSeedArbitration?.();
           detachSeedArbitration = undefined;
           retract();
-          clog("seed: concurrent double-seed lost LWW — retracted our layout inserts");
+          clog("seed: concurrent double-seed lost LWW - retracted our layout inserts");
         }
       };
       meta.observe(onMeta);
@@ -753,7 +753,7 @@ export function bindKicadCollab(
 
     if (!hasState) {
       if (readOnly) {
-        clog("seed: read-only viewer on an empty room — not snapshot-seeding");
+        clog("seed: read-only viewer on an empty room - not snapshot-seeding");
         return;
       }
       // First tab, no file source: seed the shared doc from the editor model.

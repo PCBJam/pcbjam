@@ -188,7 +188,7 @@ export function createOomWatch(opts: OomWatchOptions): OomWatch {
     log(`[oom] recover (${reason}${what ? `: ${what}` : ""}) at retry ${n}`);
 
     if (n >= MAX_RETRIES) {
-      log(`[oom] retry cap (${MAX_RETRIES}) reached — giving up`);
+      log(`[oom] retry cap (${MAX_RETRIES}) reached - giving up`);
       clearOwnSentinel();
       opts.showExhaustedDialog();
       return;
@@ -269,7 +269,7 @@ export function createOomWatch(opts: OomWatchOptions): OomWatch {
           } catch {
             /* ignore */
           }
-          log("[oom] healthy session — retry chain reset");
+          log("[oom] healthy session - retry chain reset");
         }
         writeSentinel(0);
       }, HEALTHY_RESET_MS);

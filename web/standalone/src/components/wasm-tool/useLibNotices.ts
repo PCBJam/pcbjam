@@ -97,7 +97,7 @@ export function useLibNotices(opts: {
     const fn = mod?.kicadUpdateFromLibrary;
     const reload = mod?.kicadLibsReload;
     if (typeof fn !== "function") {
-      setLibError("This editor build can't update placed items from the library — reload to refresh them.");
+      setLibError("This editor build can't update placed items from the library - reload to refresh them.");
       return;
     }
     setStaleUpdating(true);
@@ -204,14 +204,14 @@ export function useLibNotices(opts: {
       noteStale(d.kind, d.lib, d.usedNames);
       setLibUpdate(
         `${d.usedNames.length === 1 ? label : `${label}s`} ${names} in "${d.lib}" ` +
-          `${d.usedNames.length === 1 ? "was" : "were"} updated by a collaborator — ` +
+          `${d.usedNames.length === 1 ? "was" : "were"} updated by a collaborator - ` +
           `placed copies keep the previous version. Update them from the session menu.`,
       );
     };
     const onDocReverted = (e: Event) => {
       const d = (e as CustomEvent<{ reason?: string; at?: string }>).detail;
       setDocReverted(
-        `This document was rolled back to its last valid state — invalid content ` +
+        `This document was rolled back to its last valid state - invalid content ` +
           `was detected${d?.reason ? ` (${d.reason})` : ""}. Recent edits may have been undone.`,
       );
     };
@@ -222,8 +222,8 @@ export function useLibNotices(opts: {
       if (d.op !== "add") return;
       setLibSetNotice({
         message: d.name
-          ? `A collaborator added library "${d.name}" — click to load it into this session.`
-          : `A collaborator added a new library — click to load it into this session.`,
+          ? `A collaborator added library "${d.name}" - click to load it into this session.`
+          : `A collaborator added a new library - click to load it into this session.`,
         detail: d,
         mode: "load",
       });
@@ -312,7 +312,7 @@ export function useLibNotices(opts: {
     const onModels = (e: Event) => {
       const d = (e as CustomEvent<ModelsLoadingDetail>).detail;
       setModelsSync(
-        d.loading ? `Fetching 3D models — ${d.done}/${d.total}` : null,
+        d.loading ? `Fetching 3D models - ${d.done}/${d.total}` : null,
       );
     };
     window.addEventListener(MODELS_LOADING_EVENT, onModels);

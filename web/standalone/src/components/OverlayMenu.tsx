@@ -174,7 +174,7 @@ export function OverlayMenu({
 
   return (
     <div ref={rootRef} className="absolute z-50" style={style}>
-      <Tip content="Session menu — drag to move">
+      <Tip content="Session menu - drag to move">
         <Button
           type="button"
           data-testid="overlay-menu-fab"
@@ -199,7 +199,7 @@ export function OverlayMenu({
             </Badge>
           )}
           {alert && (
-            <Tip content="Some of what you see is behind the latest library state — open the session menu">
+            <Tip content="Some of what you see is behind the latest library state - open the session menu">
               <span
                 data-testid="overlay-menu-alert"
                 className="absolute -bottom-1 -left-1 flex h-4 w-4 items-center justify-center rounded-full bg-amber-400 text-neutral-900 ring-1 ring-white/70 dark:ring-neutral-950"
@@ -209,7 +209,7 @@ export function OverlayMenu({
             </Tip>
           )}
           {unread > 0 && (
-            <Tip content={unreadMention ? "Unread comments — you were mentioned" : "Unread comments"}>
+            <Tip content={unreadMention ? "Unread comments - you were mentioned" : "Unread comments"}>
               <Badge
                 data-testid="overlay-menu-unread-badge"
                 size="count"

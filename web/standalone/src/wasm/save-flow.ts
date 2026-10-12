@@ -61,7 +61,7 @@ function normalizeSaveOutcome(outcome: unknown, relPath: string): SaveOutcome {
   }
   return {
     kind: "unknown",
-    message: `Save state unknown: ${relPath} — reload or save a copy`,
+    message: `Save state unknown: ${relPath} - reload or save a copy`,
   };
 }
 
@@ -177,7 +177,7 @@ export function registerSaveHook(
         : `${retainedBytes + bytes} > ${maxRetainedBytes} retained bytes`;
     opts.log(`[save] FAILED to queue ${relPath}: save queue capacity (${detail})`);
     if (generation === statusGeneration) {
-      opts.onStatus(`Save failed: ${relPath} — save queue is full`);
+      opts.onStatus(`Save failed: ${relPath} - save queue is full`);
     }
   };
 
@@ -232,8 +232,8 @@ export function registerSaveHook(
                 message:
                   outcome.message ??
                   (outcome.kind === "conflict"
-                    ? `Save conflict: ${relPath} — reload or merge, or save a copy`
-                    : `Save state unknown: ${relPath} — reload or save a copy`),
+                    ? `Save conflict: ${relPath} - reload or merge, or save a copy`
+                    : `Save state unknown: ${relPath} - reload or save a copy`),
               };
               blockedPaths.set(relPath, block);
               opts.log(`[save] BLOCKED ${relPath}: ${block.message}`);
@@ -243,7 +243,7 @@ export function registerSaveHook(
               }
             } else if (terminalGeneration === statusGeneration) {
               opts.onStatus(
-                outcome.message ?? `Save failed: ${relPath} — see console`,
+                outcome.message ?? `Save failed: ${relPath} - see console`,
               );
             }
             return;
@@ -272,7 +272,7 @@ export function registerSaveHook(
           const block: SaveBlock = {
             relPath,
             kind: "unknown",
-            message: `Save state unknown: ${relPath} — reload or save a copy`,
+            message: `Save state unknown: ${relPath} - reload or save a copy`,
           };
           blockedPaths.set(relPath, block);
           opts.onBlocked?.(block);
@@ -333,7 +333,7 @@ export function registerSaveHook(
     }
 
     if (opts.uploadPolicy?.(relPath) === "room") {
-      opts.log(`[save] ${relPath} is room-backed — synced via collab room, not uploaded`);
+      opts.log(`[save] ${relPath} is room-backed - synced via collab room, not uploaded`);
       opts.onStatus(`Saved ${relPath} ✓ (collab room)`);
       statusClearTimer = setTimeout(() => {
         statusClearTimer = undefined;
@@ -379,7 +379,7 @@ export function registerSaveHook(
     } catch (error) {
       opts.log(`[save] FAILED to snapshot ${relPath}: ${String(error)}`);
       if (generation === statusGeneration) {
-        opts.onStatus(`Save failed: ${relPath} — not enough memory`);
+        opts.onStatus(`Save failed: ${relPath} - not enough memory`);
       }
       return;
     }

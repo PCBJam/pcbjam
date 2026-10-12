@@ -457,7 +457,7 @@ export async function installNgspiceServiceStub(
                     slot.bootTimer = setTimeout(() => {
                         if (slot.failed || workerSlot !== slot) return;
                         const why = `ngspice_service boot timed out after ${bootTimeoutMs} ms`;
-                        console.log(`[TEST-NGSPICE] ${why} — resetting service`);
+                        console.log(`[TEST-NGSPICE] ${why} - resetting service`);
                         retireWorker(slot, why);
                     }, bootTimeoutMs);
                 });
@@ -498,7 +498,7 @@ export async function installNgspiceServiceStub(
                     };
                     const failWorker = (detail: string) => {
                         const why = `ngspice_service crashed: ${detail}`;
-                        console.log(`[TEST-NGSPICE] worker error: ${detail} — resetting service`);
+                        console.log(`[TEST-NGSPICE] worker error: ${detail} - resetting service`);
                         retireWorker(slot, why);
                     };
                     worker.onerror = (e) => failWorker(e.message || 'worker error');
@@ -555,7 +555,7 @@ export async function installNgspiceServiceStub(
                 const timer = setTimeout(() => {
                     if (pending.get(id)?.generation !== slot.generation) return;
                     const why = `ngspice_service response timed out after ${responseTimeoutMs} ms`;
-                    console.log(`[TEST-NGSPICE] ${why} — resetting service`);
+                    console.log(`[TEST-NGSPICE] ${why} - resetting service`);
                     retireWorker(slot, why);
                 }, responseTimeoutMs);
                 pending.set(id, { generation: slot.generation, resolve, timer });

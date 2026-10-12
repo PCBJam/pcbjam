@@ -112,7 +112,7 @@ export function createReconciler(
   // UP: remote Y.Doc change → local model
   const observer = (events: Y.YEvent<Y.Map<unknown>>[], txn: Y.Transaction) => {
     if (txn.origin === ORIGIN) {
-      clog("⬆ Y change (own origin) — ignored");
+      clog("⬆ Y change (own origin) - ignored");
       return; // our own echo — ignore
     }
 

@@ -330,7 +330,7 @@ export async function stageScoped(
   try {
     await stack.open();
   } catch (e) {
-    opts.log(`[stage] project sync namespace unavailable (${String(e)}) — per-file staging`);
+    opts.log(`[stage] project sync namespace unavailable (${String(e)}) - per-file staging`);
     stack.close();
     stack = null;
   }
@@ -439,14 +439,14 @@ export async function stageViaProjectSync(
     }
     if (missed.length) {
       opts.log(
-        `[stage] ${missed.length} file(s) missed the sync namespace — per-file fallback`,
+        `[stage] ${missed.length} file(s) missed the sync namespace - per-file fallback`,
       );
     }
     return [...rest, ...missed];
   } catch (e) {
     // Older backend (no sync routes), quota, decode failure — the whole set
     // falls back to per-file staging, which is exactly the previous behavior.
-    opts.log(`[stage] project sync namespace unavailable (${String(e)}) — per-file staging`);
+    opts.log(`[stage] project sync namespace unavailable (${String(e)}) - per-file staging`);
     return opts.files;
   } finally {
     stack.close();
@@ -530,7 +530,7 @@ async function openGerberSet(
         return;
       }
       opts.log(
-        "[open] gerbview bundle has no kicadOpenFiles — opening the clicked layer only",
+        "[open] gerbview bundle has no kicadOpenFiles - opening the clicked layer only",
       );
       mod?.kicadOpenFile?.(abs[0]!);
     },

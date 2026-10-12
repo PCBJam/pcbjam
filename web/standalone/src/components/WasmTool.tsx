@@ -1227,7 +1227,7 @@ export function WasmTool({
           | { error: unknown }
         > = (async () => {
           if (collabOptOut) {
-            append("[collab] ?collab=0 — doc room skipped, file loads from plain fetch");
+            append("[collab] ?collab=0 - doc room skipped, file loads from plain fetch");
             return {};
           }
           try {
@@ -1872,10 +1872,10 @@ export function WasmTool({
             onTargetChanged: (c) => {
               const who = c.by ?? "a collaborator";
               setStatus(
-                `${c.path} was updated by ${who} (rev ${c.revision}) — reload to see it; your next save will report a conflict`,
+                `${c.path} was updated by ${who} (rev ${c.revision}) - reload to see it; your next save will report a conflict`,
               );
             },
-            onListingStale: () => append("[files] hint gap — project listing is stale until reload"),
+            onListingStale: () => append("[files] hint gap - project listing is stale until reload"),
             log: append,
           }).then((handle) => {
             if (!handle) return;
@@ -1917,7 +1917,7 @@ export function WasmTool({
           // The load never settled (or a legacy-wasm open timed out): entering
           // the wasm now would race the parked open chain. Boot on without
           // collab/presence — the board stays viewable, saves still route.
-          append("[collab] file open never settled — collab/presence disabled for this session");
+          append("[collab] file open never settled - collab/presence disabled for this session");
           releasePendingDocSession("open never settled");
         } else {
           try {
@@ -1927,7 +1927,7 @@ export function WasmTool({
             if ((err as { name?: string } | undefined)?.name === "SexprVersionError") throw err;
             // Degrade, don't die: a residual wasm trap here (reentrancy during
             // some other parked chain) used to fail the whole boot.
-            append(`[collab] attach failed — continuing without collab: ${String(err)}`);
+            append(`[collab] attach failed - continuing without collab: ${String(err)}`);
             releasePendingDocSession("attach failed");
           }
           // A no-op attach (bridge missing / non-collab tool) adopts nothing.
