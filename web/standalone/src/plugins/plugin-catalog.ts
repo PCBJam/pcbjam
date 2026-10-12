@@ -14,6 +14,8 @@ export interface Descriptor {
   /** Installed from the marketplace (published by PCBJam), a private upload, or by starting a
    *  tutorial (overlay-system 0005: runs like any plugin, hidden from the plugin lists). */
   source?: 'marketplace' | 'upload' | 'tutorial';
+  /** Published in the marketplace: may load from content-hash URLs (plugins 0022 M2). */
+  published?: boolean;
   fileMetadata?: Record<string, { sha256: string; bytes: number }>;
   backends?: Array<{endpoint:string;origin:string;paths?:string[];methods?:('GET'|'POST')[];auth?:'none'|'pcbjam-user';kind?:'remote-provider';registrationId?:string;policyDigest:string;status:string;ready:boolean;audience?:string;issuer?:string}>;
   /** Snapshot of a remote provider's /.well-known document (kind: "remote-provider" only). */
@@ -45,6 +47,9 @@ export interface PackageHost {
     plugins: Descriptor[];
     permissions: Record<string, string>;
     userId?: string;
+    /** The isolated origin plugin UI pages are served from. */
+    uiOrigin?: string;
+    placementEnabled?: boolean;
     runtimeVersion?: string;
     /** Account may upload private plugins (hosted platform only). */
     developer?: boolean;
@@ -78,6 +83,8 @@ export interface PackageHost {
       storageBinding?(): string | null;
       authorize?(signal: AbortSignal): Promise<void>;
       onAuthorizationReady?(check: (method: string) => Promise<void>): void;
+      localChecks?: boolean;
+      hashServing?: { userId: string; uiOrigin: string; placementEnabled: boolean };
       selectItems?(ids: string[], signal: AbortSignal): Promise<{ selected: string[]; held: string[]; missing: string[] }>;
       saveFile?(
         proposal: { name: string; text?: string; kind: "text" | "html" | "image" | "archive"; bytes: Uint8Array; method: string },
@@ -141,6 +148,9 @@ export function usePluginCatalog(enabled: boolean) {
   // Local development always uploads; hosted accounts need developer access.
   const [developer, setDeveloper] = React.useState(!hostedPlugins);
   const generation = React.useRef(0);
+  // What loading a published plugin by hash needs from the installed list (plugins 0022 M2).
+  // Read when a plugin starts; a refresh must not restart a running one.
+  const account = React.useRef<{ userId: string; uiOrigin: string; placementEnabled: boolean } | null>(null);
   const refresh = React.useCallback(async () => {
     if (!enabled) return;
     const current = ++generation.current;
@@ -154,6 +164,8 @@ export function usePluginCatalog(enabled: boolean) {
           result.plugins
         );
       if (current !== generation.current) return;
+      account.current = hostedPlugins && result.userId && result.uiOrigin
+        ? { userId: result.userId, uiOrigin: result.uiOrigin, placementEnabled: result.placementEnabled === true } : null;
       setPlugins(result.plugins.filter((p) => p.installed !== false));
       setPermissions(result.permissions);
       setDeveloper(!hostedPlugins || result.developer === true);
@@ -161,6 +173,7 @@ export function usePluginCatalog(enabled: boolean) {
     } catch {
       if (current === generation.current) {
         // An old account's catalog must not survive a failed fresh identity check.
+        account.current = null;
         setPlugins([]);
         setPermissions({});
         setDeveloper(!hostedPlugins);
@@ -183,7 +196,8 @@ export function usePluginCatalog(enabled: boolean) {
       window.removeEventListener("focus", refresh);
     };
   }, [enabled, refresh]);
-  return { plugins, permissions, developer, error, loaded, refresh };
+  const hashAccount = React.useCallback(() => account.current, []);
+  return { plugins, permissions, developer, error, loaded, refresh, hashAccount };
 }
 export type PluginCatalog = ReturnType<typeof usePluginCatalog>;
 /**

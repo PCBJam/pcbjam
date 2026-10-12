@@ -234,7 +234,8 @@ all: minimal_test.html \
      $(S)/stattext-ellipsize/stattext-ellipsize_test.html \
      $(S)/tooltip-lifetime/tooltip-lifetime_test.html \
      $(S)/tooltip-toolbar/tooltip-toolbar_test.html \
-     $(S)/warp-pointer/warp-pointer_test.html
+     $(S)/warp-pointer/warp-pointer_test.html \
+     $(S)/hidden-focus/hidden-focus_test.html
 
 # Main test app
 minimal_test.o: minimal_test.cpp
@@ -290,6 +291,15 @@ $(S)/warp-pointer/warp-pointer_test.html: $(S)/warp-pointer/warp-pointer_test.o 
 	$(CXX) $< $(LDFLAGS_NOGL) --pre-js $(JS) --shell-file $(HTML) -o $@
 
 warp-pointer: $(S)/warp-pointer/warp-pointer_test.html
+
+# Hiding the focused window must move focus off it (KiCad's hidden search box kept hotkeys).
+$(S)/hidden-focus/hidden-focus_test.o: $(S)/hidden-focus/hidden-focus_test.cpp
+	$(CXX) -c $(CXXFLAGS) $< -o $@
+
+$(S)/hidden-focus/hidden-focus_test.html: $(S)/hidden-focus/hidden-focus_test.o $(WX_CORE_LIB) $(JS_FILES)
+	$(CXX) $< $(LDFLAGS_NOGL) --pre-js $(JS) --shell-file $(HTML) -o $@
+
+hidden-focus: $(S)/hidden-focus/hidden-focus_test.html
 
 # Menu test (no GL)
 $(S)/menu/menu_test.o: $(S)/menu/menu_test.cpp
