@@ -185,6 +185,7 @@ all: minimal_test.html \
      $(S)/tree-hier/tree_hier_test.html \
      $(S)/radiogroups/radiogroups_test.html \
      $(S)/dataview/dataview_test.html \
+     $(S)/dataview-contextmenu/dataview_contextmenu_test.html \
      $(S)/htmlwin/htmlwin_test.html \
      $(S)/stc/stc_test.html \
      $(S)/print/print_test.html \
@@ -498,6 +499,13 @@ $(S)/dataview/dataview_test.o: $(S)/dataview/dataview_test.cpp
 	$(CXX) -c $(CXXFLAGS) $< -o $@
 
 $(S)/dataview/dataview_test.html: $(S)/dataview/dataview_test.o $(WX_CORE_LIB) $(JS_FILES)
+	$(CXX) $< $(LDFLAGS_NOGL) --pre-js $(JS) --shell-file $(HTML) -o $@
+
+# DataView item context menu, KiCad LIB_TREE style (no GL)
+$(S)/dataview-contextmenu/dataview_contextmenu_test.o: $(S)/dataview-contextmenu/dataview_contextmenu_test.cpp
+	$(CXX) -c $(CXXFLAGS) $< -o $@
+
+$(S)/dataview-contextmenu/dataview_contextmenu_test.html: $(S)/dataview-contextmenu/dataview_contextmenu_test.o $(WX_CORE_LIB) $(JS_FILES)
 	$(CXX) $< $(LDFLAGS_NOGL) --pre-js $(JS) --shell-file $(HTML) -o $@
 
 # HtmlWindow test (needs HTML library)
@@ -907,6 +915,7 @@ $(S)/asyncify-races/races_test.html: $(S)/asyncify-races/races_test.o $(S)/corou
 # Convenience targets
 menu: $(S)/menu/menu_test.html
 contextmenu: $(S)/contextmenu/contextmenu_test.html
+dataview-contextmenu: $(S)/dataview-contextmenu/dataview_contextmenu_test.html
 scrollbar: $(S)/scrollbar/scrollbar_test.html
 notebook: $(S)/notebook/notebook_test.html
 clipboard: $(S)/clipboard/clipboard_test.html
