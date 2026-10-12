@@ -32,4 +32,17 @@ describe("brandHtml", () => {
     expect(links.at(-1)).toBe('<link rel="stylesheet" href="https://app.pcbjam.com/brand/app.css" />');
     expect(links.length).toBe(2);
   });
+
+  it("gives the airlock page the brand's icons and nothing else", () => {
+    const recover = readFileSync(path.resolve(__dirname, "../../recover.html"), "utf8");
+    expect(brandHtml(recover, undefined, "airlock")).toBe(recover);
+    const html = brandHtml(recover, "https://app.pcbjam.com/brand", "airlock");
+    expect(html).toContain('href="https://app.pcbjam.com/brand/favicon.ico"');
+    expect(html).toContain('href="https://app.pcbjam.com/brand/favicon.svg"');
+    expect(html).not.toMatch(/href="\/(favicon|apple-touch-icon)/);
+    expect(html).not.toContain("preconnect");
+    expect(html).not.toContain('rel="stylesheet"');
+    // Only the icon hrefs changed.
+    expect(html.replace(/https:\/\/app\.pcbjam\.com\/brand\//g, "/")).toBe(recover);
+  });
 });

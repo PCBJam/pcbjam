@@ -175,14 +175,18 @@ function pluginRuntimeAssets(): Plugin {
 /**
  * Runtime branding (ui-components 0001, section 4.3): with VITE_BRAND_BASE set (build-editor.mjs
  * --brand-base) the main page links the brand from there; unset, it stays neutral. See
- * src/lib/brand-html.ts. The OOM airlock page (recover.html) stays as it is.
+ * src/lib/brand-html.ts. The OOM airlock page (recover.html) takes the brand's icons only.
  */
 function brand(): Plugin {
   return {
     name: "pcbjam-brand",
     transformIndexHtml: {
       order: "post",
-      handler: (html, ctx) => (ctx.path === "/index.html" ? brandHtml(html, process.env.VITE_BRAND_BASE) : html),
+      handler: (html, ctx) => {
+        if (ctx.path === "/index.html") return brandHtml(html, process.env.VITE_BRAND_BASE);
+        if (ctx.path === "/recover.html") return brandHtml(html, process.env.VITE_BRAND_BASE, "airlock");
+        return html;
+      },
     },
   };
 }
