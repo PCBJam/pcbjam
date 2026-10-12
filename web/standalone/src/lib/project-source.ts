@@ -154,6 +154,8 @@ function remoteProjectSource(): ProjectSource {
   // overwrite the winner. Only `baseRevisions` is a legal write precondition.
   const baseRevisions = new Map<string, number>();
   const observedRevisions = new Map<string, number>();
+  // Per-path tail of the in-flight CAS PUT chain (see uploadFileBytes).
+  const uploadTails = new Map<string, Promise<void>>();
   const revisionKey = (slug: string, relPath: string) =>
     `${currentScope()}\u0000${slug}\u0000${relPath}`;
   const rememberObservedRevision = (
@@ -324,109 +326,146 @@ function remoteProjectSource(): ProjectSource {
     // latest observed metadata — so a save issued after a conflict cannot
     // silently overwrite the winner. The multipart POST remains the bulk
     // import path only (deliberately unconditional; see files.ts route note).
-    async uploadFileBytes(slug, relPath, bytes, signal, opts) {
+    uploadFileBytes(slug, relPath, bytes, signal, opts) {
+      // One write per path at a time, in call order. The expected revision is
+      // read when a write STARTS, so a second writer of the same path in this
+      // session publishes against the revision the first one committed. Two
+      // concurrent writers would both read the same base and the later one
+      // 409 against its own sibling: a subsheet created in-editor is
+      // registered by the sheet-created hook (collab-start persistCreatedSheet)
+      // while a Ctrl+S of the same file goes through the save lane, and both
+      // went out as a create ("local base 0, server 1"). Call order is MEMFS
+      // write order (both writers read the bytes synchronously before
+      // calling), so the newest bytes still land last. A genuine peer's
+      // revision never enters `baseRevisions`, so real conflicts still 409.
       const key = revisionKey(slug, relPath);
-      const expectedRevision = baseRevisions.get(key) ?? 0;
-      let res: Response;
-      try {
-        res = await fetch(fileUrl(slug, relPath), {
-          method: "PUT",
-          body: bytes as BodyInit,
-          credentials: "include",
-          signal,
-          headers: {
-            "content-type": "application/octet-stream",
-            [PROJECT_FILE_REVISION_HEADER]: String(expectedRevision),
-            // KiCad wrote these bytes a moment ago: nothing to normalize.
-            ...(opts?.editorSave ? { [PROJECT_FILE_SOURCE_HEADER]: PROJECT_FILE_SOURCE_EDITOR_SAVE } : {}),
-          },
-        });
-      } catch {
-        // Even an AbortError can arrive after the server published the CAS but
-        // before this client received its acknowledgement. Hook retirement
-        // ignores the result; a live caller must treat it as ambiguous.
-        return {
-          kind: "unknown",
-          message: `Save state unknown: ${relPath} — reload or save a copy`,
-        };
-      }
-      const responseRevision = rememberResponseRevision(slug, relPath, res);
-      if (res.status === 409) {
-        const conflict = (await res.json().catch(() => null)) as {
-          current?: ProjectFile | null;
-        } | null;
-        rememberObservedRevision(slug, relPath, conflict?.current?.revision);
-        const headerText = res.headers.get(PROJECT_FILE_REVISION_HEADER);
-        const headerRevision =
-          headerText !== null && /^\d+$/.test(headerText)
-            ? Number(headerText)
-            : NaN;
-        const currentRevision =
-          conflict?.current?.revision ??
-          (Number.isSafeInteger(headerRevision) && headerRevision >= 0
-            ? headerRevision
-            : 0);
-        return {
-          kind: "conflict",
-          message: `Save conflict: ${relPath} (local base ${expectedRevision}, server ${currentRevision}) — reload or merge, or save a copy`,
-        };
-      }
-      if (!res.ok) {
-        // These answers are produced before body publication. A generic 5xx
-        // can happen after publication but before the response is encoded, so
-        // its commit state is unknown and the hook must block the path.
-        const prePublish = new Set([400, 401, 403, 404, 413, 415, 428]);
-        return prePublish.has(res.status)
-          ? {
-              kind: "not-committed",
-              message: `Save failed (${res.status}): ${relPath}`,
-            }
-          : {
-              kind: "unknown",
-              message: `Save state unknown (${res.status}): ${relPath} — reload or save a copy`,
-            };
-      }
-      let savedRevision: number | undefined;
-      try {
-        const saved = (await res.json()) as Partial<ProjectFile>;
-        if (
-          Number.isSafeInteger(saved.revision) &&
-          (saved.revision as number) >= 0
-        ) {
-          savedRevision = saved.revision;
-          rememberObservedRevision(slug, relPath, savedRevision);
-        }
-      } catch {
-        // A conforming response also carries the revision header, so malformed
-        // JSON need not make an otherwise acknowledged commit ambiguous.
-      }
-      if (
-        savedRevision !== undefined &&
-        responseRevision !== undefined &&
-        savedRevision !== responseRevision
-      ) {
-        return {
-          kind: "unknown",
-          message: `Save returned inconsistent revisions for ${relPath} — reload or save a copy`,
-        };
-      }
-      const committedRevision = savedRevision ?? responseRevision;
-      if (committedRevision === undefined) {
-        return {
-          kind: "unknown",
-          message: `Save committed without a revision: ${relPath} — reload or save a copy`,
-        };
-      }
-      if (committedRevision <= expectedRevision) {
-        return {
-          kind: "unknown",
-          message: `Save returned a non-advancing revision for ${relPath} — reload or save a copy`,
-        };
-      }
-      baseRevisions.set(key, committedRevision);
-      return SAVE_COMMITTED;
+      const run = (uploadTails.get(key) ?? Promise.resolve()).then(() =>
+        putFile(slug, relPath, key, bytes, signal, opts),
+      );
+      const tail = run.then(
+        () => undefined,
+        () => undefined,
+      );
+      uploadTails.set(key, tail);
+      void tail.then(() => {
+        if (uploadTails.get(key) === tail) uploadTails.delete(key);
+      });
+      return run;
     },
   };
+
+  async function putFile(
+    slug: string,
+    relPath: string,
+    key: string,
+    bytes: Uint8Array,
+    signal: AbortSignal | undefined,
+    opts: UploadFileOptions | undefined,
+  ): Promise<SaveOutcome> {
+    // Retired while queued behind a sibling write: nothing was sent.
+    if (signal?.aborted) {
+      return { kind: "not-committed", message: `Save cancelled: ${relPath}` };
+    }
+    const expectedRevision = baseRevisions.get(key) ?? 0;
+    let res: Response;
+    try {
+      res = await fetch(fileUrl(slug, relPath), {
+        method: "PUT",
+        body: bytes as BodyInit,
+        credentials: "include",
+        signal,
+        headers: {
+          "content-type": "application/octet-stream",
+          [PROJECT_FILE_REVISION_HEADER]: String(expectedRevision),
+          // KiCad wrote these bytes a moment ago: nothing to normalize.
+          ...(opts?.editorSave ? { [PROJECT_FILE_SOURCE_HEADER]: PROJECT_FILE_SOURCE_EDITOR_SAVE } : {}),
+        },
+      });
+    } catch {
+      // Even an AbortError can arrive after the server published the CAS but
+      // before this client received its acknowledgement. Hook retirement
+      // ignores the result; a live caller must treat it as ambiguous.
+      return {
+        kind: "unknown",
+        message: `Save state unknown: ${relPath} — reload or save a copy`,
+      };
+    }
+    const responseRevision = rememberResponseRevision(slug, relPath, res);
+    if (res.status === 409) {
+      const conflict = (await res.json().catch(() => null)) as {
+        current?: ProjectFile | null;
+      } | null;
+      rememberObservedRevision(slug, relPath, conflict?.current?.revision);
+      const headerText = res.headers.get(PROJECT_FILE_REVISION_HEADER);
+      const headerRevision =
+        headerText !== null && /^\d+$/.test(headerText)
+          ? Number(headerText)
+          : NaN;
+      const currentRevision =
+        conflict?.current?.revision ??
+        (Number.isSafeInteger(headerRevision) && headerRevision >= 0
+          ? headerRevision
+          : 0);
+      return {
+        kind: "conflict",
+        message: `Save conflict: ${relPath} (local base ${expectedRevision}, server ${currentRevision}) — reload or merge, or save a copy`,
+      };
+    }
+    if (!res.ok) {
+      // These answers are produced before body publication. A generic 5xx
+      // can happen after publication but before the response is encoded, so
+      // its commit state is unknown and the hook must block the path.
+      const prePublish = new Set([400, 401, 403, 404, 413, 415, 428]);
+      return prePublish.has(res.status)
+        ? {
+            kind: "not-committed",
+            message: `Save failed (${res.status}): ${relPath}`,
+          }
+        : {
+            kind: "unknown",
+            message: `Save state unknown (${res.status}): ${relPath} — reload or save a copy`,
+          };
+    }
+    let savedRevision: number | undefined;
+    try {
+      const saved = (await res.json()) as Partial<ProjectFile>;
+      if (
+        Number.isSafeInteger(saved.revision) &&
+        (saved.revision as number) >= 0
+      ) {
+        savedRevision = saved.revision;
+        rememberObservedRevision(slug, relPath, savedRevision);
+      }
+    } catch {
+      // A conforming response also carries the revision header, so malformed
+      // JSON need not make an otherwise acknowledged commit ambiguous.
+    }
+    if (
+      savedRevision !== undefined &&
+      responseRevision !== undefined &&
+      savedRevision !== responseRevision
+    ) {
+      return {
+        kind: "unknown",
+        message: `Save returned inconsistent revisions for ${relPath} — reload or save a copy`,
+      };
+    }
+    const committedRevision = savedRevision ?? responseRevision;
+    if (committedRevision === undefined) {
+      return {
+        kind: "unknown",
+        message: `Save committed without a revision: ${relPath} — reload or save a copy`,
+      };
+    }
+    if (committedRevision <= expectedRevision) {
+      return {
+        kind: "unknown",
+        message: `Save returned a non-advancing revision for ${relPath} — reload or save a copy`,
+      };
+    }
+    baseRevisions.set(key, committedRevision);
+    return SAVE_COMMITTED;
+  }
 }
 
 // --- static (read-only gallery: manifest + file bytes on a CDN) ---------------

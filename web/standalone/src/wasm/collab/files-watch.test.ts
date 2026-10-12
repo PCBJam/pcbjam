@@ -65,6 +65,27 @@ describe("files hint router (project-sync 0002 §3)", () => {
     expect(restaged).toEqual(["x.kicad_pro"]);
   });
 
+  it("a late own echo of an OLDER revision is ignored (two own writes back to back)", async () => {
+    // Created-subsheet registration committed r1, the Ctrl+S right after it
+    // committed r2; r1's hint arrives after r2's ack. Restaging r1 would put
+    // stale bytes into MEMFS and move the observed revision backwards.
+    const { router, restaged, observed } = makeRouter();
+    observed.set("x.kicad_pro", 2);
+    router.handle(1, [ch({ revision: 1, by: "me" })]);
+    await tick();
+    expect(restaged).toEqual([]);
+    expect(observed.get("x.kicad_pro")).toBe(2);
+  });
+
+  it("an own delete/move (revision 0) is never taken for a stale echo", async () => {
+    const removed: string[] = [];
+    const { router, observed } = makeRouter({ onPathRemoved: (c) => void removed.push(c.path) });
+    observed.set("x.kicad_pro", 2);
+    router.handle(1, [ch({ revision: 0, by: "me", deleted: true, movedTo: "y.kicad_pro" })]);
+    await tick();
+    expect(removed).toEqual(["x.kicad_pro"]);
+  });
+
   it("room-backed paths are never restaged from an EDITOR-origin row", async () => {
     const { router, restaged, events } = makeRouter();
     router.handle(1, [ch({ path: "root.kicad_sch", revision: 9, by: "peer" })]);

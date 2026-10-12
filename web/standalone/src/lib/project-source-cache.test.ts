@@ -350,3 +350,88 @@ describe("remote source: a sibling restage never moves the CAS base (proposal 21
     expect(revHeader(fetchMock.mock.calls[1]![1])).toBe("2");
   });
 });
+
+describe("remote source: two writers of one path in a session (created subsheet)", () => {
+  // A tiny CAS server: PUT with the expected revision header commits
+  // current+1, anything else answers 409 with the current row. Each PUT
+  // resolves on the next macrotask, so concurrent calls really overlap.
+  function casServer(initial = 0) {
+    let current = initial;
+    const puts: string[] = [];
+    const fetchMock = vi.fn(async (_url: string, init?: { method?: string; headers?: Record<string, string> }) => {
+      const expected = init?.headers?.["x-pcbjam-file-revision"] ?? "";
+      puts.push(expected);
+      await new Promise((r) => setTimeout(r, 5));
+      const ok = Number(expected) === current;
+      if (ok) current += 1;
+      const revision = String(current);
+      return {
+        ok,
+        status: ok ? (expected === "0" ? 201 : 200) : 409,
+        headers: { get: (h: string) => (h === "x-pcbjam-file-revision" ? revision : null) },
+        json: async () => (ok ? { revision: current } : { current: { revision: current } }),
+      };
+    });
+    return { fetchMock, puts, current: () => current };
+  }
+
+  it("the sheet-created registration and a Ctrl+S of the same new file both commit", async () => {
+    // Bug: persistCreatedSheet's PUT (base 0) and the save lane's PUT of the
+    // same new .kicad_sch (also base 0) overlapped; the second one 409'd with
+    // "local base 0, server 1" and blocked every later save of the sheet.
+    const source = await loadRemote(cacheMock());
+    const server = casServer();
+    vi.stubGlobal("fetch", server.fetchMock);
+    const relPath = "hardware/kicad/key_cell.kicad_sch";
+    const created = source().uploadFileBytes!("p", relPath, new Uint8Array([1]), undefined, { editorSave: true });
+    const saved = source().uploadFileBytes!("p", relPath, new Uint8Array([2]), undefined, { editorSave: true });
+    expect(await created).toEqual({ kind: "committed" });
+    expect(await saved).toEqual({ kind: "committed" });
+    expect(server.puts).toEqual(["0", "1"]);
+    expect(server.current()).toBe(2);
+    // The next save carries the latest committed revision.
+    expect(await source().uploadFileBytes!("p", relPath, new Uint8Array([3]))).toEqual({ kind: "committed" });
+    expect(server.puts[2]).toBe("2");
+  });
+
+  it("a genuine peer revision still conflicts (the queue never adopts it)", async () => {
+    // A peer created the file first (server at 1); this session never saw it
+    // as its model's ancestry, so its create must still 409.
+    const source = await loadRemote(cacheMock());
+    const server = casServer(1);
+    vi.stubGlobal("fetch", server.fetchMock);
+    const relPath = "hardware/kicad/key_cell.kicad_sch";
+    const first = source().uploadFileBytes!("p", relPath, new Uint8Array([1]));
+    const second = source().uploadFileBytes!("p", relPath, new Uint8Array([2]));
+    expect((await first).kind).toBe("conflict");
+    expect((await second).kind).toBe("conflict");
+    expect(server.puts).toEqual(["0", "0"]);
+    expect(server.current()).toBe(1);
+  });
+
+  it("different paths do not wait for each other", async () => {
+    const source = await loadRemote(cacheMock());
+    const server = casServer();
+    vi.stubGlobal("fetch", server.fetchMock);
+    const a = source().uploadFileBytes!("p", "a.kicad_sch", new Uint8Array([1]));
+    const b = source().uploadFileBytes!("p", "b.kicad_sch", new Uint8Array([1]));
+    await new Promise((r) => setTimeout(r, 1));
+    // Both PUTs are on the wire before either answers.
+    expect(server.fetchMock).toHaveBeenCalledTimes(2);
+    await Promise.all([a, b]);
+  });
+
+  it("a write retired while queued sends nothing", async () => {
+    const source = await loadRemote(cacheMock());
+    const server = casServer();
+    vi.stubGlobal("fetch", server.fetchMock);
+    const relPath = "x.kicad_sch";
+    const controller = new AbortController();
+    const first = source().uploadFileBytes!("p", relPath, new Uint8Array([1]));
+    const second = source().uploadFileBytes!("p", relPath, new Uint8Array([2]), controller.signal);
+    controller.abort();
+    expect((await first).kind).toBe("committed");
+    expect((await second).kind).toBe("not-committed");
+    expect(server.puts).toEqual(["0"]);
+  });
+});

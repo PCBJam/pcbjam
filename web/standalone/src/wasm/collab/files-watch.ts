@@ -130,11 +130,18 @@ export function createFilesHintRouter(opts: FilesWatchOptions) {
     lastSeq = seq;
     opts.onHint?.(changes);
     for (const change of changes) {
-      // Own echo: our PUT ack already recorded exactly this revision.
+      // Own echo: our PUT ack already recorded this revision — or a newer
+      // one, when two of our writes of one path landed back to back (a
+      // created subsheet's registration, then its Ctrl+S) and the first
+      // write's hint arrives after the second write's ack. A delete/move
+      // (revision 0) is never an echo of a write.
+      const seen = opts.observedRevision(change.path);
       if (
         opts.selfUser &&
         change.by === opts.selfUser &&
-        opts.observedRevision(change.path) === change.revision
+        !change.deleted &&
+        seen !== undefined &&
+        seen >= change.revision
       ) {
         continue;
       }
