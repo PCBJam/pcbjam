@@ -21,7 +21,7 @@ import { useTrustedPrompt } from '@/overlay/trusted-prompts';
 import { pluginSheetAdapter, pluginTourAdapter } from '@/overlay/plugin-tours';
 import { pluginPartSaver, type PluginPartSummary } from './plugin-parts';
 import { panelToReopen, readPluginPanel, rememberPluginPanel } from './panel-memory';
-import { Code, Tip } from "@pcbjam/ui";
+import { Button, Code, Tip } from "@pcbjam/ui";
 
 interface InspectorHost {
   mountEditorPlugin(container: HTMLElement, options: {
@@ -258,7 +258,7 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
       <header className="flex h-14 shrink-0 items-center gap-2 border-b border-black/10 px-4 dark:border-white/10">
         <Puzzle size={17} className="text-sky-500" /><h2 className="flex-1 text-sm font-semibold">Plugins</h2>
         <Tip content="Close plugins">
-          <button type="button" aria-label="Close plugins" onClick={onClose} className="rounded p-2 hover:bg-black/5 dark:hover:bg-white/10"><X size={17} /></button>
+          <Button type="button" aria-label="Close plugins" onClick={onClose} variant="plain" size="icon-xs" className="p-2 hover:bg-black/5 dark:hover:bg-white/10"><X size={17} /></Button>
         </Tip>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 text-xs">

@@ -2,6 +2,7 @@ import * as React from "react";
 import { ChevronDown, ChevronRight, Eye, EyeOff, X } from "lucide-react";
 import { useDraggablePanel } from "@/components/useDraggablePanel";
 import { Button, Tip, Toggle } from "@pcbjam/ui";
+import { overlayIconClass } from "@/components/OverlayMenu";
 
 /**
  * Floating layer panel (viewer-panels): the canvas-only replacement for the
@@ -175,26 +176,30 @@ export function LayerPanel({
           onPointerUp={() => void drag.onPointerUp()}
         >
           <Tip content={collapsed ? "Expand" : "Collapse to header"}>
-            <button
+            <Button
               data-testid="layers-panel-collapse"
               aria-expanded={!collapsed}
               onPointerDown={(e) => e.stopPropagation()}
               onClick={() => setCollapsed(!collapsed)}
-              className="rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
+              variant="plain"
+              size="icon-xs"
+              className={overlayIconClass}
             >
               {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
-            </button>
+            </Button>
           </Tip>
           <span>Layers</span>
           <span className="ml-auto flex items-center gap-0.5" onPointerDown={(e) => e.stopPropagation()}>
             <Tip content="Close">
-              <button
+              <Button
                 data-testid="layers-panel-close"
                 onClick={onClose}
-                className="rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
+                variant="plain"
+                size="icon-xs"
+                className={overlayIconClass}
               >
                 <X size={14} />
-              </button>
+              </Button>
             </Tip>
           </span>
         </div>
@@ -227,7 +232,7 @@ export function LayerPanel({
                 <Toggle
                   data-testid="layer-visibility"
                   variant="ghost"
-                  size="xs"
+                  size="icon-xs"
                   pressed={l.visible}
                   onPressedChange={(visible) => setVisible(l.id, visible)}
                   className="text-neutral-300 hover:bg-black/5 dark:text-white/25 dark:hover:bg-white/10 data-[state=on]:text-neutral-600 dark:data-[state=on]:text-white/70"

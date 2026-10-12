@@ -2,6 +2,7 @@ import * as React from "react";
 import { ChevronDown, ChevronRight, FileText, X } from "lucide-react";
 import { useDraggablePanel } from "@/components/useDraggablePanel";
 import { Button, Tip } from "@pcbjam/ui";
+import { overlayIconClass } from "@/components/OverlayMenu";
 
 /**
  * Floating sheet navigator (sheet-panel): the canvas-only stand-in for the
@@ -183,15 +184,17 @@ export function SheetPanel({
           onPointerUp={() => void drag.onPointerUp()}
         >
           <Tip content={collapsed ? "Expand" : "Collapse to header"}>
-            <button
+            <Button
               data-testid="sheet-panel-collapse"
               aria-expanded={!collapsed}
               onPointerDown={(e) => e.stopPropagation()}
               onClick={() => setCollapsed(!collapsed)}
-              className="rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
+              variant="plain"
+              size="icon-xs"
+              className={overlayIconClass}
             >
               {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
-            </button>
+            </Button>
           </Tip>
           <span>Sheets</span>
           {state && state.sheets.length > 1 && (
@@ -201,13 +204,15 @@ export function SheetPanel({
           )}
           <span className="ml-auto flex items-center gap-0.5" onPointerDown={(e) => e.stopPropagation()}>
             <Tip content="Close">
-              <button
+              <Button
                 data-testid="sheet-panel-close"
                 onClick={onClose}
-                className="rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
+                variant="plain"
+                size="icon-xs"
+                className={overlayIconClass}
               >
                 <X size={14} />
-              </button>
+              </Button>
             </Tip>
           </span>
         </div>

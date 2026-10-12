@@ -120,14 +120,16 @@ function PreflightBanner({
             </Button>
           </div>
         </div>
-        <button
+        <Button
           type="button"
           aria-label="Dismiss"
           onClick={onDismiss}
+          variant="plain"
+          size="text"
           className="rounded-sm opacity-70 transition-opacity hover:opacity-100"
         >
           <X className="h-4 w-4" />
-        </button>
+        </Button>
       </div>
     </div>
   );
