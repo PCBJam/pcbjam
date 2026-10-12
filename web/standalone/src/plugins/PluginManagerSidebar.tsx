@@ -161,6 +161,8 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
         instance = await host.mountPackagePlugin(target, {
           plugin: active, signal: abort.signal, documents, authorize,
           localChecks: hostedPlugins && sessionFeature('pluginLocalChecks'),
+          // Published releases from content-hash URLs, no activation (plugins 0022 M2).
+          hashServing: hostedPlugins && sessionFeature('pluginHashServing') && active.published ? catalog.hashAccount() ?? undefined : undefined,
           // Dev only: the local plugin lab's UI origin when it is not on the default :4318.
           ...(import.meta.env.DEV && import.meta.env.VITE_PLUGIN_UI_ORIGIN ? { uiOrigin: import.meta.env.VITE_PLUGIN_UI_ORIGIN as string } : {}),
           onAuthorizationReady:check=>{authorizeOperation=check;},
