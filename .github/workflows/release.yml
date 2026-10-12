@@ -49,6 +49,10 @@ env:
   # Mgmt app origin: non-editor routes on the editor host redirect here
   # (standalone-hardening 0006). The demo build never sets this.
   EDITOR_APP_BASE: https://app.pcbjam.com
+  # Where the editor and the demo link the brand (colours, type, icons) from at runtime
+  # (ui-components 0001 §4.3). The private repo's deploy publishes it there; until that deploy
+  # has run, a new build renders neutral, it does not break.
+  BRAND_BASE: https://app.pcbjam.com/brand
   # Better Stack error-tracking DSN (Sentry wire format). Unset ⇒ builds report
   # nothing, so this is safe to leave empty. Held as a secret rather than a
   # literal: this repo is public, and although the token becomes visible in the
@@ -200,6 +204,7 @@ jobs:
           node scripts/deploy/build-demo.mjs --tag "${{ needs.meta.outputs.tag }}"
           --cdn "$CDN" --lib-tag "$LIB_TAG"
           ${MODELS_TAG:+--models-tag "$MODELS_TAG"}
+          --brand-base "$BRAND_BASE"
           --plausible "https://plausible.io/js/pa-KjNS9YmidydULZTstsjRg.js"
           ${ERRORS_DSN:+--errors-dsn "$ERRORS_DSN" --errors-env demo}
 
@@ -274,15 +279,12 @@ jobs:
       # --models-source registry: 3D models come from the closed registry's
       # kind='model3d' origin libs (chunked packages3D ingest, libs/0016), not
       # the CDN snapshot — MODELS_TAG only feeds the demo build above.
-      # --brand-base: the page links the brand (colours, type, icons) from the app
-      # origin's /brand at runtime (ui-components 0001 §4.3). The private repo's
-      # deploy publishes it there; until that deploy has run the editor renders
-      # neutral, it does not break.
+      # --brand-base: see BRAND_BASE above.
       - name: Build editor (remote mode)
         run: >
           node scripts/deploy/build-editor.mjs --tag "$RELEASE_TAG"
           --cdn "$CDN" --api-base "$EDITOR_API_BASE" --app-base "$EDITOR_APP_BASE"
-          --brand-base "$EDITOR_APP_BASE/brand"
+          --brand-base "$BRAND_BASE"
           --plausible "https://plausible.io/js/pa-KjNS9YmidydULZTstsjRg.js"
           ${ERRORS_DSN:+--errors-dsn "$ERRORS_DSN" --errors-env production}
           --models-source registry

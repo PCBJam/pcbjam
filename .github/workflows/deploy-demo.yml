@@ -32,6 +32,9 @@ env:
   # to libs/kicad-models/<MODELS_TAG>/ — see scripts/deploy/publish-models.ts +
   # upload-models-r2.sh; docs/features/3d-models). Empty ⇒ 3D models off.
   MODELS_TAG: "10.0.3"
+  # Where the demo links the brand (colours, type, icons) from at runtime (ui-components
+  # 0001 §4.3). Keep in sync with release.yml.
+  BRAND_BASE: https://app.pcbjam.com/brand
   PAGES_PROJECT: pcbjam-demo
   # MUST be the Pages project's PRODUCTION branch — any other value makes
   # `wrangler pages deploy` a PREVIEW deploy and demo.pcbjam.com won't update.
@@ -130,6 +133,7 @@ jobs:
           node scripts/deploy/build-demo.mjs --tag "${{ steps.tag.outputs.tag }}"
           --cdn "$CDN" --lib-tag "$LIB_TAG"
           ${MODELS_TAG:+--models-tag "$MODELS_TAG"}
+          --brand-base "$BRAND_BASE"
           --plausible "https://plausible.io/js/pa-KjNS9YmidydULZTstsjRg.js"
           ${ERRORS_DSN:+--errors-dsn "$ERRORS_DSN" --errors-env demo}
 

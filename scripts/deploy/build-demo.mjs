@@ -41,7 +41,8 @@ function parseArgs(argv) {
     errorsDsn: null,
     errorsEnv: "demo",
     // Where the brand lives; set ⇒ the page links it (ui-components 0001 §4.3), as the editor
-    // build does. Omitted ⇒ the demo stays neutral.
+    // build does. The release and deploy-demo workflows pass the app origin's /brand; omitted
+    // (local and fork builds) ⇒ the demo stays neutral.
     brandBase: null,
   };
   for (let i = 2; i < argv.length; i++) {
