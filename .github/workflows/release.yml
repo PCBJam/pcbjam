@@ -274,10 +274,15 @@ jobs:
       # --models-source registry: 3D models come from the closed registry's
       # kind='model3d' origin libs (chunked packages3D ingest, libs/0016), not
       # the CDN snapshot — MODELS_TAG only feeds the demo build above.
+      # --brand-base: the page links the brand (colours, type, icons) from the app
+      # origin's /brand at runtime (ui-components 0001 §4.3). The private repo's
+      # deploy publishes it there; until that deploy has run the editor renders
+      # neutral, it does not break.
       - name: Build editor (remote mode)
         run: >
           node scripts/deploy/build-editor.mjs --tag "$RELEASE_TAG"
           --cdn "$CDN" --api-base "$EDITOR_API_BASE" --app-base "$EDITOR_APP_BASE"
+          --brand-base "$EDITOR_APP_BASE/brand"
           --plausible "https://plausible.io/js/pa-KjNS9YmidydULZTstsjRg.js"
           ${ERRORS_DSN:+--errors-dsn "$ERRORS_DSN" --errors-env production}
           --models-source registry
