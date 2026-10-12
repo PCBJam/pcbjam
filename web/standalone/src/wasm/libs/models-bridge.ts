@@ -1,4 +1,4 @@
-import { mapLimit } from "@pcbjam/shared";
+import { mapLimit, parseLibVarRef } from "@pcbjam/shared";
 import { MODELS_3D_ROOT } from "../constants";
 import type { Model3dSource } from "./models-source";
 
@@ -47,12 +47,37 @@ export function normalizeModelRef(raw: string): string | null {
     const end = ref.indexOf(closing);
     if (end < 0) return null;
     const v = ref.slice(2, end);
+    // A team library's path variable (`${MYPARTS_DIR}/…`, libs 0020) stays a
+    // variable ref in brace syntax: the library source resolves it. Mirrors
+    // the C++ NormalizeModelRef. ${KIPRJMOD} is project-local, not ours.
+    if (isLibPathVar(v)) {
+      const rest = ref.slice(end + 1).replace(/^[/\\]+/, "").replace(/\\/g, "/");
+      return rest ? `\${${v}}/${rest}` : null;
+    }
     // Any vintage of the model-dir var, plus the pre-v6 legacy alias.
     if (!v.includes("3DMODEL_DIR") && v !== "KISYS3DMOD") return null;
     return ref.slice(end + 1).replace(/^[/\\]+/, "") || null;
   }
   if (ref.startsWith("/") || ref.includes("://")) return null;
   return ref;
+}
+
+/** A team-library path variable: `<X>_DIR`, but not a model-dir vintage or ${KIPRJMOD}. */
+function isLibPathVar(v: string): boolean {
+  return /^[A-Za-z0-9_]+_DIR$/.test(v) && !v.includes("3DMODEL_DIR") && v !== "KIPRJMOD";
+}
+
+/**
+ * Where team-library models land in MEMFS: one folder per path variable,
+ * mirroring the library root (`${MYPARTS_DIR}/3d/x.step` →
+ * `/pcbjam/libroots/MYPARTS_DIR/3d/x.step`). Boot points each variable here.
+ */
+export const LIB_ROOTS_DIR = "/pcbjam/libroots";
+
+/** The MEMFS path a normalized ref materializes at. */
+export function memfsPathForRef(ref: string): string {
+  const lib = parseLibVarRef(ref);
+  return lib ? `${LIB_ROOTS_DIR}/${lib.pathVar}/${lib.rest}` : `${MODELS_3D_ROOT}/${ref}`;
 }
 
 /** Every `(model "…")` ref in a KiCad board/footprint s-expr, normalized. */
@@ -101,14 +126,53 @@ const ensuring = new Map<string, Promise<string | null>>();
  */
 const servingCandidate = new Map<string, string>();
 
+let officialSource: Model3dSource | null = null;
+let libModelSource: Model3dSource | null = null;
+
+/**
+ * The source every path reads through: `${VAR}/…` refs go to the team
+ * libraries' models (libs 0020), everything else to the official set.
+ */
+function composeSources(): Model3dSource | null {
+  if (!libModelSource) return officialSource;
+  const official = officialSource;
+  const lib = libModelSource;
+  const pick = (ref: string) => (ref.startsWith("${") ? lib : official);
+  return {
+    getModelBody: async (ref) => (await pick(ref)?.getModelBody(ref)) ?? null,
+    hasModel: async (ref) => (await pick(ref)?.hasModel(ref)) ?? false,
+  };
+}
+
 /** Wire the model source used by the provider dispatch + prescan. */
 export function installModel3dHandler(
   source: Model3dSource,
   log: (msg: string) => void,
 ): void {
-  installedSource = source;
+  officialSource = source;
+  installedSource = composeSources();
   installedLog = log;
   servingCandidate.clear();
+}
+
+/** Wire the team libraries' model source (refs `${<NICK>_DIR}/…`, libs 0020). */
+export function installLibModelSource(
+  source: Model3dSource,
+  log: (msg: string) => void,
+): void {
+  libModelSource = source;
+  installedSource = composeSources();
+  installedLog = log;
+  servingCandidate.clear();
+}
+
+/**
+ * Forget a library-variable ref's materialization, so a model uploaded or
+ * replaced in this session is fetched again on the next ensure.
+ */
+export function forgetLibModel(ref: string): void {
+  materialized.delete(ref);
+  servingCandidate.delete(ref);
 }
 
 /** Fetch one model body and write it under MODELS_3D_ROOT. Resolves to the
@@ -157,7 +221,7 @@ async function doEnsure(ref: string): Promise<string | null> {
   // `.step` body) is memoized and returned, so a later ensure for the same ref
   // hands KiCad the file that exists, not the ref's own (never-written) path.
   for (const candidate of refCandidates(ref)) {
-    const target = `${MODELS_3D_ROOT}/${candidate}`;
+    const target = memfsPathForRef(candidate);
     // Already on disk (a prior ensure — this ref or another — wrote this body).
     if (fs.analyzePath(target).exists) {
       materialized.set(ref, target);
@@ -341,4 +405,35 @@ export async function prescanBoardModels(
   installedLog(
     `[3d] prescan: ${done}/${total} in ${Math.round(performance.now() - started)}ms`,
   );
+}
+
+/**
+ * Stage a team library's models in MEMFS under its path-variable root, so
+ * KiCad's 3D model file picker can browse them (libs 0020 E.4). Lazy
+ * delivery still covers anything left out: staging stops at `maxBytes`.
+ */
+export async function stageLibModels(
+  lib: { paths: { pathVar: string; modelsDir: string } },
+  modelNames: string[],
+  opts: { concurrency?: number; maxBytes?: number } = {},
+): Promise<number> {
+  if (!installedSource || !toolFS()) return 0;
+  const maxBytes = opts.maxBytes ?? 256 * 1024 * 1024;
+  const dir = lib.paths.modelsDir.replace(/^\/+|\/+$/g, "");
+  let bytes = 0;
+  let staged = 0;
+  await mapLimit(modelNames, opts.concurrency ?? 4, async (name) => {
+    if (bytes >= maxBytes) return;
+    const ref = `\${${lib.paths.pathVar}}/${dir ? `${dir}/` : ""}${name}`;
+    const path = await ensureModelInMemfs(ref).catch(() => null);
+    if (!path) return;
+    staged++;
+    try {
+      bytes += (toolFS()!.readFile(path) as Uint8Array).length;
+    } catch {
+      // size is only a budget hint
+    }
+  });
+  installedLog(`[3d] staged ${staged}/${modelNames.length} model(s) of ${lib.paths.pathVar}`);
+  return staged;
 }

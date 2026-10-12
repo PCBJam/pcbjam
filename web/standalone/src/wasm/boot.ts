@@ -1,4 +1,4 @@
-import type { Tool } from "@pcbjam/shared";
+import { mapLimit, type Tool } from "@pcbjam/shared";
 import {
   KICAD_CONFIG_DIR,
   MODELS_3D_ENV_VARS,
@@ -10,7 +10,20 @@ import {
   TOOL_NEEDS_CONFIG_SEED,
   type Bundle,
 } from "./constants";
-import { installModel3dHandler } from "./libs/models-bridge";
+import {
+  installLibModelSource,
+  installModel3dHandler,
+  LIB_ROOTS_DIR,
+  stageLibModels,
+} from "./libs/models-bridge";
+import { libModelsSource } from "./libs/models-source";
+import { installLibDocPlaceholders } from "./libs/lib-docs";
+import { API_BASE_URL, currentScope } from "@/lib/config";
+
+/** The REST body URL of one library item (the datasheet placeholders' fetch). */
+const libItemUrl = (libId: string, kind: string, name: string): string =>
+  `${API_BASE_URL}/api/scopes/${encodeURIComponent(currentScope())}/libs/` +
+  `${encodeURIComponent(libId)}/items/${encodeURIComponent(kind)}/${encodeURIComponent(name)}`;
 import type { Model3dSource } from "./libs/models-source";
 import { installNgspiceService } from "./ngspice-service";
 import { installOccService } from "./occ-service";
@@ -438,6 +451,13 @@ async function doBoot(opts: BootOptions): Promise<void> {
   // which errors on a non-existent path. The bytes are virtual (served via
   // window.kicadLibs); this file only satisfies incidental fs checks.
   let libPlaceholderUris: string[] = [];
+  // Team-library path variables (libs 0020): `${<NICK>_DIR}` → its MEMFS root.
+  // Seeded into KiCad's environment so the 3D model picker shortens a picked
+  // file to the variable form; the model bytes still arrive via the bridge.
+  let libRootVars: Record<string, string> = {};
+  // A library editor stages its own library's models once the runtime is up
+  // (the file picker browses MEMFS); project sessions stay lazy.
+  let stageModelsAfterBoot: (() => Promise<void>) | null = null;
   // Which lib tables to seed. The merged kicad_editor bundle serves all four
   // editors AND cross-face features — the symbol chooser's footprint selector/
   // preview reach FACE_PCB from a schematic session — so it gets BOTH tables
@@ -490,6 +510,54 @@ async function doBoot(opts: BootOptions): Promise<void> {
           [...listsByKind.values()].flat().map((l) => libUri(l.id)),
         ),
       ];
+      const teamLibs = [
+        ...new Map(
+          [...listsByKind.values()]
+            .flat()
+            .filter((l) => l.paths)
+            .map((l) => [l.id, l] as const),
+        ).values(),
+      ];
+      if (teamLibs.length && libsSource.getItemBytes) {
+        const read = libsSource.getItemBytes.bind(libsSource);
+        installLibModelSource(
+          libModelsSource(teamLibs, (id, name) => read(id, "model3d", name)),
+          log,
+        );
+        libRootVars = Object.fromEntries(
+          teamLibs.map((l) => [l.paths!.pathVar, `${LIB_ROOTS_DIR}/${l.paths!.pathVar}`]),
+        );
+        log(`[3d] team library model roots: ${Object.keys(libRootVars).join(", ")}`);
+        const own = teamLibs.length === 1 ? teamLibs[0]! : null;
+        stageModelsAfterBoot = async () => {
+          // Datasheets: lazy placeholder folders in every session, so a
+          // `${<NICK>_DIR}/…` Datasheet field opens wherever it is used.
+          await mapLimit(
+            teamLibs.filter((l) => l.paths?.docsDir),
+            4,
+            async (l) => {
+              const names = (await libsSource.listItems(l.id))
+                .filter((i) => i.kind === "doc")
+                .map((i) => i.name);
+              installLibDocPlaceholders({
+                fs: moduleFS() as unknown as Parameters<typeof installLibDocPlaceholders>[0]["fs"],
+                lib: { id: l.id, paths: { pathVar: l.paths!.pathVar, docsDir: l.paths!.docsDir! } },
+                names,
+                itemUrl: libItemUrl,
+                log,
+              });
+            },
+          );
+          // Models: the footprint library editor stages its own library's,
+          // so KiCad's 3D model picker can browse them.
+          if (own?.paths && tool === "footprint_editor") {
+            const names = (await libsSource.listItems(own.id))
+              .filter((i) => i.kind === "model3d")
+              .map((i) => i.name);
+            if (names.length) await stageLibModels({ paths: own.paths }, names);
+          }
+        };
+      }
     } catch (e) {
       log(`[libs] listLibs failed, seeding empty table: ${String(e)}`);
     }
@@ -588,6 +656,7 @@ async function doBoot(opts: BootOptions): Promise<void> {
     // 3D models: the MEMFS root the prescan/ensure paths write into, plus the
     // env vars (every vintage) that make KiCad's resolver look there.
     FS.mkdirTree(MODELS_3D_ROOT);
+    for (const root of Object.values(libRootVars)) FS.mkdirTree(root);
     writeIfAbsent(
       `${KICAD_CONFIG_DIR}/kicad_common.json`,
       JSON.stringify(
@@ -603,9 +672,12 @@ async function doBoot(opts: BootOptions): Promise<void> {
           // (project-sync 0003).
           auto_backup: { enabled: false },
           environment: {
-            vars: Object.fromEntries(
-              MODELS_3D_ENV_VARS.map((v) => [v, MODELS_3D_ROOT]),
-            ),
+            vars: {
+              ...Object.fromEntries(
+                MODELS_3D_ENV_VARS.map((v) => [v, MODELS_3D_ROOT]),
+              ),
+              ...libRootVars,
+            },
           },
         },
         null,
@@ -708,6 +780,9 @@ async function doBoot(opts: BootOptions): Promise<void> {
       // The runtime is up; main() is booting the wx UI next (the open-flow's
       // own "Opening…" statuses take over from there).
       onStatus("Starting the editor…");
+      void stageModelsAfterBoot?.().catch((e) =>
+        log(`[3d] library model staging failed: ${String(e)}`),
+      );
     },
     // Resolve wasm + pthread worker against the asset base, not the SPA route.
     locateFile: (path: string) => `${base}/${path}`,

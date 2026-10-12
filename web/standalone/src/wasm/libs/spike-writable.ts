@@ -81,6 +81,13 @@ function withSpikeKindLib(
       log(`[libs] spike saved ${spec.kind} "${name}" (${body.length} bytes)`);
       return true;
     },
+
+    async deleteItemBody(libId: string, kind: string, name: string): Promise<boolean> {
+      if (!isSpike(libId)) {
+        return inner?.deleteItemBody ? inner.deleteItemBody(libId, kind, name) : false;
+      }
+      return store.delete(name);
+    },
   };
 }
 

@@ -5,6 +5,7 @@ import {
   installModel3dHandler,
   deferBoardModelPrescan,
   runDeferredModelPrescan,
+  memfsPathForRef,
   normalizeModelRef,
   scanModelRefs,
   type BoardModelFile,
@@ -370,5 +371,21 @@ describe("deferred board prescan (read-only sessions)", () => {
     const t = installCounting();
     await runDeferredModelPrescan();
     expect(t.fetches()).toBe(0);
+  });
+});
+
+describe("team library variable refs (libs 0020)", () => {
+  it("keeps a library path variable as a canonical brace ref", () => {
+    expect(normalizeModelRef("${MYPARTS_DIR}/3d/sot23.step")).toBe("${MYPARTS_DIR}/3d/sot23.step");
+    expect(normalizeModelRef("$(MYPARTS_DIR)\\3d\\sot23.step")).toBe("${MYPARTS_DIR}/3d/sot23.step");
+    expect(normalizeModelRef("${MYPARTS_DIR}/")).toBeNull();
+    // Project-local and unrelated variables stay out.
+    expect(normalizeModelRef("${KIPRJMOD}/3d/x.step")).toBeNull();
+    expect(normalizeModelRef("${HOME}/x.step")).toBeNull();
+  });
+
+  it("materializes library refs under their variable root", () => {
+    expect(memfsPathForRef("${MYPARTS_DIR}/3d/x.step")).toBe("/pcbjam/libroots/MYPARTS_DIR/3d/x.step");
+    expect(memfsPathForRef("L.3dshapes/x.step")).toBe("/pcbjam/3dmodels/L.3dshapes/x.step");
   });
 });

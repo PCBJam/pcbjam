@@ -240,3 +240,55 @@ describe("busy notices (libs 0017 §B)", () => {
     }
   });
 });
+
+describe("delete op + quiet not-found (libs 0020)", () => {
+  function withWindow<T>(fn: (errors: string[]) => Promise<T>): Promise<T> {
+    const errors: string[] = [];
+    (globalThis as unknown as { window: unknown }).window = {
+      location: { search: "" },
+      dispatchEvent: (e: { type: string; detail?: { message?: string } | string }) => {
+        if (e.type.includes("error")) {
+          const d = e.detail;
+          errors.push(typeof d === "string" ? d : (d?.message ?? ""));
+        }
+        return true;
+      },
+    };
+    return fn(errors).finally(() => {
+      delete (globalThis as unknown as { window?: unknown }).window;
+    });
+  }
+
+  it("routes delete to deleteItemBody and answers ok", async () => {
+    await withWindow(async (errors) => {
+      const deleted: string[] = [];
+      const request = installAndGetRequest(
+        baseSource({
+          deleteItemBody: async (_id, kind, name) => {
+            deleted.push(`${kind}/${name}`);
+            return true;
+          },
+        }),
+      );
+      expect(await request("delete", libUri("L"), "Untitled", "footprint")).toBe("ok");
+      expect(deleted).toEqual(["footprint/Untitled"]);
+      expect(errors).toEqual([]);
+    });
+  });
+
+  it("a read-only source answers null and reports the failed delete", async () => {
+    await withWindow(async (errors) => {
+      const request = installAndGetRequest(baseSource());
+      expect(await request("delete", libUri("L"), "R", "symbol")).toBeNull();
+      expect(errors.length).toBe(1);
+    });
+  });
+
+  it("a get for a missing name is a plain not-found, without an error toast", async () => {
+    await withWindow(async (errors) => {
+      const request = installAndGetRequest(baseSource());
+      expect(await request("get", libUri("L"), "Untitled", "footprint")).toBeNull();
+      expect(errors).toEqual([]);
+    });
+  });
+});

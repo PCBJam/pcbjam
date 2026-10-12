@@ -1,6 +1,8 @@
 import { SyncStack, type SyncStackOptions } from "@pcbjam/sync-client";
 import {
   fetchSyncStacks,
+  modelItemNameFor,
+  parseLibVarRef,
   type SyncStackDescriptor,
 } from "@pcbjam/shared";
 
@@ -251,6 +253,47 @@ export function registryModelsSource(
       } catch {
         return false;
       }
+    },
+  };
+}
+
+/**
+ * Team-library `Model3dSource` (libs 0020): resolves `${<pathVar>}/<rest>`
+ * refs against the libraries that carry a path variable. `<rest>` is relative
+ * to the library root; the part under the library's models folder is the
+ * `model3d` item name (sub-folders kept). Bodies come from the library's own
+ * sync stack, so a model uploaded in this session is readable at once.
+ */
+export function libModelsSource(
+  libs: ReadonlyArray<{
+    id: string;
+    paths?: { pathVar: string; modelsDir: string } | null;
+  }>,
+  readItem: (libId: string, name: string) => Promise<Uint8Array | null>,
+): Model3dSource {
+  const byVar = new Map(
+    libs.filter((l) => l.paths).map((l) => [l.paths!.pathVar, l] as const),
+  );
+  const locate = (ref: string): { libId: string; name: string } | null => {
+    const parsed = parseLibVarRef(ref);
+    if (!parsed) return null;
+    const lib = byVar.get(parsed.pathVar);
+    if (!lib?.paths) return null;
+    const name = modelItemNameFor(parsed.rest, lib.paths.modelsDir);
+    return name ? { libId: lib.id, name } : null;
+  };
+  return {
+    async getModelBody(ref: string): Promise<Uint8Array | null> {
+      const at = locate(ref);
+      if (!at) return null;
+      try {
+        return await readItem(at.libId, at.name);
+      } catch {
+        return null; // missing models render as absent, never break the viewer
+      }
+    },
+    async hasModel(ref: string): Promise<boolean> {
+      return (await this.getModelBody(ref)) !== null;
     },
   };
 }

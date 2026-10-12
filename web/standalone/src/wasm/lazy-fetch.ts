@@ -25,7 +25,7 @@ export interface SyncFolderFetchOptions {
   request?: (url: string) => { status: number; body: Uint8Array; header(name: string): string | null };
 }
 
-function blockingGet(url: string): { status: number; body: Uint8Array; header(name: string): string | null } {
+export function blockingGet(url: string): { status: number; body: Uint8Array; header(name: string): string | null } {
   const xhr = new XMLHttpRequest();
   xhr.open("GET", url, false);
   xhr.withCredentials = true;

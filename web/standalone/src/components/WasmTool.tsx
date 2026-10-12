@@ -99,6 +99,7 @@ import { CommentLayer } from "@/components/CommentLayer";
 import { hasTunerBridge, PresenceTuner, type TunerModule } from "@/components/PresenceTuner";
 import { hasLayersBridge, LayerPanel, type LayersModule } from "@/components/LayerPanel";
 import { ImportItemPanel } from "@/components/ImportItemPanel";
+import { LibFilesPanel } from "@/components/LibFilesPanel";
 import { hasImportBridge, type ImportModule } from "@/wasm/import-item";
 import { localPluginLab, usePluginCatalog, type PluginView } from "@/plugins/plugin-catalog";
 import { useSessionFeature } from "@/lib/session-identity";
@@ -205,6 +206,7 @@ export function WasmTool({
   docSource,
   assetBaseUrl,
   libsSource,
+  libScoped = false,
   sourceDescriptor,
   readOnly = false,
   commentAccess,
@@ -228,6 +230,9 @@ export function WasmTool({
    * — a specific backend lib, or a local `.kicad_sym`/`.kicad_mod` file.
    */
   libsSource?: LibsSource | null;
+  /** A library editor opened on one library (`/:scope/libs/:lib`): shows the
+   *  library files panel (libs 0020). */
+  libScoped?: boolean;
   /**
    * The composed boot payload (load-path-rework 0001 §6), when the page's ONE
    * boot round-trip answered: seeds identity, the lib listing + stack
@@ -438,6 +443,7 @@ export function WasmTool({
   // Editor lifecycle for the loading chrome: false until the tool has booted +
   // opened (covers the big WASM-compile freeze with a full-screen overlay).
   const [ready, setReady] = React.useState(false);
+  const libFilesOn = useSessionFeature("libFolderAuthoring");
   // Download progress for the (large) wasm, and a "this is taking too long" flag
   // the overlay raises after a while so a stuck load doesn't read as a silent hang.
   const [progress, setProgress] = React.useState<{
@@ -856,14 +862,18 @@ export function WasmTool({
       log: append,
     });
 
-    // File→Quit leaves the editor for the project overview — lib editors
-    // (/:scope/libs/:name) have none, so they exit home instead. Both are
-    // non-editor surfaces: on a backed deploy (APP_URL set) they belong to the
-    // management app, so quit goes straight there (one hop instead of letting
-    // App.tsx's 0006 redirect bounce it).
+    // File→Quit leaves the editor for the project overview. Lib editors
+    // (/:scope/libs/:name) go back to where they were opened from: a
+    // same-origin `?return=` path the management app passes, else its library
+    // page (libs 0020 P8); a plain standalone has no library page, so home.
+    // Both are non-editor surfaces: on a backed deploy (APP_URL set) they
+    // belong to the management app, so quit goes straight there (one hop
+    // instead of letting App.tsx's 0006 redirect bounce it).
     const segments = win.location.pathname.split("/").filter(Boolean);
     const exitPath =
-      segments[1] === "libs" ? "/" : projectPath(currentScope(), slug);
+      segments[1] === "libs"
+        ? libExitPath(segments[2], win.location.search)
+        : projectPath(currentScope(), slug);
     const removeQuitHook = installQuitHook(win, {
       exitUrl: redirectTargetFor(APP_URL, exitPath) ?? exitPath,
       log: append,
@@ -2270,6 +2280,10 @@ export function WasmTool({
         <ImportItemPanel mod={importMod} tool={tool} onClose={() => setImportOpen(false)} />
       )}
 
+      {ready && libScoped && libFilesOn && !readOnly && activeLibsSourceRef.current && (
+        <LibFilesPanel source={activeLibsSourceRef.current} tool={tool} />
+      )}
+
       {ready && pluginPocEnabled && (
         <React.Suspense fallback={null}>
           <PluginSidebar project={{id:projectId,scope:scopeId,name:slug}} projectFiles={files} doc={panelDoc} tool={tool} readOnly={!!readOnly} fileName={targetPath ?? "Current document"}
@@ -2320,3 +2334,16 @@ export function WasmTool({
 }
 
 /** "~173 MB" — coarse on purpose; these are quotes, not meters. */
+
+/**
+ * Where File→Quit leaves a lib editor for: a same-origin `?return=` path
+ * (absolute path only, no protocol-relative `//host`), else the management
+ * app's library page when there is one, else home.
+ */
+function libExitPath(libSegment: string | undefined, search: string): string {
+  const ret = new URLSearchParams(search).get("return");
+  if (ret && ret.startsWith("/") && !ret.startsWith("//") && !ret.includes("\\")) {
+    return ret;
+  }
+  return APP_URL && libSegment ? `/libs/${libSegment}` : "/";
+}

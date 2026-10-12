@@ -27,6 +27,16 @@ export interface LibInfo {
    *  unknown). Powers {@link LibsSource.syncState} on the synced source without
    *  resolving N stacks. Omitted by sources without a client-side sync cache. */
   sync?: { namespace: string; bytes?: number | null } | null;
+  /** Team-library path variable + folders (wire `libSchema.paths`, libs 0020):
+   *  `${pathVar}` names the library root; models and datasheets live under
+   *  `modelsDir` / `docsDir`. Omitted by sources without them. */
+  paths?: LibPaths;
+}
+
+export interface LibPaths {
+  pathVar: string;
+  modelsDir: string;
+  docsDir: string | null;
 }
 
 export interface LibItemInfo {
@@ -120,8 +130,20 @@ export interface LibsSource {
     libId: string,
     kind: string,
     name: string,
-    body: string,
+    // Text for symbols/footprints; raw bytes for a 3D model or datasheet.
+    body: string | Uint8Array,
   ): Promise<boolean>;
+  /**
+   * One item body as raw bytes (3D models and datasheets are binary; libs
+   * 0020). Optional: sources without it serve text items only.
+   */
+  getItemBytes?(libId: string, kind: string, name: string): Promise<Uint8Array | null>;
+  /**
+   * Remove one item from a writable lib (libs 0020 P13: KiCad's rename is
+   * delete-old + save-new, and the tree's Delete calls it). Resolves false on a
+   * rejected delete. Optional, like saveItemBody.
+   */
+  deleteItemBody?(libId: string, kind: string, name: string): Promise<boolean>;
   /**
    * Create a user library (returns its `LibInfo`, or null if unsupported / on
    * conflict). Used by boot to ensure the owner has a writable target.
@@ -405,7 +427,7 @@ export function installLibsProvider(
 
     // "get"/"save" are user-triggered (open/save an item) and otherwise give no
     // visible feedback — broadcast busy + errors so the editor can show them.
-    const userFacing = op === "get" || op === "save";
+    const userFacing = op === "get" || op === "save" || op === "delete";
     // The busy notice names the ITEM: for `save` the arg is the JSON envelope
     // `{name, body}` (the whole body would otherwise be printed — libs 0017 §B).
     const busyName = op === "save" ? saveArgName(arg) : arg;
@@ -487,11 +509,10 @@ export function installLibsProvider(
         }
         case "get": {
           const body = await source.getItemBody(id, kind, arg);
-          if (body === null) {
-            emitLibError(
-              `Couldn't open "${arg}" — the backend has no body for it (404).`,
-            );
-          }
+          // A null body is KiCad's normal "not found": existence probes (the
+          // unique "Untitled" name on New Footprint, the old name on a rename)
+          // ask for names that don't exist yet, so no toast here (libs 0020).
+          if (body === null) log(`[libs] get: no body for ${kind} "${arg}"`);
           return body;
         }
         case "save": {
@@ -505,6 +526,7 @@ export function installLibsProvider(
           if (!parsed.name || !parsed.body) return null;
           if (!source.saveItemBody) {
             log(`[libs] save: source has no write support (lib=${id})`);
+            emitLibError(`Couldn't save "${parsed.name}": this library is read-only here.`);
             return null;
           }
           const ok = await source.saveItemBody(
@@ -514,6 +536,17 @@ export function installLibsProvider(
             parsed.body,
           );
           if (!ok) emitLibError(`Couldn't save "${parsed.name}".`);
+          return ok ? "ok" : null;
+        }
+        case "delete": {
+          if (!arg) return null;
+          if (!source.deleteItemBody) {
+            log(`[libs] delete: source has no write support (lib=${id})`);
+            emitLibError(`Couldn't delete "${arg}": this library is read-only here.`);
+            return null;
+          }
+          const ok = await source.deleteItemBody(id, kind, arg);
+          if (!ok) emitLibError(`Couldn't delete "${arg}".`);
           return ok ? "ok" : null;
         }
         default:

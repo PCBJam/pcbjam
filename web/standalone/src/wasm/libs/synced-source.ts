@@ -20,6 +20,7 @@ import {
   LIB_ITEM_UPDATED_EVENT,
   LIB_SET_CHANGED_EVENT,
   type LibInfo,
+  type LibPaths,
   type LibItemInfo,
   type LibItemUpdatedDetail,
   type LibSetChangedDetail,
@@ -170,7 +171,7 @@ export function syncedLibsSource(
 
   async function ensure(): Promise<{ stack: SyncStack; info: LibInfo }> {
     if (!opened) {
-      opened = resolveAndOpen(libId, opts, log).then((r) => {
+      const attempt = resolveAndOpen(libId, opts, log).then((r) => {
         r.stack.subscribe((c) => {
           // Consume our own save's echo (exactly one change event per push);
           // everything else is a peer's edit.
@@ -178,6 +179,13 @@ export function syncedLibsSource(
           scheduleEditorReload(r.info, c.path);
         });
         return r;
+      });
+      opened = attempt;
+      // A failed open must not poison the session: forget it so the next call
+      // retries (libs 0020 P10 — one transient failure on a brand-new lib's
+      // first open used to fail every later list/save until a reload).
+      attempt.catch(() => {
+        if (opened === attempt) opened = null;
       });
     }
     return opened;
@@ -221,9 +229,13 @@ export function syncedLibsSource(
       const bytes = await stack.read(pathOf(kind, name));
       return bytes ? new TextDecoder().decode(bytes) : null;
     },
+    async getItemBytes(_id, kind, name): Promise<Uint8Array | null> {
+      const { stack } = await ensure();
+      return await stack.read(pathOf(kind, name));
+    },
     async saveItemBody(_id, kind, name, body): Promise<boolean> {
       const path = pathOf(kind, name);
-      const bytes = new TextEncoder().encode(body);
+      const bytes = typeof body === "string" ? new TextEncoder().encode(body) : body;
       // Two attempts at most: the second only after a cutover 409 told us the
       // room moved — the stack is re-resolved and the write retried against
       // the room the fresh descriptor names (load-path-rework 0002 §3.3).
@@ -250,6 +262,20 @@ export function syncedLibsSource(
           log(`[synced] save failed for ${kind}/${name}: ${String(e)}`);
           return false;
         }
+      }
+    },
+    async deleteItemBody(_id, kind, name): Promise<boolean> {
+      const path = pathOf(kind, name);
+      const { stack } = await ensure();
+      // Same echo bookkeeping as a save: our own delete is not a peer edit.
+      selfPushed.add(path);
+      try {
+        await stack.delete(path);
+        return true;
+      } catch (e) {
+        selfPushed.delete(path);
+        log(`[synced] delete failed for ${kind}/${name}: ${String(e)}`);
+        return false;
       }
     },
     dispose(): void {
@@ -327,7 +353,12 @@ async function resolveAndOpen(
   await stack.open();
   return {
     stack,
-    info: { id: body.lib.id, name: body.lib.name, description: null },
+    info: {
+      id: body.lib.id,
+      name: body.lib.name,
+      description: null,
+      ...(body.lib.paths ? { paths: body.lib.paths } : {}),
+    },
   };
 }
 
@@ -368,6 +399,7 @@ export interface PreloadedLibDto {
    *  `libHasKind` filter for `listLibs(kind)`. */
   kindCounts?: Record<string, number>;
   sync?: { namespace: string; bytes: number | null } | null;
+  paths?: LibPaths;
 }
 
 export function syncedScopeLibsSource(
@@ -442,6 +474,7 @@ export function syncedScopeLibsSource(
         type: l.type,
         itemCount: l.itemCount,
         sync: l.sync ?? null,
+        ...(l.paths ? { paths: l.paths } : {}),
       }));
   const forLib = (libId: string): LibsSource => {
     let src = perLib.get(libId);
@@ -553,6 +586,10 @@ export function syncedScopeLibsSource(
       forLib(libId).getItemBody(libId, kind, name),
     saveItemBody: (libId, kind, name, body) =>
       forLib(libId).saveItemBody!(libId, kind, name, body),
+    deleteItemBody: (libId, kind, name) =>
+      forLib(libId).deleteItemBody!(libId, kind, name),
+    getItemBytes: (libId, kind, name) =>
+      forLib(libId).getItemBytes!(libId, kind, name),
     async presync(presyncOpts): Promise<void> {
       const libs = await listLibsPreferred(presyncOpts?.kind);
       const total = libs.length;

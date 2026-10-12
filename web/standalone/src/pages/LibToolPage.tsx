@@ -31,6 +31,7 @@ export function LibToolPage() {
         projectId="local"
         files={[]}
         libsSource={libsSource}
+        libScoped
         fetchBytes={async (relPath) => {
           throw new Error(`no project file to fetch: ${relPath}`);
         }}

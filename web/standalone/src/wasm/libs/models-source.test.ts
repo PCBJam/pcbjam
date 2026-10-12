@@ -5,7 +5,7 @@ import {
   type SyncStackDescriptor,
 } from "@pcbjam/shared";
 import { memStore, type LayerStore } from "@pcbjam/sync-client";
-import { cdnModelsSource, registryModelsSource } from "./models-source";
+import { cdnModelsSource, libModelsSource, registryModelsSource } from "./models-source";
 
 const MANIFEST_URL = "https://cdn.test/libs/kicad-models/9.0.9/manifest.json";
 const BASE = "https://cdn.test/libs/kicad-models/9.0.9";
@@ -245,5 +245,25 @@ describe("registryModelsSource", () => {
 
     expect(await src.getModelBody("NoSuchLib.3dshapes/m.wrl")).toBeNull();
     expect(await src.getModelBody("not-a-model-ref")).toBeNull();
+  });
+});
+
+describe("libModelsSource (libs 0020)", () => {
+  const libs = [
+    { id: "lib-a", paths: { pathVar: "MYPARTS_DIR", modelsDir: "3d" } },
+    { id: "lib-b", paths: null },
+  ];
+  const bodies = new Map([["lib-a|sub/sot23.step", new Uint8Array([1, 2, 3])]]);
+  const source = libModelsSource(libs, async (libId, name) => bodies.get(`${libId}|${name}`) ?? null);
+
+  it("reads a model under the library's models folder by its sub-path name", async () => {
+    expect(await source.getModelBody("${MYPARTS_DIR}/3d/sub/sot23.step")).toEqual(new Uint8Array([1, 2, 3]));
+    expect(await source.hasModel("${MYPARTS_DIR}/3d/sub/sot23.step")).toBe(true);
+  });
+
+  it("answers null outside the models folder, for unknown variables and plain refs", async () => {
+    expect(await source.getModelBody("${MYPARTS_DIR}/other/sot23.step")).toBeNull();
+    expect(await source.getModelBody("${OTHER_DIR}/3d/sub/sot23.step")).toBeNull();
+    expect(await source.getModelBody("L.3dshapes/x.step")).toBeNull();
   });
 });

@@ -67,12 +67,16 @@ async function fakeServer(seed: Record<string, string>) {
   // Cutover simulation: `movedOnce` refuses the NEXT write with the 409 +
   // reload-action answer a room gives after it stopped being the namespace's
   // writer; `resolves` counts sync-stack resolutions (the retry re-resolves).
-  const state = { movedOnce: false, resolves: 0 };
+  const state = { movedOnce: false, resolves: 0, failResolves: 0 };
 
   const fetchImpl = (async (input: unknown, init?: RequestInit) => {
     const url = String(input);
     if (url.endsWith("/sync-stack")) {
       state.resolves += 1;
+      if (state.failResolves > 0) {
+        state.failResolves -= 1;
+        return { ok: false, status: 503 };
+      }
       return json({
         lib: { id: LIB_ID, name: "My Lib" },
         layers: [
@@ -111,6 +115,13 @@ async function fakeServer(seed: Record<string, string>) {
       manifest.entries[path] = { hash, size: body.length, mtime: 0 };
       return json({ version: manifest.version, hash, size: body.length });
     }
+    if (url.startsWith(`${ROOM}/body/`) && init?.method === "DELETE") {
+      const path = decodeURIComponent(url.slice(`${ROOM}/body/`.length));
+      bodies.delete(path);
+      delete manifest.entries[path];
+      manifest.version += 1;
+      return json({ version: manifest.version });
+    }
     return { ok: false, status: 404 };
   }) as unknown as typeof fetch;
 
@@ -131,7 +142,7 @@ async function fakeServer(seed: Record<string, string>) {
     });
   }
 
-  return { fetchImpl, channel, remotePut, state };
+  return { fetchImpl, channel, remotePut, state, bodies };
 }
 
 function makeSource(server: Awaited<ReturnType<typeof fakeServer>>) {
@@ -528,5 +539,32 @@ describe("syncedScopeLibsSource.syncState", () => {
     ]);
     await src.syncState!();
     expect(await storeFactory("origin:a@v1").getManifest()).toBeNull();
+  });
+});
+
+describe("delete + open retry (libs 0020)", () => {
+  it("deleteItemBody removes the item from the room and the merged list", async () => {
+    const server = await fakeServer({ "footprint/Untitled": "(footprint Untitled)" });
+    const source = makeSource(server);
+
+    const ok = await source.deleteItemBody!(LIB_ID, "footprint", "Untitled");
+
+    expect(ok).toBe(true);
+    expect(server.bodies.has("footprint/Untitled")).toBe(false);
+    expect(await source.listItems(LIB_ID)).toEqual([]);
+    source.dispose?.();
+  });
+
+  it("a failed first open does not poison the session: the next call retries", async () => {
+    const server = await fakeServer({ "symbol/R": "(r)" });
+    server.state.failResolves = 1;
+    const source = makeSource(server);
+
+    await expect(source.listItems(LIB_ID)).rejects.toThrow();
+    const ok = await source.saveItemBody!(LIB_ID, "symbol", "Mine", "(body)");
+
+    expect(ok).toBe(true);
+    expect(server.state.resolves).toBe(2);
+    source.dispose?.();
   });
 });
