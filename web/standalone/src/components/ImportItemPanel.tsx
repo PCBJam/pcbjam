@@ -18,7 +18,8 @@ import {
   buildInteractiveImport,
   hasInteractivePlacement,
 } from "@/wasm/import-item";
-import { Combobox, Tip } from "@pcbjam/ui";
+import { Button, Combobox, Tip } from "@pcbjam/ui";
+import { overlayIconClass } from "@/components/OverlayMenu";
 
 /**
  * POC "plugin" sidebar (import-item): pick a `.kicad_sym` / `.kicad_mod` from
@@ -185,8 +186,6 @@ export function ImportItemPanel({
     ? { left: drag.pos.x, top: drag.pos.y }
     : { right: 12, top: 100 };
 
-  const iconBtn =
-    "rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white";
   const canAdd = picked !== null && picked.kind === wanted;
 
   return (
@@ -217,22 +216,24 @@ export function ImportItemPanel({
           onPointerUp={() => void drag.onPointerUp()}
         >
           <Tip content={collapsed ? "Expand" : "Collapse to header"}>
-            <button
+            <Button
               aria-expanded={!collapsed}
               onPointerDown={(e) => e.stopPropagation()}
               onClick={() => setCollapsed(!collapsed)}
-              className={iconBtn}
+              variant="plain"
+              size="icon-xs"
+              className={overlayIconClass}
             >
               {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
-            </button>
+            </Button>
           </Tip>
           <FilePlus size={14} className="text-neutral-400 dark:text-white/50" />
           <span>Import from file</span>
           <span className="ml-auto" onPointerDown={(e) => e.stopPropagation()}>
             <Tip content="Close">
-              <button data-testid="import-panel-close" onClick={onClose} className={iconBtn}>
+              <Button data-testid="import-panel-close" onClick={onClose} variant="plain" size="icon-xs" className={overlayIconClass}>
                 <X size={14} />
-              </button>
+              </Button>
             </Tip>
           </span>
         </div>

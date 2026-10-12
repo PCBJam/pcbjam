@@ -27,6 +27,8 @@ import { cn } from "@/lib/utils";
  *                        (a toggle row is @pcbjam/ui's Toggle, variant="ghost"
  *                        size="row", plus overlayPressedClass if it shows a
  *                        pressed look).
+ *   overlayIconClass   — a header's icon button (Button variant="plain"
+ *                        size="icon-xs").
  *   overlayFieldClass  — a text field (Input / Textarea) on the glass.
  *   overlayKbdClass    — a shortcut hint (Kbd) at the end of a row.
  *
@@ -43,6 +45,12 @@ export const overlayRowClass =
   "text-neutral-800 transition-colors hover:bg-black/5 " +
   "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-black/30 " +
   "dark:text-white/90 dark:hover:bg-white/10 dark:focus-visible:ring-white/40";
+
+/** A panel header's icon button (collapse, close, put back), for @pcbjam/ui's Button
+ *  variant="plain" size="icon-xs" or Toggle size="icon-xs". */
+export const overlayIconClass =
+  "text-neutral-500 hover:bg-black/5 hover:text-neutral-900 " +
+  "dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white";
 
 /**
  * A shortcut hint on the glass, for @pcbjam/ui's Kbd (⌘\ beside "Hide UI", Esc while placing).

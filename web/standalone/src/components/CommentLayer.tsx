@@ -1,6 +1,6 @@
 import * as React from "react";
 import { createPortal } from "react-dom";
-import { overlayFieldClass, overlayKbdClass, overlayPressedClass, overlayRowClass } from "@/components/OverlayMenu";
+import { overlayFieldClass, overlayIconClass, overlayKbdClass, overlayPressedClass, overlayRowClass } from "@/components/OverlayMenu";
 import {
   threadMentionsUnread,
   threadUnreadCount,
@@ -749,15 +749,17 @@ function CommentsPanel({
           onPointerUp={() => void drag.onPointerUp()}
         >
           <Tip content={collapsed ? "Expand" : "Collapse to header"}>
-            <button
+            <Button
               data-testid="comments-panel-collapse"
               aria-expanded={!collapsed}
               onPointerDown={(e) => e.stopPropagation()}
               onClick={() => setCollapsed(!collapsed)}
-              className="rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
+              variant="plain"
+              size="icon-xs"
+              className={overlayIconClass}
             >
               {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
-            </button>
+            </Button>
           </Tip>
           <span>Comments ({threads.length})</span>
           <span
@@ -768,10 +770,10 @@ function CommentsPanel({
               <Toggle
                 data-testid="comments-panel-add"
                 variant="ghost"
-                size="xs"
+                size="icon-xs"
                 pressed={mode}
                 onPressedChange={onToggleMode}
-                className="text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white data-[state=on]:bg-amber-500/20 data-[state=on]:text-amber-600 dark:data-[state=on]:text-amber-200"
+                className={cn(overlayIconClass, "data-[state=on]:bg-amber-500/20 data-[state=on]:text-amber-600 dark:data-[state=on]:text-amber-200")}
               >
                 <MessageSquarePlus size={14} />
               </Toggle>
@@ -780,37 +782,41 @@ function CommentsPanel({
               <Toggle
                 data-testid="comments-panel-pins"
                 variant="ghost"
-                size="xs"
+                size="icon-xs"
                 pressed={!pinsHidden}
                 onPressedChange={onTogglePins}
-                className="text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
+                className={overlayIconClass}
               >
                 {pinsHidden ? <EyeOff size={14} /> : <Eye size={14} />}
               </Toggle>
             </Tip>
             {threads.some((t) => threadUnreadCount(t, currentUser) > 0) && (
               <Tip content="Mark all as seen">
-                <button
+                <Button
                   data-testid="comments-mark-all-seen"
                   onClick={() => {
                     for (const t of threads) {
                       if (threadUnreadCount(t, currentUser) > 0) controller.markSeen(t.id);
                     }
                   }}
-                  className="rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
+                  variant="plain"
+                  size="icon-xs"
+                  className={overlayIconClass}
                 >
                   <CheckCheck size={14} />
-                </button>
+                </Button>
               </Tip>
             )}
             <Tip content="Close">
-              <button
+              <Button
                 data-testid="comments-panel-close"
                 onClick={onClose}
-                className="rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
+                variant="plain"
+                size="icon-xs"
+                className={overlayIconClass}
               >
                 <X size={14} />
-              </button>
+              </Button>
             </Tip>
           </span>
         </div>
@@ -1230,9 +1236,9 @@ function ThreadPopover({
             </Tip>
           )}
           <Tip content="Close">
-            <button onClick={onClose} className="text-neutral-500 hover:text-neutral-900 dark:text-white/60 dark:hover:text-white">
+            <Button onClick={onClose} variant="plain" size="text" className="text-neutral-500 hover:text-neutral-900 dark:text-white/60 dark:hover:text-white">
               <X size={14} />
-            </button>
+            </Button>
           </Tip>
         </div>
       </div>

@@ -14,7 +14,8 @@ import {
   subscribeLocalSelection,
 } from "@/wasm/collab/local-selection";
 import { netNameResolver, summarizeItem, type ItemSummary } from "@/lib/item-summary";
-import { Tip } from "@pcbjam/ui";
+import { Button, Tip } from "@pcbjam/ui";
+import { overlayIconClass } from "@/components/OverlayMenu";
 
 /**
  * Floating selection inspector (viewer-panels): read-only properties of the
@@ -136,15 +137,17 @@ export function SelectionInspector({
           onPointerUp={() => void drag.onPointerUp()}
         >
           <Tip content={collapsed ? "Expand" : "Collapse to header"}>
-            <button
+            <Button
               data-testid="inspector-panel-collapse"
               aria-expanded={!collapsed}
               onPointerDown={(e) => e.stopPropagation()}
               onClick={() => setCollapsed(!collapsed)}
-              className="rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
+              variant="plain"
+              size="icon-xs"
+              className={overlayIconClass}
             >
               {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
-            </button>
+            </Button>
           </Tip>
           <span>
             Inspector
@@ -156,13 +159,15 @@ export function SelectionInspector({
           </span>
           <span className="ml-auto flex items-center gap-0.5" onPointerDown={(e) => e.stopPropagation()}>
             <Tip content="Close">
-              <button
+              <Button
                 data-testid="inspector-panel-close"
                 onClick={onClose}
-                className="rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
+                variant="plain"
+                size="icon-xs"
+                className={overlayIconClass}
               >
                 <X size={14} />
-              </button>
+              </Button>
             </Tip>
           </span>
         </div>

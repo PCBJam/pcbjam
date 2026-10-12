@@ -11,7 +11,8 @@ import { isCanvasWork, isTargetAction, pointInRect, stepUseKey } from "./target-
 import { startOverlayTracking } from "./tracker";
 import type { OverlayButton, TargetState } from "./types";
 import { glCanvasRect, type CssRect } from "@/wasm/canvas-coords";
-import { Tip } from "@pcbjam/ui";
+import { Button, Tip } from "@pcbjam/ui";
+import { overlayIconClass } from "@/components/OverlayMenu";
 
 /**
  * The overlay layer (overlay-system 0002 M1): spotlight, target ring and the
@@ -301,7 +302,7 @@ export function OverlayHost({ tool }: { tool: string }) {
               {/* The grip, not the whole header: a header-wide handle would swallow clicks in a strip
                   right beside the target, where the work happens. */}
               <Tip content="Drag to move the card">
-                <button
+                <Button
                   type="button"
                   aria-label="Move the card"
                   data-testid="overlay-grip"
@@ -325,40 +326,43 @@ export function OverlayHost({ tool }: { tool: string }) {
                   onPointerUp={endDrag}
                   onPointerCancel={endDrag}
                   onLostPointerCapture={endDrag}
+                  variant="plain"
+                  size="icon-xs"
                   className={cn(
-                    "pointer-events-auto cursor-grab touch-none rounded p-0.5 text-neutral-400 hover:bg-black/5 hover:text-neutral-900 active:cursor-grabbing dark:text-white/50 dark:hover:bg-white/10 dark:hover:text-white",
+                    "pointer-events-auto cursor-grab touch-none text-neutral-400 hover:bg-black/5 hover:text-neutral-900 active:cursor-grabbing dark:text-white/50 dark:hover:bg-white/10 dark:hover:text-white",
                     !moved && step.closable === false && "-mr-1",
                   )}
                 >
                   <GripHorizontal className="h-4 w-4" />
-                </button>
+                </Button>
               </Tip>
               {moved && (
                 <Tip content="Put the card back">
-                  <button
+                  <Button
                     type="button"
                     aria-label="Put the card back"
                     data-testid="overlay-put-back"
                     onClick={() => setMoved(null)}
-                    className={cn(
-                      "pointer-events-auto rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white",
-                      step.closable === false && "-mr-1",
-                    )}
+                    variant="plain"
+                    size="icon-xs"
+                    className={cn("pointer-events-auto", overlayIconClass, step.closable === false && "-mr-1")}
                   >
                     <LocateFixed className="h-4 w-4" />
-                  </button>
+                  </Button>
                 </Tip>
               )}
               {step.closable !== false && (
-                <button
+                <Button
                   type="button"
                   aria-label="Close guide"
                   data-testid="overlay-close"
                   onClick={() => pressButton("close")}
-                  className="pointer-events-auto -mr-1 rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white"
+                  variant="plain"
+                  size="icon-xs"
+                  className={cn("pointer-events-auto -mr-1", overlayIconClass)}
                 >
                   <X className="h-4 w-4" />
-                </button>
+                </Button>
               )}
             </div>
             <p data-testid="overlay-text" aria-live="polite" className="mt-1 whitespace-pre-line text-sm leading-snug">

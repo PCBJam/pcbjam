@@ -3,6 +3,7 @@ import { setPinRadiusPx } from "@/wasm/collab/pin-geometry";
 import { PRESENCE_COLORS } from "@pcbjam/shared";
 import { Palette, X } from "lucide-react";
 import {
+  Button,
   Select as UiSelect,
   SelectContent,
   SelectItem,
@@ -281,9 +282,9 @@ export function PresenceTuner({ mod, tool }: { mod: TunerModule; tool: string })
         <span className="flex items-center gap-1.5 text-xs font-semibold">
           <Palette size={13} /> Presence tuner <span className="text-white/50">(dev)</span>
         </span>
-        <button onClick={() => setOpen(false)} className="text-white/70 hover:text-white">
+        <Button onClick={() => setOpen(false)} variant="plain" size="text" className="text-white/70 hover:text-white">
           <X size={14} />
-        </button>
+        </Button>
       </div>
 
       <div className="flex gap-2 border-b border-white/10 px-3 py-2">
