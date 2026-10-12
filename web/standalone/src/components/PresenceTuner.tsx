@@ -12,6 +12,8 @@ import {
   RadioGroup,
   RadioGroupItem,
   Checkbox,
+  Input,
+  Slider,
   Textarea,
   Tip,
 } from "@pcbjam/ui";
@@ -266,18 +268,20 @@ export function PresenceTuner({ mod, tool }: { mod: TunerModule; tool: string })
   if (!open) {
     return (
       <Tip content="Presence style tuner">
-        <button
+        <Button
           onClick={() => setOpen(true)}
-          className="absolute left-3 top-12 z-40 flex h-8 w-8 items-center justify-center rounded-full bg-fuchsia-700 text-white shadow-lg"
+          variant="plain"
+          size="icon"
+          className="absolute left-3 top-12 z-40 h-8 w-8 rounded-full bg-fuchsia-700 text-white shadow-lg"
         >
           <Palette size={15} />
-        </button>
+        </Button>
       </Tip>
     );
   }
 
   return (
-    <div className="absolute left-3 top-12 z-40 flex max-h-[80vh] w-72 flex-col overflow-hidden rounded-lg bg-black/90 text-white shadow-xl ring-1 ring-inset ring-fuchsia-400/40">
+    <div className="dark absolute left-3 top-12 z-40 flex max-h-[80vh] w-72 flex-col overflow-hidden rounded-lg bg-black/90 text-white shadow-xl ring-1 ring-inset ring-fuchsia-400/40">
       <div className="flex items-center justify-between bg-fuchsia-900/60 px-3 py-2">
         <span className="flex items-center gap-1.5 text-xs font-semibold">
           <Palette size={13} /> Presence tuner <span className="text-white/50">(dev)</span>
@@ -288,29 +292,35 @@ export function PresenceTuner({ mod, tool }: { mod: TunerModule; tool: string })
       </div>
 
       <div className="flex gap-2 border-b border-white/10 px-3 py-2">
-        <button
+        <Button
           onClick={() => injectDemo(!demo)}
+          variant="plain"
+          size="text"
           className={`rounded px-2 py-1 text-[11px] ring-1 ring-inset ring-white/25 ${
             demo ? "bg-fuchsia-600" : "hover:bg-white/10"
           }`}
         >
           {demo ? "Demo on" : "Demo peers"}
-        </button>
-        <button
+        </Button>
+        <Button
           onClick={copyJson}
+          variant="plain"
+          size="text"
           className="rounded px-2 py-1 text-[11px] ring-1 ring-inset ring-white/25 hover:bg-white/10"
         >
           {copied ? "Copied ✓" : "Copy JSON"}
-        </button>
-        <button
+        </Button>
+        <Button
           onClick={() => {
             setStyle(defaultsFor(tool));
             localStorage.removeItem(storeKey(tool));
           }}
+          variant="plain"
+          size="text"
           className="rounded px-2 py-1 text-[11px] ring-1 ring-inset ring-white/25 hover:bg-white/10"
         >
           Reset
-        </button>
+        </Button>
       </div>
 
       <div className="overflow-y-auto px-3 pb-3 text-[11px]">
@@ -461,13 +471,15 @@ function ColorsSection({
         <div className="mb-1 space-y-1">
           <div className="flex flex-wrap gap-1">
             {Object.entries(PALETTE_PRESETS).map(([name, colors]) => (
-              <button
+              <Button
                 key={name}
                 onClick={() => applyPalette(colors)}
+                variant="plain"
+                size="text"
                 className="rounded px-1.5 py-0.5 text-[10px] ring-1 ring-inset ring-white/25 hover:bg-white/10"
               >
                 {name}
-              </button>
+              </Button>
             ))}
           </div>
           <Textarea
@@ -480,12 +492,14 @@ function ColorsSection({
             )}
           />
           <div className="flex items-center gap-2">
-            <button
+            <Button
               onClick={() => set("palette", parsePalette(paletteText))}
+              variant="plain"
+              size="text"
               className="rounded bg-fuchsia-700 px-2 py-0.5 text-[10px] hover:bg-fuchsia-600"
             >
               Apply
-            </button>
+            </Button>
             <span className="text-[10px] text-white/40">
               {parsePalette(paletteText).length} colors
             </span>
@@ -528,15 +542,7 @@ function Range({
   return (
     <label className="flex items-center gap-2">
       <span className="w-24 shrink-0 text-white/60">{label}</span>
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={v}
-        onChange={(e) => onChange(Number(e.target.value))}
-        className="min-w-0 flex-1"
-      />
+      <Slider min={min} max={max} step={step} value={[v]} onValueChange={([n]) => onChange(n!)} thumbLabel={label} className="min-w-0 flex-1" />
       <span className="w-9 text-right text-white/80">{v}</span>
     </label>
   );
@@ -546,10 +552,10 @@ function TextField({ label, v, onChange }: { label: string; v: string; onChange:
   return (
     <label className="flex items-center gap-2">
       <span className="w-24 shrink-0 text-white/60">{label}</span>
-      <input
+      <Input
         value={v}
         onChange={(e) => onChange(e.target.value)}
-        className="min-w-0 flex-1 rounded bg-white/10 px-1 py-0.5 font-mono text-[10px] text-white outline-none"
+        className={cn(overlayFieldClass, "min-w-0 flex-1 rounded bg-white/10 px-1 py-0.5 font-mono text-[10px] text-white")}
       />
     </label>
   );

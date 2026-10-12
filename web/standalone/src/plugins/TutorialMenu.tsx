@@ -8,9 +8,6 @@ import { listTutorials, startTutorial, tutorialUrl, TUTORIAL_LEVEL, type Tutoria
 import { Button, Tip } from "@pcbjam/ui";
 
 /** "Open here": sized to its label. The shared row class is full width and would cover the title. */
-const openHereClass =
-  'shrink-0 whitespace-nowrap rounded-md px-2 py-1.5 text-xs text-neutral-800 transition-colors hover:bg-black/5 ' +
-  'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-black/30 disabled:opacity-60 ' +
   'dark:text-white/90 dark:hover:bg-white/10 dark:focus-visible:ring-white/40';
 
 /**
@@ -58,9 +55,9 @@ export function TutorialMenu({ tool, catalog, onViewChange }: PluginMenuProps) {
               </span>
             </Button>
           </Tip>
-          {here && <button type="button" className={openHereClass} disabled={!!busy}
+          {here && <Button type="button" variant="ghost" size="xs" className="shrink-0" disabled={!!busy}
             aria-label={`Open ${tutorial.title} in this project`}
-            onClick={() => { onViewChange({ kind: 'plugin', id: pluginKey(here) }); closeMenu(); }}>Open here</button>}
+            onClick={() => { onViewChange({ kind: 'plugin', id: pluginKey(here) }); closeMenu(); }}>Open here</Button>}
         </div>;
       })}
       {error && <p role="status" className="px-2 py-1 text-xs text-amber-700 dark:text-amber-200">{error}</p>}

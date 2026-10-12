@@ -1,3 +1,4 @@
+import { Button } from "@pcbjam/ui";
 // Extracted from WasmTool.tsx (2026-08-25 split) — behavior unchanged.
 
 /**
@@ -10,7 +11,7 @@ export function FatalOverlay({ message }: { message: string }) {
   return (
     <div
       data-testid="fatal-overlay"
-      className="absolute inset-0 z-[35] flex flex-col items-center justify-center gap-3 bg-[#1a1a2e] text-white"
+      className="dark absolute inset-0 z-[35] flex flex-col items-center justify-center gap-3 bg-[#1a1a2e] text-white"
     >
       <p className="font-mono text-4xl text-white/90">:(</p>
       <p className="font-mono text-sm text-white">
@@ -24,12 +25,13 @@ export function FatalOverlay({ message }: { message: string }) {
         please copy it into a bug report.
       </p>
       <div className="flex gap-2">
-        <button
-          className="rounded border border-white/40 px-3 py-1 text-xs hover:bg-white/10"
+        <Button
+          variant="outline"
+          size="xs"
           onClick={() => window.location.reload()}
         >
           Reload
-        </button>
+        </Button>
       </div>
     </div>
   );

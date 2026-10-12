@@ -119,12 +119,14 @@ export function ProjectView() {
       <>
         {isLocal && (
           <Tip content="Download this file">
-            <button
-              className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-sm hover:bg-accent"
+            <Button
+              variant="outline"
+              size="sm"
+              className="px-2.5"
               onClick={() => void downloadOne(path)}
             >
               <Download size={14} />
-            </button>
+            </Button>
           </Tip>
         )}
         {tool && (

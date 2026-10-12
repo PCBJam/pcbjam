@@ -61,7 +61,7 @@ export function WaitlistForm({ source = "standalone" }: { source?: string }) {
               className="sm:max-w-xs"
             />
             {/* Honeypot — humans never see/fill this. */}
-            <input
+            <Input
               type="text"
               name="company_url"
               tabIndex={-1}

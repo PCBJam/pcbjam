@@ -250,7 +250,6 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
     finally { placing.current = false; setPlacementBusy(false); }
   };
   const [resetCandidate,setResetCandidate]=React.useState<Descriptor|null>(null);
-  const button = 'rounded border border-neutral-300 px-2 py-1.5 text-xs hover:bg-black/5 disabled:opacity-40 dark:border-white/20 dark:hover:bg-white/10';
   const title = selected === BUILTIN ? 'Board Inspector' : active?.manifest.name ?? 'Plugin unavailable';
   const panelStorageKey = 'pcbjam:plugin-panel-layout:' + JSON.stringify([API_BASE_URL, sessionIdentity()?.slug ?? null, active?.pluginId ?? selected]);
   return <>
@@ -267,8 +266,8 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
         <h3 className="text-sm font-semibold">Add a plugin</h3>
         <p className="mt-1 text-neutral-500 dark:text-white/60">Choose a built plugin ZIP or folder. Review its permissions before installing.</p>
         <div className="mt-3 flex gap-2">
-          <button className={button} disabled={busy} onClick={() => zipInput.current?.click()}>Install ZIP</button>
-          <button className={button} disabled={busy} onClick={() => folderInput.current?.click()}>Install folder</button>
+          <Button variant="outline" size="xs" disabled={busy} onClick={() => zipInput.current?.click()}>Install ZIP</Button>
+          <Button variant="outline" size="xs" disabled={busy} onClick={() => folderInput.current?.click()}>Install folder</Button>
           <input ref={zipInput} type="file" accept=".zip" aria-label="Plugin ZIP" className="hidden" onChange={event => { const files = Array.from(event.target.files ?? []); event.target.value = ''; if (files.length) void prepare(files, true); }} />
           <input ref={folderInput} type="file" multiple aria-label="Plugin folder" className="hidden" onChange={event => { const files = Array.from(event.target.files ?? []); event.target.value = ''; if (files.length) void prepare(files, false); }} />
         </div>
@@ -300,12 +299,12 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
             <p>{backend.ready?'Approved by PCBJam':backend.status==='approved'?'Awaiting PCBJam setup.':'Not ready: '+backend.status+' — ask PCBJam to review this provider.'}</p>
             <p className="mt-1 break-all text-[10px]">Package: {candidate.pluginId}</p>
           </div>)}
-          <button className={button} disabled={busy || candidate.backends?.some(b=>!b.ready)} onClick={() => void install()}>Install plugin</button>{' '}<button className={button} disabled={busy} onClick={() => setCandidate(null)}>Cancel</button>
+          <Button variant="outline" size="xs" disabled={busy || candidate.backends?.some(b=>!b.ready)} onClick={() => void install()}>Install plugin</Button>{' '}<Button variant="outline" size="xs" disabled={busy} onClick={() => setCandidate(null)}>Cancel</Button>
         </section>}
         {resetCandidate && <section aria-label="Reset plugin data" className="mt-4 rounded border border-amber-500 p-3">
           <p>Reset local data for {resetCandidate.manifest.name}? Data is cleared in this browser and in other browsers the next time they connect.</p>
-          <button className={button} disabled={busy} onClick={async()=>{setBusy(true);try{await (await packageHost()).resetPluginData(resetCandidate.pluginId!);await refresh();setResetCandidate(null);}catch(error){setNotice((error as Error).message);}finally{setBusy(false);}}}>Reset plugin data</button>{' '}
-          <button className={button} onClick={()=>setResetCandidate(null)}>Cancel</button>
+          <Button variant="outline" size="xs" disabled={busy} onClick={async()=>{setBusy(true);try{await (await packageHost()).resetPluginData(resetCandidate.pluginId!);await refresh();setResetCandidate(null);}catch(error){setNotice((error as Error).message);}finally{setBusy(false);}}}>Reset plugin data</Button>{' '}
+          <Button variant="outline" size="xs" onClick={()=>setResetCandidate(null)}>Cancel</Button>
         </section>}
         <section aria-label="Installed plugins" className="mt-6 border-t border-black/10 pt-4 dark:border-white/10">
           <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-white/50">Installed plugins</h3>
@@ -313,11 +312,11 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
           {/* Tutorials live in the Tutorials menu, not among the user's plugins. */}
           {plugins.filter(plugin => plugin.source !== 'tutorial').map(plugin => <div key={pluginKey(plugin)} className="flex items-center gap-2 border-b border-black/5 py-3 last:border-0 dark:border-white/5">
             <div className="min-w-0 flex-1"><Tip content={plugin.manifest.name}><p className="truncate font-medium">{plugin.manifest.name}</p></Tip><p className="mt-1 text-neutral-500 dark:text-white/50">{plugin.manifest.version}{plugin.source === 'marketplace' ? ' · From the marketplace' : ''}{compatible(plugin) ? '' : ' · Available in another editor'}</p></div>
-            <button className={button} disabled={busy || !compatible(plugin) || plugin.enabled===false} onClick={() => openPlugin(pluginKey(plugin))}>Open</button>
-            {hostedPlugins && <button className={button} disabled={busy} onClick={async()=>{setBusy(true);try{await (await packageHost()).setPluginEnabled(plugin,plugin.enabled===false);await refresh();}catch(error){setNotice((error as Error).message);}finally{setBusy(false);}}}>{plugin.enabled===false?'Enable':'Disable'}</button>}
-            {hostedPlugins && <button className={button} disabled={busy} onClick={()=>setResetCandidate(plugin)}>Reset data</button>}
+            <Button variant="outline" size="xs" disabled={busy || !compatible(plugin) || plugin.enabled===false} onClick={() => openPlugin(pluginKey(plugin))}>Open</Button>
+            {hostedPlugins && <Button variant="outline" size="xs" disabled={busy} onClick={async()=>{setBusy(true);try{await (await packageHost()).setPluginEnabled(plugin,plugin.enabled===false);await refresh();}catch(error){setNotice((error as Error).message);}finally{setBusy(false);}}}>{plugin.enabled===false?'Enable':'Disable'}</Button>}
+            {hostedPlugins && <Button variant="outline" size="xs" disabled={busy} onClick={()=>setResetCandidate(plugin)}>Reset data</Button>}
             <Tip content={'Remove ' + plugin.manifest.name}>
-              <button className={button} disabled={busy} onClick={() => void remove(plugin)} aria-label={'Remove ' + plugin.manifest.name}><Trash2 size={14} /></button>
+              <Button variant="outline" size="xs" disabled={busy} onClick={() => void remove(plugin)} aria-label={'Remove ' + plugin.manifest.name}><Trash2 size={14} /></Button>
             </Tip>
           </div>)}
         </section>
@@ -332,32 +331,32 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
       {prompt?.kind === 'file' && <section aria-label="Plugin file request" className="mt-3 rounded border border-sky-500/40 p-3">
         <p className="mb-2">{active?.manifest.name} wants a file you choose.</p>
         <input type="file" aria-label="Choose file for plugin" accept={prompt.extensions.join(',')} className="max-w-full text-xs" onChange={event => { const file = event.target.files?.[0]; if (file) prompt.finish(file); }} />
-        <button className={button + ' mt-2'} onClick={() => prompt.finish(null)}>Cancel file request</button>
+        <Button variant="outline" size="xs" className="mt-2" onClick={() => prompt.finish(null)}>Cancel file request</Button>
       </section>}
       {prompt?.kind === 'external' && <section aria-label="Confirm opening a website" className="mt-3 rounded border border-sky-500/40 p-3">
         <p>{active?.manifest.name} wants to open <strong>{prompt.site}</strong> in a new tab.</p>
         <p className="my-2 break-all text-neutral-500 dark:text-white/60">{prompt.url}</p>
-        <button className={button} disabled={placementBusy} onClick={async () => {
+        <Button variant="outline" size="xs" disabled={placementBusy} onClick={async () => {
           if(placing.current)return;placing.current=true;setPlacementBusy(true);
           try {await prompt.authorize();prompt.signal.throwIfAborted();if(promptRef.current!==prompt)return;
             // A new tab without a handle back to the editor.
             window.open(prompt.url,'_blank','noopener,noreferrer');prompt.finish({status:'opened'});
           }catch(error){setNotice((error as Error).message);}finally{placing.current=false;setPlacementBusy(false);}
-        }}>Open {prompt.site}</button>{' '}
-        <button className={button} disabled={placementBusy} onClick={()=>prompt.finish({status:'cancelled'})}>Cancel</button>
+        }}>Open {prompt.site}</Button>{' '}
+        <Button variant="outline" size="xs" disabled={placementBusy} onClick={()=>prompt.finish({status:'cancelled'})}>Cancel</Button>
       </section>}
       {prompt?.kind === 'download' && <section aria-label="Confirm plugin download" className="mt-3 rounded border border-sky-500/40 p-3">
         <p>{active?.manifest.name} requests a download of <strong>{prompt.name}</strong>.</p>
         <p className="my-2 text-neutral-500 dark:text-white/60">{prompt.bytes.length.toLocaleString()} bytes. This downloads a file; it does not save changes to your project.</p>
         {prompt.content === 'archive' && <p className="my-2 text-neutral-500 dark:text-white/60">A ZIP archive PCBJam built on its servers from this plugin's exports of your design.</p>}
         {prompt.content === 'html' && <p className="my-2 text-neutral-500 dark:text-white/60">This is a web page containing code from this plugin and data from your design. The code runs when you open the file. PCBJam blocks the page from loading or sending anything over the network.</p>}
-        <button className={button} disabled={placementBusy} onClick={async () => {
+        <Button variant="outline" size="xs" disabled={placementBusy} onClick={async () => {
           if(placing.current)return;placing.current=true;setPlacementBusy(true);
           try {await prompt.authorize();prompt.signal.throwIfAborted();if(promptRef.current!==prompt)return;
             downloadBytes(prompt.name,prompt.bytes);prompt.finish({status:'download-requested'});
           }catch(error){setNotice((error as Error).message);}finally{placing.current=false;setPlacementBusy(false);}
-        }}>Download file</button>{' '}
-        <button className={button} disabled={placementBusy} onClick={()=>prompt.finish({status:'cancelled'})}>Cancel download</button>
+        }}>Download file</Button>{' '}
+        <Button variant="outline" size="xs" disabled={placementBusy} onClick={()=>prompt.finish({status:'cancelled'})}>Cancel download</Button>
       </section>}
       {prompt?.kind === 'part' && <section aria-label="Confirm remote part" className="mt-3 rounded border border-sky-500/40 p-3">
         <p>{active?.manifest.name} offers <strong>{prompt.request.pack.displayName}</strong>{prompt.request.place ? ' to place on the schematic' : ' to save'}.</p>
@@ -367,7 +366,7 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
           {(prompt.request.pack.model3d || prompt.request.pack.spice) && ' 3D models and SPICE files are not kept yet.'}
           {prompt.request.skipped.length > 0 && ` Not kept: ${prompt.request.skipped.join(', ')}.`}
         </p>
-        <button className={button} onClick={() => prompt.finish(true)}>{prompt.request.place ? 'Save and place' : 'Save to library'}</button>{' '}<button className={button} onClick={() => prompt.finish(false)}>Cancel</button>
+        <Button variant="outline" size="xs" onClick={() => prompt.finish(true)}>{prompt.request.place ? 'Save and place' : 'Save to library'}</Button>{' '}<Button variant="outline" size="xs" onClick={() => prompt.finish(false)}>Cancel</Button>
       </section>}
       {prompt?.kind === 'pluginPart' && <section aria-label="Confirm plugin part" className="mt-3 rounded border border-sky-500/40 p-3">
         <p>{active?.manifest.name} adds <strong>{prompt.part.displayName}</strong> to your team library{prompt.part.place ? ' and places it on the schematic' : ''}.</p>
@@ -375,13 +374,13 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
           {[prompt.part.symbol && `symbol ${prompt.part.symbol}`, prompt.part.footprint && `footprint ${prompt.part.footprint}`].filter(Boolean).join(' + ')}
           {' · '}{prompt.part.bytes.toLocaleString()} bytes, saved to <Code>{prompt.part.library}</Code>{prompt.part.place ? '; you then click the canvas to place it.' : '; nothing is placed.'}
         </p>
-        <button className={button} onClick={() => prompt.finish(true)}>{prompt.part.place ? 'Save and place' : 'Save to library'}</button>{' '}<button className={button} onClick={() => prompt.finish(false)}>Cancel</button>
+        <Button variant="outline" size="xs" onClick={() => prompt.finish(true)}>{prompt.part.place ? 'Save and place' : 'Save to library'}</Button>{' '}<Button variant="outline" size="xs" onClick={() => prompt.finish(false)}>Cancel</Button>
       </section>}
       {prompt?.kind === 'placement' && <section aria-label="Confirm plugin placement" className="mt-3 rounded border border-sky-500/40 p-3">
         <p>{active?.manifest.name} requests placement of <strong>{prompt.label}</strong>.</p>
         <p className="my-2 text-neutral-500 dark:text-white/60">This starts the editor's placement tool. You choose the position on the canvas.</p>
         <details className="mb-2"><summary>View clipboard data</summary><pre className="max-h-32 overflow-auto whitespace-pre-wrap text-[10px]">{prompt.sexpr}</pre></details>
-        <button className={button} disabled={placementBusy} onClick={() => void place()}>Place on canvas</button>{' '}<button className={button} disabled={placementBusy} onClick={() => prompt.finish({ status: 'cancelled' })}>Cancel placement</button>
+        <Button variant="outline" size="xs" disabled={placementBusy} onClick={() => void place()}>Place on canvas</Button>{' '}<Button variant="outline" size="xs" disabled={placementBusy} onClick={() => prompt.finish({ status: 'cancelled' })}>Cancel placement</Button>
       </section>}
         {notice && <p role="alert" className="mt-3 text-amber-700 dark:text-amber-200">{notice}</p>}
       </div>

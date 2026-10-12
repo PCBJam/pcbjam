@@ -57,20 +57,24 @@ export function LocalProjectView({
     return (
       <>
         {tool && (
-          <button
-            className="inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-sm hover:bg-accent"
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-1"
             onClick={() => onOpen(tool, path)}
           >
             <ExternalLink size={14} /> Open in {TOOL_LABELS[tool]}
-          </button>
+          </Button>
         )}
         {libTool && (
-          <button
-            className="inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-sm hover:bg-accent"
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-1"
             onClick={() => onOpenLib(libTool, path)}
           >
             <Library size={14} /> Open in {TOOL_LABELS[libTool]}
-          </button>
+          </Button>
         )}
       </>
     );

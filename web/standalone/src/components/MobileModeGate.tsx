@@ -9,7 +9,7 @@ import {
   rememberMobileMode,
   rememberedMobileMode,
 } from "@/lib/mobile-mode-choice";
-import { Checkbox } from "@pcbjam/ui";
+import { Button, Checkbox } from "@pcbjam/ui";
 
 /**
  * Mobile session-mode gate (mobile 0002). Sits between the boot payload and
@@ -136,19 +136,21 @@ function MobileModeDialog({
         </p>
         <div className="mt-4 flex flex-col gap-2">
           {options.map((o) => (
-            <button
+            <Button
               key={o.mode}
               type="button"
               data-testid={`mobile-mode-${o.mode}`}
               onClick={() => onChoose(o.mode, remember)}
-              className="flex items-start gap-3 rounded-md border p-3 text-left hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              variant="outline"
+              size="row"
+              className="items-start gap-3 rounded-md p-3"
             >
               <span className="mt-0.5 shrink-0 text-muted-foreground">{o.icon}</span>
               <span className="min-w-0">
                 <span className="block text-sm font-medium">{o.title}</span>
                 <span className="block text-xs text-muted-foreground">{o.detail}</span>
               </span>
-            </button>
+            </Button>
           ))}
         </div>
         <label className="mt-4 flex items-center gap-2 text-sm text-muted-foreground">
