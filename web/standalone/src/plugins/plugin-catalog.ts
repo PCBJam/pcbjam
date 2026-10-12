@@ -78,6 +78,7 @@ export interface PackageHost {
       storageBinding?(): string | null;
       authorize?(signal: AbortSignal): Promise<void>;
       onAuthorizationReady?(check: (method: string) => Promise<void>): void;
+      localChecks?: boolean;
       selectItems?(ids: string[], signal: AbortSignal): Promise<{ selected: string[]; held: string[]; missing: string[] }>;
       saveFile?(
         proposal: { name: string; text?: string; kind: "text" | "html" | "image" | "archive"; bytes: Uint8Array; method: string },
