@@ -43,7 +43,7 @@ import { noteEmojiUsed, quickEmojis } from "@/lib/emoji-quick";
 import { cachedCollaborators, collaborators, mergeCandidates } from "@/lib/mentions";
 import { copyLabel, currentCopyRef } from "@/lib/copy-context";
 import { ancestryLabel, ancestryStore } from "@/lib/git-provenance";
-import { Badge, Checkbox, Kbd, Textarea, Tip, Toggle } from "@pcbjam/ui";
+import { Badge, Button, Checkbox, Kbd, Textarea, Tip, Toggle } from "@pcbjam/ui";
 import { cn } from "@/lib/utils";
 
 /**
@@ -693,12 +693,14 @@ function CommentsPanel({
   };
 
   const row = (t: ResolvedThread, testId: string) => (
-    <button
+    <Button
       key={t.id}
       data-testid={testId}
       data-thread-id={t.id}
       onClick={() => onJump(t)}
-      className="block w-full border-t border-black/10 px-3 py-2 text-left text-xs hover:bg-black/5 dark:border-white/10 dark:hover:bg-white/10"
+      variant="plain"
+      size="row"
+      className="block border-t border-black/10 px-3 py-2 text-xs hover:bg-black/5 dark:border-white/10 dark:hover:bg-white/10"
     >
       <span className="flex items-center gap-1">
         <Tip content={authorLabel(t).title}>
@@ -725,7 +727,7 @@ function CommentsPanel({
       <span className="mt-0.5 block truncate text-neutral-800 dark:text-white/90">
         {t.messages[0]?.body ?? ""}
       </span>
-    </button>
+    </Button>
   );
 
   return (
@@ -839,15 +841,17 @@ function CommentsPanel({
         {detached.length > 0 && (
           <div data-testid="comments-detached-section" className="border-t border-black/10 dark:border-white/10">
             <Tip content="Threads whose anchor item is gone from this document — they stay here until moved or resolved">
-              <button
+              <Button
                 data-testid="comments-detached-summary"
                 aria-expanded={detachedOpen}
                 onClick={() => setDetachedOpen(!detachedOpen)}
-                className="flex w-full items-center gap-1 px-3 py-1.5 text-left text-[11px] text-neutral-600 hover:bg-black/5 dark:text-white/70 dark:hover:bg-white/10"
+                variant="plain"
+                size="row"
+                className="gap-1 px-3 py-1.5 text-[11px] text-neutral-600 hover:bg-black/5 dark:text-white/70 dark:hover:bg-white/10"
               >
                 {detachedOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                 <span>Not on this revision ({detached.length})</span>
-              </button>
+              </Button>
             </Tip>
             {detachedOpen && (
               <>

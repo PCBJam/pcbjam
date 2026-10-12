@@ -1,6 +1,6 @@
 import * as React from "react";
 import type { Collaborator } from "@pcbjam/shared";
-import { Input, Textarea } from "@pcbjam/ui";
+import { Button, Input, Textarea } from "@pcbjam/ui";
 import { overlayFieldClass } from "@/components/OverlayMenu";
 import { filterCandidates } from "@/lib/mentions";
 import { cn } from "@/lib/utils";
@@ -177,7 +177,7 @@ export function MentionInput({
           className="absolute left-0 right-0 top-full z-[80] mt-1 overflow-hidden rounded-md bg-white shadow-xl ring-1 ring-black/10 dark:bg-neutral-900 dark:ring-white/15"
         >
           {open.items.map((c, i) => (
-            <button
+            <Button
               key={c.slug}
               data-testid="mention-option"
               data-slug={c.slug}
@@ -187,7 +187,9 @@ export function MentionInput({
                 accept(c);
               }}
               onPointerEnter={() => setOpen((o) => (o ? { ...o, sel: i } : o))}
-              className={`flex w-full items-center gap-2 px-2 py-1.5 text-left text-xs text-neutral-900 dark:text-white ${
+              variant="plain"
+              size="row"
+              className={`px-2 py-1.5 text-xs text-neutral-900 dark:text-white ${
                 i === open.sel ? "bg-sky-500/20 dark:bg-sky-600/40" : "hover:bg-black/5 dark:hover:bg-white/10"
               }`}
             >
@@ -200,7 +202,7 @@ export function MentionInput({
               )}
               <span className="truncate">{c.name}</span>
               <span className="ml-auto truncate text-[10px] text-neutral-400 dark:text-white/40">@{c.slug}</span>
-            </button>
+            </Button>
           ))}
         </div>
       )}

@@ -3,7 +3,7 @@ import { presenceKey } from "@pcbjam/shared";
 import type { PresencePeer } from "@/wasm/collab/presence";
 import type { FollowTarget } from "@/wasm/collab/follow-user";
 import { overlayRowClass } from "@/components/OverlayMenu";
-import { Badge, Tip } from "@pcbjam/ui";
+import { Badge, Button, Tip } from "@pcbjam/ui";
 
 /**
  * "Who else is in this file" (collab-presence 0001/0003), as a readable LIST.
@@ -91,7 +91,7 @@ export function PresenceRoster({
                   : `${p.user.name} — on ${elsewhere}`
             }
           >
-            <button
+            <Button
               type="button"
               data-presence-user={p.user.id}
               data-presence-agent={p.agent ? p.agent.client : undefined}
@@ -99,9 +99,11 @@ export function PresenceRoster({
               data-presence-following={followed ? "1" : undefined}
               disabled={!followable(p)}
               onClick={() => toggleFollow(p)}
+              variant="plain"
+              size="row"
               className={`${overlayRowClass} ${
                 followed ? "bg-black/10 dark:bg-white/10" : ""
-              } ${here ? "" : "cursor-default opacity-50 hover:bg-transparent"}`}
+              } ${here ? "disabled:opacity-100" : "cursor-default opacity-50 hover:bg-transparent"}`}
             >
               <span
                 aria-hidden
@@ -151,7 +153,7 @@ export function PresenceRoster({
                   Follow
                 </span>
               )}
-            </button>
+            </Button>
           </Tip>
         );
       })}

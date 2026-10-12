@@ -95,20 +95,24 @@ export function FileTree({
 
       <div className="divide-y rounded-lg border">
         {dir && (
-          <button
+          <Button
             type="button"
-            className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-sm text-muted-foreground hover:bg-accent"
+            variant="ghost"
+            size="row"
+            className="px-4 py-2.5 text-sm text-muted-foreground"
             onClick={() => setDir(parent)}
           >
             <CornerLeftUp size={15} /> ..
-          </button>
+          </Button>
         )}
 
         {folders.map(([name, count]) => (
-          <button
+          <Button
             type="button"
             key={name}
-            className="flex w-full items-center justify-between gap-4 px-4 py-2.5 text-left hover:bg-accent"
+            variant="ghost"
+            size="row"
+            className="justify-between gap-4 px-4 py-2.5"
             onClick={() => setDir(`${dir}${name}/`)}
           >
             <span className="flex min-w-0 items-center gap-2">
@@ -119,7 +123,7 @@ export function FileTree({
               {count} item{count === 1 ? "" : "s"}
               <ChevronRight size={14} />
             </span>
-          </button>
+          </Button>
         ))}
 
         {filesHere.map((f) => (

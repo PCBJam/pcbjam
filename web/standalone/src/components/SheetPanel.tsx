@@ -1,7 +1,7 @@
 import * as React from "react";
 import { ChevronDown, ChevronRight, FileText, X } from "lucide-react";
 import { useDraggablePanel } from "@/components/useDraggablePanel";
-import { Tip } from "@pcbjam/ui";
+import { Button, Tip } from "@pcbjam/ui";
 
 /**
  * Floating sheet navigator (sheet-panel): the canvas-only stand-in for the
@@ -229,13 +229,15 @@ export function SheetPanel({
             const active = state.current === s.path;
             return (
               <Tip content={`${fileLabel(s.file)} — page ${s.page}`} key={s.path}>
-                <button
+                <Button
                   data-testid="sheet-row"
                   data-sheet-path={s.path}
                   data-active={active || undefined}
                   aria-current={active ? "page" : undefined}
                   onClick={() => enter(s.path)}
-                  className={`flex w-full items-center gap-2 border-t border-black/5 px-3 py-1 text-left text-xs hover:text-sky-600 dark:border-white/5 dark:hover:text-sky-300 ${
+                  variant="plain"
+                  size="row"
+                  className={`border-t border-black/5 px-3 py-1 text-xs hover:text-sky-600 dark:border-white/5 dark:hover:text-sky-300 ${
                     active ? "bg-sky-500/10 dark:bg-sky-400/10" : ""
                   }`}
                   style={{ paddingLeft: 12 + Math.min(s.depth, 8) * 12 }}
@@ -252,7 +254,7 @@ export function SheetPanel({
                   <span className="shrink-0 tabular-nums text-[10px] text-neutral-400 dark:text-white/40">
                     {s.page}
                   </span>
-                </button>
+                </Button>
               </Tip>
             );
           })}

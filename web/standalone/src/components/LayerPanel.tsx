@@ -1,7 +1,7 @@
 import * as React from "react";
 import { ChevronDown, ChevronRight, Eye, EyeOff, X } from "lucide-react";
 import { useDraggablePanel } from "@/components/useDraggablePanel";
-import { Tip, Toggle } from "@pcbjam/ui";
+import { Button, Tip, Toggle } from "@pcbjam/ui";
 
 /**
  * Floating layer panel (viewer-panels): the canvas-only replacement for the
@@ -236,15 +236,17 @@ export function LayerPanel({
                 </Toggle>
               </Tip>
               <Tip content={`Make ${l.name} the active layer`}>
-                <button
+                <Button
                   data-testid="layer-activate"
-                  className="min-w-0 flex-1 text-left hover:text-sky-600 dark:hover:text-sky-300"
+                  variant="plain"
+                  size="text"
+                  className="min-w-0 flex-1 justify-start text-left hover:text-sky-600 dark:hover:text-sky-300"
                   onClick={() => setActive(l.id)}
                 >
                   <span className={`block truncate ${state.active === l.id ? "font-semibold" : ""}`}>
                     {l.name}
                   </span>
-                </button>
+                </Button>
               </Tip>
             </div>
           ))}
