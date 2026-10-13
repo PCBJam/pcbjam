@@ -4,6 +4,8 @@ import { libVarRef } from "@pcbjam/shared";
 import type { Tool } from "@pcbjam/shared";
 import type { LibInfo, LibsSource } from "@/wasm/libs/source";
 import { ensureModelInMemfs, forgetLibModel, LIB_ROOTS_DIR } from "@/wasm/libs/models-bridge";
+import { Button, Tip } from "@pcbjam/ui";
+import { overlayIconClass } from "@/components/OverlayMenu";
 
 /**
  * Library files (libs 0020 E.3/F): the lib-scoped editors' way to put a 3D
@@ -24,9 +26,6 @@ const ACCEPT: Record<FileKind, string> = {
 
 /** Same cap as the runner's library bodies (lib-bodies.ts). */
 const MAX_BYTES = 32 * 1024 * 1024;
-
-const iconBtn =
-  "rounded p-0.5 text-neutral-500 hover:bg-black/5 hover:text-neutral-900 dark:text-white/60 dark:hover:bg-white/10 dark:hover:text-white";
 
 export function LibFilesPanel({ source, tool }: { source: LibsSource; tool: Tool }) {
   const kind: FileKind | null =
@@ -104,11 +103,13 @@ export function LibFilesPanel({ source, tool }: { source: LibsSource; tool: Tool
       data-testid="lib-files-panel"
       className="absolute bottom-3 right-3 z-40 flex w-80 flex-col overflow-hidden rounded-xl bg-white/95 text-neutral-900 shadow-2xl ring-1 ring-inset ring-black/10 backdrop-blur-sm dark:bg-neutral-950/90 dark:text-white dark:ring-white/15"
     >
-      <button
+      <Button
         data-testid="lib-files-toggle"
         aria-expanded={!collapsed}
         onClick={() => setCollapsed(!collapsed)}
-        className="flex items-center gap-2 px-3 py-2 text-left text-xs font-semibold"
+        variant="plain"
+        size="row"
+        className="items-center gap-2 px-3 py-2 text-xs font-semibold"
       >
         {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
         <FolderOpen size={14} className="text-neutral-400 dark:text-white/50" />
@@ -118,7 +119,7 @@ export function LibFilesPanel({ source, tool }: { source: LibsSource; tool: Tool
           {paths.pathVar}
           {"}"}
         </span>
-      </button>
+      </Button>
       {!collapsed && (
         <div className="flex flex-col gap-2 px-3 pb-3 text-xs">
           <p className="text-neutral-500 dark:text-white/60">
@@ -126,14 +127,14 @@ export function LibFilesPanel({ source, tool }: { source: LibsSource; tool: Tool
             the path below in KiCad: it works here, and in desktop KiCad once{" "}
             <span className="font-mono">{paths.pathVar}</span> points at the library folder.
           </p>
-          <button
+          <Button
             data-testid="lib-files-upload"
             disabled={busy}
             onClick={() => inputRef.current?.click()}
-            className="inline-flex items-center justify-center gap-1.5 rounded-md bg-sky-600 px-3 py-1.5 font-medium text-white hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-40"
+            size="xs"
           >
-            <Upload size={13} /> {busy ? "Uploading…" : `Upload ${what}`}
-          </button>
+            <Upload /> {busy ? "Uploading…" : `Upload ${what}`}
+          </Button>
           <input
             ref={inputRef}
             data-testid="lib-files-input"
@@ -148,16 +149,25 @@ export function LibFilesPanel({ source, tool }: { source: LibsSource; tool: Tool
           />
           {last && (
             <div className="flex items-center gap-1.5">
-              <code
-                data-testid="lib-files-ref"
-                className="min-w-0 flex-1 truncate rounded bg-black/5 px-1.5 py-1 dark:bg-white/10"
-                title={last}
-              >
-                {last}
-              </code>
-              <button title="Copy path" onClick={() => void copy()} className={iconBtn}>
-                {copied ? <Check size={14} /> : <Copy size={14} />}
-              </button>
+              <Tip content={last}>
+                <code
+                  data-testid="lib-files-ref"
+                  className="min-w-0 flex-1 truncate rounded bg-black/5 px-1.5 py-1 dark:bg-white/10"
+                >
+                  {last}
+                </code>
+              </Tip>
+              <Tip content={copied ? "Copied" : "Copy path"}>
+                <Button
+                  aria-label="Copy path"
+                  onClick={() => void copy()}
+                  variant="plain"
+                  size="icon-xs"
+                  className={overlayIconClass}
+                >
+                  {copied ? <Check size={14} /> : <Copy size={14} />}
+                </Button>
+              </Tip>
             </div>
           )}
           {last && kind === "model3d" && (
