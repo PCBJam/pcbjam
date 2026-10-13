@@ -3,6 +3,7 @@ import { pluginSheetAdapter } from '@/overlay/plugin-tours';
 import { applyEdit, editModule, validateEdit, type EditRequest } from '@/plugins/edits';
 import { placeImportedItem, placementModule } from '@/plugins/placement';
 import { buildSymbolImport } from '@/wasm/import-item';
+import { kicadString } from './kicad-string';
 
 /**
  * AI chat editor actions (POC): what the agent asks the OPEN editor to do. Each
@@ -119,7 +120,9 @@ async function placeSymbol(input: { value?: string; lib_id?: string }, ctx: Edit
   if (input.value) {
     // Only the placed symbol's Value, not the library definition's.
     const at = sexpr.indexOf('\n(symbol (lib_id');
-    sexpr = sexpr.slice(0, at) + sexpr.slice(at).replace(/\(property "Value" "(?:[^"\\]|\\.)*"/, `(property "Value" "${input.value.replace(/"/g, '')}"`);
+    // A replacer function: a replacement STRING would interpret `$&`/`$1` in the value.
+    const value = kicadString(input.value);
+    sexpr = sexpr.slice(0, at) + sexpr.slice(at).replace(/\(property "Value" "(?:[^"\\]|\\.)*"/, () => `(property "Value" "${value}"`);
   }
 
   const mod = placementModule();
@@ -148,7 +151,7 @@ async function connectPin(input: { ref?: string; pin?: string; net?: string }, c
   // Library y points up, the sheet's down.
   const x = mm(symbol.x) + pin.x;
   const y = mm(symbol.y) - pin.y;
-  const net = input.net.replace(/"/g, '');
+  const net = kicadString(input.net);
   const label = `(label "${net}" (at ${+x.toFixed(4)} ${+y.toFixed(4)} 0) (effects (font (size 1.27 1.27)) (justify left bottom)) (uuid "${crypto.randomUUID()}"))`;
   await nativeEdit({ label: `PCBJam AI: connect ${symbol.ref}.${input.pin} to ${net}`, upsert: [{ sexpr: label }], remove: [] }, ctx);
   return { connected: `${symbol.ref}.${input.pin}`, net, at: [x, y], undo: 'One undo step in the editor (Ctrl+Z).' };
