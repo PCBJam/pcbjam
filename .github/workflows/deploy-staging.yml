@@ -24,6 +24,14 @@ env:
 jobs:
   build:
     uses: ./.github/workflows/wasm-build.yml
+    # wasm-build's green-result cache: read the commit's statuses + the green
+    # run's artifact, write the green mark (the default token is read-only).
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+      pull-requests: read
+      statuses: write
     with:
       build_3d_viewer: "ON"
       run_tests: true

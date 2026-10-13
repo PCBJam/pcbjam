@@ -34,6 +34,14 @@ concurrency:
 jobs:
   build:
     uses: ./.github/workflows/wasm-build.yml
+    # wasm-build's green-result cache: read the commit's statuses + the green
+    # run's artifact, write the green mark (the default token is read-only).
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+      pull-requests: read
+      statuses: write
     # Pass repo secrets (DISCORD_WEBHOOK_URL) through to the reusable build so the
     # post-test step can post the screenshot + perf report on push to main.
     secrets: inherit

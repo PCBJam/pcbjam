@@ -16,6 +16,22 @@ name: wasm-build (reusable)
 # the whole build is skipped (a tag release reuses main's entry for the same
 # commit); on a miss the compile reruns and the shim is re-applied before the
 # save.
+#
+# GREEN-RESULT CACHE (on top of the output cache). A commit is built and tested
+# on staging, then fast-forwarded to main, then tagged: the same commit, three
+# full runs (~20 min of tests each, plus a ~25 min recompile on main, because
+# Actions caches are branch-scoped and main can't read staging's). So a run
+# whose gating tests pass marks the commit with a commit status
+# `ci-green/wasm-build` (description = the green key, target = this run). The
+# `green` job checks it first: on a match the build-and-test job is skipped and,
+# when the caller needs the build (upload_output), `reuse-output` copies the
+# green run's `wasm-output` artifact into this run (only a hit while that
+# artifact still exists). Commit statuses are per commit, visible from every
+# branch and tag. The key is the commit's TREE (code, submodule pointers, build
+# scripts, .ci-cache-epoch, this workflow) + the 3D flag + a version; bump
+# GREEN_KEY_VERSION to invalidate every mark. Only pushes reuse a mark (a
+# manual dispatch or a PR always runs). Bypass: no_cache, or
+# [no-cache] / [rebuild-wasm] / [no-green-cache] in the commit message.
 
 on:
   workflow_call:
@@ -62,12 +78,104 @@ on:
       CI_SCREENSHOTS_S3_WRITE_SECRET_ACCESS_KEY:
         required: false
 
+env:
+  GREEN_CONTEXT: ci-green/wasm-build
+  GREEN_KEY_VERSION: "1"
+
 jobs:
+  # Was this exact commit already built and tested green (on staging, usually)?
+  # Never fails the run: any error reads as "not green" and the full job runs.
+  green:
+    name: Already green on this commit?
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      hit: ${{ steps.check.outputs.hit }}
+      run_id: ${{ steps.check.outputs.run_id }}
+      key: ${{ steps.check.outputs.key }}
+    steps:
+      - name: Look up the green mark
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          HEAD_MSG: ${{ github.event.head_commit.message }}
+          NO_CACHE: ${{ inputs.no_cache }}
+          EVENT: ${{ github.event_name }}
+          RUN_TESTS: ${{ inputs.run_tests }}
+          NEED_OUTPUT: ${{ inputs.upload_output }}
+          FLAG: ${{ inputs.build_3d_viewer }}
+        run: |
+          hit=false; run_id=""
+          tree=$(gh api "repos/$REPO/commits/$SHA" --jq .commit.tree.sha 2>/dev/null || true)
+          key="v$GREEN_KEY_VERSION tree=$tree 3d=$FLAG"
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+          if [ -z "$tree" ]; then
+            echo "no tree for $SHA: full run"
+          elif [ "$RUN_TESTS" != "true" ] || [ "$NO_CACHE" = "true" ]; then
+            echo "tests off or no_cache: full run"
+          elif [ "$EVENT" != "push" ]; then
+            echo "$EVENT run: full run (only pushes reuse a green mark)"
+          elif printf '%s' "$HEAD_MSG" | grep -qiE '\[(no-cache|rebuild-wasm|no-green-cache)\]'; then
+            echo "the commit message asks for a full run"
+          else
+            url=$(gh api --paginate "repos/$REPO/commits/$SHA/statuses" \
+              --jq ".[] | select(.context == \"$GREEN_CONTEXT\" and .state == \"success\" and .description == \"$key\") | .target_url" \
+              2>/dev/null | head -1 || true)
+            rid=$(printf '%s' "$url" | sed -nE 's#.*/actions/runs/([0-9]+).*#\1#p')
+            if [ -z "$rid" ]; then
+              echo "not green yet: full run"
+            elif [ "$NEED_OUTPUT" = "true" ] && [ -z "$(gh api "repos/$REPO/actions/runs/$rid/artifacts" \
+                --jq '.artifacts[] | select(.name == "wasm-output" and .expired == false) | .id' 2>/dev/null)" ]; then
+              echo "green on run $rid, but its wasm-output artifact is gone: full run"
+            else
+              hit=true; run_id=$rid
+            fi
+          fi
+          echo "hit=$hit" >> "$GITHUB_OUTPUT"
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          if [ "$hit" = true ]; then
+            {
+              echo "### Already green: build and tests skipped"
+              echo "This commit passed them in run [$run_id]($GITHUB_SERVER_URL/$REPO/actions/runs/$run_id) (\`$key\`)."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "green hit=$hit run=$run_id key=$key"
+
+  # A green hit that must still hand the build on (staging deploy, tag release):
+  # the green run's artifact, re-uploaded under this run's name.
+  reuse-output:
+    name: Reuse the green build output
+    needs: green
+    if: needs.green.outputs.hit == 'true' && inputs.upload_output
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Download the green run's WASM output
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-output
+          path: output
+          run-id: ${{ needs.green.outputs.run_id }}
+          github-token: ${{ github.token }}
+      - name: Upload WASM output artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-output
+          if-no-files-found: error
+          path: output/
+
   build-and-test:
     name: Build all tools + KiCad e2e (Ubicloud)
+    needs: green
     # Don't run untrusted fork PRs on the paid runner (push/dispatch always run;
-    # same-repo PRs run). github.event_name here is the CALLER's event.
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # same-repo PRs run). github.event_name here is the CALLER's event. Skipped
+    # when this commit is already green (see the header). !cancelled(): a failed
+    # `green` job must mean "run everything", never "skip".
+    if: >-
+      !cancelled() && needs.green.outputs.hit != 'true' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubicloud-standard-30
     timeout-minutes: 300
     env:
@@ -601,6 +709,23 @@ jobs:
           jq -n --arg c "$CONTENT" '{content:$c, allowed_mentions:{parse:[]}}' \
             | curl -sS -X POST "$DISCORD_WEBHOOK_URL" -H "Content-Type: application/json" -d @- >/dev/null \
             && echo "posted CI-failure notice"
+
+      # Mark this commit green for later runs (main after staging, the tag after
+      # main). Only after every gating step passed; a mark never blocks a build.
+      - name: Mark this commit green
+        if: success() && inputs.run_tests && github.event_name != 'pull_request'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEY: ${{ needs.green.outputs.key }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          case "$KEY" in ""|*"tree= "*) echo "no green key: not marking"; exit 0;; esac
+          gh api "repos/$REPO/statuses/$SHA" -f state=success -f context="$GREEN_CONTEXT" \
+            -f description="$KEY" -f target_url="$RUN_URL" >/dev/null
+          echo "marked $SHA green ($KEY)"
 
       - name: Upload test logs & screenshots
         if: always() && inputs.run_tests
