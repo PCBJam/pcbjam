@@ -100,6 +100,7 @@ describe("select-all amplification", () => {
       setCursor: vi.fn(),
       setSelection: vi.fn(),
       setViewport: vi.fn(),
+      setPlugin: vi.fn(),
       colorOf: () => "#000",
       destroy: vi.fn(),
     };

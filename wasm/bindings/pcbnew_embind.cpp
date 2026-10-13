@@ -75,6 +75,7 @@
 #include "collab_common.h"
 #include "collab_presence_core.h"
 #include "plugin_board_geometry.h"
+#include "plugin_edits.h"
 #include "open_gate.h"
 #include "pcbjam_async_policy.h"
 #include "timer_park.h"
@@ -84,6 +85,7 @@
 #include <page_info.h>
 #include <title_block.h>
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <typeinfo>
 #include <chrono>
@@ -1703,6 +1705,301 @@ void doApplyItems( PCB_EDIT_FRAME* aFrame, const json& aPayload )
     rebaselineTouched( board, touched );
     s_applyingRemote = false;
     scheduleFlush();
+}
+
+// ── Plugin edits (plugins 0023) ──────────────────────────────────────────────
+// A plugin's create / change / delete of board items as ONE local KiCad commit. Unlike
+// doApplyItems (a peer's edit: SKIP_UNDO, echo-suppressed), this is the user's own edit made
+// through a plugin: it lands on the undo stack ("Undo <plugin>: <label>") and the collab
+// listener broadcasts it like any local commit. All or nothing: every item is parsed and every
+// id resolved before anything is staged.
+
+// Board items a plugin may create, change or delete (0023 "What may be edited"). Groups and
+// generators are out: replacing them moves member sets (see relinkGroups).
+bool pluginEditableType( KICAD_T aType )
+{
+    switch( aType )
+    {
+    case PCB_TRACE_T:
+    case PCB_ARC_T:
+    case PCB_VIA_T:
+    case PCB_ZONE_T:
+    case PCB_FOOTPRINT_T:
+    case PCB_SHAPE_T:
+    case PCB_TEXT_T:
+    case PCB_TEXTBOX_T:
+    case PCB_DIM_ALIGNED_T:
+    case PCB_DIM_LEADER_T:
+    case PCB_DIM_CENTER_T:
+    case PCB_DIM_RADIAL_T:
+    case PCB_DIM_ORTHOGONAL_T:
+        return true;
+    default:
+        return false;
+    }
+}
+
+// One plugin item: a bare item s-expr parsed against the live board's layer and net tables,
+// like makeFromBlob, but strict: exactly one editable top-level item, and an unknown net is
+// refused (MapNets would add it to the live board outside any commit). Sets aCode on failure.
+BOARD_ITEM* parsePluginItem( BOARD& aBoard, const std::string& aSexpr, std::string& aCode )
+{
+    aCode = "INVALID";
+    const size_t first = aSexpr.find_first_not_of( " \t\r\n" );
+
+    if( first == std::string::npos || aSexpr.compare( first, 10, "(kicad_pcb" ) == 0 )
+        return nullptr;
+
+    // Nets go by name, as KiCad 10 writes them. A bare net code would bind to nothing (the board
+    // file has no net table any more) and silently disconnect the item.
+    for( size_t at = aSexpr.find( "(net", first ); at != std::string::npos; at = aSexpr.find( "(net", at + 4 ) )
+    {
+        size_t p = at + 4;
+
+        if( p >= aSexpr.size() || !std::isspace( static_cast<unsigned char>( aSexpr[p] ) ) )
+            continue;                   // (net_tie_pad_groups …), (netclass …)
+
+        while( p < aSexpr.size() && std::isspace( static_cast<unsigned char>( aSexpr[p] ) ) )
+            ++p;
+
+        if( p < aSexpr.size() && std::isdigit( static_cast<unsigned char>( aSexpr[p] ) ) )
+        {
+            aCode = "UNKNOWN_NET";
+            return nullptr;
+        }
+    }
+
+    CLIPBOARD_IO io;
+    io.SetBoard( &aBoard );
+    BOARD_ITEM* parsed = nullptr;
+
+    try
+    {
+        parsed = io.PCB_IO_KICAD_SEXPR::Parse(
+                wxString::FromUTF8( wrapInBoardEnvelope( aBoard, aSexpr.substr( first ) ).c_str() ) );
+    }
+    catch( ... )
+    {
+        return nullptr;
+    }
+
+    if( !parsed )
+        return nullptr;
+
+    if( parsed->Type() != PCB_T )
+    {
+        delete parsed;
+        return nullptr;
+    }
+
+    BOARD* clip = static_cast<BOARD*>( parsed );
+    std::vector<BOARD_ITEM*> items;
+
+    for( BOARD_ITEM* i : clip->Tracks() )      items.push_back( i );
+    for( BOARD_ITEM* i : clip->Zones() )       items.push_back( i );
+    for( BOARD_ITEM* i : clip->Drawings() )    items.push_back( i );
+    for( BOARD_ITEM* i : clip->Footprints() )  items.push_back( i );
+    for( BOARD_ITEM* i : clip->Points() )      items.push_back( i );
+    for( BOARD_ITEM* i : clip->Generators() )  items.push_back( i );
+    for( BOARD_ITEM* i : clip->Groups() )      items.push_back( i );
+
+    if( items.size() != 1 || !pluginEditableType( items[0]->Type() ) )
+    {
+        delete clip;
+        return nullptr;
+    }
+
+    for( BOARD_CONNECTED_ITEM* c : clip->AllConnectedItems() )
+    {
+        if( !c->GetNetname().IsEmpty() && !aBoard.FindNet( c->GetNetname() ) )
+        {
+            aCode = "UNKNOWN_NET";
+            delete clip;
+            return nullptr;
+        }
+    }
+
+    clip->MapNets( &aBoard );
+
+    BOARD_ITEM* found = items[0];
+    clip->Remove( found );
+    found->SetParent( &aBoard );       // before clip is freed (see makeFromBlob)
+    found->SetParentGroup( nullptr );
+
+    if( FOOTPRINT* fp = dynamic_cast<FOOTPRINT*>( found ) )
+    {
+        fp->ResolveComponentClassNames( &aBoard, fp->GetTransientComponentClassNames() );
+        fp->ClearTransientComponentClassNames();
+    }
+
+    delete clip;
+    aCode.clear();
+    return found;
+}
+
+// Held by a collaborator: the item, or for a footprint any of its children, since replacing or
+// removing a footprint rewrites its pads too. (Locks are per selected item, which can be a pad.)
+bool pluginHeld( BOARD_ITEM* aItem )
+{
+    bool held = PCBJAM_REMOTE_LOCK::IsLocked( aItem->m_Uuid );
+
+    if( !held && aItem->Type() == PCB_FOOTPRINT_T )
+        static_cast<FOOTPRINT*>( aItem )->RunOnChildren(
+                [&]( BOARD_ITEM* aChild ) { held = held || PCBJAM_REMOTE_LOCK::IsLocked( aChild->m_Uuid ); },
+                RECURSE_MODE::RECURSE );
+
+    return held;
+}
+
+// A plugin footprint's children keep their ids only where they name a child of the footprint
+// they replace (none for a new footprint), once each; the rest get fresh ids, as KiCad's paste
+// does. An id copied from another item would otherwise exist twice on the board, out of reach
+// of that item's holds.
+void freshChildIds( FOOTPRINT* aParsed, BOARD_ITEM* aExisting )
+{
+    std::set<KIID> own;
+
+    if( aExisting )
+        static_cast<FOOTPRINT*>( aExisting )->RunOnChildren(
+                [&]( BOARD_ITEM* aChild ) { own.insert( aChild->m_Uuid ); }, RECURSE_MODE::RECURSE );
+
+    aParsed->RunOnChildren(
+            [&]( BOARD_ITEM* aChild )
+            {
+                if( !own.erase( aChild->m_Uuid ) )
+                    const_cast<KIID&>( aChild->m_Uuid ) = KIID();
+            },
+            RECURSE_MODE::RECURSE );
+}
+
+json doPluginEdit( PCB_EDIT_FRAME* aFrame, const json& aReq )
+{
+    using pcbjam_plugin_edit::error;
+
+    if( pcbjam_open::busy() || !aFrame->ToolStackIsEmpty() )
+        return error( "BUSY" );
+
+    if( PCBJAM_READ_ONLY::IsReadOnly() )
+        return error( "READ_ONLY" );
+
+    // Local intent from before this edit reaches the doc as its own diff first.
+    if( g_flushScheduled )
+        flushDiff();
+
+    BOARD*                   board = aFrame->GetBoard();
+    json                     held = json::array(), missing = json::array();
+    std::set<std::string>    ids;
+    std::vector<BOARD_ITEM*> removing;
+
+    struct UPSERT
+    {
+        BOARD_ITEM* parsed;
+        BOARD_ITEM* existing;
+    };
+
+    std::vector<UPSERT> upserts;
+    auto discard = [&]() { for( UPSERT& u : upserts ) delete u.parsed; };
+
+    for( const json& rid : aReq.value( "remove", json::array() ) )
+    {
+        const std::string id = rid.get<std::string>();
+
+        if( !ids.insert( id ).second )
+            return error( "INVALID", json::array( { id } ) );
+
+        BOARD_ITEM* item = board->ResolveItem( KIID( wxString::FromUTF8( id.c_str() ) ), true );
+
+        if( !item )
+            missing.push_back( id );
+        else if( item->GetParentFootprint() || !pluginEditableType( item->Type() ) )
+            return error( "INVALID", json::array( { id } ) );   // pads change through their footprint
+        else if( pluginHeld( item ) )
+            held.push_back( id );
+        else
+            removing.push_back( item );
+    }
+
+    for( const json& u : aReq.value( "upsert", json::array() ) )
+    {
+        std::string code;
+        BOARD_ITEM* parsed = parsePluginItem( *board, u.value( "sexpr", "" ), code );
+
+        if( !parsed )
+        {
+            discard();
+            return error( code.c_str() );
+        }
+
+        const std::string id = toUtf8( parsed->m_Uuid.AsString() );
+        BOARD_ITEM*       existing = board->ResolveItem( parsed->m_Uuid, true );
+
+        // One entry per id; an id keeps its item type; only top-level items are addressed.
+        if( !ids.insert( id ).second
+            || ( existing && ( existing->GetParentFootprint() || existing->Type() != parsed->Type() ) ) )
+        {
+            delete parsed;
+            discard();
+            return error( "INVALID", json::array( { id } ) );
+        }
+
+        if( existing && pluginHeld( existing ) )
+            held.push_back( id );
+
+        if( parsed->Type() == PCB_FOOTPRINT_T )
+            freshChildIds( static_cast<FOOTPRINT*>( parsed ), existing );
+
+        upserts.push_back( { parsed, existing } );
+    }
+
+    if( !missing.empty() || !held.empty() )
+    {
+        discard();
+        return missing.empty() ? error( "HELD", held ) : error( "MISSING", missing );
+    }
+
+    BOARD_COMMIT             commit( aFrame );
+    std::vector<BOARD_ITEM*> oldImages;   // swap leftovers holding the OLD data, freed after Push
+    json                     added = json::array(), changed = json::array(), removed = json::array();
+    KIGFX::VIEW*             view = aFrame->GetCanvas()->GetView();
+    auto                     connectivity = board->GetConnectivity();
+
+    for( BOARD_ITEM* item : removing )
+    {
+        removed.push_back( toUtf8( item->m_Uuid.AsString() ) );
+        commit.Remove( item );           // the undo stack owns it now
+    }
+
+    for( UPSERT& u : upserts )
+    {
+        const std::string id = toUtf8( u.parsed->m_Uuid.AsString() );
+
+        if( u.existing )
+        {
+            // In place, as doApplyItems does (SYNC-08): the live object keeps its identity, so
+            // earlier undo pickers that point at it stay valid. Modify() takes the undo image
+            // first; the view and connectivity let go of the children the swap moves.
+            commit.Modify( u.existing );
+            view->Remove( u.existing );
+            connectivity->Remove( u.existing );
+            u.existing->SwapItemData( u.parsed );
+            view->Add( u.existing );
+            connectivity->Add( u.existing );
+            oldImages.push_back( u.parsed );
+            changed.push_back( id );
+        }
+        else
+        {
+            commit.Add( u.parsed );
+            added.push_back( id );
+        }
+    }
+
+    commit.Push( wxString::FromUTF8( aReq.value( "label", std::string( "Plugin edit" ) ).c_str() ) );
+
+    for( BOARD_ITEM* old : oldImages )
+        delete old;
+
+    return json{ { "status", "applied" }, { "added", added }, { "changed", changed }, { "removed", removed } };
 }
 
 // Test/PoC move (the BOARD_COMMIT body for kicadCollabTestMoveFirst). Run inside a COROUTINE by
@@ -3741,6 +4038,39 @@ std::string pcbPlaceImportedItem( std::string aSexpr )
     return out.dump();
 }
 
+// ── Plugin edits (plugins 0023) ─────────────────────────────────────────────
+// `aJson` is {label, upsert:[{sexpr}], remove:[uuid]}. Queues ONE local commit on the apply
+// coroutine (doPluginEdit) and returns a receipt; JS polls kicadPluginEditStatus.
+std::string pcbPluginEditItems( std::string aJson )
+{
+    auto refuse = []( const char* aCode ) { return json{ { "ok", false }, { "code", aCode } }.dump(); };
+    const json req = json::parse( aJson, nullptr, /*allow_exceptions*/ false );
+
+    if( req.is_discarded() || !pcbjam_plugin_edit::wellFormed( req ) || req.contains( "libSymbols" ) )
+        return refuse( "INVALID" );
+
+    if( pcbjam_open::busy() )
+        return refuse( "BUSY" );
+
+    PCB_EDIT_FRAME* fr = pcbFrame();
+
+    if( !fr )
+        return refuse( "NO_EDITOR" );
+
+    const int operation = pcbjam_plugin_edit::begin();
+
+    if( !operation )
+        return refuse( "BUSY" );
+
+    pcbjam_collab::runOnCoroutine( fr, [fr, req, operation]()
+    {
+        if( pcbjam_plugin_edit::start( operation ) )
+            pcbjam_plugin_edit::finish( operation, doPluginEdit( fr, req ) );
+    } );
+
+    return json{ { "ok", true }, { "operation", operation } }.dump();
+}
+
 EMSCRIPTEN_BINDINGS(pcbnew) {
     // Register vector types for iteration
     register_vector<FOOTPRINT*>("FootprintVector");
@@ -3828,6 +4158,11 @@ EMSCRIPTEN_BINDINGS(pcbnew) {
     // v2 items bridge: per-item s-expr payloads (ysync 0008).
     function("kicadCollabApplyItems", &pcbCollabApplyItems);
     function("kicadPlaceImportedItem", &pcbPlaceImportedItem);
+    // Plugin edits (plugins 0023): one local, undoable commit; receipts as for placement.
+    function("kicadPluginEditItems", &pcbPluginEditItems);
+    function("kicadPluginEditStatus", &pcbjam_plugin_edit::status);
+    function("kicadCancelPluginEdit", &pcbjam_plugin_edit::cancel);
+    function("kicadPluginEditVersion", &pcbjam_plugin_edit::version);
     function("kicadCollabSnapshotItems", &pcbCollabSnapshotItems);
     function("kicadCollabTestMoveFirst", &pcbCollabTestMoveFirst);
     function("kicadCollabGetPos", &pcbCollabGetPos);

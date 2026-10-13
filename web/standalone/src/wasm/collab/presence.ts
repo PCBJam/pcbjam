@@ -51,6 +51,8 @@ export interface PresenceHandle {
   /** 0008: publish the visible world rect (center + half-extents, IU) for
    *  followers; null while unknown. */
   setViewport(rect: PresenceViewport | null): void;
+  /** Plugins 0023: the plugin editing for this person now (null = none). */
+  setPlugin(plugin: { name: string } | null): void;
   /** A user's current presence color: their published one if they're in the
    *  room, our claimed one for ourselves, else the palette-hash fallback
    *  (offline users, e.g. old comment authors). */
@@ -153,6 +155,24 @@ export function publishSkeleton(
     updatedAt: Date.now(),
   };
   awareness.setLocalState(state);
+}
+
+// The editor's live presence (one per open document), so the plugin panel can say which
+// plugin is editing for this person (plugins 0023) without owning the handle.
+let g_current: PresenceHandle | null = null;
+let g_pluginTimer: ReturnType<typeof setTimeout> | undefined;
+
+/**
+ * Show teammates "via <plugin>" while a plugin edit applies and for `holdMs` after it, so
+ * they notice. A later edit restarts the window.
+ */
+export function showPluginActivity(name: string, holdMs = 5000): () => void {
+  clearTimeout(g_pluginTimer);
+  g_current?.setPlugin({ name });
+  return () => {
+    clearTimeout(g_pluginTimer);
+    g_pluginTimer = setTimeout(() => g_current?.setPlugin(null), holdMs);
+  };
 }
 
 export function createPresence(opts: {
@@ -375,7 +395,7 @@ export function createPresence(opts: {
   );
 
   let destroyed = false;
-  return {
+  const handle: PresenceHandle = {
     peers,
     clients,
     self() {
@@ -395,6 +415,9 @@ export function createPresence(opts: {
     setViewport(rect) {
       patchHighFrequency({ viewport: rect });
     },
+    setPlugin(plugin) {
+      patch({ plugin: plugin ?? undefined });
+    },
     colorOf(userId) {
       if (userId === user.id) return user.color;
       for (const [clientId, raw] of awareness.getStates()) {
@@ -411,6 +434,7 @@ export function createPresence(opts: {
     destroy() {
       if (destroyed) return;
       destroyed = true;
+      if (g_current === handle) g_current = null;
       if (typeof window !== "undefined") {
         window.removeEventListener("pagehide", onPageHide);
       }
@@ -422,4 +446,6 @@ export function createPresence(opts: {
       awareness.setLocalState(null);
     },
   };
+  g_current = handle;
+  return handle;
 }

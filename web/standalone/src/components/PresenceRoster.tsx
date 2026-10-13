@@ -125,6 +125,16 @@ export function PresenceRoster({
                   </Badge>
                 </Tip>
               )}
+              {p.plugin && (
+                <Tip content={`Editing through the plugin “${p.plugin.name}”`}>
+                  <span
+                    data-testid="presence-plugin"
+                    className="shrink-0 truncate text-[10px] text-neutral-500 dark:text-white/60"
+                  >
+                    via {p.plugin.name}
+                  </span>
+                </Tip>
+              )}
               {p.role === "commenter" && (
                 <Tip content="Reviewer (commenter): sees the board, comments, never locks items">
                   <Badge

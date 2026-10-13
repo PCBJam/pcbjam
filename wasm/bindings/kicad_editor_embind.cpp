@@ -52,6 +52,7 @@
 #include "pcbjam_async_policy.h"
 #include "open_gate.h"
 #include "plugin_placement.h"
+#include "plugin_edits.h"
 #include "timer_park.h"
 
 using namespace emscripten;
@@ -71,6 +72,7 @@ std::string schUpdateFromLibrary( std::string aLib, std::string aNamesJson );
 void        pcbCollabApply( std::string aJson );
 void        pcbCollabApplyItems( std::string aJson );
 std::string pcbPlaceImportedItem( std::string aSexpr );
+std::string pcbPluginEditItems( std::string aJson );
 std::string pcbCollabSnapshot();
 std::string pcbCollabSnapshotItems();
 std::string pcbCollabTestMoveFirst( int aDx, int aDy );
@@ -124,6 +126,7 @@ int         schLibsSymbolUsage( std::string aLibNickname, std::string aSymbolNam
 void        schCollabApply( std::string aJson );
 void        schCollabApplyItems( std::string aJson );
 std::string schPlaceImportedItem( std::string aSexpr );
+std::string schPluginEditItems( std::string aJson );
 std::string schCollabSnapshot();
 std::string schCollabSnapshotItems();
 std::string schCollabTestMoveFirst( int aDx, int aDy );
@@ -452,6 +455,12 @@ static void collabApplyItems( std::string aJson )
 static std::string placeImportedItem( std::string aSexpr )
 {
     return pcbEditorActive() ? pcbPlaceImportedItem( aSexpr ) : schPlaceImportedItem( aSexpr );
+}
+
+// Plugin edits (plugins 0023): one local, undoable commit in whichever editor is open.
+static std::string pluginEditItems( std::string aJson )
+{
+    return pcbEditorActive() ? pcbPluginEditItems( aJson ) : schPluginEditItems( aJson );
 }
 
 static std::string collabSnapshot()
@@ -820,6 +829,10 @@ EMSCRIPTEN_BINDINGS(kicad_editor) {
     function("kicadPluginPlacementVersion", &pcbjam_plugin_placement::version);
     function("kicadImportedItemStatus", &pcbjam_plugin_placement::status);
     function("kicadCancelImportedItem", &pcbjam_plugin_placement::cancel);
+    function("kicadPluginEditItems", &pluginEditItems);
+    function("kicadPluginEditStatus", &pcbjam_plugin_edit::status);
+    function("kicadCancelPluginEdit", &pcbjam_plugin_edit::cancel);
+    function("kicadPluginEditVersion", &pcbjam_plugin_edit::version);
     function("kicadCollabSnapshotItems", &collabSnapshotItems);
     function("kicadCollabTestMoveFirst", &collabTestMoveFirst);
     function("kicadCollabGetPos", &collabGetPos);

@@ -52,6 +52,8 @@ export interface PackageHost {
     /** The isolated origin plugin UI pages are served from. */
     uiOrigin?: string;
     placementEnabled?: boolean;
+    /** Plugin edits (plugins 0023) for this account. */
+    editsEnabled?: boolean;
     runtimeVersion?: string;
     /** Account may upload private plugins (hosted platform only). */
     developer?: boolean;
@@ -69,6 +71,7 @@ export interface PackageHost {
         fileName: string;
         readOnly: boolean;
         canPlaceItems: boolean;
+        canEditItems?: boolean;
         canSelectItems?: boolean;
         canReadGeometry?: boolean;
       };
@@ -87,7 +90,8 @@ export interface PackageHost {
       onAuthorizationReady?(check: (method: string) => Promise<void>): void;
       localChecks?: boolean;
       network?: boolean;
-      hashServing?: { userId: string; uiOrigin: string; placementEnabled: boolean };
+      editItems?(proposal: { method: 'board.edit' | 'schematic.edit'; label: string; upsert: { sexpr: string }[]; remove: string[]; libSymbols?: string[] }, signal: AbortSignal): Promise<{ status: 'applied'; added: string[]; changed: string[]; removed: string[] } | { status: 'cancelled' }>;
+      hashServing?: { userId: string; uiOrigin: string; placementEnabled: boolean; editsEnabled?: boolean };
       selectItems?(ids: string[], signal: AbortSignal): Promise<{ selected: string[]; held: string[]; missing: string[] }>;
       saveFile?(
         proposal: { name: string; text?: string; kind: "text" | "html" | "image" | "archive"; bytes: Uint8Array; method: string },
@@ -153,7 +157,7 @@ export function usePluginCatalog(enabled: boolean) {
   const generation = React.useRef(0);
   // What loading a published plugin by hash needs from the installed list (plugins 0022 M2).
   // Read when a plugin starts; a refresh must not restart a running one.
-  const account = React.useRef<{ userId: string; uiOrigin: string; placementEnabled: boolean } | null>(null);
+  const account = React.useRef<{ userId: string; uiOrigin: string; placementEnabled: boolean; editsEnabled: boolean } | null>(null);
   const refresh = React.useCallback(async () => {
     if (!enabled) return;
     const current = ++generation.current;
@@ -168,7 +172,7 @@ export function usePluginCatalog(enabled: boolean) {
         );
       if (current !== generation.current) return;
       account.current = hostedPlugins && result.userId && result.uiOrigin
-        ? { userId: result.userId, uiOrigin: result.uiOrigin, placementEnabled: result.placementEnabled === true } : null;
+        ? { userId: result.userId, uiOrigin: result.uiOrigin, placementEnabled: result.placementEnabled === true, editsEnabled: result.editsEnabled === true } : null;
       setPlugins(result.plugins.filter((p) => p.installed !== false));
       setPermissions(result.permissions);
       setDeveloper(!hostedPlugins || result.developer === true);

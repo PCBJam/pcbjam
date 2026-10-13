@@ -76,6 +76,7 @@
 #include "collab_common.h"
 #include "open_gate.h"
 #include "plugin_placement.h"
+#include "plugin_edits.h"
 #include "collab_presence_core.h"
 #include "collab_presence_style.h"
 #include "pcbjam_theme.h"
@@ -1889,6 +1890,282 @@ void doApplyItems( SCH_EDIT_FRAME* aFrame, const json& aPayload )
     scheduleFlush();
 }
 
+// ── Plugin edits (plugins 0023) ──────────────────────────────────────────────
+// The schematic twin of pcbnew's doPluginEdit: a plugin's create / change / delete of items on
+// the SHOWN sheet as ONE local SCH_COMMIT. Undoable, broadcast by the collab listener like any
+// local edit, all or nothing.
+
+// Sheet items a plugin may create, change or delete (0023). Sheets and sheet pins are out:
+// they link files.
+bool pluginEditableType( KICAD_T aType )
+{
+    switch( aType )
+    {
+    case SCH_SYMBOL_T:
+    case SCH_LINE_T:
+    case SCH_BUS_WIRE_ENTRY_T:
+    case SCH_BUS_BUS_ENTRY_T:
+    case SCH_JUNCTION_T:
+    case SCH_NO_CONNECT_T:
+    case SCH_LABEL_T:
+    case SCH_GLOBAL_LABEL_T:
+    case SCH_HIER_LABEL_T:
+    case SCH_DIRECTIVE_LABEL_T:
+    case SCH_TEXT_T:
+    case SCH_TEXTBOX_T:
+    case SCH_SHAPE_T:
+        return true;
+    default:
+        return false;
+    }
+}
+
+// One plugin item, parsed like clipboard paste into a throwaway sheet with the request's
+// library symbols in front: exactly one editable item. A symbol needs its LIB_SYMBOL from
+// those or from the shown sheet.
+SCH_ITEM* parsePluginItem( SCH_EDIT_FRAME* aFrame, const std::string& aSexpr, const std::string& aLibs )
+{
+    SCH_SHEET   tempSheet;
+    SCH_SCREEN* tempScreen = new SCH_SCREEN( &aFrame->Schematic() );   // owned by tempSheet
+    tempSheet.SetScreen( tempScreen );
+
+    STRING_LINE_READER reader( aLibs + aSexpr, wxT( "plugin-edit" ) );
+    SCH_IO_KICAD_SEXPR plugin;
+
+    try
+    {
+        plugin.LoadContent( reader, &tempSheet );
+    }
+    catch( ... )
+    {
+        return nullptr;
+    }
+
+    std::vector<SCH_ITEM*> loaded;
+
+    for( SCH_ITEM* item : tempScreen->Items() )
+        loaded.push_back( item );
+
+    if( loaded.size() != 1 || !pluginEditableType( loaded[0]->Type() ) )
+        return nullptr;                     // tempSheet frees what it loaded
+
+    SCH_ITEM* item = loaded[0];
+
+    if( item->Type() == SCH_SYMBOL_T )
+    {
+        auto*    sym = static_cast<SCH_SYMBOL*>( item );
+        wxString lookup = sym->UseLibIdLookup() ? wxString( sym->GetLibId().Format().wx_str() )
+                                                : sym->GetSchSymbolLibraryName();
+        LIB_SYMBOL* lib = nullptr;
+        auto&       tlibs = tempScreen->GetLibSymbols();
+        auto&       libs = aFrame->GetScreen()->GetLibSymbols();
+
+        if( auto ti = tlibs.find( lookup ); ti != tlibs.end() )
+            lib = new LIB_SYMBOL( *ti->second );
+        else if( auto li = libs.find( lookup ); li != libs.end() )
+            lib = new LIB_SYMBOL( *li->second );
+
+        if( !lib )
+            return nullptr;
+
+        sym->SetLibSymbol( lib );
+    }
+
+    tempScreen->Remove( item );             // detach: tempSheet's dtor must not free it
+    return item;
+}
+
+// Held by a collaborator: the item or any of its children (a symbol's pins and fields), since
+// replacing or removing the item rewrites them too.
+bool pluginHeld( SCH_ITEM* aItem )
+{
+    bool held = PCBJAM_REMOTE_LOCK::IsLocked( aItem->m_Uuid );
+
+    aItem->RunOnChildren(
+            [&]( SCH_ITEM* aChild ) { held = held || PCBJAM_REMOTE_LOCK::IsLocked( aChild->m_Uuid ); },
+            RECURSE_MODE::NO_RECURSE );
+
+    return held;
+}
+
+// A plugin item's children (pins, fields) keep their ids only where they name a child of the
+// item they replace (none for a new item), once each; the rest get fresh ids, as paste does. An
+// id copied from another symbol would otherwise exist twice on the sheet.
+void freshChildIds( SCH_ITEM* aParsed, SCH_ITEM* aExisting )
+{
+    std::set<KIID> own;
+
+    if( aExisting )
+        aExisting->RunOnChildren( [&]( SCH_ITEM* aChild ) { own.insert( aChild->m_Uuid ); },
+                                  RECURSE_MODE::NO_RECURSE );
+
+    aParsed->RunOnChildren(
+            [&]( SCH_ITEM* aChild )
+            {
+                if( !own.erase( aChild->m_Uuid ) )
+                    const_cast<KIID&>( aChild->m_Uuid ) = KIID();
+            },
+            RECURSE_MODE::NO_RECURSE );
+}
+
+json doPluginEdit( SCH_EDIT_FRAME* aFrame, const json& aReq )
+{
+    using pcbjam_plugin_edit::error;
+
+    if( pcbjam_open::busy() || !aFrame->ToolStackIsEmpty() )
+        return error( "BUSY" );
+
+    if( PCBJAM_READ_ONLY::IsReadOnly() )
+        return error( "READ_ONLY" );
+
+    SCH_SCREEN* screen = currentScreen( aFrame );
+
+    if( !screen )
+        return error( "NO_EDITOR" );
+
+    // Local intent from before this edit reaches the doc as its own diff first.
+    if( g_flushScheduled )
+        flushDiff();
+
+    std::string libs;
+
+    for( const json& l : aReq.value( "libSymbols", json::array() ) )
+    {
+        const std::string& text = l.get_ref<const std::string&>();
+        const size_t       first = text.find_first_not_of( " \t\r\n" );
+
+        if( first == std::string::npos || text.compare( first, 7, "(symbol" ) != 0 )
+            return error( "INVALID" );
+
+        libs += text + "\n";
+    }
+
+    if( !libs.empty() )
+        libs = "(lib_symbols\n" + libs + ")\n";
+
+    SCHEMATIC&             sch = aFrame->Schematic();
+    json                   held = json::array(), missing = json::array();
+    std::set<std::string>  ids;
+    std::vector<SCH_ITEM*> removing;
+
+    struct UPSERT
+    {
+        SCH_ITEM* parsed;
+        SCH_ITEM* existing;
+    };
+
+    std::vector<UPSERT> upserts;
+    auto discard = [&]() { for( UPSERT& u : upserts ) delete u.parsed; };
+
+    for( const json& rid : aReq.value( "remove", json::array() ) )
+    {
+        const std::string id = rid.get<std::string>();
+
+        if( !ids.insert( id ).second )
+            return error( "INVALID", json::array( { id } ) );
+
+        SCH_ITEM* item = resolveOnShown( aFrame, KIID( wxString::FromUTF8( id.c_str() ) ) );
+
+        if( !item )
+            missing.push_back( id );
+        else if( !pluginEditableType( item->Type() ) )
+            return error( "INVALID", json::array( { id } ) );   // fields and pins change through their symbol
+        else if( pluginHeld( item ) )
+            held.push_back( id );
+        else
+            removing.push_back( item );
+    }
+
+    for( const json& u : aReq.value( "upsert", json::array() ) )
+    {
+        SCH_ITEM* parsed = parsePluginItem( aFrame, u.value( "sexpr", "" ), libs );
+
+        if( !parsed )
+        {
+            discard();
+            return error( "INVALID" );
+        }
+
+        const std::string id = toUtf8( parsed->m_Uuid.AsString() );
+        SCH_ITEM*         existing = resolveOnShown( aFrame, parsed->m_Uuid );
+
+        // One entry per id; an id keeps its item type.
+        if( !ids.insert( id ).second || ( existing && existing->Type() != parsed->Type() ) )
+        {
+            delete parsed;
+            discard();
+            return error( "INVALID", json::array( { id } ) );
+        }
+
+        if( existing && pluginHeld( existing ) )
+            held.push_back( id );
+
+        freshChildIds( parsed, existing );
+        upserts.push_back( { parsed, existing } );
+    }
+
+    if( !missing.empty() || !held.empty() )
+    {
+        discard();
+        return missing.empty() ? error( "HELD", held ) : error( "MISSING", missing );
+    }
+
+    SCH_COMMIT             commit( aFrame );
+    std::vector<SCH_ITEM*> oldImages;     // swap leftovers holding the OLD data, freed after Push
+    json                   added = json::array(), changed = json::array(), removed = json::array();
+    KIGFX::VIEW*           view = aFrame->GetCanvas()->GetView();
+
+    for( SCH_ITEM* item : removing )
+    {
+        removed.push_back( toUtf8( item->m_Uuid.AsString() ) );
+        commit.Remove( item, screen );    // the undo stack owns it now
+    }
+
+    for( UPSERT& u : upserts )
+    {
+        const std::string id = toUtf8( u.parsed->m_Uuid.AsString() );
+
+        if( u.existing )
+        {
+            // In place, as doApplyItems does (SYNC-08): the live object keeps its identity, so
+            // earlier undo pickers stay valid. Same sequence as SCH_COMMIT::Revert's CHT_MODIFY.
+            commit.Modify( u.existing, screen );
+            view->Remove( u.existing );
+            u.existing->SwapItemData( u.parsed );   // `parsed` now holds the OLD data
+            screen->Update( u.existing );
+
+            if( u.existing->Type() == SCH_SYMBOL_T )
+            {
+                static_cast<SCH_SYMBOL*>( u.existing )->UpdatePins();
+
+                CONNECTION_GRAPH* graph = sch.ConnectionGraph();
+                auto*             old = static_cast<SCH_SYMBOL*>( u.parsed );
+                graph->RemoveItem( old );
+
+                for( SCH_PIN* pin : old->GetPins() )
+                    graph->RemoveItem( pin );
+            }
+
+            view->Add( u.existing );
+            oldImages.push_back( u.parsed );
+            changed.push_back( id );
+        }
+        else
+        {
+            u.parsed->SetParent( &sch );
+            commit.Add( u.parsed, screen );
+            added.push_back( id );
+        }
+    }
+
+    commit.Push( wxString::FromUTF8( aReq.value( "label", std::string( "Plugin edit" ) ).c_str() ) );
+
+    for( SCH_ITEM* old : oldImages )
+        delete old;
+
+    return json{ { "status", "applied" }, { "added", added }, { "changed", changed }, { "removed", removed } };
+}
+
 // Test/PoC move (the SCH_COMMIT body for kicadCollabTestMoveFirst, deferred via CallAfter).
 void collabTestMove( SCH_EDIT_FRAME* aFrame, SCH_ITEM* aItem, SCH_SCREEN* aScreen, int aDx,
                      int aDy )
@@ -3392,6 +3669,40 @@ static bool kicadCollabBusyProbe()
 // and broadcast by the collab bridge like any local placement.
 // Returns an operation receipt when queued. The host polls until placement,
 // cancellation or a bounded error, and can cancel before the native commit.
+// ── Plugin edits (plugins 0023) ─────────────────────────────────────────────
+// `aJson` is {label, upsert:[{sexpr}], remove:[uuid], libSymbols?:[sexpr]} for the SHOWN sheet.
+// Queues ONE local commit on the apply coroutine (doPluginEdit) and returns a receipt; JS polls
+// kicadPluginEditStatus.
+std::string schPluginEditItems( std::string aJson )
+{
+    auto refuse = []( const char* aCode ) { return json{ { "ok", false }, { "code", aCode } }.dump(); };
+    const json req = json::parse( aJson, nullptr, /*allow_exceptions*/ false );
+
+    if( req.is_discarded() || !pcbjam_plugin_edit::wellFormed( req ) )
+        return refuse( "INVALID" );
+
+    if( pcbjam_open::busy() )
+        return refuse( "BUSY" );
+
+    SCH_EDIT_FRAME* fr = schFrame();
+
+    if( !fr )
+        return refuse( "NO_EDITOR" );
+
+    const int operation = pcbjam_plugin_edit::begin();
+
+    if( !operation )
+        return refuse( "BUSY" );
+
+    pcbjam_collab::runOnCoroutine( fr, [fr, req, operation]()
+    {
+        if( pcbjam_plugin_edit::start( operation ) )
+            pcbjam_plugin_edit::finish( operation, doPluginEdit( fr, req ) );
+    } );
+
+    return json{ { "ok", true }, { "operation", operation } }.dump();
+}
+
 std::string schPlaceImportedItem( std::string aSexpr )
 {
     json out;
@@ -3586,6 +3897,11 @@ EMSCRIPTEN_BINDINGS(eeschema) {
     // v2 items bridge: per-item s-expr payloads (ysync 0008).
     function("kicadCollabApplyItems", &schCollabApplyItems);
     function("kicadPlaceImportedItem", &schPlaceImportedItem);
+    // Plugin edits (plugins 0023): one local, undoable commit; receipts as for placement.
+    function("kicadPluginEditItems", &schPluginEditItems);
+    function("kicadPluginEditStatus", &pcbjam_plugin_edit::status);
+    function("kicadCancelPluginEdit", &pcbjam_plugin_edit::cancel);
+    function("kicadPluginEditVersion", &pcbjam_plugin_edit::version);
     function("kicadPluginPlacementVersion", &pcbjam_plugin_placement::version);
     function("kicadImportedItemStatus", &pcbjam_plugin_placement::status);
     function("kicadCancelImportedItem", &pcbjam_plugin_placement::cancel);

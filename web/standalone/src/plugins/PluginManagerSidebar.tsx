@@ -6,6 +6,9 @@ import { PluginFloatingPanel } from './PluginFloatingPanel';
 import { getLocalSelection, subscribeLocalSelection } from '@/wasm/collab/local-selection';
 import { inspectorSnapshot, type InspectorSnapshot } from './board-inspector-projection';
 import { placementModule, validatePlacement, placeClipboard } from './placement';
+import { applyEdit, editError, editModule, editSize, validateEdit } from './edits';
+import { showPluginActivity } from '@/wasm/collab/presence';
+import { EDIT_LIMITS } from '@pcbjam/plugin-platform/api';
 import { selectModule, selectItems } from './selection';
 import { geometryModule, openGeometry } from './board-geometry';
 import { createDocumentAPI } from './document-api';
@@ -39,7 +42,9 @@ type Prompt = {kind:'external';url:string;site:string;finish(value:{status:'open
   // A remote provider's part: the bytes are already verified; the user confirms the library write.
   | { kind: 'part'; request: PartRequest; finish(accept: boolean): void }
   // A QuickJS plugin's own part (parts.save): the user confirms the write into the plugin's team library.
-  | { kind: 'pluginPart'; part: PluginPartSummary; finish(accept: boolean): void };
+  | { kind: 'pluginPart'; part: PluginPartSummary; finish(accept: boolean): void }
+  // A large plugin edit (plugins 0023): the user confirms it before the native commit.
+  | { kind: 'edit'; label: string; upserts: number; removes: number; finish(accept: boolean): void };
 const isProvider = (plugin?: Descriptor | null) => plugin?.manifest.kind === 'remote-provider';
 const PROVIDER_PANEL_SIZE = { width: 520, height: 680 };
 
@@ -176,7 +181,7 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
           },
           openExternal: (proposal, signal) => requestUser<{status:'opened'|'cancelled'}>(signal,finish=>({kind:'external',url:proposal.url,site:proposal.site,finish,signal,authorize:()=>authorizeOperation('ui.openExternal')})),
           saveFile: (proposal, signal) => requestUser<{status:'download-requested'|'cancelled'}>(signal,finish=>({kind:'download',name:proposal.name,content:proposal.kind,bytes:proposal.bytes,finish,signal,authorize:()=>authorizeOperation(SAVE_METHODS[proposal.kind])})),
-          context: () => ({ tool, fileName, readOnly, canSelectItems: !!selectModule(), canReadGeometry: tool === 'pcbnew' && !!geometryModule(), canPlaceItems: !readOnly && !!placementModule() && (!hostedPlugins || tool==='eeschema' && placementModule()?.kicadPluginPlacementVersion?.()===1) }),
+          context: () => ({ tool, fileName, readOnly, canEditItems: !readOnly && !!editModule(), canSelectItems: !!selectModule(), canReadGeometry: tool === 'pcbnew' && !!geometryModule(), canPlaceItems: !readOnly && !!placementModule() && (!hostedPlugins || tool==='eeschema' && placementModule()?.kicadPluginPlacementVersion?.()===1) }),
           selectItems: ids => selectItems(ids),
           // Guided tours + pointers (overlay-system 0003): drawn by the host with the plugin's name,
           // cleared when this instance stops (abort.signal).
@@ -194,6 +199,24 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
             onPlacementIssue: message => setNotice(message),
           }),
           chooseFile: (extensions, signal) => requestUser<File | null>(signal, finish => ({ kind: 'file', extensions, finish })),
+          // Plugin edits (plugins 0023): one native commit, Undo reverts it. Large edits wait for the
+          // user; the operation is authorized again right before the native step.
+          editItems: async ({ method, ...edit }, signal) => {
+            if (readOnly) throw editError('READ_ONLY');
+            validateEdit(edit, tool);
+            const mod = editModule();
+            if (!mod) throw editError('NO_EDITOR', '. Reload PCBJam.');
+            if (editSize(edit) > EDIT_LIMITS.confirmAbove
+                && !await requestUser<boolean>(signal, finish => ({ kind: 'edit', label: edit.label, upserts: edit.upsert.length, removes: edit.remove.length, finish })))
+              return { status: 'cancelled' };
+            await authorizeOperation(method);
+            signal.throwIfAborted();
+            // Teammates see "via <plugin>" next to this person while it edits (plugins 0023).
+            const done = showPluginActivity(active.manifest.name);
+            const outcome = await applyEdit(mod, { ...edit, label: `${active.manifest.name}: ${edit.label}` }, signal).finally(done);
+            setNotice(`${active.manifest.name} changed this ${tool === 'pcbnew' ? 'board' : 'sheet'}. Undo reverts it.`);
+            return outcome;
+          },
           requestPlacement: (proposal, signal) => {
             if (readOnly) throw new Error('This document is read-only');
             validatePlacement(proposal.sexpr, tool);
@@ -382,6 +405,11 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
           {' · '}{prompt.part.bytes.toLocaleString()} bytes, saved to <Code>{prompt.part.library}</Code>{prompt.part.place ? '; you then click the canvas to place it.' : '; nothing is placed.'}
         </p>
         <Button variant="outline" size="xs" onClick={() => prompt.finish(true)}>{prompt.part.place ? 'Save and place' : 'Save to library'}</Button>{' '}<Button variant="outline" size="xs" onClick={() => prompt.finish(false)}>Cancel</Button>
+      </section>}
+      {prompt?.kind === 'edit' && <section aria-label="Confirm plugin edit" className="mt-3 rounded border border-sky-500/40 p-3">
+        <p>{active?.manifest.name} wants to apply <strong>{prompt.label}</strong>: {prompt.upserts} items added or changed, {prompt.removes} deleted in this {tool === 'pcbnew' ? 'board' : 'sheet'}.</p>
+        <p className="my-2 text-neutral-500 dark:text-white/60">Undo reverts the whole edit in one step.</p>
+        <Button variant="outline" size="xs" onClick={() => prompt.finish(true)}>Apply edit</Button>{' '}<Button variant="outline" size="xs" onClick={() => prompt.finish(false)}>Cancel</Button>
       </section>}
       {prompt?.kind === 'placement' && <section aria-label="Confirm plugin placement" className="mt-3 rounded border border-sky-500/40 p-3">
         <p>{active?.manifest.name} requests placement of <strong>{prompt.label}</strong>.</p>
