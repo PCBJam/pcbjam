@@ -1,6 +1,10 @@
 export const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3050";
 
+// The AI chat service (POC, no trailing slash). Unset: no AI chat panel.
+export const AI_CHAT_URL =
+  (import.meta.env.VITE_AI_CHAT_URL || "").replace(/\/+$/, "") || null;
+
 // The public PCBJam docs (no trailing slash): the plugin developer guide lives
 // under /plugins/. Self-hosted builds link to the public site by default.
 export const PLUGIN_DOCS_URL =

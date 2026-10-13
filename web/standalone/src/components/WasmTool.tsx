@@ -13,6 +13,7 @@ import {
 } from "@pcbjam/shared";
 import { Download } from "lucide-react";
 import {
+  AI_CHAT_URL,
   API_BASE_URL,
   APP_URL,
   commentAuthor,
@@ -194,6 +195,11 @@ function fenceGuarded(sink: SaveBytes | undefined): SaveBytes | undefined {
     return sink(relPath, bytes, signal);
   };
 }
+
+// AI chat (POC): only when the chat service is configured (VITE_AI_CHAT_URL).
+const AiChatPanel = React.lazy(() =>
+  import("@/ai-chat/AiChatPanel").then((m) => ({ default: m.AiChatPanel })),
+);
 
 /**
  * Boots a KiCad tool directly in this React document (no iframe): builds the
@@ -2311,6 +2317,12 @@ export function WasmTool({
         <React.Suspense fallback={null}>
           <PluginSidebar project={{id:projectId,scope:scopeId,name:slug}} projectFiles={files} doc={panelDoc} tool={tool} readOnly={!!readOnly} fileName={targetPath ?? "Current document"}
             view={pluginView} onViewChange={setPluginView} catalog={pluginCatalog} />
+        </React.Suspense>
+      )}
+
+      {ready && AI_CHAT_URL && !readOnly && (
+        <React.Suspense fallback={null}>
+          <AiChatPanel scope={currentScope()} project={slug} file={targetPath ?? ""} />
         </React.Suspense>
       )}
 

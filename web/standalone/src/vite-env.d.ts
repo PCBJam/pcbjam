@@ -8,6 +8,8 @@ interface ImportMetaEnv {
    * toggle turns them on per session.
    */
   readonly VITE_PLUGIN_POC?: string;
+  /** AI chat service base URL (POC); unset hides the AI chat panel. */
+  readonly VITE_AI_CHAT_URL?: string;
   readonly VITE_API_BASE_URL?: string;
   /** The public docs root, default https://app.pcbjam.com/docs. */
   readonly VITE_DOCS_URL?: string;
