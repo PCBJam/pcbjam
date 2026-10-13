@@ -2322,7 +2322,7 @@ export function WasmTool({
 
       {ready && AI_CHAT_URL && !readOnly && (
         <React.Suspense fallback={null}>
-          <AiChatPanel scope={currentScope()} project={slug} file={targetPath ?? ""} />
+          <AiChatPanel scope={currentScope()} project={slug} file={targetPath ?? ""} tool={tool} />
         </React.Suspense>
       )}
 
