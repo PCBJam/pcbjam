@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseCrop, prepareSvg } from "../src/shot.ts";
+import { parseCrop, prepareSvg, rasterize } from "../src/shot.ts";
 import { classifyRef, modelRefs } from "../src/step.ts";
 
 const PLOT =
@@ -24,6 +24,15 @@ describe("shots", () => {
     expect(parseCrop("1,2,3,4")).toEqual({ cx: 1, cy: 2, halfW: 3, halfH: 4 });
     expect(parseCrop(undefined)).toBeNull();
     expect(() => parseCrop("1,2,0,4")).toThrow(/--crop/);
+  });
+
+  it("renders a small crop at the asked width without overshooting sharp's pixel limit", async () => {
+    // 10 mm at 1600 px: a density linear in the width asked ~700 Mpx of
+    // librsvg (the size grows with density²) and sharp refused it.
+    const svg = prepareSvg(PLOT.replace("<g/>", '<circle cx="50" cy="50" r="2"/>'), { crop: { cx: 50, cy: 50, halfW: 5, halfH: 3.5 } });
+    const png = await rasterize(svg, 1600);
+    const sharp = (await import("sharp")).default;
+    expect((await sharp(Buffer.from(png)).metadata()).width).toBe(1600);
   });
 });
 
