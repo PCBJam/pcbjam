@@ -182,3 +182,19 @@ jobs:
           name: plugin-runtime-receipt
           path: web/standalone/src/generated/plugin-runtime.json
           if-no-files-found: error
+
+      # Event-driven hand-off: the editor for this commit is live, so start the
+      # closed stack's staging deploy now (its staging branch pins this commit
+      # once the gitlink is bumped; it checks that itself and no-ops otherwise).
+      # The closed side checks once and never polls, so this dispatch is how it
+      # deploys an editor that wasn't live at its push. Needs CLOSED_DEPLOY_TOKEN
+      # (fine-grained, Actions: write on PCBJam/pcbjam-private); without it this
+      # step only warns and the closed deploy has to be started by hand.
+      - name: Start the closed stack's staging deploy
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.CLOSED_DEPLOY_TOKEN }}
+        run: |
+          [ -n "$GH_TOKEN" ] || { echo "::warning title=Closed deploy not started::CLOSED_DEPLOY_TOKEN is unset; run the pcbjam-private staging deploy by hand"; exit 0; }
+          gh workflow run deploy-staging.yml -R PCBJam/pcbjam-private --ref staging -f wasm_run_id="$GITHUB_RUN_ID"
+          echo "started the closed staging deploy for editor run $GITHUB_RUN_ID"
