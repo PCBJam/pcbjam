@@ -4,7 +4,9 @@ import { useAgentChat } from 'agents/chat/react';
 import type { UIMessage } from 'ai';
 import { Sparkles, X, Plus, Trash2, History, Square, Send, Wrench, Check, AlertTriangle, Loader2, ArrowDown } from 'lucide-react';
 import { Badge, Button, Code, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Textarea, Tip, cn } from '@pcbjam/ui';
+import { attachEditorBridge, type BridgeSocket } from '@/agent/bridge';
 import { AI_CHAT_URL } from '@/lib/config';
+import { copySegment } from '@/lib/copy-context';
 import { EDITOR_TOOLS, runEditorTool } from './editor-actions';
 
 /**
@@ -156,6 +158,13 @@ function ChatView({ chatId, initial, scope, project, file, tool, onTurnEnd, mode
 }) {
   const host = new URL(AI_CHAT_URL!).host;
   const agent = useAgent({ agent: 'chat-session', name: chatId, host, protocol: AI_CHAT_URL!.startsWith('https') ? 'wss' : 'ws' } as never);
+  // The editor bridge (ai-chat 0003 step 5): the chat's schematic tools carry out their
+  // edits on this tab's file here, with KiCad (one undo step each). Re-attached when the
+  // shown file or editor changes.
+  React.useEffect(
+    () => attachEditorBridge(agent as unknown as BridgeSocket, () => ({ scope, project, copy: copySegment(), file, tool })),
+    [agent, scope, project, file, tool],
+  );
   const fileRef = React.useRef(file);
   fileRef.current = file;
   const toolRef = React.useRef(tool);
