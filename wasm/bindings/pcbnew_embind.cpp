@@ -3758,6 +3758,30 @@ bool pcbLibsTestEditorLoad( std::string aLibNickname, std::string aFootprintName
     return true;
 }
 
+// Test probe: run a Footprint Editor action by name, as its library tree's
+// context menu would, with <lib>:<name> selected in the tree first (empty
+// name = the library row). Copy / Paste Footprint act on that selection.
+bool pcbLibsTestEditorAction( std::string aAction, std::string aLibNickname,
+                              std::string aFootprintName )
+{
+    FOOTPRINT_EDIT_FRAME* fe = fpEditorFrame( pcbFrame() );
+
+    if( !fe || !fe->GetToolManager() )
+        return false;
+
+    const LIB_ID id( wxString::FromUTF8( aLibNickname.c_str() ),
+                     wxString::FromUTF8( aFootprintName.c_str() ) );
+    pcbjam_collab::runOnCoroutine( fe,
+            [fe, id, aAction]()
+            {
+                if( id.GetLibNickname().size() )
+                    fe->FocusOnLibID( id );
+
+                fe->GetToolManager()->RunAction( aAction );
+            } );
+    return true;
+}
+
 // Smoke probe: the Footprint Editor's OPEN copy — "<lib>:<name>|<pads>" or "".
 std::string pcbLibsTestEditorFootprint()
 {
@@ -4096,6 +4120,7 @@ EMSCRIPTEN_BINDINGS(pcbnew) {
     function("kicadLibsTestLoadFootprint", &pcbLibsTestLoadFootprint);
     function("kicadLibsTestEditorFootprint", &pcbLibsTestEditorFootprint);
     function("kicadLibsTestEditorLoad", &pcbLibsTestEditorLoad);
+    function("kicadLibsTestEditorAction", &pcbLibsTestEditorAction);
 #endif
     // Layer bridge (viewer-panels) — pcbnew-only names, merged-image safe
     // (null-frame no-op when eeschema is the live frame).

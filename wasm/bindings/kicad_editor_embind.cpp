@@ -67,6 +67,7 @@ int         pcbLibsTestPreload( std::string aLib );
 std::string pcbLibsTestLoadFootprint( std::string aLib, std::string aName );
 std::string pcbLibsTestEditorFootprint();
 bool        pcbLibsTestEditorLoad( std::string aLib, std::string aName );
+bool        pcbLibsTestEditorAction( std::string aAction, std::string aLib, std::string aName );
 std::string pcbUpdateFromLibrary( std::string aLib, std::string aNamesJson );
 std::string schUpdateFromLibrary( std::string aLib, std::string aNamesJson );
 void        pcbCollabApply( std::string aJson );
@@ -571,6 +572,11 @@ static bool libsTestEditorLoad( std::string aLib, std::string aName )
     return pcbEditorActive() ? pcbLibsTestEditorLoad( aLib, aName ) : false;
 }
 
+static bool libsTestEditorAction( std::string aAction, std::string aLib, std::string aName )
+{
+    return pcbEditorActive() ? pcbLibsTestEditorAction( aAction, aLib, aName ) : false;
+}
+
 // Placed-instance count for a library footprint — board frame only (libs 0017 §2d).
 static int libsFootprintUsage( std::string aLib, std::string aName )
 {
@@ -886,6 +892,7 @@ EMSCRIPTEN_BINDINGS(kicad_editor) {
     function("kicadLibsTestLoadFootprint", &libsTestLoadFootprint PCBJAM_PARKER_POLICY);
     function("kicadLibsTestEditorFootprint", &libsTestEditorFootprint);
     function("kicadLibsTestEditorLoad", &libsTestEditorLoad);
+    function("kicadLibsTestEditorAction", &libsTestEditorAction);
     // Runtime lib-table row insert + load (a new team library appeared
     // mid-session; the lib set is otherwise frozen at boot).
     function("kicadLibsAddEntry", &pcbjam_libs::addLibraryEntry PCBJAM_PARKER_POLICY);
