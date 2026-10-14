@@ -183,18 +183,28 @@ jobs:
           path: web/standalone/src/generated/plugin-runtime.json
           if-no-files-found: error
 
-      # Event-driven hand-off: the editor for this commit is live, so start the
-      # closed stack's staging deploy now (its staging branch pins this commit
-      # once the gitlink is bumped; it checks that itself and no-ops otherwise).
-      # The closed side checks once and never polls, so this dispatch is how it
-      # deploys an editor that wasn't live at its push. Needs CLOSED_DEPLOY_TOKEN
-      # (fine-grained, Actions: write on PCBJam/pcbjam-private); without it this
-      # step only warns and the closed deploy has to be started by hand.
-      - name: Start the closed stack's staging deploy
+      # Event-driven hand-off: the editor for this commit is live, so re-check
+      # the closed stack's staging deploy. Its newest run on staging (the one
+      # that pins this editor, once the gitlink is bumped) waits cancelled
+      # until the editor and the closed e2e are green; re-running it lets its
+      # gate deploy, wait again or turn red. A busy run can't be re-run, so a
+      # hand-off dispatch queues behind it instead. Needs CLOSED_DEPLOY_TOKEN
+      # (fine-grained, Actions: write on PCBJam/pcbjam-private); without it
+      # this step only warns.
+      - name: Re-check the closed stack's staging deploy
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.CLOSED_DEPLOY_TOKEN }}
+          CLOSED: PCBJam/pcbjam-private
         run: |
           [ -n "$GH_TOKEN" ] || { echo "::warning title=Closed deploy not started::CLOSED_DEPLOY_TOKEN is unset; run the pcbjam-private staging deploy by hand"; exit 0; }
-          gh workflow run deploy-staging.yml -R PCBJam/pcbjam-private --ref staging -f wasm_run_id="$GITHUB_RUN_ID"
-          echo "started the closed staging deploy for editor run $GITHUB_RUN_ID"
+          dispatch() { gh workflow run deploy-staging.yml -R "$CLOSED" --ref staging -f wasm_run_id="$GITHUB_RUN_ID" -f auto=true && echo "$1"; }
+          tip=$(gh run list -R "$CLOSED" --workflow deploy-staging.yml --branch staging --limit 1 \
+            --json databaseId,status --jq '.[0] // empty')
+          if [ -z "$tip" ]; then dispatch "no closed staging deploy run yet: dispatched one"; exit 0; fi
+          id=$(jq -r .databaseId <<< "$tip")
+          if [ "$(jq -r .status <<< "$tip")" != completed ]; then dispatch "closed deploy run $id is busy: queued a hand-off"; exit 0; fi
+          if [ -n "$(gh run view -R "$CLOSED" "$id" --json jobs --jq '.jobs[] | select(.name == "deploy" and .conclusion == "success") | .name')" ]; then
+            echo "closed deploy run $id already deployed its commit; it pins an older editor, or this one: nothing to do"; exit 0
+          fi
+          if gh run rerun "$id" -R "$CLOSED"; then echo "re-ran closed staging deploy run $id"; else dispatch "re-run refused: dispatched a hand-off"; fi
