@@ -7,7 +7,7 @@ import * as path from 'path';
 // rebuild them in beforeAll (per worker, in place), and a worker injecting a
 // bundle while another rewrote it got a truncated script (see
 // collab/atomic-build.mjs).
-const COLLAB_BUILDS = ['build.mjs', 'build-integrity.mjs', 'build-sync-audit.mjs'];
+const COLLAB_BUILDS = ['build.mjs', 'build-integrity.mjs', 'build-sync-audit.mjs', 'build-agent.mjs'];
 
 function buildCollabBundles(): void {
   for (const script of COLLAB_BUILDS) {
