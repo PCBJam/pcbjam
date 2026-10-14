@@ -7,14 +7,14 @@ import { Badge, Button, Code, Select, SelectContent, SelectItem, SelectTrigger, 
 import { attachEditorBridge, type BridgeSocket } from '@/agent/bridge';
 import { AI_CHAT_URL } from '@/lib/config';
 import { copySegment } from '@/lib/copy-context';
-import { EDITOR_TOOLS, runEditorTool } from './editor-actions';
 
 /**
  * In-editor AI chat (POC). The chat runs server-side, one Durable Object per
  * chat; this panel only renders it. It talks to the chat service over a
  * WebSocket with the session cookie, so the person's identity never passes
- * through here. Edits the agent makes arrive through the document room like
- * any collaborator's.
+ * through here. The same socket carries the editor bridge: the agent's
+ * schematic edits on the open file run here, through KiCad (one undo step
+ * each), and edits on other files arrive through their document rooms.
  *
  * Built on @pcbjam/ui (ui-components 0001): its controls, and theme tokens
  * for every colour, so a brand stylesheet and dark mode restyle it.
@@ -107,7 +107,7 @@ export function AiChatPanel({ scope, project, file, tool }: { scope: string; pro
 
   if (!open) {
     return (
-      <div className="absolute bottom-4 right-4 z-[54]">
+      <div className="absolute bottom-12 right-4 z-[54]">
         <Tip content="AI chat">
           <Button type="button" aria-label="Open AI chat" onClick={() => setOpen(true)} size="icon" className="rounded-full shadow-lg">
             <Sparkles />
@@ -177,16 +177,8 @@ function ChatView({ chatId, initial, scope, project, file, tool, onTurnEnd, mode
     messages: initial,
     credentials: 'include',
     // The file open right now: the agent works on what the person looks at.
-    // `editor`: this tab can carry out editor_* actions natively (the agent offers them only then).
+    // `editor`: which editor this tab shows (the agent's edits on its file run here, step 5's bridge).
     body: () => ({ file: fileRef.current, editor: { tool: toolRef.current }, ...(modelRef.current ? { model: modelRef.current } : {}) }),
-    // The agent's editor_* calls run here, in KiCad; the answer goes back to the agent.
-    onToolCall: async ({ toolCall, addToolOutput }) => {
-      if (!EDITOR_TOOLS.has(toolCall.toolName)) return;
-      const output = await runEditorTool(toolCall.toolName, toolCall.input, {
-        scope, project, file: fileRef.current, tool: toolRef.current, signal: new AbortController().signal,
-      });
-      addToolOutput({ toolCallId: toolCall.toolCallId, output });
-    },
     // A finished turn may have named the chat (its first message): re-read the list.
     onTurnEnd,
   });
@@ -225,12 +217,12 @@ function ChatView({ chatId, initial, scope, project, file, tool, onTurnEnd, mode
         {messages.length === 0 && (
           <div className="mt-6 space-y-2 text-xs text-muted-foreground">
             <p>Ask me to work on this project. Try:</p>
-            {['add a 10k resistor between +3V3 and SDA', 'remove R7', 'run ERC and explain the errors', 'show me the board'].map((s) => (
+            {['add a 10k resistor between +3V3 and SDA', 'what is connected to R1?', 'remove R7', 'run ERC'].map((s) => (
               <Button key={s} type="button" variant="outline" size="xs" className="mr-1 font-normal" onClick={() => setDraft(s)}>{s}</Button>
             ))}
           </div>
         )}
-        {messages.map((m) => <Message key={m.id} message={m} />)}
+        {messages.map((m) => <Message key={m.id} message={m} at={{ scope, project, file }} />)}
         {status === 'submitted' && <p className="flex items-center text-xs text-muted-foreground"><Loader2 size={13} className="mr-1.5 animate-spin" />Thinking…</p>}
       </div>
       {!pinned && (
@@ -273,36 +265,58 @@ function ChatView({ chatId, initial, scope, project, file, tool, onTurnEnd, mode
 type Part = UIMessage['parts'][number];
 type ToolPart = { type: string; toolName?: string; state: string; input?: unknown; output?: unknown; errorText?: string };
 
-function Message({ message }: { message: UIMessage }) {
+/** Where the panel is: tool calls on another file offer to open it. */
+interface PanelAt { scope: string; project: string; file: string }
+
+function Message({ message, at }: { message: UIMessage; at: PanelAt }) {
   if (message.role === 'user') {
     const text = message.parts.filter((p) => p.type === 'text').map((p) => (p as { text: string }).text).join('\n');
     return <div className="ml-8 whitespace-pre-wrap rounded-lg bg-primary/10 px-3 py-2">{text}</div>;
   }
   const model = (message.metadata as { model?: string } | undefined)?.model;
   return <div className="space-y-1.5">
-    {message.parts.map((p, i) => <AssistantPart key={i} part={p} />)}
+    {message.parts.map((p, i) => <AssistantPart key={i} part={p} at={at} />)}
     {model && <Badge size="sm">{modelLabel(model)}</Badge>}
   </div>;
 }
 
-function AssistantPart({ part }: { part: Part }) {
+function AssistantPart({ part, at }: { part: Part; at: PanelAt }) {
   if (part.type === 'text') return <Markdown text={(part as { text: string }).text} />;
-  if (part.type === 'dynamic-tool' || part.type.startsWith('tool-')) return <ToolCall part={part as unknown as ToolPart} />;
+  if (part.type === 'dynamic-tool' || part.type.startsWith('tool-')) return <ToolCall part={part as unknown as ToolPart} at={at} />;
   return null;
 }
 
 const TOOL_LABELS: Record<string, string> = {
-  list_files: 'Listing files', read_file: 'Reading the file', get_document: 'Reading the document',
-  list_libs: 'Looking up libraries', add_part_to_project: 'Getting the part ready', apply_edits: 'Editing the document',
-  run_kicad_tool: 'Running the check', board_shot: 'Taking a board shot', schematic_shot: 'Taking a schematic shot',
-  editor_list_symbols: 'Listing parts in the editor', editor_remove_symbol: 'Removing in the editor',
-  editor_place_symbol: 'Placing in the editor: click where it goes', editor_connect_pin: 'Connecting in the editor',
+  list_parts: 'Reading the parts', list_nets: 'Reading the connections', place_part: 'Placing parts',
+  connect: 'Connecting pins', remove_part: 'Removing parts', set_field: 'Changing a field', move_part: 'Moving parts',
+  run_check: 'Running the check', search_lib_items: 'Searching the libraries', get_lib_item: 'Reading a library part',
+  list_files: 'Listing files', read_file: 'Reading the file', board_shot: 'Taking a board shot',
+  schematic_shot: 'Taking a schematic shot', tool_search: 'Looking for a tool', load_skill: 'Reading a skill',
 };
 
-function ToolCall({ part }: { part: ToolPart }) {
+/** The label while a tool runs: a placement by click waits for the person. */
+function toolLabel(name: string, input: unknown, running: boolean): string {
+  if (name === 'place_part' && running && (input as { click?: boolean } | undefined)?.click) return 'Click where it goes (Esc cancels)';
+  return TOOL_LABELS[name] ?? name;
+}
+
+/** The project file a tool call worked on, when it is not the one open here. */
+function otherFile(input: unknown, at: PanelAt): string | null {
+  const i = input as { path?: unknown; file?: unknown; scope?: unknown; project?: unknown } | undefined;
+  const file = typeof i?.path === 'string' ? i.path : typeof i?.file === 'string' ? i.file : null;
+  if (!file || file === at.file || (i?.scope !== undefined && i.scope !== at.scope) || (i?.project !== undefined && i.project !== at.project)) return null;
+  return /\.(kicad_sch|kicad_pcb)$/.test(file) ? file : null;
+}
+
+/** The editor URL of another file in this project (the agent never moves the person's view itself). */
+const fileHref = (at: PanelAt, file: string) =>
+  `/${encodeURIComponent(at.scope)}/projects/${encodeURIComponent(at.project)}/${file.split('/').map(encodeURIComponent).join('/')}${window.location.search}`;
+
+function ToolCall({ part, at }: { part: ToolPart; at: PanelAt }) {
   const [open, setOpen] = React.useState(false);
   const name = part.toolName ?? part.type.replace(/^tool-/, '');
   const done = part.state === 'output-available';
+  const elsewhere = otherFile(part.input, at);
   const failed = part.state === 'output-error' || (done && (part.output as { isError?: boolean })?.isError === true);
   const images = done ? ((part.output as { content?: Array<{ type: string; data?: string; mimeType?: string }> })?.content ?? []).filter((c) => c.type === 'image' && c.data) : [];
   return (
@@ -310,9 +324,15 @@ function ToolCall({ part }: { part: ToolPart }) {
       <Button type="button" variant="ghost" size="row" className="items-center gap-1.5 px-2 py-1 text-xs text-muted-foreground" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
         {failed ? <AlertTriangle size={12} className="text-warning" /> : done ? <Check size={12} className="text-success" /> : <Loader2 size={12} className="animate-spin" />}
         <Wrench size={11} />
-        <span className="flex-1 truncate">{TOOL_LABELS[name] ?? name}</span>
+        <span className="flex-1 truncate">{toolLabel(name, part.input, !done && part.state !== 'output-error')}</span>
         <Code className="px-1 py-0 text-[10px]">{name}</Code>
       </Button>
+      {elsewhere && (
+        <div className="flex items-center gap-1.5 border-t border-border px-2 py-1 text-[11px] text-muted-foreground">
+          <span className="flex-1 truncate">On {elsewhere}</span>
+          <Button asChild variant="outline" size="xs"><a href={fileHref(at, elsewhere)}>Open it</a></Button>
+        </div>
+      )}
       {images.map((img, i) => <img key={i} alt={`${name} result`} className="block w-full border-t border-border" src={`data:${img.mimeType};base64,${img.data}`} />)}
       {open && (
         <pre className="max-h-48 overflow-auto border-t border-border bg-muted p-2 text-[10px] leading-snug">
