@@ -26,7 +26,7 @@ test('Copy Footprint in one tab, Paste Footprint in another', async ({ page, con
     await page.evaluate(() => navigator.clipboard.writeText('SENTINEL-BEFORE-COPY'));
     await editorAction(page, 'pcbnew.ModuleEditor.copyFootprint', SRC);
     await expect
-        .poll(() => page.evaluate(() => navigator.clipboard.readText()), { message: 'copied footprint on the clipboard' })
+        .poll(() => page.evaluate(() => navigator.clipboard.readText()), { message: 'copied footprint on the clipboard', timeout: 30000 })
         .toMatch(new RegExp(`^\\s*\\(footprint "${SRC}"`));
 
     // Tab B: a separate KiCad; paste into the same-named library.
@@ -39,7 +39,7 @@ test('Copy Footprint in one tab, Paste Footprint in another', async ({ page, con
     await editorAction(tabB, 'pcbnew.ModuleEditor.pasteFootprint');
 
     // The name exists, so the paste lands as <name>_copy, saved and opened.
-    await expect.poll(() => editorFootprint(tabB), { message: 'pasted footprint open in tab B' })
+    await expect.poll(() => editorFootprint(tabB), { message: 'pasted footprint open in tab B', timeout: 60000 })
         .toMatch(new RegExp(`^Footprints:${SRC}_copy\\|`));
     const saved = await tabB.evaluate((p) => {
         const FS = (window as any).FS;

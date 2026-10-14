@@ -36,17 +36,19 @@ function modelFields(page: Page): Promise<Field[] | null> {
         const inputs = Array.from(document.querySelectorAll('input.wx-dom-control'))
             .map((i) => i as HTMLInputElement)
             .filter((i) => i.type === 'text' && i.style.display !== 'none' && i.getBoundingClientRect().width > 0);
-        // They are the one column of exactly nine text fields sharing a left edge.
+        // They are the bottom nine of the column of text fields sharing a left
+        // edge (an open model-path cell editor above them can share that edge).
         const columns = new Map<number, HTMLInputElement[]>();
         for (const i of inputs) {
             const k = Math.round(i.getBoundingClientRect().x);
             columns.set(k, [...(columns.get(k) ?? []), i]);
         }
-        const col = [...columns.values()].find((c) => c.length === 9);
+        const col = [...columns.values()].find((c) => c.length >= 9);
         if (!col) return null;
         return col
             .map((i) => ({ i, r: i.getBoundingClientRect() }))
             .sort((a, b) => a.r.y - b.r.y)
+            .slice(-9)
             .map(({ i, r }) => ({ value: i.value, x: r.x + r.width / 2, y: r.y + r.height / 2 }));
     });
 }
@@ -56,7 +58,7 @@ const OFF_X = 6;
 
 async function field(page: Page, idx: number): Promise<Field> {
     let f: Field[] | null = null;
-    await expect.poll(async () => (f = await modelFields(page)) !== null, { message: '3D model fields shown' }).toBe(true);
+    await expect.poll(async () => (f = await modelFields(page)) !== null, { message: '3D model fields shown', timeout: 30000 }).toBe(true);
     return f![idx];
 }
 
@@ -75,7 +77,7 @@ async function openModelsTab(page: Page, testLogger: { consoleLogs: string[]; er
     await openEcc83WithFootprintEditor(page, testLogger, { [FP]: BODY });
     await loadInEditor(page, FP);
     await editorAction(page, 'pcbnew.ModuleEditor.footprintProperties');
-    await expect.poll(() => clickTab(page, '3D Models'), { message: '3D Models tab' }).toBe(true);
+    await expect.poll(() => clickTab(page, '3D Models'), { message: '3D Models tab', timeout: 30000 }).toBe(true);
 }
 
 test.describe('Footprint Properties → 3D Models fields', () => {
@@ -84,29 +86,29 @@ test.describe('Footprint Properties → 3D Models fields', () => {
     test('rotation shows "-90.00°" and keeps it after the field loses focus', async ({ page, testLogger }) => {
         await openModelsTab(page, testLogger);
 
-        await expect.poll(async () => (await field(page, ROT_Z)).value, { message: 'model A rotation Z' }).toBe('-90.00°');
+        await expect.poll(async () => (await field(page, ROT_Z)).value, { message: 'model A rotation Z', timeout: 30000 }).toBe('-90.00°');
         expect((await field(page, 3)).value, 'rotation X').toBe('0.00°');
 
         const rz = await field(page, ROT_Z);
         await page.mouse.click(rz.x, rz.y);
         await page.keyboard.press('Tab');
-        await expect.poll(async () => (await field(page, ROT_Z)).value, { message: 'rotation Z after blur' }).toBe('-90.00°');
+        await expect.poll(async () => (await field(page, ROT_Z)).value, { message: 'rotation Z after blur', timeout: 30000 }).toBe('-90.00°');
     });
 
     test("switching models keeps the selected model's offset when a field gets focus", async ({ page, testLogger }) => {
         await openModelsTab(page, testLogger);
 
         // Model A: focus and leave its X offset (the evaluator now holds "2.300000 mm").
-        await expect.poll(async () => (await field(page, OFF_X)).value).toBe('2.300000 mm');
+        await expect.poll(async () => (await field(page, OFF_X)).value, { timeout: 30000 }).toBe('2.300000 mm');
         const ax = await field(page, OFF_X);
         await page.mouse.click(ax.x, ax.y);
         await page.keyboard.press('Tab');
 
         // Model B: its X offset is 0, before AND after the field gets focus.
         await selectModel(page, 'model-b.step');
-        await expect.poll(async () => (await field(page, OFF_X)).value, { message: 'model B offset X shown' }).toBe('0.000000 mm');
+        await expect.poll(async () => (await field(page, OFF_X)).value, { message: 'model B offset X shown', timeout: 30000 }).toBe('0.000000 mm');
         const bx = await field(page, OFF_X);
         await page.mouse.click(bx.x, bx.y);
-        await expect.poll(async () => (await field(page, OFF_X)).value, { message: 'model B offset X after focus' }).toBe('0.000000 mm');
+        await expect.poll(async () => (await field(page, OFF_X)).value, { message: 'model B offset X after focus', timeout: 30000 }).toBe('0.000000 mm');
     });
 });

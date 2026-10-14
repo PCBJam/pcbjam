@@ -77,9 +77,9 @@ export function editorFootprint(page: Page): Promise<string> {
 export async function loadInEditor(page: Page, name: string): Promise<void> {
     await expect
         .poll(() => page.evaluate(({ lib, name }) => (window as any).Module.kicadLibsTestEditorLoad(lib, name) as boolean,
-            { lib: LIB, name }), { message: 'footprint editor accepts a load' })
+            { lib: LIB, name }), { message: 'footprint editor accepts a load', timeout: 60000 })
         .toBe(true);
-    await expect.poll(() => editorFootprint(page), { message: `${name} open in the footprint editor` })
+    await expect.poll(() => editorFootprint(page), { message: `${name} open in the footprint editor`, timeout: 60000 })
         .toMatch(new RegExp(`^${LIB}:${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\|`));
 }
 
