@@ -76,6 +76,14 @@
 #include "collab_presence_core.h"
 #include "plugin_board_geometry.h"
 #include "plugin_edits.h"
+#include "update_pcb.h"
+#include <chrono>
+#include <mail_type.h>
+#include <reporter.h>
+#include <netlist_reader/board_netlist_updater.h>
+#include <netlist_reader/netlist_reader.h>
+#include <netlist_reader/pcb_netlist.h>
+#include <autorouter/spread_footprints.h>
 #include "open_gate.h"
 #include "pcbjam_async_policy.h"
 #include "timer_park.h"
@@ -4095,6 +4103,207 @@ std::string pcbPluginEditItems( std::string aJson )
     return json{ { "ok", true }, { "operation", operation } }.dump();
 }
 
+// ── Update PCB from Schematic for the AI chat (ai-chat 0003 step 5b) ────────
+// KiCad's own update (DIALOG_UPDATE_PCB::PerformUpdate) without its dialog: the netlist from
+// the in-process schematic player (as FetchNetlistFromSchematic, minus its message boxes),
+// BOARD_NETLIST_UPDATER with the dialog's default options, and its report as JSON. A dry run
+// changes nothing; a real run is one undo step, broadcast like any local commit. New
+// footprints are spread beside the board as KiCad does, but not picked up for a drag.
+namespace
+{
+// The updater's report, line by line, with KiCad's severity.
+class JSON_REPORTER : public REPORTER
+{
+public:
+    using REPORTER::Report;
+
+    REPORTER& Report( const wxString& aText, SEVERITY aSeverity = RPT_SEVERITY_UNDEFINED ) override
+    {
+        REPORTER::Report( aText, aSeverity );
+
+        if( aText.IsEmpty() ) // the updater's spacers between sections
+            return *this;
+
+        const char* severity = aSeverity == RPT_SEVERITY_ERROR     ? "error"
+                               : aSeverity == RPT_SEVERITY_WARNING ? "warning"
+                               : aSeverity == RPT_SEVERITY_ACTION  ? "action"
+                                                                   : "info";
+        m_lines.push_back( json{ { "severity", severity }, { "text", toUtf8( aText ) } } );
+        return *this;
+    }
+
+    json m_lines = json::array();
+};
+} // namespace
+
+static json doUpdatePcb( PCB_EDIT_FRAME* fr, const json& aReq )
+{
+    auto fail = []( const char* aCode, const std::string& aMessage )
+    {
+        return json{ { "status", "error" }, { "code", aCode }, { "error", aMessage } };
+    };
+    const bool dryRun = aReq.value( "dryRun", true );
+    const bool relink = aReq.value( "relinkByReference", false );
+    const bool replace = aReq.value( "replaceFootprints", true );
+
+    // The schematic player loads the project's sheets (it stays hidden); an empty payload
+    // skips eeschema's annotation prompt, so unannotated symbols are refused below instead.
+    if( fr->TestStandalone() <= 0 )
+        return fail( "NO_SCHEMATIC", "The project's schematic could not be loaded" );
+
+    std::string payload;
+    fr->Kiway().ExpressMail( FRAME_SCH, MAIL_SCH_GET_NETLIST, payload, fr );
+
+    if( payload.empty() )
+        return fail( "NO_SCHEMATIC", "The schematic editor returned no netlist" );
+
+    NETLIST netlist;
+
+    try
+    {
+        KICAD_NETLIST_READER reader( new STRING_LINE_READER( payload, wxS( "Eeschema netlist" ) ), &netlist );
+        reader.LoadNetlist();
+    }
+    catch( const IO_ERROR& e )
+    {
+        return fail( "NETLIST", toUtf8( e.What() ) );
+    }
+
+    json unannotated = json::array();
+
+    for( unsigned i = 0; i < netlist.GetCount(); i++ )
+    {
+        if( netlist.GetComponent( i )->GetReference().EndsWith( wxS( "?" ) ) )
+            unannotated.push_back( toUtf8( netlist.GetComponent( i )->GetReference() ) );
+    }
+
+    if( !unannotated.empty() )
+    {
+        json out = fail( "NOT_ANNOTATED", "Some symbols have no reference number yet: annotate the schematic first" );
+        out["refs"] = unannotated;
+        return out;
+    }
+
+    netlist.SortByReference();
+    netlist.SetFindByTimeStamp( !relink );
+    netlist.SetReplaceFootprints( replace );
+
+    TOOL_MANAGER* tm = fr->GetToolManager();
+
+    if( !dryRun )
+    {
+        tm->DeactivateTool();
+        tm->RunAction( ACTIONS::selectionClear );
+    }
+
+    JSON_REPORTER         reporter;
+    BOARD_NETLIST_UPDATER updater( fr, fr->GetBoard() );
+    updater.SetReporter( &reporter );
+    updater.SetIsDryRun( dryRun );
+    updater.SetLookupByTimestamp( !relink );
+    updater.SetDeleteUnusedFootprints( aReq.value( "deleteUnused", false ) );
+    updater.SetReplaceFootprints( replace );
+    updater.SetTransferGroups( false );
+    updater.SetApplyDesignBlockLayouts( false );
+    updater.SetOverrideLocks( false );
+    updater.SetUpdateFields( true );
+    updater.SetRemoveExtraFields( false );
+    const bool completed = updater.UpdateNetlist( netlist );
+
+    json added = json::array();
+
+    if( !dryRun )
+    {
+        std::vector<FOOTPRINT*> newFootprints = updater.GetAddedFootprints();
+
+        for( FOOTPRINT* fp : newFootprints )
+            added.push_back( toUtf8( fp->GetReference() ) );
+
+        // Spreads the new footprints at the page corner and selects them for KiCad's drag;
+        // the agent never drags.
+        bool runDragCommand = false;
+        fr->OnNetlistChanged( updater, &runDragCommand );
+        tm->RunAction( ACTIONS::selectionClear );
+
+        // Where the person sees them instead: under the board outline (its right side is
+        // where the chat panel covers the view), or mid-page on a board without one. Moved
+        // as OnNetlistChanged spreads them (outside the commit); the collab differ carries
+        // the positions to the room.
+        if( !newFootprints.empty() )
+        {
+            const BOX2I edges = fr->GetBoard()->GetBoardEdgesBoundingBox();
+            const VECTOR2I page = fr->GetPageSizeIU();
+            const VECTOR2I target = edges.GetWidth() > 0
+                                            ? VECTOR2I( edges.GetLeft(), edges.GetBottom() + pcbIUScale.mmToIU( 5 ) )
+                                            : VECTOR2I( page.x / 2, page.y / 2 );
+            SpreadFootprints( &newFootprints, target, true );
+            fr->GetCanvas()->Refresh();
+        }
+    }
+
+    return json{ { "status", "done" }, { "dryRun", dryRun }, { "completed", completed },
+                 { "added", added }, { "report", reporter.m_lines } };
+}
+
+// Runs on the event loop's main stack, as the person's Update PCB does (a coroutine's stack is
+// too small for loading the sheets), and never in the middle of a collab apply or a file open:
+// it waits for them, up to 30 s (a wedged apply would otherwise keep it waiting forever).
+static void runUpdatePcb( PCB_EDIT_FRAME* fr, json aReq, int aOperation, std::chrono::steady_clock::time_point aSince )
+{
+    fr->CallAfter( [fr, aReq, aOperation, aSince]()
+    {
+        if( pcbjam_collab::applyBusy() || pcbjam_open::busy() )
+        {
+            if( std::chrono::steady_clock::now() - aSince > std::chrono::seconds( 30 ) )
+                pcbjam_update_pcb::finish( aOperation, json{ { "status", "error" }, { "code", "BUSY" },
+                                                              { "error", "The board editor stayed busy: try again in a moment" } } );
+            else
+                runUpdatePcb( fr, aReq, aOperation, aSince );
+
+            return;
+        }
+
+        try
+        {
+            pcbjam_update_pcb::finish( aOperation, doUpdatePcb( fr, aReq ) );
+        }
+        catch( const std::exception& e )
+        {
+            pcbjam_update_pcb::finish( aOperation, json{ { "status", "error" }, { "code", "FAILED" }, { "error", e.what() } } );
+        }
+    } );
+}
+
+// `aJson` = {dryRun?: true, deleteUnused?: false, replaceFootprints?: true, relinkByReference?: false}.
+// Returns a receipt; JS polls kicadUpdatePcbStatus.
+std::string pcbUpdatePcbFromSchematic( std::string aJson )
+{
+    auto refuse = []( const char* aCode ) { return json{ { "ok", false }, { "code", aCode } }.dump(); };
+    const json req = json::parse( aJson, nullptr, /*allow_exceptions*/ false );
+
+    if( req.is_discarded() || !req.is_object() )
+        return refuse( "INVALID" );
+
+    for( const char* flag : { "dryRun", "deleteUnused", "replaceFootprints", "relinkByReference" } )
+    {
+        if( req.contains( flag ) && !req[flag].is_boolean() )
+            return refuse( "INVALID" );
+    }
+
+    PCB_EDIT_FRAME* fr = pcbFrame();
+
+    if( !fr )
+        return refuse( "NO_EDITOR" );
+
+    const int operation = pcbjam_update_pcb::begin();
+
+    if( !operation )
+        return refuse( "BUSY" );
+
+    runUpdatePcb( fr, req, operation, std::chrono::steady_clock::now() );
+    return json{ { "ok", true }, { "operation", operation } }.dump();
+}
+
 EMSCRIPTEN_BINDINGS(pcbnew) {
     // Register vector types for iteration
     register_vector<FOOTPRINT*>("FootprintVector");
@@ -4128,6 +4337,11 @@ EMSCRIPTEN_BINDINGS(pcbnew) {
     // Guide overlay (overlay-system 0004): the board as a tour reads it — pcbnew-only name,
     // merged-image safe ("{}" while the schematic frame is live).
     function("kicadBoardStatus", &pcbBoardStatus);
+    // AI chat (ai-chat 0003 step 5b): KiCad's Update PCB from Schematic without its dialog.
+    // pcbnew-only names, merged-image safe (NO_EDITOR while the schematic frame is live).
+    function("kicadUpdatePcbFromSchematic", &pcbUpdatePcbFromSchematic);
+    function("kicadUpdatePcbStatus", &pcbjam_update_pcb::status);
+    function("kicadUpdatePcbVersion", &pcbjam_update_pcb::version);
     function("kicadLayersSetVisible", &pcbLayersSetVisible);
     function("kicadLayersSetActive", &pcbLayersSetActive);
     // Session-menu 3D entry (read-only-viewer 0003) — pcbnew-only name,

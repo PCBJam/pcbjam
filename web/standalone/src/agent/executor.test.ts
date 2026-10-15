@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fileToDoc, parseSexpr, placementBlob, placePartEdit, type Form } from '@pcbjam/shared';
 import type { TourDeps } from '@/overlay/tours/declarative';
-import { AGENT_UNDO_PREFIX, agentEditRequest, applyAgentEdit, placeAgentPart, readParts } from './executor';
+import { AGENT_UNDO_PREFIX, agentEditRequest, applyAgentEdit, placeAgentPart, readParts, updatePcb } from './executor';
 
 // A synthetic sheet and symbol written for these tests.
 const F = '(effects (font (size 1.27 1.27)))';
@@ -151,5 +151,84 @@ describe('readParts', () => {
 
   it('refuses while a file is loading', () => {
     expect(readParts(deps(() => symbols, nets, true))).toEqual({ error: 'The document is still loading', code: 'BUSY' });
+  });
+});
+
+describe('updatePcb', () => {
+  const add = { severity: 'action', text: "Add D1 (footprint 'LED_SMD:LED_0603_1608Metric')." };
+  const remove = { severity: 'action', text: 'Remove unused footprint R9.' };
+
+  /** A fake engine: each dry run reports `preview()`; the real run reports what it did. */
+  function updateEngine(preview: () => object[]) {
+    let operation = 0;
+    const runs: boolean[] = [];
+    const results = new Map<number, object>();
+    const mod = {
+      kicadUpdatePcbFromSchematic: vi.fn((json: string) => {
+        const { dryRun } = JSON.parse(json) as { dryRun: boolean };
+        runs.push(dryRun);
+        operation++;
+        results.set(operation, dryRun
+          ? { status: 'done', report: preview(), added: [] }
+          : { status: 'done', report: [{ severity: 'action', text: "Added D1 (footprint 'LED_SMD:LED_0603_1608Metric')." }], added: ['D1'] });
+        return JSON.stringify({ ok: true, operation });
+      }),
+      kicadUpdatePcbStatus: vi.fn((id: number) => JSON.stringify(results.get(id) ?? { status: 'expired' })),
+    };
+    return { mod, runs };
+  }
+  const signal = () => new AbortController().signal;
+  const run = (req: { dryRun: boolean; deleteUnused?: boolean }, confirm = vi.fn(async () => true)) =>
+    updatePcb({ deleteUnused: false, ...req }, signal(), confirm, { deps: deps(() => []), pollMs: 1 });
+
+  it("previews: KiCad's report, and what would need the person's approval", async () => {
+    const { mod, runs } = updateEngine(() => [add, remove]);
+    install(mod);
+    expect(await run({ dryRun: true })).toEqual({ status: 'previewed', report: [add, remove], needsApproval: ['Remove unused footprint R9.'] });
+    expect(runs).toEqual([true]);
+  });
+
+  it('applies additions without asking: a dry run, then the real one', async () => {
+    const { mod, runs } = updateEngine(() => [add]);
+    install(mod);
+    const confirm = vi.fn(async () => true);
+    expect(await run({ dryRun: false }, confirm)).toMatchObject({ status: 'applied', added: ['D1'], approved: [] });
+    expect(confirm).not.toHaveBeenCalled();
+    expect(runs).toEqual([true, false]);
+  });
+
+  it('asks before a removal; declined, the board is never touched', async () => {
+    const { mod, runs } = updateEngine(() => [add, remove]);
+    install(mod);
+    const confirm = vi.fn(async () => false);
+    expect(await run({ dryRun: false, deleteUnused: true }, confirm)).toEqual({ status: 'declined', needsApproval: ['Remove unused footprint R9.'] });
+    expect(confirm).toHaveBeenCalledWith(['Remove unused footprint R9.'], expect.any(AbortSignal));
+    expect(runs).toEqual([true]);
+  });
+
+  it('approved, previews again right before applying, and asks again when something new appeared', async () => {
+    let report = [add, remove];
+    const { mod, runs } = updateEngine(() => report);
+    install(mod);
+    const swap = { severity: 'action', text: "Change R1 footprint from 'R_0603' to 'R_0805'." };
+    const confirm = vi.fn(async () => {
+      report = confirm.mock.calls.length === 1 ? [add, remove, swap] : report;
+      return true;
+    });
+    expect(await run({ dryRun: false, deleteUnused: true }, confirm)).toMatchObject({ status: 'applied', approved: ['Remove unused footprint R9.', swap.text] });
+    expect(confirm).toHaveBeenCalledTimes(2);
+    expect(runs).toEqual([true, true, true, false]);
+  });
+
+  it("passes KiCad's refusals on, and needs an editor build that has the hook", async () => {
+    install({
+      kicadUpdatePcbFromSchematic: () => JSON.stringify({ ok: true, operation: 1 }),
+      kicadUpdatePcbStatus: () => JSON.stringify({ status: 'error', code: 'NOT_ANNOTATED', error: 'annotate first' }),
+    });
+    expect(await run({ dryRun: true })).toEqual({ error: 'annotate first', code: 'NOT_ANNOTATED' });
+    install({ kicadUpdatePcbFromSchematic: () => JSON.stringify({ ok: false, code: 'NO_EDITOR' }), kicadUpdatePcbStatus: () => '{}' });
+    expect(await run({ dryRun: true })).toEqual({ error: 'Update PCB runs in the board editor: open the board first.', code: 'NO_EDITOR' });
+    install({});
+    expect(await run({ dryRun: true })).toMatchObject({ code: 'NO_EDITOR' });
   });
 });

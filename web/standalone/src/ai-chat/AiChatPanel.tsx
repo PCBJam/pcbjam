@@ -5,6 +5,7 @@ import type { UIMessage } from 'ai';
 import { Sparkles, X, Plus, Trash2, History, Square, Send, Wrench, Check, AlertTriangle, Loader2, ArrowDown } from 'lucide-react';
 import { Badge, Button, Code, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Textarea, Tip, cn } from '@pcbjam/ui';
 import { attachEditorBridge, type BridgeSocket } from '@/agent/bridge';
+import type { ConfirmUpdatePcb } from '@/agent/executor';
 import { AI_CHAT_URL } from '@/lib/config';
 import { copySegment } from '@/lib/copy-context';
 
@@ -14,7 +15,9 @@ import { copySegment } from '@/lib/copy-context';
  * WebSocket with the session cookie, so the person's identity never passes
  * through here. The same socket carries the editor bridge: the agent's
  * schematic edits on the open file run here, through KiCad (one undo step
- * each), and edits on other files arrive through their document rooms.
+ * each), and edits on other files arrive through their document rooms. On a
+ * board, an Update PCB that would remove or rewire anything waits for the
+ * person's Apply here: the agent cannot answer it.
  *
  * Built on @pcbjam/ui (ui-components 0001): its controls, and theme tokens
  * for every colour, so a brand stylesheet and dark mode restyle it.
@@ -158,12 +161,20 @@ function ChatView({ chatId, initial, scope, project, file, tool, onTurnEnd, mode
 }) {
   const host = new URL(AI_CHAT_URL!).host;
   const agent = useAgent({ agent: 'chat-session', name: chatId, host, protocol: AI_CHAT_URL!.startsWith('https') ? 'wss' : 'ws' } as never);
+  // An Update PCB waiting for the person's OK (step 5b); Stop withdraws the question.
+  const [approval, setApproval] = React.useState<{ changes: string[]; answer: (ok: boolean) => void } | null>(null);
+  const confirm = React.useCallback<ConfirmUpdatePcb>((changes, signal) => new Promise<boolean>((resolve) => {
+    const answer = (ok: boolean) => { setApproval(null); signal.removeEventListener('abort', stopped); resolve(ok); };
+    const stopped = () => answer(false);
+    signal.addEventListener('abort', stopped, { once: true });
+    setApproval({ changes, answer });
+  }), []);
   // The editor bridge (ai-chat 0003 step 5): the chat's schematic tools carry out their
   // edits on this tab's file here, with KiCad (one undo step each). Re-attached when the
   // shown file or editor changes.
   React.useEffect(
-    () => attachEditorBridge(agent as unknown as BridgeSocket, () => ({ scope, project, copy: copySegment(), file, tool })),
-    [agent, scope, project, file, tool],
+    () => attachEditorBridge(agent as unknown as BridgeSocket, () => ({ scope, project, copy: copySegment(), file, tool }), undefined, confirm),
+    [agent, scope, project, file, tool, confirm],
   );
   const fileRef = React.useRef(file);
   fileRef.current = file;
@@ -231,6 +242,7 @@ function ChatView({ chatId, initial, scope, project, file, tool, onTurnEnd, mode
         </Button>
       )}
     </div>
+    {approval && <UpdatePcbApproval changes={approval.changes} answer={approval.answer} />}
     <form className="shrink-0 border-t border-border p-2" onSubmit={(e) => { e.preventDefault(); send(); }}>
       {models.length > 1 && model && (
         <div className="mb-1.5 flex items-center gap-2 text-[11px] text-muted-foreground">
@@ -260,6 +272,25 @@ function ChatView({ chatId, initial, scope, project, file, tool, onTurnEnd, mode
       </div>
     </form>
   </>;
+}
+
+/** The changes an Update PCB would make that the person must approve (step 5b). */
+function UpdatePcbApproval({ changes, answer }: { changes: string[]; answer: (ok: boolean) => void }) {
+  const shown = changes.slice(0, 8);
+  return (
+    <section aria-label="Confirm Update PCB" className="mx-2 mb-2 shrink-0 rounded-md border border-warning/40 bg-warning/10 p-3 text-xs">
+      <p className="font-medium">Update PCB would change what is on the board:</p>
+      <ul className="my-1.5 list-disc space-y-0.5 pl-5">
+        {shown.map((c, i) => <li key={i}>{c}</li>)}
+        {changes.length > shown.length && <li>and {changes.length - shown.length} more</li>}
+      </ul>
+      <p className="mb-2 text-muted-foreground">Undo reverts the whole update in one step.</p>
+      <div className="flex gap-2">
+        <Button type="button" size="xs" onClick={() => answer(true)}>Apply</Button>
+        <Button type="button" size="xs" variant="outline" onClick={() => answer(false)}>Cancel</Button>
+      </div>
+    </section>
+  );
 }
 
 type Part = UIMessage['parts'][number];
@@ -292,6 +323,7 @@ const TOOL_LABELS: Record<string, string> = {
   run_check: 'Running the check', search_lib_items: 'Searching the libraries', get_lib_item: 'Reading a library part',
   list_files: 'Listing files', read_file: 'Reading the file', board_shot: 'Taking a board shot',
   schematic_shot: 'Taking a schematic shot', tool_search: 'Looking for a tool', load_skill: 'Reading a skill',
+  update_pcb: 'Updating the board from the schematic', wire: 'Drawing a wire',
 };
 
 /** The label while a tool runs: a placement by click waits for the person. */

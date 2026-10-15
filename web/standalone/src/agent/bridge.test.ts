@@ -79,4 +79,22 @@ describe('attachEditorBridge', () => {
     detach();
     expect(signals[1]!.aborted).toBe(true);
   });
+
+  it('runs Update PCB on a board only, with the panel asking the person', async () => {
+    const s = socket();
+    let shown: BridgeView = { ...view, file: 'amp.kicad_pcb', tool: 'pcbnew' };
+    const updatePcb = vi.fn(async () => ({ status: 'previewed' as const, report: [], needsApproval: [] }));
+    const confirm = vi.fn(async () => true);
+    attachEditorBridge(s, () => shown, { updatePcb } as unknown as BridgeExecutor, confirm);
+    s.deliver({ type: 'pcbjam.editor.exec', id: 'u1', file: 'amp.kicad_pcb', op: 'update_pcb', dryRun: true, deleteUnused: false });
+    await settle();
+    expect(updatePcb).toHaveBeenCalledWith({ dryRun: true, deleteUnused: false }, expect.any(AbortSignal), confirm);
+    expect(s.sent.at(-1)).toEqual({ type: 'pcbjam.editor.result', id: 'u1', result: { status: 'previewed', report: [], needsApproval: [] } });
+
+    shown = { ...view, file: 'amp.kicad_pcb', tool: 'eeschema' };
+    s.deliver({ type: 'pcbjam.editor.exec', id: 'u2', file: 'amp.kicad_pcb', op: 'update_pcb', dryRun: false, deleteUnused: false });
+    await settle();
+    expect(s.sent.at(-1)).toEqual({ type: 'pcbjam.editor.result', id: 'u2', result: { error: 'Update PCB runs in the board editor: open amp.kicad_pcb.', code: 'NO_EDITOR' } });
+    expect(updatePcb).toHaveBeenCalledTimes(1);
+  });
 });
