@@ -351,30 +351,32 @@ describe("remote source: a sibling restage never moves the CAS base (proposal 21
   });
 });
 
-describe("remote source: two writers of one path in a session (created subsheet)", () => {
-  // A tiny CAS server: PUT with the expected revision header commits
-  // current+1, anything else answers 409 with the current row. Each PUT
-  // resolves on the next macrotask, so concurrent calls really overlap.
-  function casServer(initial = 0) {
-    let current = initial;
-    const puts: string[] = [];
-    const fetchMock = vi.fn(async (_url: string, init?: { method?: string; headers?: Record<string, string> }) => {
-      const expected = init?.headers?.["x-pcbjam-file-revision"] ?? "";
-      puts.push(expected);
-      await new Promise((r) => setTimeout(r, 5));
-      const ok = Number(expected) === current;
-      if (ok) current += 1;
-      const revision = String(current);
-      return {
-        ok,
-        status: ok ? (expected === "0" ? 201 : 200) : 409,
-        headers: { get: (h: string) => (h === "x-pcbjam-file-revision" ? revision : null) },
-        json: async () => (ok ? { revision: current } : { current: { revision: current } }),
-      };
-    });
-    return { fetchMock, puts, current: () => current };
-  }
+// A tiny CAS server: PUT with the expected revision header commits
+// current+1, anything else answers 409 with the current row. Each PUT
+// resolves on the next macrotask, so concurrent calls really overlap.
+// `peerWrites` bumps the row before each answer (a peer saving constantly).
+function casServer(initial = 0, opts: { peerWrites?: boolean } = {}) {
+  let current = initial;
+  const puts: string[] = [];
+  const fetchMock = vi.fn(async (_url: string, init?: { method?: string; headers?: Record<string, string> }) => {
+    const expected = init?.headers?.["x-pcbjam-file-revision"] ?? "";
+    puts.push(expected);
+    await new Promise((r) => setTimeout(r, 5));
+    if (opts.peerWrites) current += 1;
+    const ok = Number(expected) === current;
+    if (ok) current += 1;
+    const revision = String(current);
+    return {
+      ok,
+      status: ok ? (expected === "0" ? 201 : 200) : 409,
+      headers: { get: (h: string) => (h === "x-pcbjam-file-revision" ? revision : null) },
+      json: async () => (ok ? { revision: current } : { current: { revision: current } }),
+    };
+  });
+  return { fetchMock, puts, current: () => current };
+}
 
+describe("remote source: two writers of one path in a session (created subsheet)", () => {
   it("the sheet-created registration and a Ctrl+S of the same new file both commit", async () => {
     // Bug: persistCreatedSheet's PUT (base 0) and the save lane's PUT of the
     // same new .kicad_sch (also base 0) overlapped; the second one 409'd with
@@ -432,6 +434,51 @@ describe("remote source: two writers of one path in a session (created subsheet)
     controller.abort();
     expect((await first).kind).toBe("committed");
     expect((await second).kind).toBe("not-committed");
+    expect(server.puts).toEqual(["0"]);
+  });
+});
+
+describe("remote source: a generated file (plot output) supersedes what the project holds", () => {
+  it("a re-plot over an earlier session's or a peer's Gerber adopts the server's revision and commits", async () => {
+    // Without it the second plot of a board went out with base 0 against the
+    // first plot's row and the editor showed a durable "Save conflict" for a
+    // file nobody edits by hand.
+    const source = await loadRemote(cacheMock());
+    const server = casServer(3);
+    vi.stubGlobal("fetch", server.fetchMock);
+    const outcome = await source().uploadFileBytes!("p", "demo-F_Cu.gbr", new Uint8Array([1]), undefined, {
+      editorSave: true,
+      generated: true,
+    });
+    expect(outcome).toEqual({ kind: "committed" });
+    expect(server.puts).toEqual(["0", "3"]);
+    expect(server.current()).toBe(4);
+  });
+
+  it("a new output commits on the first PUT", async () => {
+    const source = await loadRemote(cacheMock());
+    const server = casServer();
+    vi.stubGlobal("fetch", server.fetchMock);
+    const outcome = await source().uploadFileBytes!("p", "demo-PTH.drl", new Uint8Array([1]), undefined, { generated: true });
+    expect(outcome).toEqual({ kind: "committed" });
+    expect(server.puts).toEqual(["0"]);
+  });
+
+  it("retries once: a second conflict is returned", async () => {
+    const source = await loadRemote(cacheMock());
+    const server = casServer(1, { peerWrites: true });
+    vi.stubGlobal("fetch", server.fetchMock);
+    const outcome = await source().uploadFileBytes!("p", "demo-F_Cu.gbr", new Uint8Array([1]), undefined, { generated: true });
+    expect(outcome.kind).toBe("conflict");
+    expect(server.puts).toHaveLength(2);
+  });
+
+  it("a document save still conflicts (only generated files overwrite)", async () => {
+    const source = await loadRemote(cacheMock());
+    const server = casServer(3);
+    vi.stubGlobal("fetch", server.fetchMock);
+    const outcome = await source().uploadFileBytes!("p", "demo.kicad_pcb", new Uint8Array([1]), undefined, { editorSave: true });
+    expect(outcome.kind).toBe("conflict");
     expect(server.puts).toEqual(["0"]);
   });
 });

@@ -112,6 +112,7 @@ import {
 } from "@/wasm/collab/sheet-manager";
 import { sidecarPathsFor, startSidecarRooms, type SidecarRooms } from "@/wasm/collab/sidecar-rooms";
 import { boardSidecarPaths, createSidecarSweep, type SidecarSweep } from "@/wasm/collab/sidecar-sweep";
+import { capturePlotOutputs, type PlotOutputCapture, type PlotOutputWindow } from "@/wasm/plot-outputs";
 import type * as Y from "yjs";
 import { createOomWatch, restartViaAirlock } from "@/recovery/oom-watch";
 import { useTabCensus } from "@/recovery/useTabCensus";
@@ -179,6 +180,21 @@ const PluginSidebar = React.lazy(() =>
   import("@/plugins/PluginManagerSidebar").then((m) => ({ default: m.PluginSidebar })),
 );
 
+// Every save sink of the session goes through this guard: once fenced, a
+// save is refused HERE (a clear not-committed outcome, counted for tests)
+// instead of a CAS PUT that could land in the copy's new generation.
+function fenceGuarded(sink: SaveBytes | undefined): SaveBytes | undefined {
+  if (!sink) return undefined;
+  return async (relPath, bytes, signal) => {
+    if (isGatewayFenced()) {
+      const w = window as { __pcbjamFencedSaves?: number };
+      w.__pcbjamFencedSaves = (w.__pcbjamFencedSaves ?? 0) + 1;
+      return { kind: "not-committed", message: FENCE_SAVE_MESSAGE };
+    }
+    return sink(relPath, bytes, signal);
+  };
+}
+
 /**
  * Boots a KiCad tool directly in this React document (no iframe): builds the
  * Emscripten `Module` config, injects the proven harness scripts (wx.js +
@@ -202,6 +218,7 @@ export function WasmTool({
   observedRevision,
   rememberObservedRevision,
   saveBytes: saveBytesProp,
+  saveOutput: saveOutputProp,
   createFile,
   docSource,
   assetBaseUrl,
@@ -271,6 +288,12 @@ export function WasmTool({
    * MEMFS-only (e.g. Y.Doc-backed sessions).
    */
   saveBytes?: SaveBytes;
+  /**
+   * Persist a Gerber or drill file KiCad's Plot / Generate Drill Files wrote
+   * into the project's folder (0007 P1); the newest one wins. Omit and those
+   * outputs stay in this tab's MEMFS.
+   */
+  saveOutput?: SaveBytes;
   /**
    * Create a new file in the project (tool-switch auto-create: eeschema's
    * "Switch to PCB Editor" when no board exists yet). Persisted BEFORE the
@@ -383,6 +406,8 @@ export function WasmTool({
   const sheetManagerRef = React.useRef<SheetCollabManager | null>(null);
   // Board sidecars KiCad writes outside the save chokepoints (proposal 21 S6).
   const sidecarSweepRef = React.useRef<SidecarSweep | null>(null);
+  // Gerbers and drill files the Plot dialogs write outside them (0007 P1).
+  const plotOutputsRef = React.useRef<PlotOutputCapture | null>(null);
   // Placeholder folders of a scoped stage (project-sync 0003); null = whole tree staged.
   const lazyDirsRef = React.useRef<LazyDirs | null>(null);
   // The project's .kicad_pro / .kicad_dru as live rooms (proposal 21 WP5).
@@ -423,23 +448,8 @@ export function WasmTool({
       }),
     [],
   );
-  // Every save sink of the session goes through this guard: once fenced, a
-  // save is refused HERE (a clear not-committed outcome, counted for tests)
-  // instead of a CAS PUT that could land in the copy's new generation.
-  const saveBytes = React.useMemo<SaveBytes | undefined>(
-    () =>
-      saveBytesProp
-        ? async (relPath, bytes, signal) => {
-            if (isGatewayFenced()) {
-              const w = window as { __pcbjamFencedSaves?: number };
-              w.__pcbjamFencedSaves = (w.__pcbjamFencedSaves ?? 0) + 1;
-              return { kind: "not-committed", message: FENCE_SAVE_MESSAGE };
-            }
-            return saveBytesProp(relPath, bytes, signal);
-          }
-        : undefined,
-    [saveBytesProp],
-  );
+  const saveBytes = React.useMemo(() => fenceGuarded(saveBytesProp), [saveBytesProp]);
+  const saveOutput = React.useMemo(() => fenceGuarded(saveOutputProp), [saveOutputProp]);
   // Editor lifecycle for the loading chrome: false until the tool has booted +
   // opened (covers the big WASM-compile freeze with a full-screen overlay).
   const [ready, setReady] = React.useState(false);
@@ -646,6 +656,8 @@ export function WasmTool({
     siblingRestageRef.current = null;
     sidecarRoomsRef.current?.destroy();
     sidecarRoomsRef.current = null;
+    plotOutputsRef.current?.stop();
+    plotOutputsRef.current = null;
     filesWatchRef.current?.destroy();
     filesWatchRef.current = null;
     driftRef.current?.stop();
@@ -1532,6 +1544,17 @@ export function WasmTool({
             slug,
             paths: boardSidecarPaths(targetPath),
             log: append,
+          });
+        }
+        // Plot / Generate Drill Files write straight to MEMFS: carry the
+        // Gerbers and drill files to the project (0007 P1).
+        if (!readOnly && saveOutput && tool === "pcbnew") {
+          plotOutputsRef.current = capturePlotOutputs({
+            win: win as unknown as PlotOutputWindow,
+            slug,
+            save: (relPath, bytes) => saveOutput(relPath, bytes),
+            log: append,
+            onStatus: setStatus,
           });
         }
         // Project settings + custom rules as live rooms (proposal 21 WP5): a

@@ -161,6 +161,35 @@ export async function uploadFileBytes(
 }
 
 /**
+ * Persist a file KiCad generated (a Gerber or drill file from Plot / Generate
+ * Drill Files): the newest one wins (UploadFileOptions.generated). Unlike a
+ * save, a read-only source does not download it: one plot would start a
+ * download per layer.
+ */
+export async function saveGeneratedFile(
+  slug: string,
+  relPath: string,
+  bytes: Uint8Array,
+  signal?: AbortSignal,
+): Promise<SaveOutcome> {
+  const source = projectSource();
+  const readOnly: SaveOutcome = {
+    kind: "not-committed",
+    message: `${relPath} stays in this tab: the project is read-only`,
+  };
+  if (!source.uploadFileBytes) return readOnly;
+  try {
+    return await source.uploadFileBytes(slug, relPath, bytes, signal, {
+      editorSave: true,
+      generated: true,
+    });
+  } catch (e) {
+    if (e instanceof ReadOnlyProjectError) return readOnly;
+    throw e;
+  }
+}
+
+/**
  * Record a file's CAS ancestry when its bytes were staged WITHOUT going through
  * `fetchFileBytes` (project sync namespace bundle). See
  * ProjectSource.rememberBaseRevision.

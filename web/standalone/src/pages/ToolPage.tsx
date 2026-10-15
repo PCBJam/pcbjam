@@ -9,6 +9,7 @@ import {
   observedFileRevision,
   rememberFileBaseRevision,
   rememberFileObservedRevision,
+  saveGeneratedFile,
   uploadFileBytes,
   useProjectBoot,
   useSourceDescriptor,
@@ -237,6 +238,11 @@ export function ToolPage() {
             : (relPath, bytes, signal) =>
                 // Every save sink hands over bytes KiCad wrote into MEMFS.
                 uploadFileBytes(slug, relPath, bytes, signal, { editorSave: true })
+        }
+        saveOutput={
+          readOnly
+            ? undefined
+            : (relPath, bytes, signal) => saveGeneratedFile(slug, relPath, bytes, signal)
         }
         createFile={
           readOnly

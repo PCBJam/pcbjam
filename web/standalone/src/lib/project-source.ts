@@ -55,6 +55,12 @@ export interface UploadFileOptions {
    * an import: the backend is told so and may skip normalizing them.
    */
   editorSave?: boolean;
+  /**
+   * The bytes are a file KiCad generated (a Gerber, a drill file): they
+   * supersede whatever the project holds, so a 409 adopts the server's
+   * revision as the base and publishes once more instead of blocking.
+   */
+  generated?: boolean;
 }
 
 export interface ProjectSource {
@@ -339,9 +345,17 @@ function remoteProjectSource(): ProjectSource {
       // calling), so the newest bytes still land last. A genuine peer's
       // revision never enters `baseRevisions`, so real conflicts still 409.
       const key = revisionKey(slug, relPath);
-      const run = (uploadTails.get(key) ?? Promise.resolve()).then(() =>
-        putFile(slug, relPath, key, bytes, signal, opts),
-      );
+      const run = (uploadTails.get(key) ?? Promise.resolve()).then(async () => {
+        const outcome = await putFile(slug, relPath, key, bytes, signal, opts);
+        if (outcome.kind !== "conflict" || !opts?.generated) return outcome;
+        // A generated file has no edits to lose: an earlier session's or a
+        // peer's plot of the same board is simply older. The 409 recorded the
+        // server's revision; publish over it once.
+        const current = observedRevisions.get(key);
+        if (current === undefined) return outcome;
+        baseRevisions.set(key, current);
+        return putFile(slug, relPath, key, bytes, signal, opts);
+      });
       const tail = run.then(
         () => undefined,
         () => undefined,
