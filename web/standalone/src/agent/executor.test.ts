@@ -158,24 +158,33 @@ describe('updatePcb', () => {
   const add = { severity: 'action', text: "Add D1 (footprint 'LED_SMD:LED_0603_1608Metric')." };
   const remove = { severity: 'action', text: 'Remove unused footprint R9.' };
 
-  /** A fake engine: each dry run reports `preview()`; the real run reports what it did. */
-  function updateEngine(preview: () => object[]) {
+  const actions = (report: object[]) => (report as Array<{ severity: string; text: string }>).filter((l) => l.severity === 'action').map((l) => l.text);
+
+  /**
+   * A fake engine: each dry run reports `preview()`; the real run previews again and refuses
+   * (CHANGED) unless the changes are the `expect` it was given, as the native hook does.
+   */
+  function updateEngine(preview: () => object[], oddNames: string[] = []) {
     let operation = 0;
     const runs: boolean[] = [];
+    const expects: unknown[] = [];
     const results = new Map<number, object>();
     const mod = {
       kicadUpdatePcbFromSchematic: vi.fn((json: string) => {
-        const { dryRun } = JSON.parse(json) as { dryRun: boolean };
+        const { dryRun, expect: seen } = JSON.parse(json) as { dryRun: boolean; expect?: string[] };
         runs.push(dryRun);
         operation++;
+        if (!dryRun) expects.push(seen);
         results.set(operation, dryRun
-          ? { status: 'done', report: preview(), added: [] }
-          : { status: 'done', report: [{ severity: 'action', text: "Added D1 (footprint 'LED_SMD:LED_0603_1608Metric')." }], added: ['D1'] });
+          ? { status: 'done', report: preview(), added: [], oddNames }
+          : JSON.stringify(seen) !== JSON.stringify(actions(preview()))
+            ? { status: 'error', code: 'CHANGED', error: 'The update changed since it was previewed' }
+            : { status: 'done', report: [{ severity: 'action', text: "Added D1 (footprint 'LED_SMD:LED_0603_1608Metric')." }], added: ['D1'], oddNames });
         return JSON.stringify({ ok: true, operation });
       }),
       kicadUpdatePcbStatus: vi.fn((id: number) => JSON.stringify(results.get(id) ?? { status: 'expired' })),
     };
-    return { mod, runs };
+    return { mod, runs, expects };
   }
   const signal = () => new AbortController().signal;
   const run = (req: { dryRun: boolean; deleteUnused?: boolean }, confirm = vi.fn(async () => true)) =>
@@ -188,13 +197,35 @@ describe('updatePcb', () => {
     expect(runs).toEqual([true]);
   });
 
-  it('applies additions without asking: a dry run, then the real one', async () => {
-    const { mod, runs } = updateEngine(() => [add]);
+  it('applies additions without asking: a dry run, then the real one naming its changes', async () => {
+    const { mod, runs, expects } = updateEngine(() => [add]);
     install(mod);
     const confirm = vi.fn(async () => true);
     expect(await run({ dryRun: false }, confirm)).toMatchObject({ status: 'applied', added: ['D1'], approved: [] });
     expect(confirm).not.toHaveBeenCalled();
     expect(runs).toEqual([true, false]);
+    expect(expects).toEqual([[add.text]]);
+  });
+
+  it('a change that slips in after the preview is refused by KiCad, previewed again and asked', async () => {
+    let report = [add];
+    const { mod, runs } = updateEngine(() => report);
+    install(mod);
+    mod.kicadUpdatePcbFromSchematic.mockImplementationOnce(((original) => (json: string) => {
+      const out = original(json);
+      report = [add, remove]; // a peer's schematic edit lands right after the first preview
+      return out;
+    })(mod.kicadUpdatePcbFromSchematic.getMockImplementation()!));
+    const confirm = vi.fn(async () => true);
+    expect(await run({ dryRun: false, deleteUnused: true }, confirm)).toMatchObject({ status: 'applied', approved: [remove.text] });
+    expect(confirm).toHaveBeenCalledWith([remove.text], expect.any(AbortSignal));
+    expect(runs).toEqual([true, false, true, true, false]);
+  });
+
+  it('asks for every change when a reference could disguise one (a space or a quote in it)', async () => {
+    const { mod } = updateEngine(() => [add], ['R1 value from x']);
+    install(mod);
+    expect(await run({ dryRun: true })).toMatchObject({ status: 'previewed', needsApproval: [add.text] });
   });
 
   it('asks before a removal; declined, the board is never touched', async () => {

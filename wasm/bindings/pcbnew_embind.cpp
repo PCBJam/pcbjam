@@ -4136,113 +4136,192 @@ public:
 };
 } // namespace
 
-static json doUpdatePcb( PCB_EDIT_FRAME* fr, const json& aReq )
+static json updateFailure( const char* aCode, const std::string& aMessage )
 {
-    auto fail = []( const char* aCode, const std::string& aMessage )
-    {
-        return json{ { "status", "error" }, { "code", aCode }, { "error", aMessage } };
-    };
-    const bool dryRun = aReq.value( "dryRun", true );
-    const bool relink = aReq.value( "relinkByReference", false );
-    const bool replace = aReq.value( "replaceFootprints", true );
+    return json{ { "status", "error" }, { "code", aCode }, { "error", aMessage } };
+}
 
-    // The schematic player loads the project's sheets (it stays hidden); an empty payload
-    // skips eeschema's annotation prompt, so unannotated symbols are refused below instead.
+// The netlist as FetchNetlistFromSchematic gets it from the schematic player (which stays
+// hidden), minus its message boxes: an empty payload skips eeschema's annotation prompt, so
+// unannotated symbols are refused here instead. Null on success, else the failure.
+static json fetchNetlist( PCB_EDIT_FRAME* fr, NETLIST& aNetlist )
+{
     if( fr->TestStandalone() <= 0 )
-        return fail( "NO_SCHEMATIC", "The project's schematic could not be loaded" );
+        return updateFailure( "NO_SCHEMATIC", "The project's schematic could not be loaded" );
 
     std::string payload;
     fr->Kiway().ExpressMail( FRAME_SCH, MAIL_SCH_GET_NETLIST, payload, fr );
 
     if( payload.empty() )
-        return fail( "NO_SCHEMATIC", "The schematic editor returned no netlist" );
-
-    NETLIST netlist;
+        return updateFailure( "NO_SCHEMATIC", "The schematic editor returned no netlist" );
 
     try
     {
-        KICAD_NETLIST_READER reader( new STRING_LINE_READER( payload, wxS( "Eeschema netlist" ) ), &netlist );
+        KICAD_NETLIST_READER reader( new STRING_LINE_READER( payload, wxS( "Eeschema netlist" ) ), &aNetlist );
         reader.LoadNetlist();
     }
     catch( const IO_ERROR& e )
     {
-        return fail( "NETLIST", toUtf8( e.What() ) );
+        return updateFailure( "NETLIST", toUtf8( e.What() ) );
     }
 
     json unannotated = json::array();
 
-    for( unsigned i = 0; i < netlist.GetCount(); i++ )
+    for( unsigned i = 0; i < aNetlist.GetCount(); i++ )
     {
-        if( netlist.GetComponent( i )->GetReference().EndsWith( wxS( "?" ) ) )
-            unannotated.push_back( toUtf8( netlist.GetComponent( i )->GetReference() ) );
+        if( aNetlist.GetComponent( i )->GetReference().EndsWith( wxS( "?" ) ) )
+            unannotated.push_back( toUtf8( aNetlist.GetComponent( i )->GetReference() ) );
     }
 
     if( !unannotated.empty() )
     {
-        json out = fail( "NOT_ANNOTATED", "Some symbols have no reference number yet: annotate the schematic first" );
+        json out = updateFailure( "NOT_ANNOTATED", "Some symbols have no reference number yet: annotate the schematic first" );
         out["refs"] = unannotated;
         return out;
     }
 
-    netlist.SortByReference();
-    netlist.SetFindByTimeStamp( !relink );
-    netlist.SetReplaceFootprints( replace );
+    return nullptr;
+}
+
+// One BOARD_NETLIST_UPDATER pass with the dialog's defaults; its report as JSON lines.
+static json runUpdater( PCB_EDIT_FRAME* fr, NETLIST& aNetlist, const json& aReq, bool aDryRun, BOARD_NETLIST_UPDATER*& aUpdater )
+{
+    const bool relink = aReq.value( "relinkByReference", false );
+    const bool replace = aReq.value( "replaceFootprints", true );
+    aNetlist.SortByReference();
+    aNetlist.SetFindByTimeStamp( !relink );
+    aNetlist.SetReplaceFootprints( replace );
+
+    JSON_REPORTER reporter;
+    aUpdater = new BOARD_NETLIST_UPDATER( fr, fr->GetBoard() );
+    aUpdater->SetReporter( &reporter );
+    aUpdater->SetIsDryRun( aDryRun );
+    aUpdater->SetLookupByTimestamp( !relink );
+    aUpdater->SetDeleteUnusedFootprints( aReq.value( "deleteUnused", false ) );
+    aUpdater->SetReplaceFootprints( replace );
+    aUpdater->SetTransferGroups( false );
+    aUpdater->SetApplyDesignBlockLayouts( false );
+    aUpdater->SetOverrideLocks( false );
+    aUpdater->SetUpdateFields( true );
+    aUpdater->SetRemoveExtraFields( false );
+    aUpdater->UpdateNetlist( aNetlist );
+    aUpdater->SetReporter( nullptr );
+    return reporter.m_lines;
+}
+
+static json actionLines( const json& aReport )
+{
+    json out = json::array();
+
+    for( const json& line : aReport )
+    {
+        if( line["severity"] == "action" )
+            out.push_back( line["text"] );
+    }
+
+    return out;
+}
+
+// References a report line cannot bound: anything but ASCII letters, digits and _#+-.?*~/.
+// The JS approval check reads KiCad's English lines, where a reference like "R1 value from x"
+// would make a footprint swap read as a value change; with such a name, every change is asked.
+static json oddReferences( PCB_EDIT_FRAME* fr, NETLIST& aNetlist )
+{
+    std::set<wxString> refs;
+
+    for( unsigned i = 0; i < aNetlist.GetCount(); i++ )
+        refs.insert( aNetlist.GetComponent( i )->GetReference() );
+
+    for( FOOTPRINT* fp : fr->GetBoard()->Footprints() )
+        refs.insert( fp->GetReference() );
+
+    json odd = json::array();
+
+    for( const wxString& ref : refs )
+    {
+        bool plain = !ref.IsEmpty();
+
+        for( wxUniChar c : ref )
+            plain = plain && c.IsAscii() && ( wxIsalnum( c ) || wxString( wxS( "_#+-.?*~/" ) ).Find( c ) != wxNOT_FOUND );
+
+        if( !plain )
+            odd.push_back( toUtf8( ref ) );
+    }
+
+    return odd;
+}
+
+// A real run carries `expect`: the change lines of the dry run the person saw (and approved
+// where needed). It previews again first, in this same event-loop turn, and applies only when
+// the changes are exactly those: nothing can slip in between the approval and the update.
+static json doUpdatePcb( PCB_EDIT_FRAME* fr, const json& aReq )
+{
+    const bool dryRun = aReq.value( "dryRun", true );
+    NETLIST    netlist;
+
+    if( json failure = fetchNetlist( fr, netlist ); !failure.is_null() )
+        return failure;
+
+    const json             oddNames = oddReferences( fr, netlist );
+    BOARD_NETLIST_UPDATER* updater = nullptr;
+
+    if( dryRun )
+    {
+        const json report = runUpdater( fr, netlist, aReq, true, updater );
+        delete updater;
+        return json{ { "status", "done" }, { "dryRun", true }, { "added", json::array() },
+                     { "report", report }, { "oddNames", oddNames } };
+    }
+
+    {
+        NETLIST check;
+
+        if( json failure = fetchNetlist( fr, check ); !failure.is_null() )
+            return failure;
+
+        const json preview = runUpdater( fr, check, aReq, true, updater );
+        delete updater;
+        updater = nullptr;
+
+        if( actionLines( preview ) != aReq["expect"] )
+            return updateFailure( "CHANGED", "The update changed since it was previewed: preview it again" );
+    }
 
     TOOL_MANAGER* tm = fr->GetToolManager();
+    tm->DeactivateTool();
+    tm->RunAction( ACTIONS::selectionClear );
 
-    if( !dryRun )
+    const json              report = runUpdater( fr, netlist, aReq, false, updater );
+    std::unique_ptr<BOARD_NETLIST_UPDATER> owned( updater );
+    std::vector<FOOTPRINT*> newFootprints = updater->GetAddedFootprints();
+    json                    added = json::array();
+
+    for( FOOTPRINT* fp : newFootprints )
+        added.push_back( toUtf8( fp->GetReference() ) );
+
+    // Spreads the new footprints at the page corner and selects them for KiCad's drag;
+    // the agent never drags.
+    bool runDragCommand = false;
+    fr->OnNetlistChanged( *updater, &runDragCommand );
+    tm->RunAction( ACTIONS::selectionClear );
+
+    // Where the person sees them instead: under the board outline (its right side is where
+    // the chat panel covers the view), or mid-page on a board without one. Moved as
+    // OnNetlistChanged spreads them (outside the commit); the collab differ carries the
+    // positions to the room.
+    if( !newFootprints.empty() )
     {
-        tm->DeactivateTool();
-        tm->RunAction( ACTIONS::selectionClear );
+        const BOX2I    edges = fr->GetBoard()->GetBoardEdgesBoundingBox();
+        const VECTOR2I page = fr->GetPageSizeIU();
+        const VECTOR2I target = edges.GetWidth() > 0
+                                        ? VECTOR2I( edges.GetLeft(), edges.GetBottom() + pcbIUScale.mmToIU( 5 ) )
+                                        : VECTOR2I( page.x / 2, page.y / 2 );
+        SpreadFootprints( &newFootprints, target, true );
+        fr->GetCanvas()->Refresh();
     }
 
-    JSON_REPORTER         reporter;
-    BOARD_NETLIST_UPDATER updater( fr, fr->GetBoard() );
-    updater.SetReporter( &reporter );
-    updater.SetIsDryRun( dryRun );
-    updater.SetLookupByTimestamp( !relink );
-    updater.SetDeleteUnusedFootprints( aReq.value( "deleteUnused", false ) );
-    updater.SetReplaceFootprints( replace );
-    updater.SetTransferGroups( false );
-    updater.SetApplyDesignBlockLayouts( false );
-    updater.SetOverrideLocks( false );
-    updater.SetUpdateFields( true );
-    updater.SetRemoveExtraFields( false );
-    const bool completed = updater.UpdateNetlist( netlist );
-
-    json added = json::array();
-
-    if( !dryRun )
-    {
-        std::vector<FOOTPRINT*> newFootprints = updater.GetAddedFootprints();
-
-        for( FOOTPRINT* fp : newFootprints )
-            added.push_back( toUtf8( fp->GetReference() ) );
-
-        // Spreads the new footprints at the page corner and selects them for KiCad's drag;
-        // the agent never drags.
-        bool runDragCommand = false;
-        fr->OnNetlistChanged( updater, &runDragCommand );
-        tm->RunAction( ACTIONS::selectionClear );
-
-        // Where the person sees them instead: under the board outline (its right side is
-        // where the chat panel covers the view), or mid-page on a board without one. Moved
-        // as OnNetlistChanged spreads them (outside the commit); the collab differ carries
-        // the positions to the room.
-        if( !newFootprints.empty() )
-        {
-            const BOX2I edges = fr->GetBoard()->GetBoardEdgesBoundingBox();
-            const VECTOR2I page = fr->GetPageSizeIU();
-            const VECTOR2I target = edges.GetWidth() > 0
-                                            ? VECTOR2I( edges.GetLeft(), edges.GetBottom() + pcbIUScale.mmToIU( 5 ) )
-                                            : VECTOR2I( page.x / 2, page.y / 2 );
-            SpreadFootprints( &newFootprints, target, true );
-            fr->GetCanvas()->Refresh();
-        }
-    }
-
-    return json{ { "status", "done" }, { "dryRun", dryRun }, { "completed", completed },
-                 { "added", added }, { "report", reporter.m_lines } };
+    return json{ { "status", "done" }, { "dryRun", false }, { "added", added },
+                 { "report", report }, { "oddNames", oddNames } };
 }
 
 // Runs on the event loop's main stack, as the person's Update PCB does (a coroutine's stack is
@@ -4274,7 +4353,8 @@ static void runUpdatePcb( PCB_EDIT_FRAME* fr, json aReq, int aOperation, std::ch
     } );
 }
 
-// `aJson` = {dryRun?: true, deleteUnused?: false, replaceFootprints?: true, relinkByReference?: false}.
+// `aJson` = {dryRun?: true, deleteUnused?: false, replaceFootprints?: true, relinkByReference?: false,
+// expect: [the dry run's change lines], required for a real run}.
 // Returns a receipt; JS polls kicadUpdatePcbStatus.
 std::string pcbUpdatePcbFromSchematic( std::string aJson )
 {
@@ -4288,6 +4368,21 @@ std::string pcbUpdatePcbFromSchematic( std::string aJson )
     {
         if( req.contains( flag ) && !req[flag].is_boolean() )
             return refuse( "INVALID" );
+    }
+
+    // A real run must name the changes it was approved for (doUpdatePcb).
+    if( !req.value( "dryRun", true ) )
+    {
+        const json expect = req.value( "expect", json() );
+
+        if( !expect.is_array() || expect.size() > 10000 )
+            return refuse( "INVALID" );
+
+        for( const json& line : expect )
+        {
+            if( !line.is_string() || line.get_ref<const std::string&>().size() > 4096 )
+                return refuse( "INVALID" );
+        }
     }
 
     PCB_EDIT_FRAME* fr = pcbFrame();

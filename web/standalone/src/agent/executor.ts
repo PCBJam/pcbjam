@@ -18,7 +18,7 @@
  * caller's signal is the chat turn's: Stop withdraws a queued edit or an armed
  * placement. First-party: the AI chat gates it (`aiChat`), not the plugin toggles.
  */
-import { pcbUpdateNeedsApproval, type AgentUpdatePcbResult, type NetlistNet, type PcbUpdateLine, type SchematicEdit } from '@pcbjam/shared';
+import { pcbUpdateActions, pcbUpdateNeedsApproval, type AgentUpdatePcbResult, type NetlistNet, type PcbUpdateLine, type SchematicEdit } from '@pcbjam/shared';
 import { engineTourDeps } from '@/overlay/tours/engine';
 import { parseSheetNets, parseSheetSymbols, type SheetSymbol, type TourDeps } from '@/overlay/tours/declarative';
 import { applyEdit, editModule, validateEdit, type EditRequest } from '@/plugins/edits';
@@ -153,7 +153,7 @@ type UpdatePcbModule = {
   kicadUpdatePcbFromSchematic(json: string): string;
   kicadUpdatePcbStatus(operation: number): string;
 };
-type NativeUpdate = { status: 'done'; report: PcbUpdateLine[]; added: string[] };
+type NativeUpdate = { status: 'done'; report: PcbUpdateLine[]; added: string[]; oddNames?: string[] };
 
 /** Asks the person to approve these changes (the chat panel's card); false = declined or stopped. */
 export type ConfirmUpdatePcb = (changes: string[], signal: AbortSignal) => Promise<boolean>;
@@ -164,7 +164,11 @@ const UPDATE_REFUSED: Record<string, string> = {
 };
 
 /** One native run, queued on KiCad's event loop; resolves with its report. */
-async function runNativeUpdate(mod: UpdatePcbModule, req: { dryRun: boolean; deleteUnused: boolean }, opts: { timeoutMs: number; pollMs: number }): Promise<NativeUpdate | AgentError> {
+async function runNativeUpdate(
+  mod: UpdatePcbModule,
+  req: { dryRun: boolean; deleteUnused: boolean; expect?: string[] },
+  opts: { timeoutMs: number; pollMs: number },
+): Promise<NativeUpdate | AgentError> {
   const receipt = JSON.parse(mod.kicadUpdatePcbFromSchematic(JSON.stringify(req))) as { ok: boolean; operation?: number; code?: string };
   if (!receipt.ok || typeof receipt.operation !== 'number') {
     const code = receipt.code ?? 'FAILED';
@@ -184,9 +188,11 @@ async function runNativeUpdate(mod: UpdatePcbModule, req: { dryRun: boolean; del
 /**
  * KiCad's Update PCB from Schematic on the open board. Always a dry run first. With
  * `dryRun` that is the answer; otherwise, when the dry run would remove or rewire anything
- * (`pcbUpdateNeedsApproval`), the person approves it in the chat panel, and the changes are
- * previewed again right before the real run (which is one undo step, "Update Netlist"), so
- * nothing they did not see slips in. The signal is the chat turn's: Stop declines.
+ * (`pcbUpdateNeedsApproval`), the person approves it in the chat panel. The real run (one
+ * undo step, "Update Netlist") carries the change lines of the dry run it follows: KiCad
+ * previews again in that same step and refuses (CHANGED) unless the changes are exactly
+ * those, so nothing the person did not see slips in; then it is previewed and asked again.
+ * The signal is the chat turn's: Stop declines.
  */
 export async function updatePcb(
   req: { dryRun: boolean; deleteUnused: boolean },
@@ -209,11 +215,13 @@ export async function updatePcb(
       if (signal.aborted) return { error: 'Update PCB cancelled', code: 'CANCELLED' };
       const preview = await runNativeUpdate(native, { dryRun: true, deleteUnused: req.deleteUnused }, timing);
       if ('error' in preview) return preview;
-      const needsApproval = pcbUpdateNeedsApproval(preview.report);
+      const needsApproval = pcbUpdateNeedsApproval(preview.report, preview.oddNames ?? []);
       if (req.dryRun) return { status: 'previewed', report: preview.report, needsApproval };
       if (needsApproval.every((change) => approved.includes(change))) {
         if (signal.aborted) return { error: 'Update PCB cancelled', code: 'CANCELLED' };
-        const done = await runNativeUpdate(native, { dryRun: false, deleteUnused: req.deleteUnused }, timing);
+        const expect = pcbUpdateActions(preview.report);
+        const done = await runNativeUpdate(native, { dryRun: false, deleteUnused: req.deleteUnused, expect }, timing);
+        if ('error' in done && done.code === 'CHANGED') continue;
         if ('error' in done) return done;
         return { status: 'applied', report: done.report, added: done.added, approved: needsApproval };
       }
