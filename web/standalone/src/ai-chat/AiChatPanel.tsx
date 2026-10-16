@@ -219,6 +219,8 @@ function ChatView({ chatId, initial, scope, project, file, tool, onTurnEnd, mode
   });
   const [draft, setDraft] = React.useState('');
   const busy = status === 'submitted' || status === 'streaming';
+  // Where the person stands after the last turn (pricing 0003): a warning once 80% of the month is used.
+  const usage = [...messages].reverse().map((m) => (m.metadata as { usage?: { usedPercent: number | null; leftCredits: string } } | undefined)?.usage).find(Boolean);
 
   // Follow the stream only while the person is at the bottom: scrolling up to
   // read stops it; scrolling back down, "Jump to latest" or sending resumes it.
@@ -267,6 +269,11 @@ function ChatView({ chatId, initial, scope, project, file, tool, onTurnEnd, mode
       )}
     </div>
     {approval && <UpdatePcbApproval key={approval.id} changes={approval.changes} answer={approval.answer} />}
+    {usage?.usedPercent !== null && usage?.usedPercent !== undefined && usage.usedPercent >= 80 && (
+      <p role="status" className="mx-2 mb-1 shrink-0 text-[11px] text-muted-foreground">
+        You have used {usage.usedPercent}% of this month&apos;s AI allowance ({usage.leftCredits} credits left). See Settings &gt; AI usage.
+      </p>
+    )}
     <form className="shrink-0 border-t border-border p-2" onSubmit={(e) => { e.preventDefault(); send(); }}>
       {models.length > 1 && model && (
         <div className="mb-1.5 flex items-center gap-2 text-[11px] text-muted-foreground">
