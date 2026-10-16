@@ -196,7 +196,8 @@ function fenceGuarded(sink: SaveBytes | undefined): SaveBytes | undefined {
   };
 }
 
-// AI chat (POC): only when the chat service is configured (VITE_AI_CHAT_URL).
+// AI chat (POC): only when the chat service is configured (VITE_AI_CHAT_URL)
+// and the `aiChat` feature is on for the person.
 const AiChatPanel = React.lazy(() =>
   import("@/ai-chat/AiChatPanel").then((m) => ({ default: m.AiChatPanel })),
 );
@@ -552,6 +553,9 @@ export function WasmTool({
   // lab turns plugins on without a backend.
   const pluginsOn = useSessionFeature("plugins");
   const tutorialsOn = useSessionFeature("tutorials");
+  // The AI panel: the chat service is configured AND the `aiChat` feature is
+  // on for this person (ai-chat 0006 A5; the service refuses them otherwise).
+  const aiChatOn = useSessionFeature("aiChat");
   // Tutorials run on the plugin machinery without `plugins` (plugins 0021):
   // the server then lists tutorials only, and the Session menu shows the
   // Tutorials section without the Plugins one.
@@ -2320,7 +2324,7 @@ export function WasmTool({
         </React.Suspense>
       )}
 
-      {ready && AI_CHAT_URL && !readOnly && (
+      {ready && AI_CHAT_URL && aiChatOn && !readOnly && (
         <React.Suspense fallback={null}>
           <AiChatPanel scope={currentScope()} project={slug} file={targetPath ?? ""} tool={tool} />
         </React.Suspense>

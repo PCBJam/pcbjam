@@ -7,7 +7,9 @@ import { Badge, Button, Code, Select, SelectContent, SelectItem, SelectTrigger, 
 import { attachEditorBridge, type BridgeSocket } from '@/agent/bridge';
 import type { ConfirmUpdatePcb } from '@/agent/executor';
 import { AI_CHAT_URL } from '@/lib/config';
-import { copySegment } from '@/lib/copy-context';
+import { copySegment, currentCopyRef } from '@/lib/copy-context';
+import { approvalOrder } from '@pcbjam/shared';
+import { fileHref, otherFile, type PanelAt } from './links';
 
 /**
  * In-editor AI chat (POC). The chat runs server-side, one Durable Object per
@@ -76,7 +78,7 @@ export function AiChatPanel({ scope, project, file, tool }: { scope: string; pro
   const newChat = React.useCallback(async () => {
     setError(null);
     try {
-      const { chat } = await api<{ chat: ChatRow }>('/chats', { method: 'POST', body: JSON.stringify({ scope, project, file }) });
+      const { chat } = await api<{ chat: ChatRow }>('/chats', { method: 'POST', body: JSON.stringify({ scope, project, file, copy: currentCopyRef()?.id }) });
       setChats((c) => [chat, ...c]);
       setChatId(chat.id); setInitial([]); setShowList(false);
     } catch (e) { setError((e as Error).message); }
@@ -159,16 +161,37 @@ function ChatView({ chatId, initial, scope, project, file, tool, onTurnEnd, mode
   chatId: string; initial: UIMessage[]; scope: string; project: string; file: string; tool: string; onTurnEnd: () => void;
   model: string | null; models: string[]; onModel: (model: string) => void;
 }) {
-  const host = new URL(AI_CHAT_URL!).host;
-  const agent = useAgent({ agent: 'chat-session', name: chatId, host, protocol: AI_CHAT_URL!.startsWith('https') ? 'wss' : 'ws' } as never);
-  // An Update PCB waiting for the person's OK (step 5b); Stop withdraws the question.
-  const [approval, setApproval] = React.useState<{ changes: string[]; answer: (ok: boolean) => void } | null>(null);
+  // Deployed, the chat sits under the API's host at a path (`…/ai-chat`, ai-chat 0006 A4).
+  const chatUrl = new URL(AI_CHAT_URL!);
+  const prefix = chatUrl.pathname.replace(/^\/+|\/+$/g, '');
+  const agent = useAgent({
+    agent: 'chat-session',
+    name: chatId,
+    host: chatUrl.host,
+    protocol: chatUrl.protocol === 'https:' ? 'wss' : 'ws',
+    ...(prefix ? { basePath: `${prefix}/agents/chat-session/${chatId}` } : {}),
+  } as never);
+  // An Update PCB waiting for the person's OK (step 5b); Stop withdraws the question. Each
+  // question is its own card (keyed), so a click meant for one never lands on the next.
+  const [approval, setApproval] = React.useState<{ id: number; changes: string[]; answer: (ok: boolean) => void } | null>(null);
+  const asked = React.useRef(0);
   const confirm = React.useCallback<ConfirmUpdatePcb>((changes, signal) => new Promise<boolean>((resolve) => {
-    const answer = (ok: boolean) => { setApproval(null); signal.removeEventListener('abort', stopped); resolve(ok); };
+    // Already stopped: an abort listener added now would never fire, and the card would outlive its run.
+    if (signal.aborted) { resolve(false); return; }
+    const id = ++asked.current;
+    const answer = (ok: boolean) => {
+      setApproval((shown) => (shown?.id === id ? null : shown));
+      signal.removeEventListener('abort', stopped);
+      resolve(ok);
+    };
     const stopped = () => answer(false);
     signal.addEventListener('abort', stopped, { once: true });
-    setApproval({ changes, answer });
+    setApproval({ id, changes, answer });
   }), []);
+  // Closing the panel or switching chats answers an open card "no": the run must not wait for ever.
+  const approvalRef = React.useRef(approval);
+  approvalRef.current = approval;
+  React.useEffect(() => () => approvalRef.current?.answer(false), []);
   // The editor bridge (ai-chat 0003 step 5): the chat's schematic tools carry out their
   // edits on this tab's file here, with KiCad (one undo step each). Re-attached when the
   // shown file or editor changes.
@@ -189,7 +212,8 @@ function ChatView({ chatId, initial, scope, project, file, tool, onTurnEnd, mode
     credentials: 'include',
     // The file open right now: the agent works on what the person looks at.
     // `editor`: which editor this tab shows (the agent's edits on its file run here, step 5's bridge).
-    body: () => ({ file: fileRef.current, editor: { tool: toolRef.current }, ...(modelRef.current ? { model: modelRef.current } : {}) }),
+    // `copy`: this tab's working copy, the chat's tools default to it (ai-chat 0006 A3).
+    body: () => ({ file: fileRef.current, copy: currentCopyRef()?.id, editor: { tool: toolRef.current }, ...(modelRef.current ? { model: modelRef.current } : {}) }),
     // A finished turn may have named the chat (its first message): re-read the list.
     onTurnEnd,
   });
@@ -242,7 +266,7 @@ function ChatView({ chatId, initial, scope, project, file, tool, onTurnEnd, mode
         </Button>
       )}
     </div>
-    {approval && <UpdatePcbApproval changes={approval.changes} answer={approval.answer} />}
+    {approval && <UpdatePcbApproval key={approval.id} changes={approval.changes} answer={approval.answer} />}
     <form className="shrink-0 border-t border-border p-2" onSubmit={(e) => { e.preventDefault(); send(); }}>
       {models.length > 1 && model && (
         <div className="mb-1.5 flex items-center gap-2 text-[11px] text-muted-foreground">
@@ -274,19 +298,31 @@ function ChatView({ chatId, initial, scope, project, file, tool, onTurnEnd, mode
   </>;
 }
 
-/** The changes an Update PCB would make that the person must approve (step 5b). */
+/** Apply turns on this long after a card appears: a click aimed at what was there before misses it. */
+const APPROVAL_ARM_MS = 500;
+
+/**
+ * The changes an Update PCB would make that the person must approve (step 5b): every line,
+ * what can break a layout first, with counts (ai-chat 0006 S5). KiCad lists removals last,
+ * so cutting the list off would hide exactly those.
+ */
 function UpdatePcbApproval({ changes, answer }: { changes: string[]; answer: (ok: boolean) => void }) {
-  const shown = changes.slice(0, 8);
+  const { lines, counts } = approvalOrder(changes);
+  const [armed, setArmed] = React.useState(false);
+  React.useEffect(() => {
+    const timer = setTimeout(() => setArmed(true), APPROVAL_ARM_MS);
+    return () => clearTimeout(timer);
+  }, []);
   return (
     <section aria-label="Confirm Update PCB" className="mx-2 mb-2 shrink-0 rounded-md border border-warning/40 bg-warning/10 p-3 text-xs">
-      <p className="font-medium">Update PCB would change what is on the board:</p>
-      <ul className="my-1.5 list-disc space-y-0.5 pl-5">
-        {shown.map((c, i) => <li key={i}>{c}</li>)}
-        {changes.length > shown.length && <li>and {changes.length - shown.length} more</li>}
+      <p className="font-medium">Update PCB would make {lines.length === 1 ? 'this change' : `these ${lines.length} changes`} to the board:</p>
+      <p className="mt-0.5 text-muted-foreground">{counts.map((c) => `${c.count} ${c.kind}`).join(', ')}</p>
+      <ul aria-label="Changes" className="my-1.5 max-h-48 list-disc space-y-0.5 overflow-y-auto pl-5">
+        {lines.map((c, i) => <li key={i}>{c}</li>)}
       </ul>
       <p className="mb-2 text-muted-foreground">Undo reverts the whole update in one step.</p>
       <div className="flex gap-2">
-        <Button type="button" size="xs" onClick={() => answer(true)}>Apply</Button>
+        <Button type="button" size="xs" disabled={!armed} onClick={() => answer(true)}>Apply</Button>
         <Button type="button" size="xs" variant="outline" onClick={() => answer(false)}>Cancel</Button>
       </div>
     </section>
@@ -295,9 +331,6 @@ function UpdatePcbApproval({ changes, answer }: { changes: string[]; answer: (ok
 
 type Part = UIMessage['parts'][number];
 type ToolPart = { type: string; toolName?: string; state: string; input?: unknown; output?: unknown; errorText?: string };
-
-/** Where the panel is: tool calls on another file offer to open it. */
-interface PanelAt { scope: string; project: string; file: string }
 
 function Message({ message, at }: { message: UIMessage; at: PanelAt }) {
   if (message.role === 'user') {
@@ -332,18 +365,6 @@ function toolLabel(name: string, input: unknown, running: boolean): string {
   return TOOL_LABELS[name] ?? name;
 }
 
-/** The project file a tool call worked on, when it is not the one open here. */
-function otherFile(input: unknown, at: PanelAt): string | null {
-  const i = input as { path?: unknown; file?: unknown; scope?: unknown; project?: unknown } | undefined;
-  const file = typeof i?.path === 'string' ? i.path : typeof i?.file === 'string' ? i.file : null;
-  if (!file || file === at.file || (i?.scope !== undefined && i.scope !== at.scope) || (i?.project !== undefined && i.project !== at.project)) return null;
-  return /\.(kicad_sch|kicad_pcb)$/.test(file) ? file : null;
-}
-
-/** The editor URL of another file in this project (the agent never moves the person's view itself). */
-const fileHref = (at: PanelAt, file: string) =>
-  `/${encodeURIComponent(at.scope)}/projects/${encodeURIComponent(at.project)}/${file.split('/').map(encodeURIComponent).join('/')}${window.location.search}`;
-
 function ToolCall({ part, at }: { part: ToolPart; at: PanelAt }) {
   const [open, setOpen] = React.useState(false);
   const name = part.toolName ?? part.type.replace(/^tool-/, '');
@@ -362,7 +383,7 @@ function ToolCall({ part, at }: { part: ToolPart; at: PanelAt }) {
       {elsewhere && (
         <div className="flex items-center gap-1.5 border-t border-border px-2 py-1 text-[11px] text-muted-foreground">
           <span className="flex-1 truncate">On {elsewhere}</span>
-          <Button asChild variant="outline" size="xs"><a href={fileHref(at, elsewhere)}>Open it</a></Button>
+          <Button asChild variant="outline" size="xs"><a href={fileHref(at, elsewhere, window.location.search)}>Open it</a></Button>
         </div>
       )}
       {images.map((img, i) => <img key={i} alt={`${name} result`} className="block w-full border-t border-border" src={`data:${img.mimeType};base64,${img.data}`} />)}

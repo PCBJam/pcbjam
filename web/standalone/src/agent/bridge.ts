@@ -20,8 +20,8 @@ import { applyAgentEdit, placeAgentPart, readParts, updatePcb, type ConfirmUpdat
 /** The chat connection (`useAgent`'s socket), as far as the bridge needs it. */
 export interface BridgeSocket {
   send(text: string): void;
-  addEventListener(type: 'message' | 'open', listener: (event: MessageEvent) => void): void;
-  removeEventListener(type: 'message' | 'open', listener: (event: MessageEvent) => void): void;
+  addEventListener(type: 'message' | 'open' | 'close', listener: (event: MessageEvent) => void): void;
+  removeEventListener(type: 'message' | 'open' | 'close', listener: (event: MessageEvent) => void): void;
 }
 
 /** What this tab shows right now. */
@@ -53,6 +53,11 @@ export async function runAgentExec(
   executor: BridgeExecutor = kicad,
   confirm: ConfirmUpdatePcb = declineAll,
 ): Promise<AgentApplyResult | AgentPlaceResult | AgentReadResult | AgentUpdatePcbResult> {
+  // Exactly this tab's project, working copy and file: after a switch, an exec in flight must not land on a
+  // same-named file elsewhere (working copies share uuids, so it would apply cleanly; ai-chat 0006 A3).
+  if (exec.scope !== view.scope || exec.project !== view.project || (exec.copy ?? null) !== view.copy || exec.copy === undefined) {
+    return { error: 'The editor now shows another project or working copy.', code: 'OTHER_FILE' };
+  }
   if (exec.file !== view.file) return { error: `The editor now shows ${view.file}, not ${exec.file}.`, code: 'OTHER_FILE' };
   if (exec.op === 'update_pcb') {
     if (view.tool !== 'pcbnew') return { error: `Update PCB runs in the board editor: open ${exec.file}.`, code: 'NO_EDITOR' };
@@ -101,12 +106,19 @@ export function attachEditorBridge(
         socket.send(agentEditorFrame({ type: 'pcbjam.editor.result', id: msg.id, result }));
       });
   };
+  // A dropped connection already told the chat "detached": withdraw what still runs here
+  // (an open Update PCB card among it), so nothing applies that the chat counts as failed.
+  const onClose = () => {
+    for (const stop of running.values()) stop.abort();
+  };
   socket.addEventListener('open', attach);
   socket.addEventListener('message', onMessage);
+  socket.addEventListener('close', onClose);
   attach();
   return () => {
     socket.removeEventListener('open', attach);
     socket.removeEventListener('message', onMessage);
+    socket.removeEventListener('close', onClose);
     for (const stop of running.values()) stop.abort();
     socket.send(agentEditorFrame({ type: 'pcbjam.editor.detach' }));
   };

@@ -164,7 +164,8 @@ describe('updatePcb', () => {
    * A fake engine: each dry run reports `preview()`; the real run previews again and refuses
    * (CHANGED) unless the changes are the `expect` it was given, as the native hook does.
    */
-  function updateEngine(preview: () => object[], oddNames: string[] = []) {
+  function updateEngine(preview: () => object[], oddNames: string[] | null = []) {
+    const odd = oddNames ? { oddNames } : {}; // null: an older build that does not report them
     let operation = 0;
     const runs: boolean[] = [];
     const expects: unknown[] = [];
@@ -176,10 +177,10 @@ describe('updatePcb', () => {
         operation++;
         if (!dryRun) expects.push(seen);
         results.set(operation, dryRun
-          ? { status: 'done', report: preview(), added: [], oddNames }
+          ? { status: 'done', report: preview(), added: [], ...odd }
           : JSON.stringify(seen) !== JSON.stringify(actions(preview()))
             ? { status: 'error', code: 'CHANGED', error: 'The update changed since it was previewed' }
-            : { status: 'done', report: [{ severity: 'action', text: "Added D1 (footprint 'LED_SMD:LED_0603_1608Metric')." }], added: ['D1'], oddNames });
+            : { status: 'done', report: [{ severity: 'action', text: "Added D1 (footprint 'LED_SMD:LED_0603_1608Metric')." }], added: ['D1'], ...odd });
         return JSON.stringify({ ok: true, operation });
       }),
       kicadUpdatePcbStatus: vi.fn((id: number) => JSON.stringify(results.get(id) ?? { status: 'expired' })),
@@ -220,6 +221,72 @@ describe('updatePcb', () => {
     expect(await run({ dryRun: false, deleteUnused: true }, confirm)).toMatchObject({ status: 'applied', approved: [remove.text] });
     expect(confirm).toHaveBeenCalledWith([remove.text], expect.any(AbortSignal));
     expect(runs).toEqual([true, false, true, true, false]);
+  });
+
+  it('asks for every change on an editor build that does not report odd names (ai-chat 0006 S9)', async () => {
+    const { mod } = updateEngine(() => [add], null);
+    install(mod);
+    expect(await run({ dryRun: true })).toMatchObject({ status: 'previewed', needsApproval: [add.text] });
+  });
+
+  it('one approved removal never lets a second, same-named one through (ai-chat 0006 S6)', async () => {
+    let report = [add, remove];
+    const { mod, runs } = updateEngine(() => report);
+    install(mod);
+    const confirm = vi.fn(async () => {
+      // Before the re-preview, a second footprint is now also "R9" and unused.
+      if (confirm.mock.calls.length === 1) report = [add, remove, remove];
+      return confirm.mock.calls.length === 1;
+    });
+    expect(await run({ dryRun: false, deleteUnused: true }, confirm)).toEqual({ status: 'declined', needsApproval: [remove.text, remove.text] });
+    expect(confirm).toHaveBeenNthCalledWith(2, [remove.text, remove.text], expect.any(AbortSignal));
+    expect(runs).toEqual([true, true]); // never applied
+  });
+
+  it('after an approval, applies only the exact update approved: a line that appeared since stops it (ai-chat 0006 S6)', async () => {
+    let report = [add, remove];
+    const rename = { severity: 'action', text: 'Change U1 value from x to y.' }; // a safe line
+    const { mod, runs } = updateEngine(() => report);
+    install(mod);
+    const confirm = vi.fn(async () => {
+      report = [add, remove, rename];
+      return true;
+    });
+    expect(await run({ dryRun: false, deleteUnused: true }, confirm)).toEqual({
+      error: 'The schematic changed while you approved the update; ask again',
+      code: 'CHANGED',
+    });
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(runs).toEqual([true, true]); // never applied
+  });
+
+  it('a Stop during the preview shows no card (ai-chat 0006 S12)', async () => {
+    const { mod } = updateEngine(() => [add, remove]);
+    install(mod);
+    const stop = new AbortController();
+    mod.kicadUpdatePcbFromSchematic.mockImplementationOnce(((original) => (json: string) => {
+      stop.abort(); // the turn is stopped while KiCad previews
+      return original(json);
+    })(mod.kicadUpdatePcbFromSchematic.getMockImplementation()!));
+    const confirm = vi.fn(async () => true);
+    expect(await updatePcb({ dryRun: false, deleteUnused: true }, stop.signal, confirm, { deps: deps(() => []), pollMs: 1 })).toEqual({
+      error: 'Update PCB cancelled',
+      code: 'CANCELLED',
+    });
+    expect(confirm).not.toHaveBeenCalled();
+    expect(await run({ dryRun: true })).toMatchObject({ status: 'previewed' }); // not stuck BUSY
+  });
+
+  it('runs one Update PCB at a time: a second one answers BUSY while the first waits for the person (ai-chat 0006 S7)', async () => {
+    const { mod } = updateEngine(() => [add, remove]);
+    install(mod);
+    let answer: (ok: boolean) => void = () => {};
+    const first = run({ dryRun: false, deleteUnused: true }, vi.fn(() => new Promise<boolean>((resolve) => { answer = resolve; })));
+    await vi.waitFor(() => expect(mod.kicadUpdatePcbFromSchematic).toHaveBeenCalled());
+    expect(await run({ dryRun: true })).toEqual({ error: 'Another Update PCB is still running or waiting for your answer', code: 'BUSY' });
+    answer(false);
+    expect(await first).toMatchObject({ status: 'declined' });
+    expect(await run({ dryRun: true })).toMatchObject({ status: 'previewed' });
   });
 
   it('asks for every change when a reference could disguise one (a space or a quote in it)', async () => {

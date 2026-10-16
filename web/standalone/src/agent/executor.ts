@@ -18,7 +18,7 @@
  * caller's signal is the chat turn's: Stop withdraws a queued edit or an armed
  * placement. First-party: the AI chat gates it (`aiChat`), not the plugin toggles.
  */
-import { pcbUpdateActions, pcbUpdateNeedsApproval, type AgentUpdatePcbResult, type NetlistNet, type PcbUpdateLine, type SchematicEdit } from '@pcbjam/shared';
+import { pcbUpdateActions, pcbUpdateNeedsApproval, sameChanges, type AgentUpdatePcbResult, type NetlistNet, type PcbUpdateLine, type SchematicEdit } from '@pcbjam/shared';
 import { engineTourDeps } from '@/overlay/tours/engine';
 import { parseSheetNets, parseSheetSymbols, type SheetSymbol, type TourDeps } from '@/overlay/tours/declarative';
 import { applyEdit, editModule, validateEdit, type EditRequest } from '@/plugins/edits';
@@ -193,8 +193,30 @@ async function runNativeUpdate(
  * previews again in that same step and refuses (CHANGED) unless the changes are exactly
  * those, so nothing the person did not see slips in; then it is previewed and asked again.
  * The signal is the chat turn's: Stop declines.
+ *
+ * One at a time per tab: a second call answers BUSY, so no run changes the board under a
+ * card the person is reading (ai-chat 0006 S7). Approval holds only for exactly the lines
+ * shown, each as many times (S6); an editor build that does not report odd names gets every
+ * change asked (S9).
  */
+let updatePcbRunning = false;
+
 export async function updatePcb(
+  req: { dryRun: boolean; deleteUnused: boolean },
+  signal: AbortSignal,
+  confirm: ConfirmUpdatePcb,
+  opts: { deps?: TourDeps; timeoutMs?: number; pollMs?: number } = {},
+): Promise<AgentUpdatePcbResult> {
+  if (updatePcbRunning) return { error: 'Another Update PCB is still running or waiting for your answer', code: 'BUSY' };
+  updatePcbRunning = true;
+  try {
+    return await updatePcbOnce(req, signal, confirm, opts);
+  } finally {
+    updatePcbRunning = false;
+  }
+}
+
+async function updatePcbOnce(
   req: { dryRun: boolean; deleteUnused: boolean },
   signal: AbortSignal,
   confirm: ConfirmUpdatePcb,
@@ -211,22 +233,35 @@ export async function updatePcb(
   if (deps.modalDialogOpen()) return { error: 'Close the open dialog first', code: 'BUSY' };
   try {
     let approved: string[] = [];
+    // Every change of the run the person approved: after an approval, the run applies only
+    // while the whole update is still exactly that one (a safe-looking line that appeared
+    // since, a rename, would otherwise ride on it).
+    let approvedRun: string[] | null = null;
     for (let round = 0; round < 3; round++) {
       if (signal.aborted) return { error: 'Update PCB cancelled', code: 'CANCELLED' };
       const preview = await runNativeUpdate(native, { dryRun: true, deleteUnused: req.deleteUnused }, timing);
       if ('error' in preview) return preview;
-      const needsApproval = pcbUpdateNeedsApproval(preview.report, preview.oddNames ?? []);
+      const needsApproval = pcbUpdateNeedsApproval(preview.report, preview.oddNames ?? null);
       if (req.dryRun) return { status: 'previewed', report: preview.report, needsApproval };
-      if (needsApproval.every((change) => approved.includes(change))) {
+      const actions = pcbUpdateActions(preview.report);
+      const asApproved = approvedRun === null || sameChanges(actions, approvedRun);
+      // Changed since the approval, but not in what a card would show: asking again would show
+      // the same card, so this run ends. New lines to approve are asked below.
+      if (!asApproved && (!needsApproval.length || sameChanges(needsApproval, approved))) {
+        return { error: 'The schematic changed while you approved the update; ask again', code: 'CHANGED' };
+      }
+      if (asApproved && (!needsApproval.length || sameChanges(needsApproval, approved))) {
         if (signal.aborted) return { error: 'Update PCB cancelled', code: 'CANCELLED' };
-        const expect = pcbUpdateActions(preview.report);
-        const done = await runNativeUpdate(native, { dryRun: false, deleteUnused: req.deleteUnused, expect }, timing);
+        const done = await runNativeUpdate(native, { dryRun: false, deleteUnused: req.deleteUnused, expect: actions }, timing);
         if ('error' in done && done.code === 'CHANGED') continue;
         if ('error' in done) return done;
         return { status: 'applied', report: done.report, added: done.added, approved: needsApproval };
       }
+      // A Stop that landed during the preview: no card for a run that is already over.
+      if (signal.aborted) return { error: 'Update PCB cancelled', code: 'CANCELLED' };
       if (!(await confirm(needsApproval, signal))) return { status: 'declined', needsApproval };
       approved = needsApproval;
+      approvedRun = actions;
     }
     return { error: 'The schematic kept changing while you approved the update; ask again', code: 'CHANGED' };
   } catch (error) {
