@@ -301,3 +301,12 @@ S3DMODEL* S3D_CACHE::GetModel( const wxString&, const wxString&,
 {
     return nullptr;
 }
+
+//=============================================================================
+// traceGalContext: gl_context_mgr.cpp traces a failed SetCurrent since KiCad
+// 10.0.7 (trace_helpers.cpp itself drags the whole trace manager).
+//=============================================================================
+
+#include <trace_helpers.h>
+
+const wxChar* const traceGalContext = wxT( "KICAD_GAL_CONTEXT" );
