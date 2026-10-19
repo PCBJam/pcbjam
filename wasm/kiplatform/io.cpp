@@ -42,6 +42,28 @@ bool IsFileHidden( const wxString& aFileName )
     return !name.IsEmpty() && name[0] == '.';
 }
 
+TARGET_ATTRS CaptureTargetAttributes( const wxString& aPath )
+{
+    // No attributes beyond mode bits, and DuplicatePermissions covers those
+    return TARGET_ATTRS{};
+}
+
+bool ApplyTargetAttributes( const wxString& aPath, const TARGET_ATTRS& aAttrs )
+{
+    return true;
+}
+
+bool FlushToDisk( FILE* aFp )
+{
+    if( !aFp )
+        return false;
+
+    // fflush only. The in-memory filesystem has nothing to commit, and emscripten
+    // implements fsync as an async import under JSPI: it would suspend every save, and
+    // throw a SuspendError when the save didn't start from a JSPI export.
+    return fflush( aFp ) == 0;
+}
+
 void LongPathAdjustment( wxFileName& aFilename )
 {
     // No-op on non-Windows platforms

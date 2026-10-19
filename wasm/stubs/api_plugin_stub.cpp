@@ -91,9 +91,15 @@ void API_PLUGIN_MANAGER::ReloadPlugins( std::optional<wxString> aDirectoryToScan
     // No-op: plugins not available in WASM
 }
 
-void API_PLUGIN_MANAGER::RecreatePluginEnvironment( const wxString& aIdentifier )
+bool API_PLUGIN_MANAGER::RecreatePluginEnvironment( const wxString& aIdentifier )
 {
     (void)aIdentifier;
+    return false;
+}
+
+void API_PLUGIN_MANAGER::HandlePythonInterpreterChanged()
+{
+    // No-op: plugins not available in WASM (panel_plugin_settings calls this)
 }
 
 void API_PLUGIN_MANAGER::InvokeAction( const wxString& aIdentifier,

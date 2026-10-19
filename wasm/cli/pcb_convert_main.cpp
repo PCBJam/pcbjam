@@ -1017,6 +1017,10 @@ int pcbToolsResaveFootprint( const char* aInPath, const char* aOutPath, std::str
         PRETTIFIED_FILE_OUTPUTFORMATTER formatter( wxString::FromUTF8( aOutPath ) );
         writer.SetOutputFormatter( &formatter );
         writer.Format( fp.get() );
+
+        // Since 10.0.7 the formatter writes a sibling temp file and only Finish()
+        // renames it over aOutPath; the destructor alone discards it.
+        formatter.Finish();
     }
     catch( const IO_ERROR& ioe )
     {
