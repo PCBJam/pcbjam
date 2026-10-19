@@ -2,22 +2,23 @@
 // The wx wasm port calls window.wxAppTopWindowClosed() when the app's MAIN
 // frame is destroyed (wxwidgets src/wasm/toplevel.cpp) — i.e. on a real
 // File→Quit / window close. A close vetoed by the unsaved-changes prompt never
-// destroys the frame, so it never fires. The port also closes the frame while
-// the page itself unloads (app.cpp UnloadCallback), so the dispatcher latches
-// off as soon as any unload/navigation is under way.
+// destroys the frame, so it never fires. The port used to close the frame from
+// beforeunload as well (removed: it threw SuspendError on every unload), so the
+// dispatcher latches off as soon as any unload/navigation is under way; the
+// latches stay so no close during an unload can redirect it.
 
 let activeQuitHook: (() => void) | undefined;
 let quitHandled = false;
 
 /**
  * Latch the quit dispatcher off ahead of a deliberate in-app navigation (the
- * tool-switch hook's location.assign). The wx port's UnloadCallback runs on
- * BEFOREUNLOAD — i.e. the instant the navigation starts, while this document
- * keeps running until the next one commits — and closes the top frame, which
- * fires wxAppTopWindowClosed. Without the latch the quit hook then navigates
- * to the exit URL over the in-flight navigation (the pagehide latch below is
- * too late: pagehide only fires at commit time). One-shot per document, same
- * as the pagehide latch — this page is on its way out.
+ * tool-switch hook's location.assign). This document keeps running until the
+ * next one commits, so a top-frame close in that window (the wx port's former
+ * beforeunload handler did exactly that) fires wxAppTopWindowClosed, and
+ * without the latch the quit hook navigates to the exit URL over the in-flight
+ * navigation (the pagehide latch below is too late: pagehide only fires at
+ * commit time). One-shot per document, same as the pagehide latch: this page
+ * is on its way out.
  */
 export function markDeliberateNavigation() {
   quitHandled = true;
@@ -53,14 +54,15 @@ if (typeof window !== "undefined") {
   // Latch off for a BROWSER-initiated unload: reload (F5), Back, closing the
   // tab, typing a URL. markDeliberateNavigation covers only our own in-app
   // navigations, and the pagehide latch below fires at commit time — too late.
-  // The wx port's UnloadCallback runs on beforeunload and closes the top frame,
-  // which fires wxAppTopWindowClosed; unlatched, the quit hook then navigated to
-  // the project overview OVER the in-flight reload, so every refresh of an
-  // editor URL bounced to the management app instead of reloading.
+  // The wx port's former beforeunload handler closed the top frame, which fired
+  // wxAppTopWindowClosed; unlatched, the quit hook then navigated to the project
+  // overview OVER the in-flight reload, so every refresh of an editor URL
+  // bounced to the management app instead of reloading. The port no longer
+  // closes anything on unload; the latch stays as the guard.
   //
-  // Registered at MODULE scope, which runs on import — before the wasm boots and
-  // installs its own beforeunload handler. Listeners fire in registration order,
-  // so this latch is always set before UnloadCallback can close the frame.
+  // Registered at MODULE scope, which runs on import, before the wasm boots.
+  // Listeners fire in registration order, so this latch is set before any
+  // beforeunload listener the wasm side could add.
   //
   // Tradeoff: if a beforeunload prompt is shown and the user chooses to stay,
   // the latch stays set and a later File→Quit won't navigate on its own. That
