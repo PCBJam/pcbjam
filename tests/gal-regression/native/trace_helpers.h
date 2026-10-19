@@ -16,12 +16,14 @@ extern const wxString traceGalProfile;
 extern const wxString traceOpenGL;
 extern const wxString traceGalCachedContainer;
 extern const wxString traceShader;
+extern const wxString traceGalContext;
 
 // Definitions
 inline const wxString traceGalProfile = "KICAD_GAL_PROFILE";
 inline const wxString traceOpenGL = "KICAD_OPENGL";
 inline const wxString traceGalCachedContainer = "KICAD_GAL_CACHED_CONTAINER";
 inline const wxString traceShader = "KICAD_SHADER";
+inline const wxString traceGalContext = "KICAD_GAL_CONTEXT";
 
 // TRACE_MANAGER - simplified stub
 class TRACE_MANAGER {
