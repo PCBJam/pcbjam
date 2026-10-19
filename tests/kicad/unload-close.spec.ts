@@ -181,7 +181,12 @@ test.describe("closing the tab", () => {
       });
     });
     await bootAndOpen(page);
-    expect(await page.evaluate(() => window.name)).toBe("unload-probe:");
+    // Start the record here. Firefox also runs the init script in the tab's
+    // initial about:blank and fires its beforeunload when goto leaves it, and
+    // window.name carries that "fired" over into the editor page.
+    await page.evaluate(() => {
+      window.name = "unload-probe:";
+    });
 
     // A page-initiated reload: Playwright's page.reload() (CDP Page.reload)
     // skips beforeunload in Chromium.
