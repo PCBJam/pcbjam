@@ -12,6 +12,7 @@
  * reports later (feature 0003) and so a "don't show again" choice can be keyed to
  * the exact set of issues seen.
  */
+import { detectsMobileDevice } from "@/lib/mobile-mode";
 
 export interface CapabilityIssue {
   /** Stable identifier for analytics + dismissal keys (e.g. "no-sab"). */
@@ -213,13 +214,13 @@ export function probeCapabilities(): CapabilityReport {
   }
 
   // --- warn: mobile ----------------------------------------------------------
-  const uaMobile = nav?.userAgentData?.mobile;
-  // Coarse PRIMARY pointer at any width = phone or tablet (touch laptops keep
-  // a fine primary pointer) — mirrors lib/mobile-mode isMobileMode.
-  const coarsePointer =
-    typeof matchMedia === "function" &&
-    matchMedia("(pointer: coarse)").matches;
-  const isMobile = uaMobile === true || coarsePointer;
+  // Phone, or a touch-only tablet: the same rule as lib/mobile-mode (a touch
+  // laptop with a trackpad or mouse is not mobile).
+  const isMobile = detectsMobileDevice({
+    location: { search: "" },
+    navigator: nav,
+    matchMedia: typeof matchMedia === "function" ? (q: string) => matchMedia(q) : undefined,
+  });
   info.mobile = isMobile;
   if (isMobile) {
     warnings.push({

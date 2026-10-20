@@ -2,7 +2,7 @@ import * as React from "react";
 import { useSearchParams } from "react-router-dom";
 import { Eye, Loader2, MessageSquare, PencilRuler } from "lucide-react";
 import type { ProjectAccess, Tool } from "@pcbjam/shared";
-import { isMobileMode } from "@/lib/mobile-mode";
+import { chooseDeviceLayout, isMobileMode } from "@/lib/mobile-mode";
 import { requestedMode, type SessionMode } from "@/lib/read-only-mode";
 import {
   mobileModeGateDecision,
@@ -162,6 +162,24 @@ function MobileModeDialog({
           />
           Remember on this device
         </label>
+        <p className="mt-4 border-t pt-3 text-xs text-muted-foreground">
+          Using a mouse or trackpad?{" "}
+          <Button
+            type="button"
+            data-testid="mobile-mode-desktop"
+            variant="link"
+            size="sm"
+            className="h-auto p-0 text-xs"
+            onClick={() => {
+              // A laptop with a touch screen: the desktop layout from now on
+              // on this device (undo from the session menu).
+              chooseDeviceLayout("desktop");
+              onChoose("edit", false);
+            }}
+          >
+            Use the desktop layout on this device
+          </Button>
+        </p>
       </div>
     </div>
   );

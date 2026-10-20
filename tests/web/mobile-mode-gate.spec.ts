@@ -51,6 +51,23 @@ test.describe('mobile session-mode gate', () => {
     expect(new URL(page.url()).searchParams.get('mode')).toBe('edit');
   });
 
+  test('"use the desktop layout" sticks on this device: no dialog, no mobile mode next time', async ({ page }) => {
+    // No ?mobile= here: detection decides (Pixel 7: coarse pointer, no fine one).
+    await page.goto(FILE);
+    await expect(page.getByTestId('mobile-mode-gate')).toBeVisible();
+    await page.getByTestId('mobile-mode-desktop').click();
+    await expect(page.getByTestId('mobile-mode-gate')).toHaveCount(0);
+    await expect.poll(() => new URL(page.url()).searchParams.get('mode')).toBe('edit');
+    expect(await page.evaluate(() => localStorage.getItem('pcbjam-device-layout'))).toBe('desktop');
+
+    await page.goto(FILE);
+    await expect(page.locator('#canvas')).toHaveCount(1);
+    await expect(page.getByTestId('mobile-mode-gate')).toHaveCount(0);
+    // ?mobile=1 still forces the mobile flow on top of the stored choice.
+    await page.goto(`${FILE}?mobile=1`);
+    await expect(page.getByTestId('mobile-mode-gate')).toBeVisible();
+  });
+
   test('not asked on a desktop pointer, nor on a fileless tool without comments', async ({ page }) => {
     await page.goto(`${FILE}?mobile=0`);
     await expect(page.getByTestId('mobile-mode-gate')).toHaveCount(0);

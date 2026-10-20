@@ -26,7 +26,7 @@ import {
 } from "@/lib/git-view";
 import { configureGitProvenance, refreshChangedPaths } from "@/lib/git-provenance";
 import { decodeRoutePath } from "@/lib/route-path";
-import { isMobileMode } from "@/lib/mobile-mode";
+import { chooseDeviceLayout, chosenDeviceLayout, detectsMobileDevice, isMobileMode } from "@/lib/mobile-mode";
 import { rememberMobileMode } from "@/lib/mobile-mode-choice";
 import {
   canChooseMode,
@@ -204,6 +204,18 @@ export function ToolPage() {
           window.location.assign(url.toString());
         }
       : undefined;
+  // The undo of "Use the desktop layout on this device" (mobile dialog), on a
+  // device detection calls mobile.
+  const onUseMobileLayout =
+    chosenDeviceLayout() === "desktop" && detectsMobileDevice()
+      ? () => {
+          chooseDeviceLayout(null);
+          const url = new URL(window.location.href);
+          url.searchParams.delete("mode");
+          url.searchParams.delete("mobile");
+          window.location.assign(url.toString());
+        }
+      : undefined;
 
   // PreflightGate runs the device-capability check; on a fatal mismatch it blocks
   // here (before WasmTool mounts) so the expensive WASM asset fetch is skipped.
@@ -254,6 +266,7 @@ export function ToolPage() {
         readOnly={readOnly}
         commentAccess={commentAccess}
         onChangeMobileMode={onChangeMobileMode}
+        onUseMobileLayout={onUseMobileLayout}
         boot={boot}
       />
       {badge && (

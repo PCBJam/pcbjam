@@ -228,6 +228,7 @@ export function WasmTool({
   readOnly = false,
   commentAccess,
   onChangeMobileMode,
+  onUseMobileLayout,
   boot = null,
 }: {
   tool: Tool;
@@ -333,6 +334,8 @@ export function WasmTool({
    * on a phone/tablet) — the session menu offers the switch.
    */
   onChangeMobileMode?: () => void;
+  /** Undo of the desktop layout chosen on a mobile-detected device. */
+  onUseMobileLayout?: () => void;
 }) {
   const containerRef = React.useRef<HTMLDivElement>(null);
   // Reader opt-in (comments-ux 0003 decision 6): plain read-only sessions
@@ -2228,6 +2231,7 @@ export function WasmTool({
           readerComments={readerComments}
           onToggleReaderComments={readOnly ? toggleReaderComments : undefined}
           onChangeMobileMode={onChangeMobileMode}
+          onUseMobileLayout={onUseMobileLayout}
           reviewerSelections={reviewerSelections}
           onToggleReviewerSelections={readOnly ? undefined : toggleReviewerSelections}
           setCommentsSlot={setCommentsSlot}

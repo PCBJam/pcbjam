@@ -159,6 +159,7 @@ export function SessionMenu({
   readerComments,
   onToggleReaderComments,
   onChangeMobileMode,
+  onUseMobileLayout,
   reviewerSelections,
   onToggleReviewerSelections,
   setCommentsSlot,
@@ -205,6 +206,7 @@ export function SessionMenu({
   /** Mobile 0002: re-choose view / comment / full editor (writers on a
    *  phone/tablet only — absent otherwise). */
   onChangeMobileMode?: () => void;
+  onUseMobileLayout?: () => void;
   /** Editors: show/hide reviewers' (commenters') selection outlines
    *  (comments-ux 0003 §5.2 rule 5). Default on, remembered per browser. */
   reviewerSelections?: boolean;
@@ -264,7 +266,7 @@ export function SessionMenu({
           SourceChip is shared with the light project pages, so instead of
           restyling it we ask for its `muted` tone: colour drops to a dot,
           and the chip sits in a normal row like everything else. */}
-      {(sourceDescriptor || readOnly || staleLibItems.size > 0 || onChangeMobileMode) && (
+      {(sourceDescriptor || readOnly || staleLibItems.size > 0 || onChangeMobileMode || onUseMobileLayout) && (
         <OverlayMenuSection label="Document">
           {staleLibItems.size > 0 && (
             <StaleLibsRow
@@ -337,6 +339,20 @@ export function SessionMenu({
               >
                 <Smartphone size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
                 <span>{readOnly ? "Open the full editor…" : "Lighter mode (view / comment)…"}</span>
+              </Button>
+            </Tip>
+          )}
+          {onUseMobileLayout && (
+            <Tip content="This device was set to the desktop layout; switch back to the touch layout (reloads)">
+              <Button
+                data-testid="use-mobile-layout"
+                onClick={onUseMobileLayout}
+                variant="plain"
+                size="row"
+                className={overlayRowClass}
+              >
+                <Smartphone size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
+                <span>Use the mobile layout…</span>
               </Button>
             </Tip>
           )}

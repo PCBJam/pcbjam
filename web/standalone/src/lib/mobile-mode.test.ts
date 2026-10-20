@@ -1,28 +1,47 @@
 import { describe, expect, it } from "vitest";
-import { isMobileMode, startsChromeHidden, type MobileModeWindow } from "./mobile-mode";
+import { chooseDeviceLayout, isMobileMode, startsChromeHidden, type MobileModeWindow } from "./mobile-mode";
 
 /**
  * Mobile-mode resolution (features/mobile): the explicit `?mobile=` URL param
- * always wins; otherwise fall back to device detection (UA-CH mobile flag, or
- * a coarse primary pointer at any width — tablets are mobile; the same signals
- * capabilities.ts warns on).
+ * always wins, then the layout chosen on this device; otherwise device
+ * detection (UA-CH mobile flag, or a coarse primary pointer with no fine
+ * pointer anywhere — touch-only tablets are mobile, touch laptops are not; the
+ * same signals capabilities.ts warns on).
  */
 
 function fakeWin(opts: {
   search?: string;
   uaMobile?: boolean;
+  /** primary pointer is coarse */
   coarse?: boolean;
+  /** some pointer is fine (mouse, trackpad); default: !coarse */
+  anyFine?: boolean;
   narrow?: boolean;
   noMatchMedia?: boolean;
+  stored?: Record<string, string>;
 }): MobileModeWindow {
+  const store = { ...(opts.stored ?? {}) };
   return {
     location: { search: opts.search ?? "" },
     navigator: { userAgentData: opts.uaMobile === undefined ? undefined : { mobile: opts.uaMobile } },
     matchMedia: opts.noMatchMedia
       ? undefined
       : (query: string) => ({
-          matches: query.includes("pointer") ? (opts.coarse ?? false) : (opts.narrow ?? false),
+          matches: query.includes("any-pointer: fine")
+            ? (opts.anyFine ?? !(opts.coarse ?? false))
+            : query.includes("pointer: coarse")
+              ? (opts.coarse ?? false)
+              : (opts.narrow ?? false),
         }),
+    localStorage: {
+      getItem: (k) => store[k] ?? null,
+      setItem: (k, v) => {
+        store[k] = v;
+      },
+      removeItem: (k) => {
+        delete store[k];
+      },
+    },
   };
 }
 
@@ -44,12 +63,29 @@ describe("isMobileMode", () => {
     expect(isMobileMode(fakeWin({ uaMobile: false }))).toBe(false);
   });
 
-  it("auto-detects via coarse primary pointer, at any width", () => {
+  it("auto-detects a touch-only device (coarse primary pointer, no fine pointer), at any width", () => {
     expect(isMobileMode(fakeWin({ coarse: true, narrow: true }))).toBe(true);
     // a WIDE coarse-primary device is a tablet in landscape — mobile too
     expect(isMobileMode(fakeWin({ coarse: true, narrow: false }))).toBe(true);
     // a narrow window with a fine pointer is just a small desktop window
     expect(isMobileMode(fakeWin({ coarse: false, narrow: true }))).toBe(false);
+  });
+
+  it("a touch laptop (coarse primary pointer, trackpad or mouse present) stays desktop", () => {
+    expect(isMobileMode(fakeWin({ coarse: true, anyFine: true }))).toBe(false);
+  });
+
+  it("the layout chosen on this device wins over detection; ?mobile= wins over both", () => {
+    expect(isMobileMode(fakeWin({ coarse: true, stored: { "pcbjam-device-layout": "desktop" } }))).toBe(false);
+    expect(isMobileMode(fakeWin({ uaMobile: true, stored: { "pcbjam-device-layout": "desktop" } }))).toBe(false);
+    expect(isMobileMode(fakeWin({ stored: { "pcbjam-device-layout": "mobile" } }))).toBe(true);
+    expect(isMobileMode(fakeWin({ search: "?mobile=1", stored: { "pcbjam-device-layout": "desktop" } }))).toBe(true);
+    // choosing and forgetting goes through the same storage key
+    const w = fakeWin({ coarse: true });
+    chooseDeviceLayout("desktop", w);
+    expect(isMobileMode(w)).toBe(false);
+    chooseDeviceLayout(null, w);
+    expect(isMobileMode(w)).toBe(true);
   });
 
   it("defaults to desktop when nothing is detectable", () => {
