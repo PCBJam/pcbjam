@@ -100,15 +100,18 @@ test.describe('pcbnew: DOM-port scrollbar + context menu', () => {
 
     await stableShot(page, 'pcbnew-context-menu.png', { fullPage: true });
 
-    // The menu is interactive: opening the "Zoom" submenu replaces the popup
-    // with the submenu's items (so the top-level "Grid" entry disappears).
+    // The menu is interactive: opening the "Zoom" submenu cascades its items
+    // beside the row, under their own registry parent, and the top-level menu
+    // (with "Grid") stays open (issue #34).
     expect(await clickMenuItem(page, 'Zoom'), 'Zoom submenu should be clickable').toBe(true);
-    await expect.poll(async () => (await popupLabels(page)).includes('Grid'), {
+    const subItems = async () =>
+      (await findRenderedByType(page, 'menuitem')).filter((i) => i.parentId.startsWith('popupmenu:sub:'));
+    await expect.poll(async () => (await subItems()).length, {
       timeout: 5000,
-      message: 'clicking "Zoom" should descend into its submenu (top-level items gone)',
-    }).toBe(false);
-    const subLabels = await popupLabels(page);
-    expect(subLabels.length, `submenu was: ${JSON.stringify(subLabels)}`).toBeGreaterThan(0);
+      message: 'clicking "Zoom" should cascade its submenu',
+    }).toBeGreaterThan(0);
+    expect(await popupLabels(page), 'the top-level menu stays open').toEqual(expect.arrayContaining(['Grid']));
+    await expect(page.locator('.wx-menu-popup')).toHaveCount(2);
     await stableShot(page, 'pcbnew-context-submenu.png', { fullPage: true });
 
     // Escape dismisses the popup without firing a command (registry clears).
@@ -117,6 +120,7 @@ test.describe('pcbnew: DOM-port scrollbar + context menu', () => {
       timeout: 5000,
       message: 'Escape should dismiss the context menu',
     }).toBe(0);
+    expect(await subItems(), 'the submenu rows leave the registry too').toHaveLength(0);
 
     expect(
       testLogger.errors.filter((e) => !e.includes('favicon') && !e.includes('WebGL')),
