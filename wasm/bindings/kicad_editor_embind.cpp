@@ -206,6 +206,15 @@ static bool kicadOpenFileBusy()
     return pcbjam_open::busy();
 }
 
+// Asked by the kicad fork's PROGRESS_REPORTER_BASE before it yields to the
+// browser mid-operation (editor-responsiveness 0001). Not during an open: the
+// web shell and its callers treat kicadOpenFile as one step, and a load that
+// suspends part-way lets them reach a half-built model.
+extern "C" int pcbjam_progress_may_yield()
+{
+    return pcbjam_open::busy() ? 0 : 1;
+}
+
 // Test-only (collab-load-fuzz): arm the deterministic open parks.
 static void kicadTestSetOpenPark( int aMs )
 {
@@ -407,7 +416,9 @@ static bool kicadCrossProbeExec( std::string aCmd, bool aForce )
 
 // Test-only (cross-probe 0001 e2e): run a KiCad action by name from the event
 // loop, as a menu click would — e.g. "eeschema.EditorControl.selectOnPCB",
-// which otherwise lives only in the canvas context menu.
+// which otherwise lives only in the canvas context menu. Once RunAction returns
+// it fires window 'pcbjam:test-action-done' ({ name }), so a spec can wait for
+// a synchronous action (zone fill) without calling into wasm while it runs.
 static bool kicadTestRunAction( std::string aName )
 {
     EDA_BASE_FRAME* frame =
@@ -416,7 +427,20 @@ static bool kicadTestRunAction( std::string aName )
     if( !frame || !frame->GetToolManager() )
         return false;
 
-    frame->CallAfter( [frame, aName]() { frame->GetToolManager()->RunAction( aName ); } );
+    frame->CallAfter(
+            [frame, aName]()
+            {
+                frame->GetToolManager()->RunAction( aName );
+
+                EM_ASM( {
+                    try
+                    {
+                        window.dispatchEvent( new CustomEvent( 'pcbjam:test-action-done',
+                                                               { detail: { name: UTF8ToString( $0 ) } } ) );
+                    }
+                    catch( e ) { console.error( '[pcbjam] test-action-done listener threw', e ); }
+                }, aName.c_str() );
+            } );
     return true;
 }
 
