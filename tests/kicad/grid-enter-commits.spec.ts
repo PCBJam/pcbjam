@@ -1,5 +1,5 @@
 /**
- * Enter in a grid cell editor commits the typed text (issue #36).
+ * Enter in a grid cell editor commits the typed text.
  *
  * Schematic Setup → Project → Text Variables: typing into a value cell and
  * pressing Enter removed the text. The cell editor is a wx-dom <input>; its

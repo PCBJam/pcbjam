@@ -1,5 +1,5 @@
 /**
- * Horizontal wheel scrolls a wx grid (issue #35).
+ * Horizontal wheel scrolls a wx grid.
  *
  * The browser WheelEvent's deltaX never reached wx: the canvas WheelCallback
  * (src/wasm/app.cpp) built the horizontal wxMouseEvent and dropped it, and the

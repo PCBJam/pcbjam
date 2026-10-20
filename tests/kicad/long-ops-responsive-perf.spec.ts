@@ -8,8 +8,8 @@ import { openAndWait } from './utils/perf-utils';
 import { clickWxButton, findWxButton } from './utils/wx-dialogs';
 
 /**
- * Long editor operations keep the tab responsive (issue #37,
- * docs/features/editor-responsiveness/0001).
+ * Long editor operations keep the tab responsive
+ * (docs/features/editor-responsiveness/0001).
  *
  * Fill-all (`B`), DRC and ERC run their work on pthread Workers, but the main
  * thread joined them in emscripten's busy-spin futex wait, and the refresh

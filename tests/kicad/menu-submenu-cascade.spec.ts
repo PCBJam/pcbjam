@@ -10,7 +10,7 @@ import {
 } from '../e2e/utils/element-tracker';
 
 /**
- * Menubar submenus cascade (issue #34).
+ * Menubar submenus cascade.
  *
  * The DOM menus (wx-dom.js) kept a single popup slot: opening a submenu
  * removed the parent popup first, then read the (now detached) row's rect,

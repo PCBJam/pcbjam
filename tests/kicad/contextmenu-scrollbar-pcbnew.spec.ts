@@ -102,7 +102,7 @@ test.describe('pcbnew: DOM-port scrollbar + context menu', () => {
 
     // The menu is interactive: opening the "Zoom" submenu cascades its items
     // beside the row, under their own registry parent, and the top-level menu
-    // (with "Grid") stays open (issue #34).
+    // (with "Grid") stays open.
     expect(await clickMenuItem(page, 'Zoom'), 'Zoom submenu should be clickable').toBe(true);
     const subItems = async () =>
       (await findRenderedByType(page, 'menuitem')).filter((i) => i.parentId.startsWith('popupmenu:sub:'));
