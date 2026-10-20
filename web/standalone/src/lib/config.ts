@@ -141,6 +141,7 @@ import { colorForUser, type PresenceUser } from "@pcbjam/shared";
 import { sessionIdentity } from "@/lib/session-identity";
 import type { ProviderConfig, ProviderKind } from "@/wasm/collab";
 import { cdnLibsSource } from "@/wasm/libs/cdn-source";
+import { withLibPack } from "@/wasm/libs/lib-pack-fetch";
 import {
   cdnModelsSource,
   registryModelsSource,
@@ -357,6 +358,13 @@ export interface LibsBootPreload {
   >;
 }
 
+/** The official-library pack (libs 0026) answers first-run bundle requests;
+ *  `?libpack=0` turns it off (per-library bundles, as before). */
+function libPackEnabled(): boolean {
+  if (typeof window === "undefined") return true;
+  return new URLSearchParams(window.location.search).get("libpack") !== "0";
+}
+
 export function libsSourceConfig(
   projectId?: string,
   preload?: LibsBootPreload,
@@ -389,6 +397,15 @@ export function libsSourceConfig(
                   project,
                   preloaded: preload,
                   log: (m) => console.log(m),
+                  ...(libPackEnabled()
+                    ? {
+                        fetchImpl: withLibPack(
+                          (input, init) => fetch(input, init),
+                          `${API_BASE_URL}/api/scopes/${encodeURIComponent(currentScope())}/libs/origins`,
+                          (m) => console.log(m),
+                        ),
+                      }
+                    : {}),
                 },
               )
             : remoteLibsSource(API_BASE_URL, currentScope(), userSlug(), project);
