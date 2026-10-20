@@ -89,12 +89,12 @@ describe("loadSessionIdentity", () => {
 
 describe("sessionFeature", () => {
   it("reads the backend's per-session toggles; anything else is off", async () => {
-    mockMe({ user: null, features: { plugins: true, tutorials: false, git: "yes" } });
+    mockMe({ user: null, features: { plugins: true, tutorials: false, fork: "yes" } });
     expect(sessionFeature("plugins")).toBe(false);
     await loadSessionIdentity("http://api");
     expect(sessionFeature("plugins")).toBe(true);
     expect(sessionFeature("tutorials")).toBe(false);
-    expect(sessionFeature("git")).toBe(false);
+    expect(sessionFeature("fork")).toBe(false);
     expect(sessionFeature("unknown")).toBe(false);
   });
 

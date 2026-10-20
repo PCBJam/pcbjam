@@ -456,7 +456,6 @@ export function WasmTool({
   // Editor lifecycle for the loading chrome: false until the tool has booted +
   // opened (covers the big WASM-compile freeze with a full-screen overlay).
   const [ready, setReady] = React.useState(false);
-  const libFilesOn = useSessionFeature("libFolderAuthoring");
   // Download progress for the (large) wasm, and a "this is taking too long" flag
   // the overlay raises after a while so a stuck load doesn't read as a silent hang.
   const [progress, setProgress] = React.useState<{
@@ -2307,7 +2306,7 @@ export function WasmTool({
         <ImportItemPanel mod={importMod} tool={tool} onClose={() => setImportOpen(false)} />
       )}
 
-      {ready && libScoped && libFilesOn && !readOnly && activeLibsSourceRef.current && (
+      {ready && libScoped && !readOnly && activeLibsSourceRef.current && (
         <LibFilesPanel source={activeLibsSourceRef.current} tool={tool} />
       )}
 
