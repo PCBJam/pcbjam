@@ -149,6 +149,13 @@ bool kicadOpenFileBusy()
     return pcbjam_open::busy();
 }
 
+// The kicad fork's progress reporters ask this before they yield or update their
+// dialog (same definition as kicad_editor_embind.cpp, which the merged image uses).
+extern "C" int pcbjam_progress_may_yield()
+{
+    return pcbjam_open::busy() ? 0 : 1;
+}
+
 // Test-only (collab-load-fuzz): arm the deterministic open parks.
 void kicadTestSetOpenPark( int aMs )
 {

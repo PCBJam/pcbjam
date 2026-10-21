@@ -27,6 +27,7 @@ const SAMPLE_SCH = `(kicad_sch
 type FS = { mkdirTree(p: string): void; writeFile(p: string, d: string): void };
 type Mod = {
   kicadOpenFile(p: string): unknown;
+  kicadOpenFileBusy(): boolean;
   kicadCollabPresenceStart(): void;
   kicadCollabSetRemote(j: string): void;
   kicadCollabGetViewport(): string;
@@ -90,6 +91,13 @@ async function bootAndOpen(page: Page): Promise<void> {
   await expect
     .poll(() => page.title(), { timeout: 60000, intervals: [500] })
     .toMatch(/locks/i);
+  // The open has truly returned (the title is set part-way through it).
+  await expect
+    .poll(() => page.evaluate(() => (window as unknown as LocksWindow).Module.kicadOpenFileBusy()), {
+      timeout: 60000,
+      intervals: [250],
+    })
+    .toBe(false);
 
   await page.evaluate(() => {
     (window as unknown as LocksWindow).Module.kicadCollabPresenceStart();
@@ -182,9 +190,33 @@ test("a locked wire resists a real drag; the same drag moves it unlocked", async
   await dragFromWire(page);
   expect(await wirePos(page)).toBe(before);
 
-  // Control: unlocked, the same gesture moves/bends the wire.
+  // Control: unlocked, a drag moves the wire.
+  //
+  // With KiCad's default left-drag mode ("drag selected items"), a drag that
+  // starts on an UNSELECTED item draws a selection box; only a drag that starts
+  // on the selection moves it. So the control leg selects the wire itself, then
+  // drags along it. It used to rely on the locked leg's selection box catching
+  // the wire's start point, which sat exactly on the box corner: a sub-pixel
+  // layout shift, or a press KiCad read late (it reads the live pointer, and a
+  // parked wx dispatch chain queues the press), left the wire unselected and
+  // the control drag drew a box instead.
   await setLock(page, false);
-  await dragFromWire(page);
+  const at = await wireScreenPos(page);
+  await page.mouse.click(at.x + 60, at.y);
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        JSON.parse((window as unknown as LocksWindow).Module.kicadCollabGetSelection()),
+      ),
+    )
+    .toEqual([WIRE1]);
+  // Every pointer position of the gesture lies on the wire (it spans ~130 px
+  // from `at`), so wherever KiCad reads the press and the first motion, the
+  // drag starts inside the selection.
+  await page.mouse.move(at.x + 20, at.y);
+  await page.mouse.down();
+  await page.mouse.move(at.x + 110, at.y, { steps: 10 });
+  await page.mouse.up();
   await expect
     .poll(() => wirePos(page), {
       timeout: 10000,

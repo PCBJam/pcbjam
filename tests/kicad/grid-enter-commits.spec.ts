@@ -142,6 +142,8 @@ test.describe("grid cell editor: Enter commits", () => {
     // a row above the last: the cell editor's own KEY_DOWN handler commits
     await typeIntoValueCell(page, 0, "first");
     await expect.poll(() => cellLabel(page, 0, 1), { message: "row 0 commits on Enter" }).toBe("first");
-    expect(await cellLabel(page, 1, 1), "row 1 unchanged").toBe("second");
+    // Enter moved the cursor down onto row 1: the registry re-reports that row's
+    // cells a beat after the redraw, so poll rather than read once.
+    await expect.poll(() => cellLabel(page, 1, 1), { message: "row 1 unchanged" }).toBe("second");
   });
 });

@@ -207,9 +207,11 @@ static bool kicadOpenFileBusy()
 }
 
 // Asked by the kicad fork's PROGRESS_REPORTER_BASE before it yields to the
-// browser mid-operation (editor-responsiveness 0001). Not during an open: the
-// web shell and its callers treat kicadOpenFile as one step, and a load that
-// suspends part-way lets them reach a half-built model.
+// browser mid-operation (editor-responsiveness 0001), and by WX_PROGRESS_REPORTER
+// before it updates its dialog and drains due wx timers. Not during an open: the
+// web shell and its callers treat kicadOpenFile as one step, a load that
+// suspends part-way lets them reach a half-built model, and timers drained
+// inside the load run nested in it.
 extern "C" int pcbjam_progress_may_yield()
 {
     return pcbjam_open::busy() ? 0 : 1;
