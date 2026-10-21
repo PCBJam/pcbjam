@@ -60,8 +60,11 @@ test.describe('mobile session-mode gate', () => {
     await expect.poll(() => new URL(page.url()).searchParams.get('mode')).toBe('edit');
     expect(await page.evaluate(() => localStorage.getItem('pcbjam-device-layout'))).toBe('desktop');
 
+    // The gate decides before the wasm boots, so no dialog means the desktop
+    // editor goes on to boot; #canvas only exists once the editor download
+    // and compile finish, which takes longer than the default 5 s on CI.
     await page.goto(FILE);
-    await expect(page.locator('#canvas')).toHaveCount(1);
+    await expect(page.locator('#canvas')).toHaveCount(1, { timeout: 120_000 });
     await expect(page.getByTestId('mobile-mode-gate')).toHaveCount(0);
     // ?mobile=1 still forces the mobile flow on top of the stored choice.
     await page.goto(`${FILE}?mobile=1`);
