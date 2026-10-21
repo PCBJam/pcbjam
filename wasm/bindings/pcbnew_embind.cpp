@@ -66,6 +66,7 @@
 #include <project/component_class_settings.h>
 #include <project/net_settings.h>
 #include <netclass.h>
+#include <pgm_base.h>
 #include <settings/settings_manager.h>
 #include <view/view.h>
 #include <view/view_overlay.h>
@@ -3699,6 +3700,18 @@ void pcbLibsInvalidatePreloaded( std::string aLibNickname )
             ->InvalidatePreloaded( wxString::FromUTF8( aLibNickname.c_str() ) );
 }
 
+// libs 0028 phase 9 golden check: the footprint tree's index items for one library
+// against its real footprints (loads that library). JSON { lib, footprints, mismatches[] }.
+// Works in any session: the adapter comes from the current project.
+std::string pcbjamCompareFootprintIndex( std::string aNickname )
+{
+    FOOTPRINT_LIBRARY_ADAPTER* adapter =
+            PROJECT_PCB::FootprintLibAdapter( &Pgm().GetSettingsManager().Prj() );
+
+    return adapter ? adapter->CompareIndexedTreeItems( wxString::FromUTF8( aNickname ) )
+                   : "{\"error\":\"no footprint library adapter\"}";
+}
+
 // Test probes (libs 0019 smoke): warm the adapter's preloaded cache the way the
 // footprint editor's tree does, and read a footprint's pad sizes through the
 // SAME LoadFootprint path the preview / update-from-library use.
@@ -4103,6 +4116,7 @@ std::string pcbPluginEditItems( std::string aJson )
 }
 
 EMSCRIPTEN_BINDINGS(pcbnew) {
+    function("pcbjamCompareFootprintIndex", &pcbjamCompareFootprintIndex PCBJAM_PARKER_POLICY);
     // Register vector types for iteration
     register_vector<FOOTPRINT*>("FootprintVector");
     register_vector<PAD*>("PadVector");

@@ -259,7 +259,7 @@ describe("provider: list/index", () => {
     let ready = false;
     const request = provider({
       ...base,
-      getLibIndex: async (id) => (id === "none" ? null : result),
+      getLibIndex: async (id, kind) => (id === "none" || kind !== "symbol" ? null : result),
       peekLibIndex: () => (ready ? result : undefined),
     });
     const tsv = (await request("list", "/mnt/pcbjam/L1", "index", "symbol")) as string;
@@ -275,6 +275,21 @@ describe("provider: list/index", () => {
     const frames = batch.split("\x1d").slice(1);
     expect(frames[0]!.startsWith("/mnt/pcbjam/L1\nv=tok")).toBe(true);
     expect(frames[1]).toBe("/mnt/pcbjam/none\n");
+  });
+
+  it("footprints: TSV, and the URI-list batch (not the Add Symbol footprint list)", async () => {
+    const fpResult = { kind: "footprint" as const, token: "ft", rows: [{ n: "R_0603", d: "Resistor", t: "res", pc: 2, up: 2 }] };
+    const fpIndexArgs: Array<string | undefined> = [];
+    const request = provider({
+      ...base,
+      getLibIndex: async (_id, kind) => (kind === "footprint" ? fpResult : null),
+      getFpIndex: async (arg) => (fpIndexArgs.push(arg), "{}"),
+    });
+    expect(await request("list", "/mnt/pcbjam/F1", "index", "footprint")).toBe("v=ft\tschema=1\tkind=footprint\nR_0603\tResistor\tres\t2\t2\n");
+    const batch = (await request("index", "/mnt/pcbjam/", JSON.stringify(["/mnt/pcbjam/F1"]), "footprint")) as string;
+    expect(batch).toBe("\x1d/mnt/pcbjam/F1\nv=ft\tschema=1\tkind=footprint\nR_0603\tResistor\tres\t2\t2\n");
+    expect(await request("index", "/mnt/pcbjam/", `{"v":"","projectLibs":[]}`, "footprint")).toBe("{}");
+    expect(fpIndexArgs).toEqual([`{"v":"","projectLibs":[]}`]);
   });
 
   it("the enumerate gate doesn't hold an index request", async () => {

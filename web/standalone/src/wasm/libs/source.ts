@@ -1,4 +1,10 @@
-import { encodeLibIndexTsv, mapLimit, type SymbolIndexRow } from "@pcbjam/shared";
+import {
+  encodeFootprintIndexTsv,
+  encodeLibIndexTsv,
+  mapLimit,
+  type FootprintIndexRow,
+  type SymbolIndexRow,
+} from "@pcbjam/shared";
 import type { LibIndexResult } from "./lib-index-store";
 import { handleModel3dRequest } from "./models-bridge";
 import { libIdFromUri, libUri } from "./uri";
@@ -355,10 +361,12 @@ export function libIndexEnabled(): boolean {
 /** Rows per `index:<cursor>` answer: one short warm-up step on the C++ side. */
 export const LIB_INDEX_PAGE_ROWS = 256;
 
-/** Bridge answer for a symbol library's index, or null when it has none. */
+/** Bridge answer for a library's index (symbols or footprints), or null when it has none. */
 function libIndexTsv(index: LibIndexResult | null, page?: { from: number; size: number }): string | null {
-  if (!index || index.kind !== "symbol") return null;
-  return encodeLibIndexTsv(index.token, index.rows as SymbolIndexRow[], page);
+  if (!index) return null;
+  return index.kind === "symbol"
+    ? encodeLibIndexTsv(index.token, index.rows as SymbolIndexRow[], page)
+    : encodeFootprintIndexTsv(index.token, index.rows as FootprintIndexRow[], page);
 }
 
 /** Escape a string for a KiCad s-expr quoted token. */
@@ -460,7 +468,10 @@ export function installLibsProvider(
     // lib-id parse, which would reject the bare mount URI the C++ side passes.
     if (op === "index") {
       log(`[libs] request op=index kind=${kind}`);
-      if (kind === "symbol") return await batchLibIndex(arg);
+      if (kind === "symbol") return await batchLibIndex(arg, kind);
+      // Footprints: a URI list is the tree's batch (libs 0028 phase 9); anything
+      // else is the Add Symbol footprint list (getFpIndex, libs 0029).
+      if (kind === "footprint" && arg.trimStart().startsWith("[")) return await batchLibIndex(arg, kind);
       return kind === "footprint" && source.getFpIndex
         ? await source.getFpIndex(arg)
         : null;
@@ -483,7 +494,7 @@ export function installLibsProvider(
           // The library index (libs 0028): metadata only, never a body fetch,
           // so the enumerate gate doesn't hold it.
           if (arg === "index" || arg.startsWith("index:")) {
-            if (kind !== "symbol" || !source.getLibIndex || !libIndexEnabled()) return null;
+            if ((kind !== "symbol" && kind !== "footprint") || !source.getLibIndex || !libIndexEnabled()) return null;
             if (arg === "index") return libIndexTsv(await source.getLibIndex(id, kind));
             const from = Number(arg.slice("index:".length)) || 0;
             // The warm-up never waits: "~" = not ready, ask again later.
@@ -617,8 +628,8 @@ export function installLibsProvider(
     }
   };
 
-  /** Several symbol libraries' indexes in one crossing (the chooser's click path). */
-  async function batchLibIndex(arg: string): Promise<string | null> {
+  /** Several libraries' indexes in one crossing (the choosers' click path). */
+  async function batchLibIndex(arg: string, kind: "symbol" | "footprint"): Promise<string | null> {
     if (!source.getLibIndex || !libIndexEnabled()) return null;
     let uris: unknown;
     try {
@@ -629,7 +640,7 @@ export function installLibsProvider(
     if (!Array.isArray(uris)) return null;
     const parts = await mapLimit(uris.filter((u): u is string => typeof u === "string"), 8, async (uri) => {
       const libId = libIdFromUri(uri);
-      const tsv = libId ? libIndexTsv(await source.getLibIndex!(libId, "symbol").catch(() => null)) : null;
+      const tsv = libId ? libIndexTsv(await source.getLibIndex!(libId, kind).catch(() => null)) : null;
       return `\x1d${uri}\n${tsv ?? ""}`;
     });
     return parts.join("");
