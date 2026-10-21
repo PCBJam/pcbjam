@@ -39,6 +39,7 @@ import {
   libIndexEnabled,
   type LibsSource,
 } from "@/wasm/libs/source";
+import { startLibIndexWarmup } from "@/wasm/libs/lib-index-warmup";
 
 import { TOOL_FRAME } from "@/wasm/constants";
 import {
@@ -1225,11 +1226,15 @@ export function WasmTool({
         // The library index (libs 0028): once the bodies are local, have every
         // symbol library's rows ready (server rows, or computed off the main
         // thread) before the first Add Symbol asks. Not on the mobile layout.
-        if (tool === "eeschema" && source?.prepareLibIndexes && libIndexEnabled() && !isMobileMode()) {
-          void presyncSettled.then(() =>
-            source.prepareLibIndexes!("symbol", presyncAbort.signal).then(() => append(mark("libindex:ready"))),
-          );
-        }
+        const libIndexPrepared: Promise<boolean> =
+          tool === "eeschema" && source?.prepareLibIndexes && libIndexEnabled() && !isMobileMode()
+            ? presyncSettled
+                .then(() => source.prepareLibIndexes!("symbol", presyncAbort.signal))
+                .then(() => {
+                  append(mark("libindex:ready"));
+                  return true;
+                })
+            : Promise.resolve(false);
         // Lib editors (fileless): their frame eagerly enumerates EVERY lib of
         // its kind at boot, one mutex-serialized bridge crossing at a time
         // (g_pcbjamProxyMutex in the plugins) — a cold lib would network-fetch
@@ -2014,6 +2019,11 @@ export function WasmTool({
         // that mechanism out; one that stops before it does not.
         await waitForWxUi(win);
         append(mark("ui:ready"));
+        // libs 0028 8.3: once the JS side has every symbol library's rows, let
+        // the wasm side pull them in, in short background steps.
+        void libIndexPrepared.then((prepared) => {
+          if (prepared && !presyncAbort.signal.aborted) void startLibIndexWarmup(win.Module, append);
+        });
         setStatus("");
         setReady(true);
       } catch (err) {

@@ -568,6 +568,16 @@ static void libsInvalidate( std::string aKind, std::string aNick )
     pcbjam_libs::invalidateLibrary( aKind, aNick );
 }
 
+// libs 0028 8.3: start the background library-index warm-up. Only arms a wx timer
+// (the steps run as timer callbacks), so this never suspends.
+extern "C" void pcbjam_lib_index_warmup_start( const char* aKind ) __attribute__(( weak ));
+
+static void libIndexWarmup( std::string aKind )
+{
+    if( pcbjam_lib_index_warmup_start )
+        pcbjam_lib_index_warmup_start( aKind.c_str() );
+}
+
 // Full refresh: the preloaded cache must go too, or the re-loaded plugin sits
 // under stale parsed copies (libs 0019 F1).
 static void libsReload( std::string aKind, std::string aNick )
@@ -914,6 +924,7 @@ EMSCRIPTEN_BINDINGS(kicad_editor) {
     function("kicadLibsReload", &libsReload PCBJAM_PARKER_POLICY);
     // Cheap invalidation for remote edits (libs 0019 F2) + smoke probes.
     function("kicadLibsInvalidate", &libsInvalidate PCBJAM_PARKER_POLICY);
+    function("kicadLibIndexWarmup", &libIndexWarmup PCBJAM_PARKER_POLICY);
     function("kicadLibsTestPreload", &libsTestPreload PCBJAM_PARKER_POLICY);
     function("kicadLibsTestLoadFootprint", &libsTestLoadFootprint PCBJAM_PARKER_POLICY);
     function("kicadLibsTestEditorFootprint", &libsTestEditorFootprint);

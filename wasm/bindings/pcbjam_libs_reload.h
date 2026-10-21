@@ -35,6 +35,11 @@
 
 #include "collab_common.h"
 
+// libs 0028 8.3: the background index warm-up (kicad eeschema/sch_io/pcbjam_lib/
+// pcbjam_symbol_index.cpp) pulls a re-loaded library's rows again. Weak: an image
+// without eeschema links without it.
+extern "C" void pcbjam_lib_index_requeue( const char* aKind, const char* aNickname ) __attribute__(( weak ));
+
 namespace pcbjam_libs {
 
 /**
@@ -114,6 +119,9 @@ inline void invalidateLibrary( std::string aKind, std::string aNickname )
         mgr.ReloadLibraryEntry( type, nick );
         mgr.LoadLibraryEntry( type, nick );
 
+        if( pcbjam_lib_index_requeue )
+            pcbjam_lib_index_requeue( fp ? "footprint" : "symbol", nick.utf8_str() );
+
         // An OPEN library editor re-syncs that lib's node (cheap: the entry is
         // LOADED again, and ExpressMail reaches existing frames only).
         std::string payload( nick.utf8_str() );
@@ -180,6 +188,9 @@ inline void addLibraryEntry( std::string aKind, std::string aNickname, std::stri
         // Bring the new row to LOADED through the JS provider bridge (GetRow
         // walks the table on a cache miss, so the inserted row is found).
         mgr.LoadLibraryEntry( type, nick );
+
+        if( pcbjam_lib_index_requeue )
+            pcbjam_lib_index_requeue( fp ? "footprint" : "symbol", nick.utf8_str() );
 
         // Open editor frames re-sync their tree; the nickname payload forces
         // the named node's rebuild past the pinned-modify-hash gate (same
