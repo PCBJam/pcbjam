@@ -1,4 +1,5 @@
-import { mapLimit } from "@pcbjam/shared";
+import { encodeLibIndexTsv, mapLimit, type SymbolIndexRow } from "@pcbjam/shared";
+import type { LibIndexResult } from "./lib-index-store";
 import { handleModel3dRequest } from "./models-bridge";
 import { libIdFromUri, libUri } from "./uri";
 
@@ -159,6 +160,23 @@ export interface LibsSource {
    * the C++ side falls back to the per-lib lazy load.
    */
   getFpIndex?(): Promise<string | null>;
+  /**
+   * The library index (libs 0028): one row per item of `kind`, so the editor
+   * lists a library without parsing its bodies. Null when the index can't be
+   * had; the editor then takes its parse path. Optional: sources without one
+   * omit it.
+   */
+  getLibIndex?(libId: string, kind: "symbol" | "footprint"): Promise<LibIndexResult | null>;
+  /**
+   * The index `getLibIndex` would answer, only when it is known right now:
+   * undefined means "not ready yet" (and starts computing it in the background).
+   */
+  peekLibIndex?(libId: string, kind: "symbol" | "footprint"): LibIndexResult | null | undefined;
+  /**
+   * Compute (or fetch) the index of every library of `kind` in the background,
+   * so the editor's first request finds it ready. Best-effort, never rejects.
+   */
+  prepareLibIndexes?(kind: "symbol" | "footprint", signal?: AbortSignal): Promise<void>;
   /**
    * Release every live resource this source holds — realtime sockets, open
    * SyncStacks — keeping the persistent caches (IDB) intact for the next
@@ -323,6 +341,21 @@ async function fallbackGetAllItems(
   });
 }
 
+/** The library index (libs 0028); `?libindex=0` turns it off for the session. */
+export function libIndexEnabled(): boolean {
+  if (typeof window === "undefined") return true;
+  return new URLSearchParams(window.location.search).get("libindex") !== "0";
+}
+
+/** Rows per `index:<cursor>` answer: one short warm-up step on the C++ side. */
+export const LIB_INDEX_PAGE_ROWS = 256;
+
+/** Bridge answer for a symbol library's index, or null when it has none. */
+function libIndexTsv(index: LibIndexResult | null, page?: { from: number; size: number }): string | null {
+  if (!index || index.kind !== "symbol") return null;
+  return encodeLibIndexTsv(index.token, index.rows as SymbolIndexRow[], page);
+}
+
 /** Escape a string for a KiCad s-expr quoted token. */
 function sexprEscape(s: string): string {
   return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
@@ -371,6 +404,12 @@ export function buildFpLibTable(libsList: LibInfo[]): string {
  *   "save"  -> "ok" / null              (arg = JSON {"name":..,"body":..})
  *   "index" -> the publish-time footprint index JSON (source-global; lib arg
  *              ignored) / null when the source has none — see getFpIndex.
+ *              With kind "symbol": the library indexes of several libraries
+ *              in one crossing (arg = JSON list of lib URIs), each framed as
+ *              "\x1d<uri>\n" + its TSV (nothing after the frame line = none).
+ *   "list" with arg "index" -> one library's index as TSV (libs 0028), null when
+ *              it has none; "index:<from>" -> the rows from <from> (a page of
+ *              LIB_INDEX_PAGE_ROWS), or "~" when it isn't ready yet.
  */
 export interface LibsProviderOptions {
   /**
@@ -416,6 +455,7 @@ export function installLibsProvider(
     // lib-id parse, which would reject the bare mount URI the C++ side passes.
     if (op === "index") {
       log(`[libs] request op=index kind=${kind}`);
+      if (kind === "symbol") return await batchLibIndex(arg);
       return kind === "footprint" && source.getFpIndex
         ? await source.getFpIndex()
         : null;
@@ -435,6 +475,17 @@ export function installLibsProvider(
     try {
       switch (op) {
         case "list": {
+          // The library index (libs 0028): metadata only, never a body fetch,
+          // so the enumerate gate doesn't hold it.
+          if (arg === "index" || arg.startsWith("index:")) {
+            if (kind !== "symbol" || !source.getLibIndex || !libIndexEnabled()) return null;
+            if (arg === "index") return libIndexTsv(await source.getLibIndex(id, kind));
+            const from = Number(arg.slice("index:".length)) || 0;
+            // The warm-up never waits: "~" = not ready, ask again later.
+            const ready = source.peekLibIndex ? source.peekLibIndex(id, kind) : await source.getLibIndex(id, kind);
+            if (ready === undefined) return "~";
+            return libIndexTsv(ready, { from, size: LIB_INDEX_PAGE_ROWS });
+          }
           // Enumerate gate (load-fanout): park this crossing (the suspended
           // C++ caller stays parked) until the caller's precondition —
           // typically the presync — has settled.
@@ -560,6 +611,24 @@ export function installLibsProvider(
       if (userFacing) emitLibBusy({ busy: false, op, kind, name: busyName });
     }
   };
+
+  /** Several symbol libraries' indexes in one crossing (the chooser's click path). */
+  async function batchLibIndex(arg: string): Promise<string | null> {
+    if (!source.getLibIndex || !libIndexEnabled()) return null;
+    let uris: unknown;
+    try {
+      uris = JSON.parse(arg);
+    } catch {
+      return null;
+    }
+    if (!Array.isArray(uris)) return null;
+    const parts = await mapLimit(uris.filter((u): u is string => typeof u === "string"), 8, async (uri) => {
+      const libId = libIdFromUri(uri);
+      const tsv = libId ? libIndexTsv(await source.getLibIndex!(libId, "symbol").catch(() => null)) : null;
+      return `\x1d${uri}\n${tsv ?? ""}`;
+    });
+    return parts.join("");
+  }
 
   window.kicadLibs = { request };
   log("[libs] provider installed");

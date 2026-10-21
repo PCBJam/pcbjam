@@ -1,6 +1,7 @@
 import { peekNamespaces, SyncStack, type SyncStackOptions } from "@pcbjam/sync-client";
 import { mapLimit } from "@pcbjam/shared";
 import type { LibInfo, LibItemInfo, LibsSource, LibsSyncState } from "./source";
+import { createLibIndexStore, type LibIndexStore } from "./lib-index-store";
 
 /**
  * A read-only, no-backend `LibsSource` that serves the FULL default KiCad symbol
@@ -43,10 +44,14 @@ export function cdnLibsSource(
   manifestUrl: string,
   // Test seam: inject fetch + an in-memory store (SyncStack defaults to real
   // fetch + IndexedDB). Production passes nothing.
-  opts?: Pick<SyncStackOptions, "fetchImpl" | "storeFactory">,
+  opts?: Pick<SyncStackOptions, "fetchImpl" | "storeFactory"> & { libIndex?: LibIndexStore },
 ): LibsSource {
   const baseDir = manifestUrl.replace(/\/[^/]*$/, ""); // <cdn>/libs/kicad/<tag>
   const fetchImpl = opts?.fetchImpl ?? fetch;
+  // No published index on the CDN yet (libs 0028 section 6.4): every library is
+  // indexed in the browser from its bodies, once, then served from IndexedDB.
+  const libIndex = opts?.libIndex ?? createLibIndexStore({ fetchImpl });
+  const settled = new Map<string, SyncStack>();
 
   let manifestP: Promise<CdnLibsManifest> | null = null;
   let fpIndexP: Promise<string | null> | null = null;
@@ -106,6 +111,9 @@ export function cdnLibsSource(
       p = (async () => {
         const m = await loadManifest();
         const stack = new SyncStack({
+          // Not `...opts` wholesale: the index store isn't a SyncStack option.
+          fetchImpl: opts?.fetchImpl,
+          storeFactory: opts?.storeFactory,
           layers: [
             {
               namespace: `kicad:${m.tag}:${libId}`,
@@ -117,9 +125,9 @@ export function cdnLibsSource(
               immutable: true,
             },
           ],
-          ...opts,
         });
         await stack.open();
+        settled.set(libId, stack);
         return stack;
       })().catch((e) => {
         // Don't cache a failed open (e.g. an early-boot fetch blip) — the lazy
@@ -220,6 +228,34 @@ export function cdnLibsSource(
       const stack = await openStack(libId);
       const bytes = await stack.read(`${kind}/${name}`);
       return bytes ? new TextDecoder().decode(bytes) : null;
+    },
+    async getLibIndex(libId, kind) {
+      return libIndex.libIndex(await openStack(libId), kind);
+    },
+    peekLibIndex(libId, kind) {
+      const stack = settled.get(libId);
+      const known = stack ? libIndex.peek(stack, kind) : undefined;
+      if (known === undefined) {
+        void openStack(libId)
+          .then((s) => libIndex.libIndex(s, kind))
+          .catch(() => {});
+      }
+      return known;
+    },
+    async prepareLibIndexes(kind, signal): Promise<void> {
+      try {
+        const m = await loadManifest();
+        await mapLimit(
+          m.libs.filter((l) => l.kind === kind),
+          4,
+          async (l) => {
+            if (signal?.aborted) return;
+            await libIndex.libIndex(await openStack(l.id), kind).catch(() => null);
+          },
+        );
+      } catch {
+        // best-effort: the index is computed on first request instead
+      }
     },
     async getFpIndex(): Promise<string | null> {
       // Published next to the top manifest (immutable, ~100 KB compressed) —

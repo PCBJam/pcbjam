@@ -397,6 +397,8 @@ export function libsSourceConfig(
                   project,
                   preloaded: preload,
                   log: (m) => console.log(m),
+                  // The official combined library index sits next to the pack (libs 0028).
+                  originsBase: `${API_BASE_URL}/api/scopes/${encodeURIComponent(currentScope())}/libs/origins`,
                   ...(libPackEnabled()
                     ? {
                         fetchImpl: withLibPack(

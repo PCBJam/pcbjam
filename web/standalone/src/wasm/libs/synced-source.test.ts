@@ -568,3 +568,24 @@ describe("delete + open retry (libs 0020)", () => {
     source.dispose?.();
   });
 });
+
+describe("syncedLibsSource: library index (libs 0028)", () => {
+  it("indexes the lib's bodies and follows a peer's edit without a reload", async () => {
+    const server = await fakeServer({
+      "symbol/A": `(kicad_symbol_lib (symbol "A" (property "Value" "A") (property "LCSC" "C1")))`,
+      "footprint/F": "(footprint F)",
+    });
+    const source = makeSource(server);
+    expect(source.peekLibIndex!(LIB_ID, "symbol")).toBeUndefined(); // starts computing
+    const first = await source.getLibIndex!(LIB_ID, "symbol");
+    expect(first!.rows).toEqual([{ n: "A", fl: { LCSC: "C1" } }]);
+    expect(source.peekLibIndex!(LIB_ID, "symbol")).toBe(first);
+
+    await server.remotePut("symbol/B", `(kicad_symbol_lib (symbol "B" (property "Value" "B")))`);
+    // The layer applies a broadcast change after fetching its body.
+    await vi.waitFor(async () => expect((await source.listItems(LIB_ID)).map((i) => i.name)).toContain("B"));
+    const after = await source.getLibIndex!(LIB_ID, "symbol");
+    expect(after!.rows.map((r) => r.n)).toEqual(["A", "B"]);
+    expect(after!.token).not.toBe(first!.token);
+  });
+});

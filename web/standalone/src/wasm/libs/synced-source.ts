@@ -27,6 +27,7 @@ import {
   type LibsSource,
   type LibsSyncState,
 } from "./source";
+import { createLibIndexStore, type LibIndexStore } from "./lib-index-store";
 
 /**
  * A one-lib `LibsSource` backed by the r2-idb-sync bridge
@@ -68,6 +69,11 @@ export function syncedLibsSource(
      * route keeps the default "all" so its ONE lib stays realtime.
      */
     realtime?: "all" | "shared-only";
+    /**
+     * The library index store (libs 0028), shared by every lib of a scope
+     * source. Absent ⇒ this source keeps its own.
+     */
+    libIndex?: LibIndexStore;
     /** Test seams (default: global fetch / IDB stores / real WebSockets). */
     fetchImpl?: typeof fetch;
     storeFactory?: (namespace: string) => LayerStore;
@@ -76,6 +82,10 @@ export function syncedLibsSource(
 ): LibsSource {
   const log = opts.log ?? (() => {});
   let opened: Promise<{ stack: SyncStack; info: LibInfo }> | null = null;
+  // The stack once `opened` has settled: lets the index be peeked without waiting.
+  let openStack: SyncStack | null = null;
+  let indexStore: LibIndexStore | undefined = opts.libIndex;
+  const libIndexStore = () => (indexStore ??= createLibIndexStore({ fetchImpl: opts.fetchImpl, log }));
 
   // Paths with a local save in flight: the stack echoes our own push as a
   // change event, but the plugin already invalidated its cache on save — a
@@ -178,6 +188,7 @@ export function syncedLibsSource(
           if (selfPushed.delete(c.path)) return;
           scheduleEditorReload(r.info, c.path);
         });
+        openStack = r.stack;
         return r;
       });
       opened = attempt;
@@ -187,6 +198,7 @@ export function syncedLibsSource(
       attempt.catch(() => {
         if (opened === attempt) opened = null;
       });
+      openStack = null;
     }
     return opened;
   }
@@ -224,6 +236,22 @@ export function syncedLibsSource(
         return { kind, name, body: bytes };
       });
     },
+    async getLibIndex(_id, kind) {
+      // The rows follow the stack: a remote change, our own save or delete
+      // changes an entry hash, and the next request recomputes only that row.
+      const { stack } = await ensure();
+      return libIndexStore().libIndex(stack, kind);
+    },
+    peekLibIndex(_id, kind) {
+      const stack = openStack;
+      const known = stack ? libIndexStore().peek(stack, kind) : undefined;
+      if (known === undefined) {
+        void ensure()
+          .then(({ stack: s }) => libIndexStore().libIndex(s, kind))
+          .catch(() => {});
+      }
+      return known;
+    },
     async getItemBody(_id, kind, name): Promise<string | null> {
       const { stack } = await ensure();
       const bytes = await stack.read(pathOf(kind, name));
@@ -256,6 +284,7 @@ export function syncedLibsSource(
             opts.onStackMoved?.(libId);
             const stale = opened;
             opened = null;
+            openStack = null;
             stale?.then((r) => r.stack.close()).catch(() => {});
             continue;
           }
@@ -286,6 +315,7 @@ export function syncedLibsSource(
       // to close.
       opened?.then((r) => r.stack.close()).catch(() => {});
       opened = null;
+      openStack = null;
     },
     async enableRealtime(): Promise<void> {
       // Names are the SCOPE source's concern (it fans out per lib); a one-lib
@@ -421,12 +451,25 @@ export function syncedScopeLibsSource(
       libs: PreloadedLibDto[];
       stacks: Record<string, SyncStackDescriptor | null>;
     };
+    /**
+     * `<api>/api/scopes/<scope>/libs/origins`: the official combined library
+     * index sits under it (libs 0028). Absent ⇒ origin layers use their own
+     * per-version index file.
+     */
+    originsBase?: string;
+    /** Library index store override (tests). */
+    libIndex?: LibIndexStore;
     fetchImpl?: typeof fetch;
     storeFactory?: (namespace: string) => LayerStore;
     channelFactory?: ChannelFactory;
   },
 ): LibsSource {
   const perLib = new Map<string, LibsSource>();
+  // One index store for the scope: the official combined index is fetched
+  // once and shared by every library.
+  const libIndex =
+    opts.libIndex ??
+    createLibIndexStore({ originsBase: opts.originsBase, fetchImpl: opts.fetchImpl, log: opts.log });
 
   // Room-level `libset` frames (a peer created an org lib / changed pins —
   // the scope room's announce broadcast): surface them to the chrome as
@@ -491,6 +534,7 @@ export function syncedScopeLibsSource(
         realtime: "shared-only",
         stackFor: (id) => (batchedStacks.has(id) ? batchedStacks.get(id) : undefined),
         onStackMoved: (id) => batchedStacks.delete(id),
+        libIndex,
       });
       perLib.set(libId, src);
     }
@@ -581,6 +625,24 @@ export function syncedScopeLibsSource(
       };
     },
     listItems: (libId) => forLib(libId).listItems(libId),
+    getLibIndex: (libId, kind) => forLib(libId).getLibIndex!(libId, kind),
+    peekLibIndex: (libId, kind) => forLib(libId).peekLibIndex!(libId, kind),
+    async prepareLibIndexes(kind, signal): Promise<void> {
+      // After the presync: every library of the kind, a few at a time, so the
+      // editor's first index request is answered from memory.
+      try {
+        const libs = await listLibsPreferred(kind);
+        const t0 = performance.now();
+        let ready = 0;
+        await mapLimit(libs, 4, async (lib) => {
+          if (signal?.aborted) return;
+          if (await forLib(lib.id).getLibIndex!(lib.id, kind).catch(() => null)) ready++;
+        });
+        opts.log?.(`[libindex] ${ready}/${libs.length} ${kind} libraries indexed in ${Math.round(performance.now() - t0)} ms`);
+      } catch (err) {
+        opts.log?.(`[libindex] prepare failed: ${String(err)}`);
+      }
+    },
     getAllItems: (libId) => forLib(libId).getAllItems!(libId),
     getItemBody: (libId, kind, name) =>
       forLib(libId).getItemBody(libId, kind, name),

@@ -36,6 +36,7 @@ import {
   resolveWasmMeta,
 } from "@/wasm/wasm-assets";
 import {
+  libIndexEnabled,
   type LibsSource,
 } from "@/wasm/libs/source";
 
@@ -1221,6 +1222,14 @@ export function WasmTool({
         };
         const presyncSettled = startLibPresync();
         void presyncSettled.then(() => append(mark("presync:settled")));
+        // The library index (libs 0028): once the bodies are local, have every
+        // symbol library's rows ready (server rows, or computed off the main
+        // thread) before the first Add Symbol asks. Not on the mobile layout.
+        if (tool === "eeschema" && source?.prepareLibIndexes && libIndexEnabled() && !isMobileMode()) {
+          void presyncSettled.then(() =>
+            source.prepareLibIndexes!("symbol", presyncAbort.signal).then(() => append(mark("libindex:ready"))),
+          );
+        }
         // Lib editors (fileless): their frame eagerly enumerates EVERY lib of
         // its kind at boot, one mutex-serialized bridge crossing at a time
         // (g_pcbjamProxyMutex in the plugins) — a cold lib would network-fetch
