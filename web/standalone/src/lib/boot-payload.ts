@@ -1,5 +1,6 @@
 import {
   USER_HEADER,
+  type ModelLibDescriptor,
   type ProjectWithFiles,
   type SyncManifest,
   type SyncStackDescriptor,
@@ -41,7 +42,9 @@ export interface BootLibDto {
  * the symbol/footprint catalog is the bulk of a cold boot's download and
  * dead weight for it. Keep only the 3D-model origins (sparse: manifest now,
  * bodies on demand) so the 3D viewer still resolves `(model …)` refs.
- * Idempotent on a payload the server already narrowed.
+ * Idempotent on a payload the server already narrowed. `modelLibs` passes
+ * through: a locked writer has none, and its team-lib models then resolve
+ * nowhere (the catalog is gone) — the same as before libs 0027.
  */
 export function narrowBootForViewer(boot: BootPayload): BootPayload {
   const libs = boot.libs.filter((l) => l.type === "origin" && l.kind === "model3d");
@@ -58,6 +61,10 @@ export interface BootPayload extends ProjectWithFiles {
   access?: ProjectAccess;
   libs: BootLibDto[];
   stacks: Record<string, SyncStackDescriptor | null>;
+  /** View-only sessions (libs 0027): the team libraries the boards reference,
+   *  each as a sparse layer serving only the referenced models. Absent for
+   *  writers and on older backends. */
+  modelLibs?: ModelLibDescriptor[];
   projectSync: { manifest: SyncManifest; digest: string };
 }
 

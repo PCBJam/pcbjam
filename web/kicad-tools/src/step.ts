@@ -35,7 +35,14 @@ const FORMATS: Record<string, string> = {
  *  the module's staged-model probe; ${KIPRJMOD} would not). */
 const PROJECT_PREFIX = "kiprjmod";
 
-export type ModelRef = { kind: "lib"; rel: string } | { kind: "project"; rel: string };
+/** Where team-library models (`${<NICK>_DIR}/…`) are staged for the module. */
+const TEAM_PREFIX = "teamlib";
+
+export type ModelRef =
+  | { kind: "lib"; rel: string }
+  | { kind: "project"; rel: string }
+  /** A team library's path variable (`${MYPARTS_DIR}/3d/x.step`, PCBJam libs 0020). */
+  | { kind: "team"; pathVar: string; rel: string };
 
 interface StagedModel {
   path: string;
@@ -61,6 +68,10 @@ export function classifyRef(ref: string): ModelRef | null {
   if (lib?.[1]) return { kind: "lib", rel: lib[1] };
   const prj = /^\$[{(]KIPRJMOD[})]\/+(.+)$/.exec(ref);
   if (prj?.[1]) return { kind: "project", rel: prj[1] };
+  const team = /^\$[{(]([A-Za-z0-9_]+_DIR)[})][/\\]+(.+)$/.exec(ref);
+  if (team?.[1] && team[2] && !team[2].split(/[/\\]/).includes("..")) {
+    return { kind: "team", pathVar: team[1], rel: team[2].replace(/\\/g, "/") };
+  }
   return null;
 }
 
@@ -143,6 +154,21 @@ export async function prepareBoard(boardPath: string, opts: Options): Promise<Pr
   for (const ref of modelRefs(board)) {
     const c = classifyRef(ref);
     if (!c) continue;
+    if (c.kind === "team") {
+      // Team-library models come only from --models-dir, laid out as
+      // <dir>/<PATHVAR>/<path under the library root>. Staged as a bare
+      // relative path (the module's staged-model probe reaches those; a
+      // variable it does not know would not) and the ref rewritten to match.
+      const dir = extraDir ? join(extraDir, c.pathVar) : null;
+      const hit = dir ? fallbacks(c.rel).find((rel) => existsSync(join(dir, rel))) : undefined;
+      if (!dir || !hit) {
+        missing.push(ref);
+        continue;
+      }
+      models.push({ path: `${TEAM_PREFIX}/${c.pathVar}/${hit}`, bytes: new Uint8Array(await readFile(join(dir, hit))) });
+      board = board.split(`"${ref}"`).join(`"${TEAM_PREFIX}/${c.pathVar}/${c.rel}"`);
+      continue;
+    }
     if (c.kind === "lib" && extraDir) {
       const hit = fallbacks(c.rel).find((rel) => existsSync(join(extraDir, rel)));
       if (hit) {

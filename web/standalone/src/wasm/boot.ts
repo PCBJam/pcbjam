@@ -16,7 +16,7 @@ import {
   LIB_ROOTS_DIR,
   stageLibModels,
 } from "./libs/models-bridge";
-import { libModelsSource } from "./libs/models-source";
+import { libModelsSource, viewerLibModelsSource, type ViewerModelLib } from "./libs/models-source";
 import { installLibDocPlaceholders } from "./libs/lib-docs";
 import { API_BASE_URL, currentScope } from "@/lib/config";
 
@@ -151,6 +151,11 @@ export interface BootOptions {
   /** 3D model source (lazy, per-board). Null/omitted ⇒ the viewer renders the
    *  bare board only, exactly as before models existed. */
   modelsSource?: Model3dSource | null;
+  /** Team-library models of a VIEW-ONLY session (boot payload `modelLibs`,
+   *  libs 0027): one sparse layer per library the project's boards reference.
+   *  Used only when the lib catalog carries no team library (viewers get
+   *  none); writers resolve their team libraries' models from the catalog. */
+  modelLibs?: ReadonlyArray<ViewerModelLib> | null;
   /** Editor frame to open when the bundle serves more than one (e.g. `"fpedit"`
    *  so the pcbnew bundle opens the Footprint Editor). Passed through as
    *  `--frame=<token>` in `Module.arguments`; parsed in single_top.cpp. Omitted
@@ -410,6 +415,7 @@ async function doBoot(opts: BootOptions): Promise<void> {
     onWasmInstantiated,
     libsSource,
     modelsSource,
+    modelLibs,
     enumerateGate,
     readOnly,
   } = opts;
@@ -561,6 +567,16 @@ async function doBoot(opts: BootOptions): Promise<void> {
     } catch (e) {
       log(`[libs] listLibs failed, seeding empty table: ${String(e)}`);
     }
+  }
+
+  // View-only sessions (libs 0027): the catalog has no team library, so the
+  // team libraries' referenced models come through the boot's sparse layers.
+  if (modelLibs?.length && Object.keys(libRootVars).length === 0) {
+    installLibModelSource(viewerLibModelsSource(modelLibs), log);
+    libRootVars = Object.fromEntries(
+      modelLibs.map((l) => [l.paths.pathVar, `${LIB_ROOTS_DIR}/${l.paths.pathVar}`]),
+    );
+    log(`[3d] viewer team library model roots: ${Object.keys(libRootVars).join(", ")}`);
   }
 
   onStatus(fetchLabel);

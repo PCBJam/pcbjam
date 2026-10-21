@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { parseCrop, prepareSvg } from "../src/shot.ts";
-import { classifyRef, modelRefs } from "../src/step.ts";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { classifyRef, modelRefs, prepareBoard } from "../src/step.ts";
 
 const PLOT =
   '<?xml version="1.0"?>\n<svg xmlns="http://www.w3.org/2000/svg" width="297.0022mm" height="210.0072mm" viewBox="0.0000 0.0000 297.0022 210.0072">\n<g/></svg>';
@@ -38,5 +41,21 @@ describe("STEP models", () => {
     expect(classifyRef("$(KISYS3DMOD)/C.3dshapes/C.wrl")).toEqual({ kind: "lib", rel: "C.3dshapes/C.wrl" });
     expect(classifyRef("${KIPRJMOD}/3d_shapes/ecc83.wrl")).toEqual({ kind: "project", rel: "3d_shapes/ecc83.wrl" });
     expect(classifyRef("/abs/path.wrl")).toBeNull();
+    // A team library's path variable (PCBJam libs 0020).
+    expect(classifyRef("${MYPARTS_DIR}/MyParts.3dshapes/a.step")).toEqual({ kind: "team", pathVar: "MYPARTS_DIR", rel: "MyParts.3dshapes/a.step" });
+    expect(classifyRef("${MYPARTS_DIR}/../etc/passwd")).toBeNull();
+  });
+
+  it("stages team-library models from --models-dir/<PATHVAR>/ and rewrites their refs", async () => {
+    const root = mkdtempSync(join(tmpdir(), "kt-team-"));
+    const models = join(root, "models");
+    mkdirSync(join(models, "MYPARTS_DIR", "MyParts.3dshapes"), { recursive: true });
+    writeFileSync(join(models, "MYPARTS_DIR", "MyParts.3dshapes", "a.step"), "ISO-10303-21;");
+    const pcb = join(root, "board.kicad_pcb");
+    writeFileSync(pcb, '(kicad_pcb (footprint "x" (model "${MYPARTS_DIR}/MyParts.3dshapes/a.wrl") (model "${MYPARTS_DIR}/MyParts.3dshapes/gone.step")))');
+    const prepared = await prepareBoard(pcb, { "models-dir": models } as never);
+    expect(prepared.models.map((m) => m.path)).toEqual(["teamlib/MYPARTS_DIR/MyParts.3dshapes/a.step"]);
+    expect(prepared.board).toContain('(model "teamlib/MYPARTS_DIR/MyParts.3dshapes/a.wrl")');
+    expect(prepared.missing).toEqual(["${MYPARTS_DIR}/MyParts.3dshapes/gone.step"]);
   });
 });

@@ -1367,6 +1367,8 @@ export function WasmTool({
           modelsSource: modelsSourceConfig(
             boot ? { libs: boot.libs, stacks: boot.stacks } : undefined,
           ),
+          // View-only sessions: the team libraries' referenced models (libs 0027).
+          modelLibs: boot?.modelLibs ?? null,
           // footprint_editor/symbol_editor load the pcbnew/eeschema bundle; the
           // frame token tells its single_top launcher which editor frame to open.
           frame: TOOL_FRAME[tool],

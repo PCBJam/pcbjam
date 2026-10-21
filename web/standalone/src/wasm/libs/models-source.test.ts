@@ -5,7 +5,7 @@ import {
   type SyncStackDescriptor,
 } from "@pcbjam/shared";
 import { memStore, type LayerStore } from "@pcbjam/sync-client";
-import { cdnModelsSource, libModelsSource, registryModelsSource } from "./models-source";
+import { cdnModelsSource, libModelsSource, registryModelsSource, viewerLibModelsSource } from "./models-source";
 
 const MANIFEST_URL = "https://cdn.test/libs/kicad-models/9.0.9/manifest.json";
 const BASE = "https://cdn.test/libs/kicad-models/9.0.9";
@@ -265,5 +265,56 @@ describe("libModelsSource (libs 0020)", () => {
     expect(await source.getModelBody("${MYPARTS_DIR}/other/sot23.step")).toBeNull();
     expect(await source.getModelBody("${OTHER_DIR}/3d/sub/sot23.step")).toBeNull();
     expect(await source.getModelBody("L.3dshapes/x.step")).toBeNull();
+  });
+});
+
+describe("viewerLibModelsSource (libs 0027)", () => {
+  const LAYER = `${API}/api/scopes/s/projects/p/copies/c1/model-libs/lib-a`;
+  /** The backend's project-gated viewer routes: only referenced models listed. */
+  async function fakeViewerRoutes() {
+    const bodies: Record<string, Uint8Array> = { "model3d/sub/sot23.step": enc.encode("STEP sot23") };
+    const entries: SyncManifest["entries"] = {};
+    for (const [path, body] of Object.entries(bodies)) {
+      entries[path] = { hash: await sha256Hex(body), size: body.length, mtime: 0 };
+    }
+    const calls: Array<{ url: string; credentials?: RequestCredentials }> = [];
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      calls.push({ url, credentials: init?.credentials });
+      if (url === `${LAYER}/manifest`) return { ok: true, json: async () => ({ version: 1, entries }) };
+      const m = url.match(new RegExp(`^${LAYER}/body/(.+)$`));
+      const body = m ? bodies[decodeURIComponent(m[1]!)] : undefined;
+      if (body) return { ok: true, arrayBuffer: async () => body.buffer };
+      return { ok: false, status: 404 };
+    }) as unknown as typeof fetch;
+    return { fetchImpl, calls };
+  }
+  const modelLibs = [
+    {
+      id: "lib-a",
+      paths: { pathVar: "MYPARTS_DIR", modelsDir: "MyParts.3dshapes", docsDir: null },
+      layer: { namespace: "project-models:c1:lib-a", kind: "sparse" as const, url: LAYER },
+    },
+  ];
+
+  it("reads a referenced model through the sparse layer, with credentials, once", async () => {
+    const api = await fakeViewerRoutes();
+    const src = viewerLibModelsSource(modelLibs, { fetchImpl: api.fetchImpl, storeFactory: storeMap() });
+    const ref = "${MYPARTS_DIR}/MyParts.3dshapes/sub/sot23.step";
+    expect(dec.decode((await src.getModelBody(ref))!)).toBe("STEP sot23");
+    expect(dec.decode((await src.getModelBody(ref))!)).toBe("STEP sot23");
+    expect(api.calls.map((c) => c.url.slice(LAYER.length))).toEqual([
+      "/manifest",
+      `/body/${encodeURIComponent("model3d/sub/sot23.step")}`,
+    ]);
+    expect(api.calls.every((c) => c.credentials === "include")).toBe(true);
+  });
+
+  it("answers null for unreferenced models, unknown variables and other refs, without body fetches", async () => {
+    const api = await fakeViewerRoutes();
+    const src = viewerLibModelsSource(modelLibs, { fetchImpl: api.fetchImpl, storeFactory: storeMap() });
+    expect(await src.getModelBody("${MYPARTS_DIR}/MyParts.3dshapes/other.step")).toBeNull();
+    expect(await src.getModelBody("${OTHER_DIR}/MyParts.3dshapes/sub/sot23.step")).toBeNull();
+    expect(await src.getModelBody("Resistor_SMD.3dshapes/R_0603.step")).toBeNull();
+    expect(api.calls.filter((c) => c.url.includes("/body/"))).toEqual([]);
   });
 });

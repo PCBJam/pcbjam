@@ -3,6 +3,7 @@ import {
   fetchSyncStacks,
   modelItemNameFor,
   parseLibVarRef,
+  type ModelLibDescriptor,
   type SyncStackDescriptor,
 } from "@pcbjam/shared";
 
@@ -296,4 +297,52 @@ export function libModelsSource(
       return (await this.getModelBody(ref)) !== null;
     },
   };
+}
+
+/** The boot payload's `modelLibs` entry `viewerLibModelsSource` consumes. */
+export type ViewerModelLib = Pick<ModelLibDescriptor, "id" | "paths" | "layer">;
+
+/**
+ * Team-library models for a VIEW-ONLY session (libs 0027): the boot payload's
+ * `modelLibs`, one sparse read-only layer per library the boards reference,
+ * served by the backend's project-gated model routes (which answer only the
+ * referenced `model3d/<name>` items). Same resolution as
+ * {@link libModelsSource}; bodies fetch lazily and cache in IDB like the
+ * official sparse model layers. Fetches carry credentials: grants and
+ * signed-in non-members authenticate with the session cookie.
+ */
+export function viewerLibModelsSource(
+  modelLibs: ReadonlyArray<ViewerModelLib>,
+  opts?: Pick<SyncStackOptions, "fetchImpl" | "storeFactory">,
+): Model3dSource {
+  const baseFetch = opts?.fetchImpl ?? fetch;
+  const fetchImpl: typeof fetch = (input, init) =>
+    baseFetch(input, { ...init, credentials: "include" });
+  const byId = new Map(modelLibs.map((l) => [l.id, l] as const));
+  const stacks = new Map<string, Promise<SyncStack | null>>();
+  const openStack = (libId: string): Promise<SyncStack | null> => {
+    let p = stacks.get(libId);
+    if (!p) {
+      const lib = byId.get(libId);
+      if (!lib) return Promise.resolve(null);
+      p = (async () => {
+        const stack = new SyncStack({
+          layers: [lib.layer],
+          fetchImpl,
+          ...(opts?.storeFactory ? { storeFactory: opts.storeFactory } : {}),
+        });
+        await stack.open();
+        return stack;
+      })().catch((e) => {
+        stacks.delete(libId); // a failed open must stay retryable
+        throw e;
+      });
+      stacks.set(libId, p);
+    }
+    return p;
+  };
+  return libModelsSource(modelLibs, async (libId, name) => {
+    const stack = await openStack(libId);
+    return stack ? stack.read(`model3d/${name}`) : null;
+  });
 }

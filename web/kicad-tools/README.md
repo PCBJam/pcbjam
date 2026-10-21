@@ -40,7 +40,9 @@ pcbjam-tools where                                         # which builds are in
 - **STEP** and 3D shots read library models from `--models <dir>` in the
   official `<lib>.3dshapes/<name>.<ext>` layout or `--models cdn` (PCBJam's
   model CDN; `--models-manifest <url>`), plus `--models-dir <dir>` for models
-  fetched elsewhere (e.g. team libraries); project models (`${KIPRJMOD}/…`)
+  fetched elsewhere (e.g. team libraries). In that folder, a team library's
+  path-variable refs (`${MYPARTS_DIR}/<path>`) are read from
+  `<dir>/MYPARTS_DIR/<path>`. Project models (`${KIPRJMOD}/…`)
   are read next to the board. Missing models are listed, never silently
   dropped.
 
