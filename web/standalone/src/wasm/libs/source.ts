@@ -349,7 +349,7 @@ async function fallbackGetAllItems(
 /** The library index (libs 0028); `?libindex=0` turns it off for the session. */
 export function libIndexEnabled(): boolean {
   if (typeof window === "undefined") return true;
-  return new URLSearchParams(window.location.search).get("libindex") !== "0";
+  return new URLSearchParams(window.location?.search ?? "").get("libindex") !== "0";
 }
 
 /** Rows per `index:<cursor>` answer: one short warm-up step on the C++ side. */

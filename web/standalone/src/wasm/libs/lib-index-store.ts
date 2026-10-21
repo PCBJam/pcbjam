@@ -59,6 +59,20 @@ export interface LibIndexStore {
    * a result, null (no index), or undefined (not computed yet).
    */
   peek(stack: SyncStack, kind: LibIndexKind): LibIndexResult | null | undefined;
+  /**
+   * libs 0028 phase 7 (the cold run): the index of a library whose stack isn't
+   * open yet, from the server rows of its one static origin layer alone (live
+   * layers are not known before the stack opens). Null when the stack has no
+   * such layer, its index can't be had, or it holds another kind.
+   */
+  staticIndex(layers: LayerDescriptor[], kind?: LibIndexKind): Promise<StaticLibIndex | null>;
+}
+
+export interface StaticLibIndex extends LibIndexResult {
+  /** The item names (paths without the kind), in path order. */
+  names: string[];
+  /** The static layer the rows belong to (its `…/body/<path>` route serves bodies). */
+  layer: LayerDescriptor;
 }
 
 export interface LibIndexStoreOptions {
@@ -86,15 +100,23 @@ export function fnv(text: string): string {
   return (h >>> 0).toString(16).padStart(8, "0");
 }
 
-/** Server rows of one layer: path → row, "bad" (a body the server couldn't index), or null (none). */
-type ServerRows = Map<string, LibIndexRow> | "bad" | null;
+/** Server rows of one layer (path → row, and the file's kind), "bad" (a body the server
+ *  couldn't index), or null (none). */
+type ServerRows = { kind: LibIndexKind; rows: Map<string, LibIndexRow> } | "bad" | null;
 
 function rowsOf(file: LibIndexFile): ServerRows {
   if (file.schema !== LIB_INDEX_SCHEMA || !Array.isArray(file.rows)) return null;
   if (file.bad?.length) return "bad";
   const map = new Map<string, LibIndexRow>();
   for (const { p, ...row } of file.rows) map.set(p, row as LibIndexRow);
-  return map;
+  return { kind: file.kind, rows: map };
+}
+
+/** Rows in path order, resolved for symbols, with the change token. */
+function finish(kind: LibIndexKind, rows: Map<string, LibIndexRow>): LibIndexResult {
+  const ordered = [...rows.keys()].sort().map((p) => rows.get(p)!);
+  const out = kind === "symbol" ? resolveSymbolRows(ordered as SymbolIndexRow[]) : ordered;
+  return { kind, token: fnv(JSON.stringify(out)), rows: out };
 }
 
 export function createLibIndexStore(opts: LibIndexStoreOptions = {}): LibIndexStore {
@@ -199,7 +221,7 @@ export function createLibIndexStore(opts: LibIndexStoreOptions = {}): LibIndexSt
     for (const [path, i] of winner) {
       const fromServer = server[i];
       if (fromServer && fromServer !== "bad") {
-        const row = fromServer.get(path);
+        const row = fromServer.rows.get(path);
         // The server index of an immutable version covers every item; a path
         // it lacks means the two disagree, so don't trust either.
         if (!row) return null;
@@ -250,9 +272,7 @@ export function createLibIndexStore(opts: LibIndexStoreOptions = {}): LibIndexSt
       }
     }
 
-    const ordered = [...rows.keys()].sort().map((p) => rows.get(p)!);
-    const out = kind === "symbol" ? resolveSymbolRows(ordered as SymbolIndexRow[]) : ordered;
-    return { kind, token: fnv(JSON.stringify(out)), rows: out };
+    return finish(kind, rows);
   }
 
   return {
@@ -280,6 +300,19 @@ export function createLibIndexStore(opts: LibIndexStoreOptions = {}): LibIndexSt
       });
       byKind.set(kind, next);
       return next.promise;
+    },
+    async staticIndex(layers, kind) {
+      const statics = layers.filter((l) => l.kind === "static");
+      if (statics.length !== 1) return null;
+      const server = await serverRows(statics[0]!);
+      if (!server || server === "bad" || (kind && server.kind !== kind)) return null;
+      const result = finish(server.kind, server.rows);
+      const prefix = `${server.kind}/`;
+      return {
+        ...result,
+        names: [...server.rows.keys()].sort().map((p) => (p.startsWith(prefix) ? p.slice(prefix.length) : p)),
+        layer: statics[0]!,
+      };
     },
     peek(stack, kind) {
       const memo = memos.get(stack)?.get(kind);

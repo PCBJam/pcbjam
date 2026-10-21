@@ -28,7 +28,7 @@ import {
   type LibsSyncState,
   libIndexEnabled,
 } from "./source";
-import { createLibIndexStore, fnv, type LibIndexStore } from "./lib-index-store";
+import { createLibIndexStore, fnv, type LibIndexStore, type StaticLibIndex } from "./lib-index-store";
 import { projectFootprintRows } from "./project-fp-index";
 import type { FootprintIndexRow } from "@pcbjam/shared";
 
@@ -89,6 +89,65 @@ export function syncedLibsSource(
   let openStack: SyncStack | null = null;
   let indexStore: LibIndexStore | undefined = opts.libIndex;
   const libIndexStore = () => (indexStore ??= createLibIndexStore({ fetchImpl: opts.fetchImpl, log }));
+
+  // libs 0028 phase 7, the cold run: while the stack isn't open and its static
+  // origin layer isn't cached yet (the bundle or the lib pack is still on its
+  // way), the names, the index and single bodies come from the server's index
+  // and the per-item route, so the editor needn't wait for the download. When
+  // the stack opens, the library is invalidated in the editor if the merged
+  // view differs (a mirror override, a changed item); later reads use the stack.
+  let coldP: Promise<StaticLibIndex | null> | null = null;
+  let coldValue: StaticLibIndex | null | undefined;
+  /** Kind → the names handed out from the cold index. */
+  const coldServed = new Map<string, Set<string>>();
+  function cold(): Promise<StaticLibIndex | null> {
+    if (openStack || !libIndexEnabled()) return Promise.resolve(null);
+    return (coldP ??= (async () => {
+      const descriptor = opts.stackFor?.(libId);
+      const statics = descriptor?.layers.filter((l) => l.kind === "static") ?? [];
+      if (!descriptor || statics.length !== 1) return null;
+      const peeked = await peekNamespaces(
+        [statics[0]!.namespace],
+        opts.storeFactory ? { storeFactory: opts.storeFactory } : undefined,
+      );
+      if (peeked.get(statics[0]!.namespace)) return null; // cached: the stack opens fast
+      const index = await libIndexStore().staticIndex(descriptor.layers);
+      if (index) log(`[synced] cold run: lib ${libId} served from its index (${index.names.length} ${index.kind}s)`);
+      return index;
+    })()
+      .catch(() => null)
+      .then((v) => (coldValue = v)));
+  }
+  function serveCold(index: StaticLibIndex): void {
+    coldServed.set(index.kind, new Set(index.names));
+    void ensure().catch(() => {});
+  }
+  /** The stack opened after a cold answer: invalidate what it changes. */
+  async function reconcileCold(stack: SyncStack, info: LibInfo): Promise<void> {
+    if (coldServed.size === 0) return;
+    const listed = await stack.list();
+    const layers = stack.layerEntries();
+    for (const [kind, served] of coldServed) {
+      const prefix = `${kind}/`;
+      const names = listed.filter((e) => e.path.startsWith(prefix)).map((e) => e.path.slice(prefix.length));
+      const overlaid = layers.some(
+        (l) => l.descriptor.kind !== "static" && Object.keys(l.entries).some((p) => p.startsWith(prefix)),
+      );
+      const same = names.length === served.size && names.every((n) => served.has(n));
+      if (same && !overlaid) continue;
+      const mod = (globalThis as { Module?: Record<string, unknown> }).Module;
+      const invalidate = mod?.kicadLibsInvalidate;
+      log(`[synced] cold run: lib "${info.name}" differs from its index (${kind}) - invalidating`);
+      if (typeof invalidate === "function") {
+        try {
+          (invalidate as (kind: string, nickname: string) => void)(kind, info.name);
+        } catch (e) {
+          log(`[synced] cold run invalidation failed: ${String(e)}`);
+        }
+      }
+    }
+    coldServed.clear();
+  }
 
   // Paths with a local save in flight: the stack echoes our own push as a
   // change event, but the plugin already invalidated its cache on save — a
@@ -192,6 +251,7 @@ export function syncedLibsSource(
           scheduleEditorReload(r.info, c.path);
         });
         openStack = r.stack;
+        void reconcileCold(r.stack, r.info).catch(() => {});
         return r;
       });
       opened = attempt;
@@ -214,6 +274,11 @@ export function syncedLibsSource(
       return [info];
     },
     async listItems(): Promise<LibItemInfo[]> {
+      const coldIndex = await cold();
+      if (coldIndex && !openStack) {
+        serveCold(coldIndex);
+        return coldIndex.names.map((name) => ({ kind: coldIndex.kind, name }));
+      }
       const { stack } = await ensure();
       return (await stack.list()).map((e) => splitPath(e.path));
     },
@@ -240,12 +305,18 @@ export function syncedLibsSource(
       });
     },
     async getLibIndex(_id, kind) {
+      const coldIndex = await cold();
+      if (coldIndex && coldIndex.kind === kind && !openStack) {
+        serveCold(coldIndex);
+        return coldIndex;
+      }
       // The rows follow the stack: a remote change, our own save or delete
       // changes an entry hash, and the next request recomputes only that row.
       const { stack } = await ensure();
       return libIndexStore().libIndex(stack, kind);
     },
     peekLibIndex(_id, kind) {
+      if (!openStack && coldValue?.kind === kind) return coldValue;
       const stack = openStack;
       const known = stack ? libIndexStore().peek(stack, kind) : undefined;
       if (known === undefined) {
@@ -256,6 +327,18 @@ export function syncedLibsSource(
       return known;
     },
     async getItemBody(_id, kind, name): Promise<string | null> {
+      const coldIndex = await cold();
+      if (coldIndex && coldIndex.kind === kind && !openStack && coldIndex.names.includes(name)) {
+        // One body from the immutable per-item route, while the bundle downloads.
+        const res = await (opts.fetchImpl ?? fetch)(
+          `${coldIndex.layer.url}/body/${encodeURIComponent(`${kind}/${name}`)}`,
+          { credentials: "include" },
+        ).catch(() => null);
+        if (res?.ok) {
+          serveCold(coldIndex);
+          return await res.text();
+        }
+      }
       const { stack } = await ensure();
       const bytes = await stack.read(pathOf(kind, name));
       return bytes ? new TextDecoder().decode(bytes) : null;

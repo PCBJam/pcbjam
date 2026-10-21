@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildLibIndex,
   decodeLibIndexTsv,
@@ -11,6 +11,7 @@ import {
 import { memStore, SyncStack, type LayerDescriptor, type LayerStore } from "@pcbjam/sync-client";
 import { createLibIndexStore, memRowCache, type LibIndexCompute, type LibIndexRowCache } from "./lib-index-store";
 import { installLibsProvider, type LibsSource } from "./source";
+import { syncedLibsSource } from "./synced-source";
 
 const API = "https://api.test";
 const ORIGINS = `${API}/api/scopes/s/libs/origins`;
@@ -25,6 +26,8 @@ function fakeBackend() {
   const indexFiles = new Map<string, LibIndexFile>(); // `<lib>@<ver>` → file (per-version route)
   let packIndex: LibIndexFile[] | null = null;
   const hits: string[] = [];
+  /** Bundle downloads held back until released (the cold run's slow pack). */
+  const held = new Map<string, Promise<void>>();
 
   const manifestOf = async (url: string): Promise<SyncManifest> => {
     const m: SyncManifest = { version: 1, entries: {} };
@@ -50,6 +53,7 @@ function fakeBackend() {
     for (const base of layers.keys()) {
       if (url === `${base}/manifest`) return json(await manifestOf(base));
       if (url === `${base}/bundle`) {
+        await held.get(base);
         const bytes = encodeBundle(await manifestOf(base), [...layers.get(base)!]);
         return { ok: true, status: 200, arrayBuffer: async () => bytes.buffer };
       }
@@ -58,6 +62,10 @@ function fakeBackend() {
         const body = new Uint8Array(init.body as ArrayBuffer | Uint8Array);
         layers.get(base)!.set(path, body);
         return json({ version: 2, hash: await sha256Hex(body), size: body.length });
+      }
+      if (url.startsWith(`${base}/body/`) && !init?.method) {
+        const body = layers.get(base)!.get(decodeURIComponent(url.slice(`${base}/body/`.length)));
+        return body ? { ok: true, status: 200, text: async () => new TextDecoder().decode(body) } : { ok: false, status: 404 };
       }
       if (url.startsWith(`${base}/body/`) && init?.method === "DELETE") {
         layers.get(base)!.delete(decodeURIComponent(url.slice(`${base}/body/`.length)));
@@ -70,6 +78,12 @@ function fakeBackend() {
   return {
     fetchImpl,
     hits,
+    /** Hold `base`'s bundle until the returned release() is called. */
+    holdBundle(base: string) {
+      let release!: () => void;
+      held.set(base, new Promise<void>((r) => (release = r)));
+      return () => release();
+    },
     layer(url: string, items: Record<string, string>) {
       layers.set(url, new Map(Object.entries(items).map(([p, t]) => [p, enc.encode(t)])));
     },
@@ -280,5 +294,74 @@ describe("provider: list/index", () => {
     win.location.search = "?libindex=0";
     expect(await request("list", "/mnt/pcbjam/L1", "index", "symbol")).toBeNull();
     expect(await request("index", "/mnt/pcbjam/", `["/mnt/pcbjam/L1"]`, "symbol")).toBeNull();
+  });
+});
+
+describe("cold run (libs 0028 phase 7)", () => {
+  const win = { location: { search: "" } };
+  beforeEach(() => {
+    (globalThis as unknown as { window: unknown }).window = win;
+  });
+  afterEach(() => {
+    delete (globalThis as unknown as { window?: unknown }).window;
+    delete (globalThis as { Module?: unknown }).Module;
+  });
+
+  it("names, index and bodies come from the server index while the bundle downloads; the open reconciles", async () => {
+    const b = fakeBackend();
+    const items = { "symbol/R": sym("R"), "symbol/C": sym("C") };
+    b.layer(`${ORIGINS}/L1/V1`, items);
+    b.servePack([b.serveIndex("L1", "V1", "symbol", items)]);
+    // The team's mirror overrides R: the cold answers can't know that yet.
+    b.layer(mirror("L1").url, { "symbol/R": sym("R", `(property "LCSC" "C1")`) });
+    const release = b.holdBundle(`${ORIGINS}/L1/V1`);
+    const invalidated: string[] = [];
+    (globalThis as { Module?: unknown }).Module = { kicadLibsInvalidate: (kind: string, nick: string) => invalidated.push(`${kind}:${nick}`) };
+
+    const stores = new Map<string, LayerStore>();
+    const source = syncedLibsSource("L1", {
+      apiBase: API,
+      scope: "s",
+      fetchImpl: b.fetchImpl,
+      realtime: "shared-only",
+      storeFactory: (ns) => stores.get(ns) ?? stores.set(ns, memStore()).get(ns)!,
+      stackFor: () => ({ lib: { id: "L1", name: "Device" }, layers: [origin("L1", "V1"), mirror("L1")] }),
+      libIndex: createLibIndexStore({ originsBase: ORIGINS, fetchImpl: b.fetchImpl, rowCache: memRowCache() }),
+    });
+
+    expect((await source.listItems("L1")).map((i) => i.name)).toEqual(["C", "R"]);
+    expect((await source.getLibIndex!("L1", "symbol"))!.rows.map((r) => r.n)).toEqual(["C", "R"]);
+    expect(await source.getItemBody("L1", "symbol", "C")).toBe(sym("C"));
+    expect(b.hits).toContain(`${ORIGINS}/L1/V1/body/${encodeURIComponent("symbol/C")}`);
+    expect(invalidated).toEqual([]);
+
+    // The bundle lands: the stack opens, and the override makes the library differ.
+    release();
+    await vi.waitFor(() => expect(invalidated).toEqual(["symbol:Device"]));
+    // From now on the stack answers, overrides included.
+    expect((await source.getLibIndex!("L1", "symbol"))!.rows.find((r) => r.n === "R")).toMatchObject({ fl: { LCSC: "C1" } });
+  });
+
+  it("a cached static layer takes the stack, as before", async () => {
+    const b = fakeBackend();
+    const items = { "symbol/R": sym("R") };
+    b.layer(`${ORIGINS}/L1/V1`, items);
+    b.serveIndex("L1", "V1", "symbol", items);
+    const stores = new Map<string, LayerStore>();
+    // A previous session cached the static layer.
+    await openStack(b, [origin("L1", "V1")], stores);
+    const release = b.holdBundle(`${ORIGINS}/L1/V1`);
+    const source = syncedLibsSource("L1", {
+      apiBase: API,
+      scope: "s",
+      fetchImpl: b.fetchImpl,
+      realtime: "shared-only",
+      storeFactory: (ns) => stores.get(ns) ?? stores.set(ns, memStore()).get(ns)!,
+      stackFor: () => ({ lib: { id: "L1", name: "Device" }, layers: [origin("L1", "V1")] }),
+      libIndex: createLibIndexStore({ originsBase: ORIGINS, fetchImpl: b.fetchImpl, rowCache: memRowCache() }),
+    });
+    expect((await source.listItems("L1")).map((i) => i.name)).toEqual(["R"]);
+    expect(b.hits.some((u) => u.endsWith("/body/symbol%2FR"))).toBe(false);
+    release();
   });
 });

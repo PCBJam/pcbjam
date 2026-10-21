@@ -12,7 +12,7 @@ import { libIndexEnabled } from "./source";
  */
 export function libWarmEnabled(): boolean {
   if (typeof window === "undefined") return true;
-  return new URLSearchParams(window.location.search).get("libwarm") !== "0" && libIndexEnabled();
+  return new URLSearchParams(window.location?.search ?? "").get("libwarm") !== "0" && libIndexEnabled();
 }
 
 interface WarmupModule {

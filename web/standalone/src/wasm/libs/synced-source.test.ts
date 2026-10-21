@@ -621,6 +621,7 @@ describe("syncedScopeLibsSource.getFpIndex (libs 0029)", () => {
           return rows ? { kind: "footprint", token: JSON.stringify(rows), rows } : null;
         },
         peek: () => undefined,
+        staticIndex: async () => null,
       },
     });
   }
