@@ -203,15 +203,19 @@ test(  // re-enabled 2026-08-13: the chooser fp-selector flow revived on the JSP
   // the asyncify-era pump, and staying lean inside a modal is still right).
   // In that mode the meaningful assertions are: the chooser survived with the
   // dual-seeded fp-lib-table, and no modal-pump/runtime error fired.
+  // The index op answers with the version token protocol (libs 0029): the
+  // first selection gets the index, later ones "=" (unchanged).
   const indexAnswered = fpCalls.some((c) => c[0] === 'index' && c[4] === 'ok');
+  // Only the remote example backend has no footprint index (the CDN and the
+  // platform's synced source both answer one); there the selector stays
+  // default-only by design, and the rest of this spec has nothing to drive.
   if (!indexAnswered) {
-    console.log('[eefpsel] no fp index from this source — asserting crash-free default-only selector');
     expect(pageErrors, `no page errors, got:\n${pageErrors.join('\n')}`).toEqual([]);
     expect(
       logs.some((l) => /pump error|abort|RuntimeError/i.test(l)),
       `no modal-pump crash; console tail:\n${logs.slice(-15).join('\n')}`,
     ).toBe(false);
-    return;
+    test.skip(true, 'this libs source publishes no footprint index (remote example backend): selector is default-only by design');
   }
 
   // Drive the selector: open the popup and click a real footprint row →

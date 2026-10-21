@@ -589,3 +589,73 @@ describe("syncedLibsSource: library index (libs 0028)", () => {
     expect(after!.token).not.toBe(first!.token);
   });
 });
+
+describe("syncedScopeLibsSource.getFpIndex (libs 0029)", () => {
+  const emptyRoom = (async (input: unknown) => {
+    const url = String(input);
+    const empty: SyncManifest = { version: 1, entries: {} };
+    if (url.endsWith("/manifest")) return { ok: true, json: async () => empty };
+    if (url.endsWith("/bundle")) {
+      const b = encodeBundle(empty, []);
+      return { ok: true, arrayBuffer: async () => b.buffer };
+    }
+    return { ok: false, status: 404 };
+  }) as unknown as typeof fetch;
+  const libDto = (id: string) => ({ id, name: id, type: "org", kindCounts: { footprint: 1 } });
+  const stackDto = (id: string) => ({
+    lib: { id, name: id },
+    layers: [{ namespace: `org:${id}`, kind: "live" as const, url: `${API}/room/${id}`, writable: true }],
+  });
+
+  function source(rowsByNs: Record<string, Array<{ n: string; up: number; pc: number }> | null>) {
+    const remote: LibsSource = { listLibs: async () => [], listItems: async () => [], getItemBody: async () => null };
+    return syncedScopeLibsSource(remote, {
+      apiBase: API,
+      scope: "s",
+      fetchImpl: emptyRoom,
+      storeFactory: () => memStore(),
+      preloaded: { libs: ["A", "B"].map(libDto), stacks: { A: stackDto("A"), B: stackDto("B") } },
+      libIndex: {
+        libIndex: async (stack) => {
+          const rows = rowsByNs[stack.layerEntries()[0]!.descriptor.namespace];
+          return rows ? { kind: "footprint", token: JSON.stringify(rows), rows } : null;
+        },
+        peek: () => undefined,
+      },
+    });
+  }
+
+  afterEach(() => {
+    delete (globalThis as { FS?: unknown }).FS;
+  });
+
+  it("merges platform rows and the project's .pretty folders; \"=\" when unchanged; leaves out a lib without an index", async () => {
+    const files: Record<string, { body: string; mtime: number }> = {
+      "/proj/local.pretty/R_P.kicad_mod": { body: `(footprint "R_P" (pad "1" smd rect (layers "F.Cu")) (pad "2" smd rect (layers "F.Cu")))`, mtime: 1 },
+    };
+    (globalThis as { FS?: unknown }).FS = {
+      isDir: (mode: number) => mode === 1,
+      stat: (p: string) => (p === "/proj/local.pretty" ? { mode: 1, size: 0, mtime: 0 } : { mode: 0, size: files[p]!.body.length, mtime: files[p]!.mtime }),
+      readdir: () => [".", "..", "R_P.kicad_mod", "notes.txt"],
+      readFile: (p: string) => files[p]!.body,
+    };
+    const rows = { "org:A": [{ n: "R_A", up: 2, pc: 2 }], "org:B": null };
+    const src = source(rows);
+    const req = (v?: string) => JSON.stringify({ v, projectLibs: ["/proj/local.pretty", "/proj/missing.pretty"] });
+
+    const first = JSON.parse((await src.getFpIndex!(req()))!);
+    expect(first.libs).toEqual({ A: [["R_A", 2]], "/proj/local.pretty": [["R_P", 2]] });
+    expect(await src.getFpIndex!(req(first.v))).toBe("=");
+
+    // A project file saved by the footprint editor: a new version.
+    files["/proj/local.pretty/R_P.kicad_mod"] = { body: `(footprint "R_P" (pad "1" smd rect (layers "F.Cu")))`, mtime: 2 };
+    const second = JSON.parse((await src.getFpIndex!(req(first.v)))!);
+    expect(second.v).not.toBe(first.v);
+    expect(second.libs["/proj/local.pretty"]).toEqual([["R_P", 1]]);
+
+    // A library's rows changed: a new version too.
+    rows["org:A"] = [{ n: "R_A", up: 2, pc: 2 }, { n: "R_C", up: 2, pc: 2 }];
+    const third = JSON.parse((await src.getFpIndex!(req(second.v)))!);
+    expect(third.libs.A).toEqual([["R_A", 2], ["R_C", 2]]);
+  });
+});

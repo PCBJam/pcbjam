@@ -159,7 +159,12 @@ export interface LibsSource {
    * Optional: sources without a published index omit it (or resolve null) and
    * the C++ side falls back to the per-lib lazy load.
    */
-  getFpIndex?(): Promise<string | null>;
+  getFpIndex?(
+    /** JSON `{ v, projectLibs }` from the C++ side (libs 0029): the version it
+     *  holds (answer `"="` when unchanged) and the project's own `.pretty`
+     *  directories to cover too. Sources that ignore it answer the full index. */
+    arg?: string,
+  ): Promise<string | null>;
   /**
    * The library index (libs 0028): one row per item of `kind`, so the editor
    * lists a library without parsing its bodies. Null when the index can't be
@@ -457,7 +462,7 @@ export function installLibsProvider(
       log(`[libs] request op=index kind=${kind}`);
       if (kind === "symbol") return await batchLibIndex(arg);
       return kind === "footprint" && source.getFpIndex
-        ? await source.getFpIndex()
+        ? await source.getFpIndex(arg)
         : null;
     }
     const id = libIdFromUri(lib);

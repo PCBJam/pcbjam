@@ -77,7 +77,7 @@ const ORIGIN_LAYER_URL = /\/libs\/origins\/([^/?]+)\/([^/?]+)$/;
 const BODY_READ_CONCURRENCY = 8;
 
 /** FNV-1a, 32 bit, hex: a cheap change token. */
-function fnv(text: string): string {
+export function fnv(text: string): string {
   let h = 0x811c9dc5;
   for (let i = 0; i < text.length; i++) {
     h ^= text.charCodeAt(i);

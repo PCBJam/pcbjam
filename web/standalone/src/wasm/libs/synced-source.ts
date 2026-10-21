@@ -26,8 +26,11 @@ import {
   type LibSetChangedDetail,
   type LibsSource,
   type LibsSyncState,
+  libIndexEnabled,
 } from "./source";
-import { createLibIndexStore, type LibIndexStore } from "./lib-index-store";
+import { createLibIndexStore, fnv, type LibIndexStore } from "./lib-index-store";
+import { projectFootprintRows } from "./project-fp-index";
+import type { FootprintIndexRow } from "@pcbjam/shared";
 
 /**
  * A one-lib `LibsSource` backed by the r2-idb-sync bridge
@@ -465,6 +468,9 @@ export function syncedScopeLibsSource(
   },
 ): LibsSource {
   const perLib = new Map<string, LibsSource>();
+  // The last footprint index answer, by its version (0029: a selection with
+  // nothing changed costs one "=" crossing).
+  let fpIndexMemo: { v: string; text: string } | null = null;
   // One index store for the scope: the official combined index is fetched
   // once and shared by every library.
   const libIndex =
@@ -585,7 +591,42 @@ export function syncedScopeLibsSource(
   return {
     listLibs: (kind) => listLibsPreferred(kind),
     createLib: remote.createLib?.bind(remote),
-    getFpIndex: remote.getFpIndex?.bind(remote),
+    async getFpIndex(arg) {
+      // The Add Symbol footprint list (libs 0029): every footprint library of
+      // the session from the library index — official and other ingested
+      // origins from the server's rows, team/user/override layers computed
+      // here — plus the project's own .pretty folders from MEMFS. The 0014
+      // shape, `{ schema, v, libs: { <key>: [[name, uniquePads], …] } }`, keyed
+      // by the /mnt/pcbjam/<id> tail or, for a project folder, its path.
+      // ?libindex=0: today's behaviour (the remote source has no index).
+      if (!libIndexEnabled()) return (await remote.getFpIndex?.(arg)) ?? null;
+      let req: { v?: string; projectLibs?: string[] } = {};
+      try {
+        req = arg ? JSON.parse(arg) : {};
+      } catch {
+        /* an older caller: no version, no project libraries */
+      }
+      const libs = await listLibsPreferred("footprint");
+      const indexes = await mapLimit(libs, 8, (l) =>
+        forLib(l.id).getLibIndex!(l.id, "footprint").catch(() => null),
+      );
+      const out: Record<string, Array<[string, number]>> = {};
+      const tokens: string[] = [];
+      libs.forEach((l, i) => {
+        const idx = indexes[i];
+        if (!idx) return; // can't be had: the C++ side skips (and traces) it
+        out[l.id] = (idx.rows as FootprintIndexRow[]).map((r) => [r.n, r.up]);
+        tokens.push(`${l.id}:${idx.token}`);
+      });
+      for (const p of projectFootprintRows(Array.isArray(req.projectLibs) ? req.projectLibs : [])) {
+        out[p.dir] = p.rows;
+        tokens.push(p.token);
+      }
+      const v = fnv(tokens.join("\n"));
+      if (req.v === v) return "=";
+      if (fpIndexMemo?.v !== v) fpIndexMemo = { v, text: JSON.stringify({ schema: 1, v, libs: out }) };
+      return fpIndexMemo.text;
+    },
     async syncState(kind): Promise<LibsSyncState | null> {
       // Read-only warmth probe for the download-consent gate (standalone-
       // load-ux 0002): the backend's list envelope names each lib's primary

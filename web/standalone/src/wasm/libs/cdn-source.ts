@@ -55,6 +55,24 @@ export function cdnLibsSource(
 
   let manifestP: Promise<CdnLibsManifest> | null = null;
   let fpIndexP: Promise<string | null> | null = null;
+  // The published index with its version added (the C++ side asks with it).
+  let fpIndexV: { v: string; text: string } | null = null;
+  /**
+   * The publish-time footprint index, next to the top manifest (immutable,
+   * ~100 KB compressed), as raw text. A missing index (a tag that predates it,
+   * or a fetch error) resolves null and the editor skips those libraries; null
+   * is NOT cached, so a transient failure retries on the next chooser use.
+   */
+  const publishedFpIndex = (): Promise<string | null> =>
+    (fpIndexP ??= (async () => {
+      const r = await fetchImpl(`${baseDir}/fp-index.json`);
+      if (r.status === 404) return null;
+      if (!r.ok) throw new Error(`cdn fp-index ${r.status}`);
+      return await r.text();
+    })().catch(() => {
+      fpIndexP = null;
+      return null;
+    }));
   const fetchManifest = async (): Promise<CdnLibsManifest> => {
     // Retry with backoff. Firefox can fail a cross-origin fetch issued in the
     // first moments after navigation under COEP (the lazy path runs seconds
@@ -257,24 +275,26 @@ export function cdnLibsSource(
         // best-effort: the index is computed on first request instead
       }
     },
-    async getFpIndex(): Promise<string | null> {
-      // Published next to the top manifest (immutable, ~100 KB compressed) —
-      // passed through as raw text; the WASM side parses it once and caches.
-      // A missing index (tag predates fp-index publishing, or a fetch error)
-      // resolves null and the editor falls back to per-lib lazy loads; null is
-      // NOT cached so a transient failure retries on the next chooser use.
-      if (!fpIndexP) {
-        fpIndexP = (async () => {
-          const r = await fetchImpl(`${baseDir}/fp-index.json`);
-          if (r.status === 404) return null;
-          if (!r.ok) throw new Error(`cdn fp-index ${r.status}`);
-          return await r.text();
-        })().catch(() => {
-          fpIndexP = null;
-          return null;
-        });
+    async getFpIndex(arg): Promise<string | null> {
+      // The published index carries no version: the tag is one (immutable).
+      let knownV: string | undefined;
+      try {
+        knownV = arg ? (JSON.parse(arg) as { v?: string }).v : undefined;
+      } catch {
+        /* no version */
       }
-      return fpIndexP;
+      const text = await publishedFpIndex();
+      if (!text) return null;
+      if (!fpIndexV) {
+        try {
+          const parsed = JSON.parse(text) as { tag?: string };
+          const v = `cdn:${parsed.tag ?? ""}`;
+          fpIndexV = { v, text: JSON.stringify({ ...parsed, v }) };
+        } catch {
+          return text; // malformed: hand it over as is, the C++ side copes
+        }
+      }
+      return knownV === fpIndexV.v ? "=" : fpIndexV.text;
     },
     // Read-only: no saveItemBody / createLib (the demo's default libs are fixed).
   };

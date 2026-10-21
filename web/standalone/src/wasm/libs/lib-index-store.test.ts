@@ -268,6 +268,13 @@ describe("provider: list/index", () => {
     expect(await request("list", "/mnt/pcbjam/L1", "index", "symbol")).toContain("v=tok");
   });
 
+  it("the footprint index op passes its argument to getFpIndex", async () => {
+    const seen: Array<string | undefined> = [];
+    const request = provider({ ...base, getFpIndex: async (arg) => (seen.push(arg), "=") });
+    expect(await request("index", "/mnt/pcbjam/", `{"v":"x","projectLibs":[]}`, "footprint")).toBe("=");
+    expect(seen).toEqual([`{"v":"x","projectLibs":[]}`]);
+  });
+
   it("?libindex=0 answers null", async () => {
     const request = provider({ ...base, getLibIndex: async () => result });
     win.location.search = "?libindex=0";

@@ -193,7 +193,7 @@ describe("cdn libs source", () => {
     });
   });
 
-  it("getFpIndex fetches fp-index.json as raw text, null on 404", async () => {
+  it("getFpIndex fetches fp-index.json once, adds its version, \"=\" when unchanged, null on 404", async () => {
     const INDEX = { schema: 1, tag: "9.0.0", libs: { Resistor_SMD: [["R_0402_1005Metric", 2]] } };
     let indexFetches = 0;
     const fetchImpl = (async (url: string) => {
@@ -205,9 +205,10 @@ describe("cdn libs source", () => {
     }) as unknown as typeof fetch;
 
     const src = cdnLibsSource(MANIFEST_URL, { fetchImpl, storeFactory: () => memStore() });
-    expect(JSON.parse((await src.getFpIndex!())!)).toEqual(INDEX);
-    await src.getFpIndex!(); // cached — no second fetch
-    expect(indexFetches).toBe(1);
+    expect(JSON.parse((await src.getFpIndex!())!)).toEqual({ ...INDEX, v: "cdn:9.0.0" });
+    expect(await src.getFpIndex!(JSON.stringify({ v: "cdn:9.0.0", projectLibs: [] }))).toBe("=");
+    expect(JSON.parse((await src.getFpIndex!(JSON.stringify({ v: "old" })))!).v).toBe("cdn:9.0.0");
+    expect(indexFetches).toBe(1); // cached
 
     // A tag published without an index resolves null (fallback path).
     const noIndex = cdnLibsSource(MANIFEST_URL, {
