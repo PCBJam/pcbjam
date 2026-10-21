@@ -59,52 +59,17 @@ function findTopFootprint(src: string): [number, number] {
 }
 
 /**
+ * Unique electrical pad count, as `FOOTPRINT::GetUniquePadCount( DO_NOT_INCLUDE_NPTH )`.
+ * It lives in `@pcbjam/shared` (libs 0028) so the demo fp-index and the platform
+ * library index count pads the same way.
+ */
+export { countUniquePads } from "@pcbjam/shared";
+
+/**
  * Parse one `.kicad_mod` document. `name` is the file-derived item name. Walks
  * the footprint's direct children (depth 1) so a `descr`/`tags`/`model` word
  * inside a quoted string can't be mistaken for a real token.
  */
-/**
- * Unique electrical pad count, mirroring the WASM fork's
- * `FOOTPRINT::GetUniquePadCount( DO_NOT_INCLUDE_NPTH )` (pcbnew/footprint.cpp,
- * `GetUniquePadNumbers`): count DISTINCT pad numbers, skipping pads that are
- * not on any copper layer, pads with an empty number ("mechanical" pads), and
- * NPTH pads. The symbol chooser's footprint selector filters on exactly this
- * value (`filterFootprints`, pcbnew.cpp), so the published index must agree
- * with what the editor would compute from the parsed footprint.
- */
-export function countUniquePads(src: string): number {
-  const [s, e] = findTopFootprint(src);
-  const block = src.slice(s, e);
-  const numbers = new Set<string>();
-
-  let i = block.indexOf("(", 1); // first child form
-  while (i >= 0 && i < block.length) {
-    const [cs, ce] = matchParen(block, i);
-    const form = block.slice(cs, ce);
-
-    // (pad "<number>" <type> <shape> …) — number quoted (modern) or bare (old).
-    const m = form.match(
-      /^\(\s*pad\s+(?:"((?:[^"\\]|\\.)*)"|([^\s()"]+))\s+([a-z_]+)/,
-    );
-    if (m) {
-      const number = m[1] !== undefined ? unescape(m[1]) : m[2]!;
-      const type = m[3]!;
-      // The pad's own (layers …) precedes any nested primitives, so the first
-      // match is the right one. Copper = any token ending in ".Cu" ("F.Cu",
-      // "B.Cu", "*.Cu", "F&B.Cu"). No layers form ⇒ count it (be permissive).
-      const layers = form.match(/\(\s*layers\s+([^)]*)\)/);
-      const onCopper = !layers || /\.Cu\b/.test(layers[1]!);
-      if (number !== "" && type !== "np_thru_hole" && onCopper) {
-        numbers.add(number);
-      }
-    }
-
-    i = block.indexOf("(", ce); // next sibling
-  }
-
-  return numbers.size;
-}
-
 export function parseFootprintFile(src: string, name: string): ParsedFootprint {
   const [s, e] = findTopFootprint(src);
   const block = src.slice(s, e);
