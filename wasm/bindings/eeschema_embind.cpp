@@ -41,6 +41,8 @@
 #include <title_block.h>
 #include <richio.h>
 #include <lib_symbol.h>
+#include <libraries/symbol_library_adapter.h>
+#include <project_sch.h>
 #include <tools/sch_selection.h>
 #include <tools/sch_selection_tool.h>
 #include <sch_commit.h>
@@ -3857,7 +3859,22 @@ std::string schPlaceImportedItem( std::string aSexpr )
     return out.dump();
 }
 
+// libs 0028 golden check: the chooser's index items for one symbol library against its
+// real symbols (fat-loads that library). JSON { lib, symbols, mismatches[] }.
+std::string pcbjamCompareChooserIndex( std::string aNickname )
+{
+    SCH_EDIT_FRAME* frame = schFrame();
+
+    if( !frame )
+        return "{\"error\":\"no schematic frame\"}";
+
+    SYMBOL_LIBRARY_ADAPTER* adapter = PROJECT_SCH::SymbolLibAdapter( &frame->Prj() );
+    return adapter ? adapter->CompareIndexedTreeItems( wxString::FromUTF8( aNickname ) )
+                   : "{\"error\":\"no symbol library adapter\"}";
+}
+
 EMSCRIPTEN_BINDINGS(eeschema) {
+    function("pcbjamCompareChooserIndex", &pcbjamCompareChooserIndex PCBJAM_PARKER_POLICY);
     // Programmatic save of the in-memory schematic (round-trip tests, README §A).
     function("kicadSaveSchematic", &kicadSaveSchematic);
     // eeschema-only ysync-review repro hook (name not shared with pcbnew).
