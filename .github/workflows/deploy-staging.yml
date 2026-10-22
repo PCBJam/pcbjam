@@ -36,6 +36,10 @@ jobs:
       build_3d_viewer: "ON"
       run_tests: true
       upload_output: true
+      # One retry, like main: intermittent Firefox hangs on the CI runners fail
+      # a different spec on most staging runs. A retried test still shows as
+      # "flaky" in the report.
+      e2e_retries: 1
     secrets:
       # Read-only R2 pair so the screenshot drift report runs on staging builds
       # too (baselines live in R2 now; without these the fetch/compare steps skip).
