@@ -142,6 +142,7 @@ import { sessionIdentity } from "@/lib/session-identity";
 import type { ProviderConfig, ProviderKind } from "@/wasm/collab";
 import { cdnLibsSource } from "@/wasm/libs/cdn-source";
 import { withLibPack } from "@/wasm/libs/lib-pack-fetch";
+import { mirrorListEnabled, withMirrorList } from "@/wasm/libs/mirror-list-fetch";
 import {
   cdnModelsSource,
   registryModelsSource,
@@ -356,6 +357,8 @@ export interface LibsBootPreload {
     string,
     import("@pcbjam/shared").SyncStackDescriptor | null
   >;
+  /** The scope's overlay list (libs 0030); absent when boot left it out. */
+  mirrors?: import("@/wasm/libs/mirror-list-fetch").PreloadedMirrorList;
 }
 
 /** The official-library pack (libs 0026) answers first-run bundle requests;
@@ -363,6 +366,27 @@ export interface LibsBootPreload {
 function libPackEnabled(): boolean {
   if (typeof window === "undefined") return true;
   return new URLSearchParams(window.location.search).get("libpack") !== "0";
+}
+
+/** The fetch the synced libs source uses: the libs 0026 pack for official
+ *  origin bundles, the libs 0030 overlay list for empty team overlays. Each
+ *  one passes every other request through. */
+function syncedLibsFetch(preload?: LibsBootPreload): typeof fetch | undefined {
+  let f: typeof fetch | undefined;
+  if (libPackEnabled()) {
+    f = withLibPack(
+      (input, init) => fetch(input, init),
+      `${API_BASE_URL}/api/scopes/${encodeURIComponent(currentScope())}/libs/origins`,
+      (m) => console.log(m),
+    );
+  }
+  if (mirrorListEnabled()) {
+    f = withMirrorList(f ?? ((input, init) => fetch(input, init)), {
+      preloaded: preload?.mirrors ?? null,
+      log: (m) => console.log(m),
+    });
+  }
+  return f;
 }
 
 export function libsSourceConfig(
@@ -399,15 +423,7 @@ export function libsSourceConfig(
                   log: (m) => console.log(m),
                   // The official combined library index sits next to the pack (libs 0028).
                   originsBase: `${API_BASE_URL}/api/scopes/${encodeURIComponent(currentScope())}/libs/origins`,
-                  ...(libPackEnabled()
-                    ? {
-                        fetchImpl: withLibPack(
-                          (input, init) => fetch(input, init),
-                          `${API_BASE_URL}/api/scopes/${encodeURIComponent(currentScope())}/libs/origins`,
-                          (m) => console.log(m),
-                        ),
-                      }
-                    : {}),
+                  fetchImpl: syncedLibsFetch(preload),
                 },
               )
             : remoteLibsSource(API_BASE_URL, currentScope(), userSlug(), project);

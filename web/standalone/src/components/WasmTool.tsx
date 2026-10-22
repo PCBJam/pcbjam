@@ -1152,7 +1152,13 @@ export function WasmTool({
             ? libsSource
             : libsSourceConfig(
                 projectId,
-                boot ? { libs: boot.libs, stacks: boot.stacks } : undefined,
+                boot
+                  ? {
+                      libs: boot.libs,
+                      stacks: boot.stacks,
+                      ...(boot.mirrors ? { mirrors: boot.mirrors } : {}),
+                    }
+                  : undefined,
               );
         if (libsSource === undefined) ownedLibsSource = source;
         activeLibsSourceRef.current = source;

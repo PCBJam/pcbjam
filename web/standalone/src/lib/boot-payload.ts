@@ -65,6 +65,10 @@ export interface BootPayload extends ProjectWithFiles {
    *  each as a sparse layer serving only the referenced models. Absent for
    *  writers and on older backends. */
   modelLibs?: ModelLibDescriptor[];
+  /** The project scope's overlay list (libs 0030): which team overlays have
+   *  content, so the empty ones are answered locally. Absent for viewers,
+   *  when boot's time cap fired, and on older backends. */
+  mirrors?: import("@/wasm/libs/mirror-list-fetch").PreloadedMirrorList;
   projectSync: { manifest: SyncManifest; digest: string };
 }
 
