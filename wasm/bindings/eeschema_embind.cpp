@@ -66,6 +66,7 @@
 #include <string_utils.h>
 #include <sch_field.h>
 #include <sch_shape.h>
+#include <sch_marker.h>
 #include <eda_shape.h>
 #include <stroke_params.h>
 #include <sch_screen.h>
@@ -780,17 +781,61 @@ inline std::string projectFingerprint( PROJECT& aProject )
 
 std::string g_schLastProject;
 
+// ERC exclusions live on the markers until RecordERCExclusions() copies them into the
+// ERC settings, which KiCad only does on Run ERC and on File→Save. Excluding a violation
+// (with or without a comment) only calls OnModify, so the fingerprint never saw it and
+// the exclusion was gone after a reload. Track the excluded markers themselves and record
+// them when THIS client changed them: a peer's stale markers after a remote project
+// reload never differ from their own baseline, so they never overwrite its exclusions.
+std::string g_schLastExclusions;
+
+std::string schExclusionsText( SCH_EDIT_FRAME* aFrame )
+{
+    std::set<std::string> lines;
+
+    for( const SCH_SHEET_PATH& path : aFrame->Schematic().Hierarchy() )
+    {
+        for( SCH_ITEM* item : path.LastScreen()->Items().OfType( SCH_MARKER_T ) )
+        {
+            SCH_MARKER* marker = static_cast<SCH_MARKER*>( item );
+
+            if( marker->IsExcluded() )
+                lines.insert( ( marker->SerializeToString() + wxT( "\t" ) + marker->GetComment() )
+                                      .utf8_string() );
+        }
+    }
+
+    std::string out;
+
+    for( const std::string& line : lines )
+        out += line + "\n";
+
+    return out;
+}
+
 std::string schProjectText( SCH_EDIT_FRAME* aFrame )
 {
     if( !aFrame || aFrame->Prj().IsNullProject() )
         return "";
 
+    g_schLastExclusions = schExclusionsText( aFrame );
     return projectFingerprint( aFrame->Prj() );
 }
 
 void schCheckProject( SCH_EDIT_FRAME* aFrame )
 {
-    std::string p = schProjectText( aFrame );
+    if( !aFrame || aFrame->Prj().IsNullProject() )
+        return;
+
+    std::string exclusions = schExclusionsText( aFrame );
+
+    if( exclusions != g_schLastExclusions )
+    {
+        g_schLastExclusions = exclusions;
+        aFrame->Schematic().RecordERCExclusions();
+    }
+
+    std::string p = projectFingerprint( aFrame->Prj() );
 
     if( p.empty() || p == g_schLastProject )
         return;

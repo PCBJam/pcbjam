@@ -16,6 +16,7 @@
 #include <board_commit.h>
 #include <pcb_io/kicad_sexpr/pcb_io_kicad_sexpr.h>
 #include <board_item.h>
+#include <pcb_marker.h>
 #include <footprint.h>
 #include <pad.h>
 #include <pcb_track.h>
@@ -919,6 +920,31 @@ inline std::string projectFingerprint( PROJECT& aProject )
 
 std::string g_lastProject;
 
+// DRC exclusions live on the markers until RecordDRCExclusions() copies them into the
+// design settings, which KiCad only does on Run DRC and on File→Save; excluding a
+// violation only calls OnModify, so the exclusion was gone after a reload. Record them
+// when THIS client's excluded markers changed (see eeschema's schExclusionsText).
+std::string g_lastExclusions;
+
+std::string exclusionsText( PCB_EDIT_FRAME* aFrame )
+{
+    std::set<std::string> lines;
+
+    for( PCB_MARKER* marker : aFrame->GetBoard()->Markers() )
+    {
+        if( marker->GetRCItem() && marker->IsExcluded() )
+            lines.insert( ( marker->SerializeToString() + wxT( "\t" ) + marker->GetComment() )
+                                  .utf8_string() );
+    }
+
+    std::string out;
+
+    for( const std::string& line : lines )
+        out += line + "\n";
+
+    return out;
+}
+
 std::string projectText( PCB_EDIT_FRAME* aFrame )
 {
     if( !aFrame || aFrame->Prj().IsNullProject() )
@@ -930,11 +956,25 @@ std::string projectText( PCB_EDIT_FRAME* aFrame )
 void noteProjectBaseline( PCB_EDIT_FRAME* aFrame )
 {
     g_lastProject = projectText( aFrame );
+
+    if( aFrame )
+        g_lastExclusions = exclusionsText( aFrame );
 }
 
 void checkProject( PCB_EDIT_FRAME* aFrame )
 {
-    std::string p = projectText( aFrame );
+    if( !aFrame || aFrame->Prj().IsNullProject() )
+        return;
+
+    std::string exclusions = exclusionsText( aFrame );
+
+    if( exclusions != g_lastExclusions )
+    {
+        g_lastExclusions = exclusions;
+        aFrame->GetBoard()->RecordDRCExclusions();
+    }
+
+    std::string p = projectFingerprint( aFrame->Prj() );
 
     if( p.empty() || p == g_lastProject )
         return;
