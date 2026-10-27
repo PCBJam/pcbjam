@@ -25,7 +25,6 @@ import { openReportProblem } from "@/lib/diagnostics/report-problem-events";
 import { CHROME_HOTKEY_LABEL } from "./ui-helpers";
 import type { StaleLibEntry } from "./useLibNotices";
 import { PluginMenu, type PluginMenuProps } from "@/plugins/PluginMenu";
-import { TutorialMenu } from "@/plugins/TutorialMenu";
 import { Button, Kbd, Tip, Toggle } from "@pcbjam/ui";
 import { cn } from "@/lib/utils";
 
@@ -371,7 +370,7 @@ export function SessionMenu({
         </OverlayMenuSection>
       )}
 
-      {plugins && <TutorialMenu {...plugins} />}
+      {/* No Tutorials here: the Tutorials page starts them, and the remembered panel reopens one. */}
       {plugins && !plugins.tutorialsOnly && <PluginMenu {...plugins} />}
 
       <OverlayMenuSection label="View">

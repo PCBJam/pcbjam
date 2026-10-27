@@ -18,23 +18,12 @@ export interface Tutorial {
   version: string;
 }
 
-export interface StartedTutorial {
-  scope: string;
-  project: string;
-  file: string;
-  tutorial: string;
-  pluginId: string;
-}
-
-export const TUTORIAL_LEVEL: Record<string, string> = { beginner: "Beginner", intermediate: "Intermediate", advanced: "Advanced" };
-
-async function request<T>(path: string, method = "GET"): Promise<{ status: number; body: T }> {
+async function request<T>(path: string): Promise<{ status: number; body: T }> {
   const response = await fetch(`${API_BASE_URL}/api/plugin-platform/v1/${path}`, {
-    method,
     credentials: "include",
     cache: "no-store",
     headers: { "Content-Type": "application/json", "X-PCBJam-Plugin-Platform": "1" },
-    signal: AbortSignal.timeout(method === "GET" ? 10000 : 30000),
+    signal: AbortSignal.timeout(10000),
   });
   return { status: response.status, body: (await response.json().catch(() => ({}))) as T };
 }
@@ -45,19 +34,6 @@ export async function listTutorials(): Promise<Tutorial[] | null> {
   if (status === 404) return null;
   if (status !== 200 || !Array.isArray(body.tutorials)) throw new Error(body.error ?? "Tutorials unavailable");
   return body.tutorials;
-}
-
-/** Make the tutorial's project and install it for this account. */
-export async function startTutorial(slug: string): Promise<StartedTutorial> {
-  const { status, body } = await request<StartedTutorial & { error?: string }>(`tutorials/${encodeURIComponent(slug)}/start`, "POST");
-  if (status !== 201) throw new Error(body.error ?? "The tutorial could not start");
-  return body;
-}
-
-/** Where the editor opens a started tutorial. */
-export function tutorialUrl(started: StartedTutorial): string {
-  const file = started.file.split("/").map(encodeURIComponent).join("/");
-  return `/${encodeURIComponent(started.scope)}/projects/${encodeURIComponent(started.project)}/${file}?tutorial=${encodeURIComponent(started.tutorial)}`;
 }
 
 /**
