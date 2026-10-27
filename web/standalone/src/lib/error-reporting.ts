@@ -54,8 +54,16 @@ let cascade = 0;
 const SECRET_PARAM = /([?&](?:token|apiKey|api_key|access_token|key|secret|sig|signature|password)=)[^&\s"']+/gi;
 const BEARER = /(Bearer\s+)[A-Za-z0-9._-]+/gi;
 
-function redact(text: string): string {
+/** Scrub credentials from free text (also used by the problem-report logs). */
+export function redact(text: string): string {
   return text.replace(SECRET_PARAM, "$1[redacted]").replace(BEARER, "$1[redacted]");
+}
+
+/** Ids of the events sent this session, so a problem report can point at them. */
+const sentEventIds: string[] = [];
+
+export function errorEventIds(): string[] {
+  return [...sentEventIds];
 }
 
 /**
@@ -135,6 +143,7 @@ export function initErrorReporting(): void {
       if (event.request?.url) event.request.url = redact(event.request.url);
 
       sent++;
+      if (event.event_id) sentEventIds.push(event.event_id);
       return event;
     },
   });

@@ -15,6 +15,7 @@
  * DOM screen is built. Whichever layer survives, the user never sees white.
  */
 
+import { compositeCanvases } from "@/lib/diagnostics/canvas-composite";
 import { dump } from "./load-trace";
 
 const MAX_RING = 400;
@@ -24,6 +25,11 @@ const ring: string[] = [];
 export function recordFatalLog(line: string): void {
   ring.push(line);
   if (ring.length > MAX_RING) ring.shift();
+}
+
+/** A copy of the log lines (problem reports read the editor log from here). */
+export function fatalLogLines(): string[] {
+  return [...ring];
 }
 
 let messages: string[] = [];
@@ -40,8 +46,16 @@ function buildDom(): void {
   // coherent family across every full-screen state.
   root.style.cssText =
     "position:fixed;inset:0;z-index:2147483000;background:#1a1a2e;color:#fff;" +
-    "display:flex;flex-direction:column;align-items:center;justify-content:center;" +
-    "gap:12px;font-family:ui-monospace,Menlo,monospace;padding:24px;box-sizing:border-box;";
+    "display:flex;flex-direction:column;font-family:ui-monospace,Menlo,monospace;";
+
+  // The message, buttons and report form above the console, never under it:
+  // an open console used to cover the buttons in a short window. Scrolls when
+  // the form makes it taller than the room left (`safe center` keeps the top
+  // reachable).
+  const main = doc.createElement("div");
+  main.style.cssText =
+    "flex:1 1 auto;min-height:0;overflow-y:auto;display:flex;flex-direction:column;align-items:center;" +
+    "justify-content:safe center;gap:12px;padding:24px;box-sizing:border-box;";
 
   const face = doc.createElement("div");
   face.textContent = ":(";
@@ -59,19 +73,34 @@ function buildDom(): void {
 
   const hint = doc.createElement("div");
   hint.textContent =
-    "The console below records what was loading when this happened - please copy it into a bug report.";
+    'The console below records what was loading when this happened. "Report this problem" sends it to us with a screenshot.';
   hint.style.cssText = "font-size:11px;color:#bfdbfe99;max-width:520px;text-align:center;";
 
-  const reload = doc.createElement("button");
-  reload.textContent = "Reload";
-  reload.style.cssText =
+  const buttonStyle =
     "border:1px solid #ffffff66;background:transparent;color:#fff;border-radius:4px;" +
     "padding:4px 14px;font-size:12px;cursor:pointer;font-family:inherit;";
+  const reload = doc.createElement("button");
+  reload.textContent = "Reload";
+  reload.style.cssText = buttonStyle;
   reload.onclick = () => window.location.reload();
+
+  const report = doc.createElement("button");
+  report.textContent = "Report this problem";
+  report.setAttribute("data-testid", "fatal-screen-report");
+  report.style.cssText = buttonStyle;
+
+  const actions = doc.createElement("div");
+  actions.style.cssText = "display:flex;gap:8px;";
+  actions.append(reload, report);
+
+  // The form goes here. It is loaded on click: the floor must not depend on
+  // anything that could have broken along with React.
+  const reportHost = doc.createElement("div");
+  reportHost.style.cssText = "width:100%;display:flex;justify-content:center;";
 
   // Console block mirroring the in-editor one: toggle bar + copy, collapsible.
   const consoleWrap = doc.createElement("div");
-  consoleWrap.style.cssText = "position:absolute;bottom:0;left:0;right:0;text-align:left;";
+  consoleWrap.style.cssText = "flex:none;text-align:left;";
 
   const bar = doc.createElement("div");
   bar.style.cssText =
@@ -108,9 +137,31 @@ function buildDom(): void {
     toggle.textContent = hidden ? "▾ console" : "▸ console";
   };
 
+  report.onclick = () => {
+    report.disabled = true;
+    report.textContent = "Opening...";
+    // The form needs the room the open console takes.
+    log.style.display = "none";
+    toggle.textContent = "▸ console";
+    const reset = () => {
+      report.disabled = false;
+      report.textContent = "Report this problem";
+      report.style.display = "";
+    };
+    import("@/lib/diagnostics/floor-report")
+      .then((m) => m.openFloorReport(reportHost, root, reset))
+      .then(() => {
+        report.style.display = "none";
+      })
+      .catch(() => {
+        report.textContent = "Could not open the report form - copy the console instead";
+      });
+  };
+
   bar.append(toggle, copy);
   consoleWrap.append(bar, log);
-  root.append(face, title, err, hint, reload, consoleWrap);
+  main.append(face, title, err, hint, actions, reportHost);
+  root.append(main, consoleWrap);
   doc.body.appendChild(root);
 }
 
@@ -130,11 +181,36 @@ function ensure(): void {
   }
 }
 
+/**
+ * How long React gets to commit its own overlay before the first check.
+ * Callers signal in the same tick as `setFatal()` (and the window listener
+ * below even earlier), so checking at once always found no React overlay and
+ * put the floor up over it until the next 1 Hz tick, hiding the overlay's
+ * "Report this problem" button for up to a second.
+ */
+const REACT_GRACE_MS = 300;
+
+let frame: HTMLCanvasElement | null = null;
+
+/**
+ * The editor's canvases as they were when the first fatal was signaled. By
+ * the time someone reports from the floor, React may have taken the editor's
+ * DOM with it, and a fresh screenshot would be blank.
+ */
+export function crashFrame(): HTMLCanvasElement | null {
+  return frame;
+}
+
 /** Signal a fatal. Idempotent; new distinct messages are appended. */
 export function showFatalScreen(message: string): void {
   if (!messages.includes(message)) messages.push(message);
   if (ensureTimer === undefined) {
-    ensure();
+    try {
+      frame = compositeCanvases();
+    } catch {
+      /* the floor must never throw into anyone */
+    }
+    window.setTimeout(ensure, REACT_GRACE_MS);
     ensureTimer = window.setInterval(ensure, 1000);
   } else {
     const err = document.querySelector("#pcbjam-fatal-screen [data-fatal-extra]");

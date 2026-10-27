@@ -1,5 +1,7 @@
 import type {
   DriftReportBody,
+  ProblemReportBody,
+  ProblemReportCreated,
   Project,
   ProjectAccess,
   ProjectFile,
@@ -13,7 +15,7 @@ import {
   PROJECT_SOURCE_KIND,
 } from "./config";
 import { fetchBootPayload, type BootPayload } from "./boot-payload";
-import { client } from "./contract-client";
+import { client, problemReportClient } from "./contract-client";
 import { setCopyContext } from "./copy-context";
 import type { LibInfo } from "@/wasm/libs/source";
 import { downloadBytes } from "./download";
@@ -246,6 +248,24 @@ export async function createProjectFileIfMissing(
   if (outcome.kind !== "committed") {
     throw new Error(outcome.message ?? `file creation did not commit: ${relPath}`);
   }
+}
+
+// --- problem reports (problem-reports 0001; backend-only) ---
+
+/** Send a "Report a problem" report. Throws with a message the dialog can show. */
+export async function createProblemReport(body: ProblemReportBody): Promise<ProblemReportCreated> {
+  let res: Awaited<ReturnType<typeof problemReportClient.createProblemReport>>;
+  try {
+    res = await problemReportClient.createProblemReport({ body });
+  } catch {
+    throw new Error("Could not reach the server. Check your connection and try again.");
+  }
+  if (res.status === 201) return res.body;
+  if (res.status === 401) throw new Error("Sign in to send a report.");
+  if (res.status === 413) throw new Error("The report is too large to send. Try again without the screenshot.");
+  if (res.status === 429) throw new Error("Too many reports in a short time. Please wait a minute and try again.");
+  const message = (res.body as { message?: unknown } | undefined)?.message;
+  throw new Error(typeof message === "string" && message ? message : `Sending failed (HTTP ${res.status}).`);
 }
 
 // --- collaboration drift reporting (ysync; backend-only) ---

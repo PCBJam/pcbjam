@@ -8,7 +8,13 @@ import { initAnalytics } from "./lib/analytics";
 import { initErrorReporting } from "./lib/error-reporting";
 import { initTheme } from "./lib/theme";
 import { installFatalScreenListeners } from "./wasm/fatal-screen";
+import { installConsoleBuffer } from "./lib/diagnostics/console-buffer";
 import "./index.css";
+
+// Console + uncaught-error capture for "Report a problem" (problem-reports
+// 0001). The one thing ahead of error tracking: it only wraps console.* and
+// adds listeners, and boot output must be in it too.
+installConsoleBuffer();
 
 // Error tracking (Better Stack), only when VITE_ERRORS_DSN is set. FIRST and
 // synchronous, so its window handlers are live before anything else runs —

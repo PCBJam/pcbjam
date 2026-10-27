@@ -7,6 +7,7 @@ import {
   EyeOff,
   FilePlus,
   Layers,
+  LifeBuoy,
   ListTree,
   Moon,
   PanelsTopLeft,
@@ -19,7 +20,8 @@ import type { PresencePeer } from "@/wasm/collab/presence";
 import type { FollowTarget } from "@/wasm/collab/follow-user";
 import { PresenceRoster } from "@/components/PresenceRoster";
 import { SourceChip } from "@/components/SourceChip";
-import { OverlayMenu, OverlayMenuSection, overlayKbdClass, overlayPressedClass, overlayRowClass } from "@/components/OverlayMenu";
+import { OverlayMenu, OverlayMenuSection, overlayKbdClass, overlayPressedClass, overlayRowClass, useCloseOverlayMenu } from "@/components/OverlayMenu";
+import { openReportProblem } from "@/lib/diagnostics/report-problem-events";
 import { CHROME_HOTKEY_LABEL } from "./ui-helpers";
 import type { StaleLibEntry } from "./useLibNotices";
 import { PluginMenu, type PluginMenuProps } from "@/plugins/PluginMenu";
@@ -506,6 +508,32 @@ export function SessionMenu({
           </Toggle>
         </Tip>
       </OverlayMenuSection>
+
+      <OverlayMenuSection label="Help">
+        <ReportProblemRow />
+      </OverlayMenuSection>
     </OverlayMenu>
+  );
+}
+
+/** Closes the menu first, so the report's screenshot shows the editor, not the menu. */
+function ReportProblemRow() {
+  const closeMenu = useCloseOverlayMenu();
+  return (
+    <Tip content="Tell us what went wrong; logs and a screenshot are attached">
+      <Button
+        data-testid="report-problem-open"
+        variant="plain"
+        size="row"
+        className={overlayRowClass}
+        onClick={() => {
+          closeMenu();
+          openReportProblem();
+        }}
+      >
+        <LifeBuoy size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
+        <span>Report a problem</span>
+      </Button>
+    </Tip>
   );
 }

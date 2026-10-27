@@ -1,17 +1,21 @@
 import { Button } from "@pcbjam/ui";
+import { openReportProblem } from "@/lib/diagnostics/report-problem-events";
 // Extracted from WasmTool.tsx (2026-08-25 split) — behavior unchanged.
 
 /**
  * Terminal failure — z-35, ABOVE the boot overlay but below the console panel,
  * OUTSIDE the error boundary, and independent of `ready`: a post-boot runtime
  * death gets a proper blue screen instead of a blank page, with the console
- * panel forced open beneath it.
+ * panel forced open beneath it. The bottom padding keeps the buttons clear
+ * of that open panel (up to ~280px) in a short window. A problem report's
+ * screenshot leaves it out, so it shows the editor underneath.
  */
 export function FatalOverlay({ message }: { message: string }) {
   return (
     <div
       data-testid="fatal-overlay"
-      className="dark absolute inset-0 z-[35] flex flex-col items-center justify-center gap-3 bg-[#1a1a2e] text-white"
+      data-screenshot-exclude=""
+      className="dark absolute inset-0 z-[35] flex flex-col items-center justify-center gap-3 bg-[#1a1a2e] pb-72 text-white"
     >
       <p className="font-mono text-4xl text-white/90">:(</p>
       <p className="font-mono text-sm text-white">
@@ -21,8 +25,8 @@ export function FatalOverlay({ message }: { message: string }) {
         {message}
       </p>
       <p className="max-w-md px-6 text-center font-mono text-xs text-blue-200/60">
-        The console below records what was loading when this happened -
-        please copy it into a bug report.
+        The console below records what was loading when this happened.
+        &quot;Report this problem&quot; sends it to us with a screenshot.
       </p>
       <div className="flex gap-2">
         <Button
@@ -31,6 +35,14 @@ export function FatalOverlay({ message }: { message: string }) {
           onClick={() => window.location.reload()}
         >
           Reload
+        </Button>
+        <Button
+          variant="outline"
+          size="xs"
+          data-testid="fatal-report-problem"
+          onClick={openReportProblem}
+        >
+          Report this problem
         </Button>
       </div>
     </div>

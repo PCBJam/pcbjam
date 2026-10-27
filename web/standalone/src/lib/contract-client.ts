@@ -1,4 +1,4 @@
-import { contract, USER_HEADER } from "@pcbjam/shared";
+import { contract, problemReportContract, USER_HEADER } from "@pcbjam/shared";
 import { initClient } from "@ts-rest/core";
 import { API_BASE_URL, userSlug } from "./config";
 
@@ -15,5 +15,13 @@ export const client = initClient(contract, {
   // Send the backend's session cookie (same-site, different origin): backends
   // with real auth resolve the user from it and ignore the thin header. On a
   // cookie-less setup this changes nothing.
+  credentials: "include",
+});
+
+/** "Report a problem" (problem-reports 0001): its own router on the shared
+ *  side, so its own client; same base URL, identity header and cookie. */
+export const problemReportClient = initClient(problemReportContract, {
+  baseUrl: API_BASE_URL,
+  baseHeaders: { [USER_HEADER]: userSlug() },
   credentials: "include",
 });

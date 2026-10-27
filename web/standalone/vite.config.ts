@@ -237,6 +237,10 @@ return {
     // busy port fails loudly instead of drifting onto another service's port.
     port: Number(process.env.STANDALONE_PORT) || 3048,
     strictPort: true,
+    // The console capture for problem reports wraps console.*; ignore-listing
+    // its file keeps devtools pointing each log line at the real caller.
+    sourcemapIgnoreList: (src: string) =>
+      src.includes("node_modules") || src.endsWith("lib/diagnostics/console-buffer.ts"),
     // KiCad WASM is cross-origin-isolated (COOP/COEP); same-origin /wasm assets
     // load fine. Keep these so SharedArrayBuffer/threads are available.
     headers: {

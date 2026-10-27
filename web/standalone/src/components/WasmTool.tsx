@@ -133,6 +133,7 @@ import { WasmErrorBoundary } from "@/components/wasm-tool/WasmErrorBoundary";
 import { BootOverlay } from "@/components/wasm-tool/BootOverlay";
 import { ConsolePanel } from "@/components/wasm-tool/ConsolePanel";
 import { FatalOverlay } from "@/components/wasm-tool/FatalOverlay";
+import { ReportProblemHost } from "@/components/ReportProblemDialog";
 import { FENCE_SAVE_MESSAGE, FenceOverlay } from "@/components/wasm-tool/FenceOverlay";
 import { LibLoadingOverlay } from "@/components/wasm-tool/LibLoadingOverlay";
 import { NoticeStack, type FileGoneNotice } from "@/components/wasm-tool/NoticeStack";
@@ -505,6 +506,21 @@ export function WasmTool({
   // the PresenceRoster chip next to SourceChip. Empty when collab is off, the
   // provider has no awareness (kind "none"), or nobody else is here.
   const [peers, setPeers] = React.useState<PresencePeer[]>([]);
+  // "Report a problem" (problem-reports 0001): what the report says was open.
+  const reportProject = React.useMemo(
+    () => ({
+      scope: currentScope(),
+      slug,
+      projectId,
+      tool,
+      file: targetPath,
+      files,
+      sourceKind: libScoped ? undefined : sourceDescriptor?.kind,
+      readOnly,
+      peers: peers.length,
+    }),
+    [slug, projectId, tool, targetPath, files, libScoped, sourceDescriptor, readOnly, peers.length],
+  );
   // eeschema: the sheet THIS client is bound to — the roster dims peers whose
   // skeleton state says they're on a different sheet (collab-presence 0003).
   const [activeSheetPath, setActiveSheetPath] = React.useState<string | undefined>();
@@ -2375,6 +2391,12 @@ export function WasmTool({
       </WasmErrorBoundary>
 
       {fatal && <FatalOverlay message={fatal} />}
+      {/* Outside the error boundary and independent of `ready`, like the
+          fatal overlay: a crashed session can still be reported. */}
+      <ReportProblemHost
+        project={reportProject}
+        consentAllowed={!libScoped && !readOnly && sourceDescriptor?.kind === "remote-rw" && scopeId !== "local"}
+      />
       {fenced && !fatal && <FenceOverlay />}
 
       {/* The log console (z-40, above boot + fatal overlays) — forced visible
