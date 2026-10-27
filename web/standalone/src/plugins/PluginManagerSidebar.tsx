@@ -61,6 +61,11 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
   const { plugins, permissions, refresh } = catalog;
   const viewRef = React.useRef(view);
   viewRef.current = view;
+  // The listing refetches each time the tab is shown again, and its rows carry live-room fields
+  // (isLive, ydocTag) that move while the editor is open: a running plugin reads the current
+  // listing instead of restarting with every new one.
+  const projectFilesRef = React.useRef(projectFiles);
+  projectFilesRef.current = projectFiles;
   const open = view?.kind === 'manager';
   const selected = view?.kind === 'plugin' ? view.id : '';
   const onClose = () => onViewChange(null);
@@ -163,7 +168,7 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
         const account = sessionIdentity()?.slug ?? null;
         const authorize = () => account ? verifyPluginAccount(API_BASE_URL, account, abort.signal) : Promise.resolve();
         let authorizeOperation:(method:string)=>Promise<void> = async()=>{if(hostedPlugins)throw new Error('Plugin is still starting');await authorize();};
-        const documents = project ? createDocumentAPI({doc,project,fileName,files:projectFiles ?? [],signal:abort.signal,
+        const documents = project ? createDocumentAPI({doc,project,fileName,files:()=>projectFilesRef.current ?? [],signal:abort.signal,
           selection:()=>getLocalSelection().uuids,subscribeSelection:subscribeLocalSelection,geometry:openGeometry}) : undefined;
         instance = await host.mountPackagePlugin(target, {
           plugin: active, signal: abort.signal, documents, authorize,
@@ -229,7 +234,7 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
       else setStatus(selected === BUILTIN ? 'Read only · Current board' : hostedPlugins ? (active?.source === 'marketplace' ? 'Published by PCBJam · Signed in' : active?.source === 'tutorial' ? 'Tutorial by PCBJam · Signed in' : 'Private plugin · Signed in') : 'Local development plugin');
     })().catch(error => fail(error instanceof Error ? error.message : 'Plugin could not start'));
     return () => { abort.abort(); instance?.dispose(); doc.off('update', changed); };
-  }, [doc, fileName, tool, readOnly, attempt, selected, active?.digest, active?.generation, active?.enabled, project?.id, project?.scope, project?.name, projectFiles]);
+  }, [doc, fileName, tool, readOnly, attempt, selected, active?.digest, active?.generation, active?.enabled, project?.id, project?.scope, project?.name]);
 
   const prepare = async (files: File[], zip: boolean) => {
     setBusy(true); setNotice(''); setCandidate(null);

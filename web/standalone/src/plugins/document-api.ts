@@ -55,7 +55,8 @@ export function createDocumentAPI(options: {
         name: string;
     };
     fileName: string;
-    files: readonly {
+    /** The project listing as it is now: it refreshes under a running plugin. */
+    files(): readonly {
         path: string;
     }[];
     selection(): readonly string[];
@@ -89,9 +90,10 @@ export function createDocumentAPI(options: {
         projectInfo: () => { live(); return { ...options.project }; },
         catalog: () => {
             live();
-            if (options.files.length > 5000)
+            const files = options.files();
+            if (files.length > 5000)
                 throw new Error('Project catalog exceeds limits');
-            return options.files.filter(file => /\.(kicad_sch|kicad_pcb|kicad_sym|kicad_mod)$/.test(file.path)).map(file => ({ name: file.path, kind: file.path.split('.').at(-1)!, current: file.path === options.fileName }));
+            return files.filter(file => /\.(kicad_sch|kicad_pcb|kicad_sym|kicad_mod)$/.test(file.path)).map(file => ({ name: file.path, kind: file.path.split('.').at(-1)!, current: file.path === options.fileName }));
         },
         revision: () => { live(); return revision; },
         items: (cursor: number, limit: number, types: string[]) => {

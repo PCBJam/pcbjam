@@ -9,9 +9,10 @@ function fixture(version = 2) {
     docToY(fileToDoc(text), doc);
     let selected = ['s1', 'missing', 's1'];
     let selectionChanged = () => { };
+    let files = [{ path: 'main.kicad_sch' }, { path: 'board.kicad_pcb' }, { path: 'credentials.json' }];
     const unsubscribe = vi.fn();
-    const api = createDocumentAPI({ doc, project: { id: 'p1', scope: 'scope', name: 'test' }, fileName: 'main.kicad_sch', files: [{ path: 'main.kicad_sch' }, { path: 'board.kicad_pcb' }, { path: 'credentials.json' }], signal: abort.signal, selection: () => selected, subscribeSelection: cb => { selectionChanged = cb; return unsubscribe; } });
-    return { doc, api, abort, unsubscribe, select: (ids: string[]) => { selected = ids; selectionChanged(); }, close: () => { abort.abort(); doc.destroy(); } };
+    const api = createDocumentAPI({ doc, project: { id: 'p1', scope: 'scope', name: 'test' }, fileName: 'main.kicad_sch', files: () => files, signal: abort.signal, selection: () => selected, subscribeSelection: cb => { selectionChanged = cb; return unsubscribe; } });
+    return { doc, api, abort, unsubscribe, select: (ids: string[]) => { selected = ids; selectionChanged(); }, list: (next: typeof files) => { files = next; }, close: () => { abort.abort(); doc.destroy(); } };
 }
 describe('plugin current-document adapter', () => {
     it.each([1, 2])('returns detached canonical slots for format %s', version => {
@@ -33,6 +34,13 @@ describe('plugin current-document adapter', () => {
     it('returns only project metadata and design file names', () => { const f = fixture(); try {
         expect(f.api.projectInfo()).toEqual({ id: 'p1', scope: 'scope', name: 'test' });
         expect(f.api.catalog().map(v => v.name)).toEqual(['main.kicad_sch', 'board.kicad_pcb']);
+    }
+    finally {
+        f.close();
+    } });
+    it('lists the project as it is now, not as it was when the plugin started', () => { const f = fixture(); try {
+        f.list([{ path: 'main.kicad_sch' }, { path: 'sub.kicad_sch' }]);
+        expect(f.api.catalog().map(v => v.name)).toEqual(['main.kicad_sch', 'sub.kicad_sch']);
     }
     finally {
         f.close();
@@ -163,7 +171,7 @@ describe('plugin current-document adapter', () => {
         doc.getMap(Y_KDOC_META).set('sexprVersion', 2);
         docToY(fileToDoc(text), doc);
         const reads: Array<[number, number]> = [], requests: unknown[] = [];
-        const base = { doc, project: { id: 'p1', scope: 'scope', name: 'test' }, fileName: 'b.kicad_pcb', files: [{ path: 'b.kicad_pcb' }], signal: abort.signal, selection: () => [], subscribeSelection: () => () => { } };
+        const base = { doc, project: { id: 'p1', scope: 'scope', name: 'test' }, fileName: 'b.kicad_pcb', files: () => [{ path: 'b.kicad_pcb' }], signal: abort.signal, selection: () => [], subscribeSelection: () => () => { } };
         try {
             expect(() => createDocumentAPI(base).openGeometry({ tracks: false, zones: false })).toThrow(/unavailable/);
             const api = createDocumentAPI({ ...base, geometry: request => { requests.push(request); return { read: async (ms, max) => { reads.push([ms, max]); return { text: 'x', done: false }; } }; } });
