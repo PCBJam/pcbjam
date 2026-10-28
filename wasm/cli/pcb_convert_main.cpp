@@ -46,6 +46,13 @@
  *             deg, smd/exclude/dnp attributes, all non-empty fields).
  *             Exit: 0 ok, 2 usage, 4 load failure, 5 write failure.
  *
+ *   batch:    pcb_convert --fab-batch <file.kicad_pcb> <outdir>
+ *                         <gerbers|drill|ipc356|fab-components>[,...]
+ *             Those exports on ONE board load (plugins 0024), each into
+ *             <outdir>/<kind>/; per-kind verdicts as "FAB-BATCH <kind>
+ *             <exit-code>" stderr lines with the single-flag codes. Exit: 0
+ *             when the loop completed, 2 usage.
+ *
  * No GUI, no renderer, no embind bindings. Wired into pcbnew/CMakeLists.txt
  * behind the KICAD_PCB_CONVERTER_WASM option (see
  * scripts/kicad/build-pcb_convert.sh).
@@ -54,6 +61,7 @@
  * separate process from closed code, never linked into it.
  */
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -62,6 +70,7 @@
 #include <string>
 #include <unistd.h>
 #include <unordered_set>
+#include <vector>
 
 #include <wx/filename.h>
 #include <wx/image.h>
@@ -478,18 +487,13 @@ int runDrc( const char* aInPath, bool aJson, bool aStrict, const char* aOutPath,
 // JOB_EXPORT_PCB_GERBERS (board's enabled layers, .gbrjob file on, no protel
 // extensions unless the board plot params say so — we DON'T use board plot
 // params, matching kicad-cli's default).
+//
+// The export* functions take a loaded board, so --fab-batch can run several
+// on one load; the run* wrappers load it for the single flags.
 
-int runGerbers( const char* aInPath, const char* aOutDir )
+int exportGerbers( BOARD* brd, const char* aInPath, const wxString& aOutDir )
 {
-    wxFileName fn( wxString::FromUTF8( aInPath ) );
-    fn.MakeAbsolute();
-
-    BOARD* brd = loadBoardHeadless( aInPath );
-
-    if( !brd )
-        return 4;
-
-    wxString outPath = aOutDir ? wxString::FromUTF8( aOutDir ) : fn.GetPath();
+    wxString outPath = aOutDir;
 
     if( !outPath.EndsWith( wxS( "/" ) ) )
         outPath += wxS( "/" );
@@ -551,6 +555,20 @@ int runGerbers( const char* aInPath, const char* aOutDir )
                   failed ? "FAIL" : "OK", plotted, (const char*) outPath.ToUTF8() );
 
     return failed ? 4 : 0;
+}
+
+
+int runGerbers( const char* aInPath, const char* aOutDir )
+{
+    wxFileName fn( wxString::FromUTF8( aInPath ) );
+    fn.MakeAbsolute();
+
+    BOARD* brd = loadBoardHeadless( aInPath );
+
+    if( !brd )
+        return 4;
+
+    return exportGerbers( brd, aInPath, aOutDir ? wxString::FromUTF8( aOutDir ) : fn.GetPath() );
 }
 
 // ── headless board plot (SVG / PDF) ───────────────────────────────────────────
@@ -664,17 +682,9 @@ int runPlotBoard( const char* aInPath, bool aPdf, const char* aLayersArg, const 
 // default JOB_EXPORT_PCB_DRILL options (kicad-cli defaults); no map files
 // (the writer would drive a plotter for those — add on demand).
 
-int runDrill( const char* aInPath, const char* aOutDir )
+int exportDrill( BOARD* brd, const char* aInPath, const wxString& aOutDir )
 {
-    wxFileName fn( wxString::FromUTF8( aInPath ) );
-    fn.MakeAbsolute();
-
-    BOARD* brd = loadBoardHeadless( aInPath );
-
-    if( !brd )
-        return 4;
-
-    wxString outPath = aOutDir ? wxString::FromUTF8( aOutDir ) : fn.GetPath();
+    wxString outPath = aOutDir;
 
     if( !outPath.EndsWith( wxS( "/" ) ) )
         outPath += wxS( "/" );
@@ -730,9 +740,36 @@ int runDrill( const char* aInPath, const char* aOutDir )
     return ok ? 0 : 4;
 }
 
+
+int runDrill( const char* aInPath, const char* aOutDir )
+{
+    wxFileName fn( wxString::FromUTF8( aInPath ) );
+    fn.MakeAbsolute();
+
+    BOARD* brd = loadBoardHeadless( aInPath );
+
+    if( !brd )
+        return 4;
+
+    return exportDrill( brd, aInPath, aOutDir ? wxString::FromUTF8( aOutDir ) : fn.GetPath() );
+}
+
 // ── IPC-D-356 netlist export ──────────────────────────────────────────────────
 // Same IPC356D_WRITER call the pcbnew GUI export makes, default settings; net
 // assignments come from the saved board (no connectivity rebuild needed).
+
+int exportIpc356( BOARD* brd, const char* aInPath, const wxString& aOutPath )
+{
+    trace( "runIpc356: IPC356D_WRITER::Write" );
+    IPC356D_WRITER writer( brd );
+    const bool     ok = writer.Write( aOutPath );
+
+    std::fprintf( stderr, "%s: %s (ipc-356d) -> %s\n", aInPath, ok ? "OK" : "FAIL",
+                  (const char*) aOutPath.ToUTF8() );
+
+    return ok ? 0 : 5;
+}
+
 
 int runIpc356( const char* aInPath, const char* aOutPath )
 {
@@ -758,14 +795,7 @@ int runIpc356( const char* aInPath, const char* aOutPath )
         outPath = out.GetFullPath();
     }
 
-    trace( "runIpc356: IPC356D_WRITER::Write" );
-    IPC356D_WRITER writer( brd );
-    const bool     ok = writer.Write( outPath );
-
-    std::fprintf( stderr, "%s: %s (ipc-356d) -> %s\n", aInPath, ok ? "OK" : "FAIL",
-                  (const char*) outPath.ToUTF8() );
-
-    return ok ? 0 : 5;
+    return exportIpc356( brd, aInPath, outPath );
 }
 
 // ── fabrication components JSON ───────────────────────────────────────────────
@@ -774,30 +804,8 @@ int runIpc356( const char* aInPath, const char* aOutPath )
 // flip, no aux-origin subtraction — manufacturer-specific conventions (e.g.
 // PCBWay's aux-relative negated-Y positions) are applied by the consumer.
 
-int runFabComponents( const char* aInPath, const char* aOutPath )
+int exportFabComponents( BOARD* brd, const char* aInPath, const wxString& aOutPath )
 {
-    wxFileName fn( wxString::FromUTF8( aInPath ) );
-    fn.MakeAbsolute();
-
-    BOARD* brd = loadBoardHeadless( aInPath );
-
-    if( !brd )
-        return 4;
-
-    wxString outPath;
-
-    if( aOutPath )
-    {
-        outPath = wxString::FromUTF8( aOutPath );
-    }
-    else
-    {
-        wxFileName out( fn );
-        out.SetName( out.GetName() + wxS( "-fab-components" ) );
-        out.SetExt( wxS( "json" ) );
-        outPath = out.GetFullPath();
-    }
-
     trace( "runFabComponents: collecting" );
 
     const BOX2I    bbox = brd->GetBoardEdgesBoundingBox();
@@ -854,21 +862,116 @@ int runFabComponents( const char* aInPath, const char* aOutPath )
     j["footprints"] = footprints;
 
     trace( "runFabComponents: writing" );
-    std::ofstream out( outPath.fn_str() );
+    std::ofstream out( aOutPath.fn_str() );
     out << j.dump( 2 ) << "\n";
     out.close();
 
     if( !out )
     {
         std::fprintf( stderr, "%s: error: unable to write %s\n", aInPath,
-                      (const char*) outPath.ToUTF8() );
+                      (const char*) aOutPath.ToUTF8() );
         return 5;
     }
 
     std::fprintf( stderr, "%s: OK (%d footprints) -> %s\n", aInPath,
-                  (int) brd->Footprints().size(), (const char*) outPath.ToUTF8() );
+                  (int) brd->Footprints().size(), (const char*) aOutPath.ToUTF8() );
 
     return 0;
+}
+
+
+int runFabComponents( const char* aInPath, const char* aOutPath )
+{
+    wxFileName fn( wxString::FromUTF8( aInPath ) );
+    fn.MakeAbsolute();
+
+    BOARD* brd = loadBoardHeadless( aInPath );
+
+    if( !brd )
+        return 4;
+
+    wxString outPath;
+
+    if( aOutPath )
+    {
+        outPath = wxString::FromUTF8( aOutPath );
+    }
+    else
+    {
+        wxFileName out( fn );
+        out.SetName( out.GetName() + wxS( "-fab-components" ) );
+        out.SetExt( wxS( "json" ) );
+        outPath = out.GetFullPath();
+    }
+
+    return exportFabComponents( brd, aInPath, outPath );
+}
+
+// ── several board exports on one load ─────────────────────────────────────────
+// plugins 0024: a manufacturer ZIP needs Gerbers, drill, IPC-356 and the
+// component list of one board; one process and one board load instead of four.
+// Running exporters one after another on a loaded board is what kicad-cli
+// jobsets do (PCBNEW_JOBS_HANDLER keeps the board between jobs); they only
+// read it. Each kind writes into <outdir>/<kind>/ with the names its single
+// flag writes for the tools pool, prints its usual verdict line, then
+//     FAB-BATCH <kind> <exit-code>
+// with the single-export code (a board that does not load: 4 for every kind).
+
+const char* const FAB_BATCH_KINDS[] = { "gerbers", "drill", "ipc356", "fab-components" };
+
+
+bool isFabBatchKind( const std::string& aKind )
+{
+    for( const char* kind : FAB_BATCH_KINDS )
+    {
+        if( aKind == kind )
+            return true;
+    }
+
+    return false;
+}
+
+
+void runFabBatch( const char* aInPath, const char* aOutDir, const std::vector<std::string>& aKinds )
+{
+    BOARD* brd = loadBoardHeadless( aInPath );
+
+    for( const std::string& kind : aKinds )
+    {
+        const wxString dir = wxString::FromUTF8( aOutDir ) + wxS( "/" ) + wxString::FromUTF8( kind );
+        int            rc = 4;
+
+        if( !brd )
+        {
+            // loadBoardHeadless already printed why.
+        }
+        else if( !wxFileName::Mkdir( dir, wxS_DIR_DEFAULT, wxPATH_MKDIR_FULL ) )
+        {
+            std::fprintf( stderr, "%s: error: unable to create %s\n", aInPath,
+                          (const char*) dir.ToUTF8() );
+            rc = 5;
+        }
+        else
+        {
+            try
+            {
+                if( kind == "gerbers" )
+                    rc = exportGerbers( brd, aInPath, dir );
+                else if( kind == "drill" )
+                    rc = exportDrill( brd, aInPath, dir );
+                else if( kind == "ipc356" )
+                    rc = exportIpc356( brd, aInPath, dir + wxS( "/netlist.ipc" ) );
+                else
+                    rc = exportFabComponents( brd, aInPath, dir + wxS( "/fab-components.json" ) );
+            }
+            catch( const std::exception& e )
+            {
+                std::fprintf( stderr, "%s: error: %s\n", aInPath, e.what() );
+            }
+        }
+
+        std::fprintf( stderr, "FAB-BATCH %s %d\n", kind.c_str(), rc );
+    }
 }
 
 } // namespace
@@ -1330,12 +1433,55 @@ int pcbConvertMain( int argc, char** argv )
         _exit( rc );
     }
 
+    if( argc >= 2 && std::strcmp( argv[1], "--fab-batch" ) == 0 )
+    {
+        wxDisableAsserts();
+
+        // Kinds are checked before anything runs: a typo is a usage error,
+        // not a verdict line.
+        std::vector<std::string> kinds;
+        bool                     usage = argc != 5;
+
+        for( const wxString& token : wxSplit( wxString::FromUTF8( argc == 5 ? argv[4] : "" ), ',' ) )
+        {
+            const std::string kind( token.ToUTF8() );
+
+            if( !isFabBatchKind( kind ) || std::find( kinds.begin(), kinds.end(), kind ) != kinds.end() )
+                usage = true;
+
+            kinds.push_back( kind );
+        }
+
+        if( usage || kinds.empty() )
+        {
+            std::fprintf( stderr, "usage: kicad_tools --fab-batch <file.kicad_pcb> <outdir> "
+                                  "<gerbers|drill|ipc356|fab-components>[,...]\n" );
+            return 2;
+        }
+
+        try
+        {
+            runFabBatch( argv[2], argv[3], kinds );
+        }
+        catch( const std::exception& e )
+        {
+            // Kinds without a FAB-BATCH line count as not run.
+            std::fprintf( stderr, "%s: error: %s\n", argv[2], e.what() );
+        }
+
+        // Same static-dtor rationale as --drc above. Exit 0: the loop
+        // completed, the verdicts are the FAB-BATCH lines (--resave-batch).
+        std::fflush( nullptr );
+        _exit( 0 );
+    }
+
     std::fprintf( stderr, "usage: kicad_tools --drc [--json] [--strict] <file.kicad_pcb> [<out>]\n"
                           "       kicad_tools --gerbers <file.kicad_pcb> [<outdir>]\n"
                           "       kicad_tools --drill <file.kicad_pcb> [<outdir>]\n"
                           "       kicad_tools --plot-board [--pdf] [--layers <a,b,...>] <file.kicad_pcb> [<out>]\n"
                           "       kicad_tools --ipc356 <file.kicad_pcb> [<out.ipc>]\n"
-                          "       kicad_tools --fab-components <file.kicad_pcb> [<out.json>]\n" );
+                          "       kicad_tools --fab-components <file.kicad_pcb> [<out.json>]\n"
+                          "       kicad_tools --fab-batch <file.kicad_pcb> <outdir> <kind>[,<kind>...]\n" );
     return 2;
 }
 

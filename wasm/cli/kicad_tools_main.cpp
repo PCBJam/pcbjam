@@ -12,6 +12,9 @@
  *     kicad_tools --plot-board [--pdf] [--layers <a,b,...>] <file.kicad_pcb> [<out>]
  *     kicad_tools --ipc356 <file.kicad_pcb> [<out.ipc>]
  *     kicad_tools --fab-components <file.kicad_pcb> [<out.json>]
+ *     kicad_tools --fab-batch <file.kicad_pcb> <outdir> <kind>[,<kind>...]
+ *                       (several of the board exports on one load; verdicts
+ *                       as "FAB-BATCH <kind> <exit-code>" stderr lines)
  *
  *   eeschema side (sym_convert_main.cpp) — everything else:
  *     kicad_tools --convert-lib <input.lib> <output.kicad_sym>
@@ -59,7 +62,8 @@ int main( int argc, char** argv )
              || std::strcmp( argv[1], "--drill" ) == 0
              || std::strcmp( argv[1], "--plot-board" ) == 0
              || std::strcmp( argv[1], "--ipc356" ) == 0
-             || std::strcmp( argv[1], "--fab-components" ) == 0 ) )
+             || std::strcmp( argv[1], "--fab-components" ) == 0
+             || std::strcmp( argv[1], "--fab-batch" ) == 0 ) )
     {
         rc = pcbConvertMain( argc, argv );
     }
