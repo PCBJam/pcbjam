@@ -371,10 +371,12 @@ test.describe("embedded fonts (pcbnew)", () => {
 
     await openProperties(page, PCB_TTF);
     // Bold only sets the flag (DIALOG_TEXT_PROPERTIES calls SetBoldFlag), so the face stays.
-    // The B toggle sits right of the Font combo (dialog_text_properties_base layout); it is
-    // a BITMAP_BUTTON the registry does not list.
+    // The B toggle is a BITMAP_BUTTON the registry does not list. It opens the button bar in
+    // the grid column (dialog_text_properties_base) whose "Position X:" label has a 15 px
+    // left border, so its left edge is that label's minus 15 whatever the font metrics.
     const combo = (await visible(page, "wxOwnerDrawnComboBox"))!;
-    await page.mouse.click(combo.screenX + combo.width + 30, combo.centerY);
+    const posX = (await visible(page, "wxStaticText", "Position X:"))!;
+    await page.mouse.click(posX.screenX - 15 + 8, combo.centerY);
     await page.waitForTimeout(500); // eslint-disable-line -- documented interaction dwell: the bitmap toggle has no registry signal
     await stableShot(page, "embedded-fonts-pcb-05-text-props-bold.png");
     await clickOk(page);
