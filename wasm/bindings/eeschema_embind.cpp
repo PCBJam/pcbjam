@@ -86,6 +86,7 @@
 #include "pcbjam_theme.h"
 #include "pcbjam_libs_reload.h"
 #include "pcbjam_async_policy.h"
+#include "part_copy_symbol.h"
 #include <algorithm>
 #include <cstring>
 #include <typeinfo>
@@ -4015,6 +4016,8 @@ EMSCRIPTEN_BINDINGS(eeschema) {
     // Sheet navigator bridge (sheet-panel): hierarchy tree + navigate.
     function("kicadSheetsGetTree", &schSheetsGetTree);
     function("kicadSheetsEnter", &schSheetsEnter);
+    // libs 0031: open a part's team-library copy (tool-unique name, merged-image safe).
+    function("kicadSymbolEditorOpenCopy", &symbolEditorOpenCopy);
 
 #ifndef KICAD_MERGED_EMBIND
     // JS names ALSO registered by pcbnew_embind.cpp — in the merged image these are

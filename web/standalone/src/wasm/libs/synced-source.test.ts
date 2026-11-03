@@ -462,6 +462,46 @@ describe("boot preload (load-path-rework 0001 §6)", () => {
   });
 });
 
+describe("isLibWritable (libs 0031)", () => {
+  const stack = (id: string, writable: boolean) => ({
+    lib: { id, name: id },
+    layers: [
+      { namespace: `origin:${id}@v1`, kind: "static" as const, url: `${API}/o/${id}` },
+      { namespace: `mirror:t:${id}`, kind: "live" as const, url: ROOM, writable },
+    ],
+  });
+
+  it("the boot stacks answer before any library opens; unknown libraries stay undefined", async () => {
+    const server = await fakeServer({});
+    const source = syncedScopeLibsSource({} as unknown as LibsSource, {
+      apiBase: API,
+      scope: "s",
+      user: "u",
+      fetchImpl: server.fetchImpl,
+      storeFactory: () => memStore(),
+      channelFactory: () => server.channel,
+      preloaded: {
+        libs: [],
+        stacks: { mine: stack("mine", true), kicad: stack("kicad", false), gone: null },
+      },
+    });
+    expect(source.isLibWritable!("mine")).toBe(true);
+    expect(source.isLibWritable!("kicad")).toBe(false);
+    expect(source.isLibWritable!("gone")).toBe(false);
+    expect(source.isLibWritable!("unknown")).toBeUndefined();
+    source.dispose?.();
+  });
+
+  it("a library resolved on its own knows once its stack is open", async () => {
+    const server = await fakeServer({ "symbol/R": "(r)" });
+    const source = makeSource(server);
+    expect(source.isLibWritable!(LIB_ID)).toBeUndefined();
+    await source.listItems(LIB_ID);
+    expect(source.isLibWritable!(LIB_ID)).toBe(true);
+    source.dispose?.();
+  });
+});
+
 describe("syncedScopeLibsSource.syncState", () => {
   function scoped(libs: LibInfo[]) {
     const remote: LibsSource = {

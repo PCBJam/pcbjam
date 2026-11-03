@@ -292,3 +292,35 @@ describe("delete op + quiet not-found (libs 0020)", () => {
     });
   });
 });
+
+describe("isWritable (libs 0031)", () => {
+  function isWritableOf(source: LibsSource): (lib: string) => boolean {
+    (globalThis as unknown as { window: unknown }).window = { location: { search: "" }, dispatchEvent: () => true };
+    try {
+      installLibsProvider(source, () => {});
+      return (globalThis as unknown as { window: { kicadLibs: { isWritable: (lib: string) => boolean } } }).window.kicadLibs
+        .isWritable;
+    } finally {
+      delete (globalThis as unknown as { window?: unknown }).window;
+    }
+  }
+  const save = async () => true;
+
+  it("answers what the source knows about the library", () => {
+    const isWritable = isWritableOf(
+      baseSource({ saveItemBody: save, isLibWritable: (id) => (id === "mine" ? true : id === "kicad" ? false : undefined) }),
+    );
+    expect(isWritable(libUri("mine"))).toBe(true);
+    expect(isWritable(libUri("kicad"))).toBe(false);
+  });
+
+  it("stays writable while the source can't tell, as before", () => {
+    expect(isWritableOf(baseSource({ saveItemBody: save }))(libUri("L"))).toBe(true);
+    expect(isWritableOf(baseSource({ saveItemBody: save, isLibWritable: () => undefined }))(libUri("L"))).toBe(true);
+  });
+
+  it("a source that can't save, or a path outside the mount, is read-only", () => {
+    expect(isWritableOf(baseSource())(libUri("L"))).toBe(false);
+    expect(isWritableOf(baseSource({ saveItemBody: save }))("/home/u/Device.kicad_sym")).toBe(false);
+  });
+});

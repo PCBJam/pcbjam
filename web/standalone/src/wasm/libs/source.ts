@@ -146,6 +146,13 @@ export interface LibsSource {
    */
   getItemBytes?(libId: string, kind: string, name: string): Promise<Uint8Array | null>;
   /**
+   * May this user write the library (libs 0031)? Answered from what the source
+   * already holds, never a fetch: KiCad asks for every row of its library
+   * tree. Undefined while it isn't known; the bridge then answers writable,
+   * as before. Optional: sources without per-library rights omit it.
+   */
+  isLibWritable?(libId: string): boolean | undefined;
+  /**
    * Remove one item from a writable lib (libs 0020 P13: KiCad's rename is
    * delete-old + save-new, and the tree's Delete calls it). Resolves false on a
    * rejected delete. Optional, like saveItemBody.
@@ -223,9 +230,16 @@ export type KicadLibsRequest = (
   // bridge); every other op returns a string (or null).
 ) => Promise<string | Uint8Array | null>;
 
+/**
+ * Whether KiCad may treat a library as writable (the plugins'
+ * `IsLibraryWritable`, libs 0031). Synchronous: the C++ side calls it inline,
+ * once per library tree row.
+ */
+export type KicadLibsIsWritable = (lib: string) => boolean;
+
 declare global {
   interface Window {
-    kicadLibs?: { request: KicadLibsRequest };
+    kicadLibs?: { request: KicadLibsRequest; isWritable?: KicadLibsIsWritable };
   }
 }
 
@@ -646,6 +660,15 @@ export function installLibsProvider(
     return parts.join("");
   }
 
-  window.kicadLibs = { request };
+  // libs 0031: a library this user can't write shows as read-only in KiCad
+  // (title, tree, banner) instead of failing at Save. A source that can't save
+  // at all is read-only; one that can't tell yet stays writable.
+  const isWritable: KicadLibsIsWritable = (lib) => {
+    const id = libIdFromUri(lib);
+    if (!id || !source.saveItemBody) return false;
+    return source.isLibWritable?.(id) ?? true;
+  };
+
+  window.kicadLibs = { request, isWritable };
   log("[libs] provider installed");
 }

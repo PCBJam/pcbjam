@@ -170,6 +170,8 @@ import { publishViewport } from "@/wasm/viewport-store";
 import { OverlayHost } from "@/overlay/OverlayHost";
 import { setTourDoc } from "@/overlay/tours/checkpoints";
 import { savePartAndPlace } from "@/libs/save-part";
+import { installPartCopyBridge } from "@/libs/part-copy";
+import { PartCopySaveDialog } from "@/components/wasm-tool/PartCopySaveDialog";
 import {
   chromeSetter,
   show3DOpener,
@@ -1147,6 +1149,7 @@ export function WasmTool({
     // caller owns) — cleanup disposes it so its SyncStack sockets don't outlive
     // the editor.
     let ownedLibsSource: LibsSource | null = null;
+    let removePartCopyBridge: (() => void) | null = null;
 
     void (async () => {
       try {
@@ -1184,6 +1187,8 @@ export function WasmTool({
         // The one live libs source, for callers outside the React tree (part saves).
         // The scope SLUG: the lib routes are addressed by slug, like every other lib call here.
         setActiveEditor({ source, tool, scope: currentScope(), projectId });
+        // libs 0031: KiCad's read-only banner and save gate ask the page (copy to a team library).
+        removePartCopyBridge = installPartCopyBridge({ libScoped });
         if (import.meta.env.DEV) (window as unknown as { __pcbjamSavePart?: typeof savePartAndPlace }).__pcbjamSavePart = savePartAndPlace;
         // Download-consent gate (standalone-load-ux 0001): before pulling the
         // (large) cold wasm + lib bundles, say how many MB and wait for the OK.
@@ -2101,6 +2106,8 @@ export function WasmTool({
       // sockets); IDB caches stay. Injected sources belong to the caller.
       ownedLibsSource?.dispose?.();
       ownedLibsSource = null;
+      removePartCopyBridge?.();
+      removePartCopyBridge = null;
       setActiveEditor(null);
       oom.stop();
     };
@@ -2392,6 +2399,9 @@ export function WasmTool({
 
       {/* Guided-tour overlay (overlay-system 0002): coachmarks over the editor. */}
       {ready && !fatal && <OverlayHost tool={tool} />}
+
+      {/* libs 0031: Save reached parts of a read-only library. */}
+      <PartCopySaveDialog />
 
       <NoticeStack
         ready={ready}

@@ -85,6 +85,7 @@
 #include "collab_presence_style.h"
 #include "pcbjam_theme.h"
 #include "pcbjam_libs_reload.h"
+#include "part_copy_footprint.h"
 #include <page_info.h>
 #include <title_block.h>
 #include <algorithm>
@@ -4242,6 +4243,8 @@ EMSCRIPTEN_BINDINGS(pcbnew) {
 
     // Programmatic save of the in-memory board (round-trip tests, README §A).
     function("kicadSaveBoard", &kicadSaveBoard);
+    // libs 0031: open a part's team-library copy (tool-unique name, merged-image safe).
+    function("kicadFootprintEditorOpenCopy", &footprintEditorOpenCopy);
 #ifndef KICAD_MERGED_EMBIND
     // Placed-footprint usage + update-from-library (libs 0017 §2c/2d).
     function("kicadLibsFootprintUsage", &pcbLibsFootprintUsage);

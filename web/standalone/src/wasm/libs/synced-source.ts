@@ -84,7 +84,9 @@ export function syncedLibsSource(
   },
 ): LibsSource {
   const log = opts.log ?? (() => {});
-  let opened: Promise<{ stack: SyncStack; info: LibInfo }> | null = null;
+  let opened: Promise<{ stack: SyncStack; info: LibInfo; writable: boolean }> | null = null;
+  // libs 0031: whether the open stack has a layer this user may write.
+  let openWritable: boolean | undefined;
   // The stack once `opened` has settled: lets the index be peeked without waiting.
   let openStack: SyncStack | null = null;
   let indexStore: LibIndexStore | undefined = opts.libIndex;
@@ -241,9 +243,10 @@ export function syncedLibsSource(
     window.dispatchEvent(new CustomEvent(LIB_ITEM_UPDATED_EVENT, { detail }));
   }
 
-  async function ensure(): Promise<{ stack: SyncStack; info: LibInfo }> {
+  async function ensure(): Promise<{ stack: SyncStack; info: LibInfo; writable: boolean }> {
     if (!opened) {
       const attempt = resolveAndOpen(libId, opts, log).then((r) => {
+        openWritable = r.writable;
         r.stack.subscribe((c) => {
           // Consume our own save's echo (exactly one change event per push);
           // everything else is a peer's edit.
@@ -403,6 +406,13 @@ export function syncedLibsSource(
       opened = null;
       openStack = null;
     },
+    isLibWritable(): boolean | undefined {
+      if (openWritable !== undefined) return openWritable;
+      // Before the open: the batch-resolved descriptor (boot) already says it.
+      const descriptor = opts.stackFor?.(libId);
+      if (descriptor === null) return false;
+      return descriptor ? hasWritableLayer(descriptor.layers) : undefined;
+    },
     async enableRealtime(): Promise<void> {
       // Names are the SCOPE source's concern (it fans out per lib); a one-lib
       // source just promotes its own stack.
@@ -426,7 +436,7 @@ async function resolveAndOpen(
     channelFactory?: ChannelFactory;
   },
   log: (msg: string) => void,
-): Promise<{ stack: SyncStack; info: LibInfo }> {
+): Promise<{ stack: SyncStack; info: LibInfo; writable: boolean }> {
   const baseFetch = opts.fetchImpl ?? fetch;
   const headers: Record<string, string> = {
     [SCOPE_HEADER]: opts.scope,
@@ -469,6 +479,7 @@ async function resolveAndOpen(
   await stack.open();
   return {
     stack,
+    writable: hasWritableLayer(body.layers),
     info: {
       id: body.lib.id,
       name: body.lib.name,
@@ -476,6 +487,11 @@ async function resolveAndOpen(
       ...(body.lib.paths ? { paths: body.lib.paths } : {}),
     },
   };
+}
+
+/** libs 0031: the server marks the layers this user may write (sync-serve). */
+function hasWritableLayer(layers: ReadonlyArray<{ writable?: boolean }>): boolean {
+  return layers.some((l) => !!l.writable);
 }
 
 /** Decode a `"<kind>/<name>"` namespace path back into editor item terms. */
@@ -774,6 +790,7 @@ export function syncedScopeLibsSource(
       forLib(libId).saveItemBody!(libId, kind, name, body),
     deleteItemBody: (libId, kind, name) =>
       forLib(libId).deleteItemBody!(libId, kind, name),
+    isLibWritable: (libId) => forLib(libId).isLibWritable!(libId),
     getItemBytes: (libId, kind, name) =>
       forLib(libId).getItemBytes!(libId, kind, name),
     async presync(presyncOpts): Promise<void> {
