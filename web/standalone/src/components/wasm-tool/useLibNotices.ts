@@ -15,6 +15,14 @@ import {
 } from "@/wasm/libs/source";
 import { MODELS_LOADING_EVENT, type ModelsLoadingDetail } from "@/wasm/libs/models-bridge";
 import { DOC_REVERTED_EVENT } from "@/wasm/collab/kicad-binding";
+import {
+  EMBEDDED_TOO_LARGE_EVENT,
+  embeddedTooLargeMessage,
+  SYNC_TOO_LARGE_EVENT,
+  syncTooLargeMessage,
+  type EmbeddedTooLargeDetail,
+  type SyncTooLargeDetail,
+} from "@/wasm/collab/sync-limits";
 import { addAnnouncedLib } from "@/wasm/libs/runtime-add";
 import { CROSS_PROBE_NOTICE_EVENT, type CrossProbeNotice } from "./cross-probe";
 import { reloadFallbackMsg } from "./ui-helpers";
@@ -158,6 +166,10 @@ export function useLibNotices(opts: {
   // The backend rolled this document back to its last valid state
   // (kicad-validity 0001 — DOC_REVERTED_EVENT from the collab binding).
   const [docReverted, setDocReverted] = React.useState<string | null>(null);
+  // Embedded files past what a room holds were not saved or shared (fonts 0001): stays
+  // until closed. A change too large to sync stops the doc's sync: a banner until reload.
+  const [embeddedTooLarge, setEmbeddedTooLarge] = React.useState<string | null>(null);
+  const [syncTooLarge, setSyncTooLarge] = React.useState<string | null>(null);
   // Cross-tab cross-probing (cross-probe 0001): "the other editor is open in
   // another tab", or a blocked popup with an open button.
   const [crossProbeNotice, setCrossProbeNotice] = React.useState<CrossProbeNotice | null>(null);
@@ -233,6 +245,12 @@ export function useLibNotices(opts: {
     window.addEventListener(LIB_ITEM_UPDATED_EVENT, onItemUpdated);
     window.addEventListener(LIB_SET_CHANGED_EVENT, onLibSet);
     window.addEventListener(DOC_REVERTED_EVENT, onDocReverted);
+    const onEmbeddedTooLarge = (e: Event) =>
+      setEmbeddedTooLarge(embeddedTooLargeMessage((e as CustomEvent<EmbeddedTooLargeDetail>).detail));
+    const onSyncTooLarge = (e: Event) =>
+      setSyncTooLarge(syncTooLargeMessage((e as CustomEvent<SyncTooLargeDetail>).detail));
+    window.addEventListener(EMBEDDED_TOO_LARGE_EVENT, onEmbeddedTooLarge);
+    window.addEventListener(SYNC_TOO_LARGE_EVENT, onSyncTooLarge);
     const onCrossProbe = (e: Event) =>
       setCrossProbeNotice((e as CustomEvent<CrossProbeNotice>).detail);
     window.addEventListener(CROSS_PROBE_NOTICE_EVENT, onCrossProbe);
@@ -244,6 +262,8 @@ export function useLibNotices(opts: {
       window.removeEventListener(LIB_ITEM_UPDATED_EVENT, onItemUpdated);
       window.removeEventListener(LIB_SET_CHANGED_EVENT, onLibSet);
       window.removeEventListener(DOC_REVERTED_EVENT, onDocReverted);
+      window.removeEventListener(EMBEDDED_TOO_LARGE_EVENT, onEmbeddedTooLarge);
+      window.removeEventListener(SYNC_TOO_LARGE_EVENT, onSyncTooLarge);
     };
   }, [noteStale]);
 
@@ -345,6 +365,7 @@ export function useLibNotices(opts: {
   const dismissLibUpdate = React.useCallback(() => setLibUpdate(null), []);
   const dismissLibSetNotice = React.useCallback(() => setLibSetNotice(null), []);
   const dismissDocReverted = React.useCallback(() => setDocReverted(null), []);
+  const dismissEmbeddedTooLarge = React.useCallback(() => setEmbeddedTooLarge(null), []);
   const dismissCrossProbeNotice = React.useCallback(() => setCrossProbeNotice(null), []);
 
   return {
@@ -358,6 +379,9 @@ export function useLibNotices(opts: {
     dismissLibSetNotice,
     docReverted,
     dismissDocReverted,
+    embeddedTooLarge,
+    dismissEmbeddedTooLarge,
+    syncTooLarge,
     crossProbeNotice,
     dismissCrossProbeNotice,
     libLoading,

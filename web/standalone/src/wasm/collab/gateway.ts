@@ -42,6 +42,7 @@ import { cwarn } from "./debug";
 import { createGatewayAwareness } from "./gateway-awareness";
 import { idleMonitor } from "./idle-policy";
 import type { YjsProvider } from "./provider";
+import { GATEWAY_FRAME_LIMIT, notifySyncTooLarge } from "./sync-limits";
 
 const MESSAGE_SYNC = 0;
 const MESSAGE_AWARENESS = 1;
@@ -49,6 +50,8 @@ const MESSAGE_QUERY_AWARENESS = 3;
 
 const MAX_BACKOFF_MS = 30_000;
 const ACTIVATE_TIMEOUT_MS = 30_000;
+/** Room for the channel tag and the gateway's own framing under the worker's limit. */
+const FRAME_HEADROOM = 64 * 1024;
 
 /**
  * The gateway refused a subscription (`suberr`): 409 invalid-file, 403
@@ -448,6 +451,8 @@ export class GatewayDocFacade implements YjsProvider {
   private readonly gen: number | undefined;
   private dead: CollabSubRejectedError | null = null;
   private destroyed = false;
+  /** A doc frame was past the worker's message limit: this doc's sync frames stop. */
+  private tooLarge = false;
   /** The doc holds server state (a Step2 arrived) — in EITHER mode. */
   private synced = false;
   /** Sync state was reached as an ACTIVE participant (relay-backed). */
@@ -756,6 +761,21 @@ export class GatewayDocFacade implements YjsProvider {
   // --- internals ------------------------------------------------------------
 
   private send(frame: Uint8Array): void {
+    // The worker closes a socket that sends past its message limit, and every reconnect
+    // would send the same change again (its Step2 answer carries it), forever: refuse the
+    // frame, stop this doc's sync and say so. Presence frames still flow.
+    if (frame[0] === MESSAGE_SYNC) {
+      if (this.tooLarge) return;
+      if (frame.length > GATEWAY_FRAME_LIMIT - FRAME_HEADROOM) {
+        this.tooLarge = true;
+        console.error(
+          `[gateway] ${this.docPath}: a ${frame.length}-byte change is past the ` +
+            `${GATEWAY_FRAME_LIMIT}-byte message limit; this doc no longer syncs`,
+        );
+        notifySyncTooLarge({ docPath: this.docPath, bytes: frame.length, limit: GATEWAY_FRAME_LIMIT });
+        return;
+      }
+    }
     this.conn.sendFrame(this.ch, frame);
   }
 

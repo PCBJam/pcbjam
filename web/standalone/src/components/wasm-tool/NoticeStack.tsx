@@ -21,7 +21,7 @@ export interface FileGoneNotice {
  * Every transient notice the running editor shows over the canvas: the
  * bottom-left progress badges (lib pre-sync, 3D models), the busy pill, the
  * durable save-blocked banner and the toasts (lib error, placed-item update,
- * lib-set change, doc revert, cross-probe, shared tabs; Sonner, from the
+ * lib-set change, doc revert, embedded files too large, cross-probe, shared tabs; Sonner, from the
  * Toaster at the app root). State + timers live in useLibNotices; this is the
  * render.
  */
@@ -41,6 +41,9 @@ export function NoticeStack({
   onDismissLibSet,
   docReverted,
   onDismissDocReverted,
+  embeddedTooLarge,
+  onDismissEmbeddedTooLarge,
+  syncTooLarge,
   crossProbeNotice,
   onDismissCrossProbeNotice,
   sharedTabs,
@@ -61,6 +64,11 @@ export function NoticeStack({
   onDismissLibSet?: () => void;
   docReverted: string | null;
   onDismissDocReverted: () => void;
+  /** Embedded files past what a room holds were not saved or shared (fonts 0001). */
+  embeddedTooLarge?: string | null;
+  onDismissEmbeddedTooLarge?: () => void;
+  /** A change too large to sync: the doc no longer syncs from this tab (fonts 0001). */
+  syncTooLarge?: string | null;
   crossProbeNotice?: CrossProbeNotice | null;
   onDismissCrossProbeNotice?: () => void;
   /** Firefox: other editor tabs share this tab's process memory (0009). */
@@ -94,6 +102,13 @@ export function NoticeStack({
   );
   // Backend rolled this doc back to the last valid state (kicad-validity).
   useNoticeToast("doc-reverted", docReverted, (message, o) => toast.warning(message, { ...o, testId: "doc-reverted-toast" }), onDismissDocReverted);
+  // Embedded files past the room budget: stays until closed.
+  useNoticeToast(
+    "embedded-too-large",
+    embeddedTooLarge,
+    (message, o) => toast.warning(message, { ...o, testId: "embedded-too-large-toast" }),
+    onDismissEmbeddedTooLarge,
+  );
   useNoticeToast(
     "cross-probe",
     crossProbeNotice,
@@ -164,6 +179,17 @@ export function NoticeStack({
           className="absolute inset-x-0 top-0 z-40 bg-red-900/95 px-4 py-2 text-center text-xs font-medium text-red-100 shadow-lg"
         >
           {saveBlocked.message}
+        </div>
+      )}
+
+      {/* A change too large to sync stopped this document's sync - persistent:
+          nothing typed from here on is saved, until a reload. */}
+      {syncTooLarge && (
+        <div
+          data-testid="sync-too-large-banner"
+          className="absolute inset-x-0 top-0 z-40 bg-red-900/95 px-4 py-2 text-center text-xs font-medium text-red-100 shadow-lg"
+        >
+          {syncTooLarge}
         </div>
       )}
 

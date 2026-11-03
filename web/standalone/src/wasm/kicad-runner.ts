@@ -584,7 +584,7 @@ export async function driveProjectIntoTool(
     // timer re-arms every 100 ms until first paint. Bracketing it is what lets a
     // crash report be placed inside or outside that window.
     log(mark("open:start", opts.targetPath));
-    result = await openFileInTool(win, abs, { log });
+    result = await openFileInTool(win, abs, { log, onStatus });
     log(mark("open:settled", `result=${result}`));
     log(`[open] result: ${result}`);
   }

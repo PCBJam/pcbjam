@@ -816,6 +816,21 @@
       return this._suspendOn(Promise.resolve(p), kind || "promise", 0);
     },
 
+    // May the wasm code running right now park? For bridges that can also be
+    // reached from plain exports (the collab mutators, saves), where a park
+    // would be a SuspendError: true only inside a tracked promising activation
+    // (a wx entry's first or resumed window, or a KiCad coroutine) and never
+    // while a file load is in flight (pcbjam_progress_may_yield's rule).
+    canPark: function () {
+      if (this.dead || this.terminal || this._openBusy()) return false;
+      var lcid = 0;
+      try {
+        lcid = (typeof _pcbjam_libctx_current === "function") ? _pcbjam_libctx_current()
+             : (Module["_pcbjam_libctx_current"] ? Module["_pcbjam_libctx_current"]() : 0);
+      } catch (e) { /* pre-runtime */ }
+      return lcid !== 0 || this._actStack.length > 0 || this._windowLive !== null;
+    },
+
     // Called once the runtime is up: wrap the app's promising entry exports.
     // The list mirrors -sJSPI_EXPORTS (main excluded: the runtime calls it
     // before this hook can matter, and boot suspensions predate any tracked

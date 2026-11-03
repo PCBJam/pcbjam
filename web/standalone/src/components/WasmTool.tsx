@@ -102,6 +102,7 @@ import { hasTunerBridge, PresenceTuner, type TunerModule } from "@/components/Pr
 import { hasLayersBridge, LayerPanel, type LayersModule } from "@/components/LayerPanel";
 import { ImportItemPanel } from "@/components/ImportItemPanel";
 import { LibFilesPanel } from "@/components/LibFilesPanel";
+import { LibFontsPanel } from "@/components/LibFontsPanel";
 import { hasImportBridge, type ImportModule } from "@/wasm/import-item";
 import { localPluginLab, usePluginCatalog, type PluginView } from "@/plugins/plugin-catalog";
 import { useSessionFeature } from "@/lib/session-identity";
@@ -139,6 +140,8 @@ import { LibLoadingOverlay } from "@/components/wasm-tool/LibLoadingOverlay";
 import { NoticeStack, type FileGoneNotice } from "@/components/wasm-tool/NoticeStack";
 import { FollowBanner, SessionMenu } from "@/components/wasm-tool/SessionMenu";
 import { useLibNotices } from "@/components/wasm-tool/useLibNotices";
+import { useLocalFonts } from "@/components/wasm-tool/useLocalFonts";
+import { useLibFonts } from "@/components/wasm-tool/useLibFonts";
 import {
   gatherConsentInfo,
   type ConsentInfo,
@@ -1413,6 +1416,12 @@ export function WasmTool({
           // session-gated POST that 401s anonymously and used to blank the
           // lib tables — anonymous public-schematic open on staging).
           readOnly,
+          // Team library fonts (fonts 0002): their list, read alongside boot. Viewers get
+          // public libraries' fonts only and read them through the item route.
+          libFontsUrl: slug
+            ? `${API_BASE_URL}/api/scopes/${encodeURIComponent(currentScope())}/projects/${encodeURIComponent(slug)}/fonts`
+            : null,
+          libFontsItemBase: slug && readOnly ? `${API_BASE_URL}/api/scopes/${encodeURIComponent(currentScope())}/libs` : null,
         });
         // Identity must be settled before the doc session / presence binds
         // below — effectively instant, it raced the multi-second wasm boot.
@@ -1501,7 +1510,7 @@ export function WasmTool({
                     try {
                       // The handle owns the layout baseline — shared with the
                       // live header sync (proposal 21 WP4), merged per field (WP1).
-                      collabHandleRef.current.layout.syncFromSave(fileToDoc(text));
+                      collabHandleRef.current.layout.syncFromSave(fileToDoc(text), relPath);
                     } catch (err) {
                       append(`[save] layout sync failed: ${String(err)}`);
                     }
@@ -2109,6 +2118,9 @@ export function WasmTool({
   // kicadShow3DViewer — the session-menu 3D entry (read-only-viewer / hide-UI
   // have no wx View menu). Runs the deferred model prescan first so a viewer's
   // first open resolves its refs from MEMFS instead of one C++ ensure each.
+  const localFonts = useLocalFonts(ready);
+  const libFonts = useLibFonts(ready);
+  const [fontsOpen, setFontsOpen] = React.useState(false);
   const show3DFn = React.useMemo(() => {
     if (!ready || tool !== "pcbnew") return null;
     const open = show3DOpener(window);
@@ -2295,6 +2307,10 @@ export function WasmTool({
           onShow3D={show3DFn}
           jumpTool={jumpTool}
           plugins={pluginPocEnabled ? { tool, catalog: pluginCatalog, view: pluginView, onViewChange: setPluginView, tutorialsOnly } : undefined}
+          localFonts={localFonts}
+          libFonts={libFonts}
+          fontsOpen={fontsOpen}
+          setFontsOpen={setFontsOpen}
         />
       )}
 
@@ -2349,6 +2365,17 @@ export function WasmTool({
         <ImportItemPanel mod={importMod} tool={tool} onClose={() => setImportOpen(false)} />
       )}
 
+      {/* Team fonts (fonts 0002): the session menu's "Team fonts" row opens it. */}
+      {ready && fontsOpen && libFonts && globalThis.__pcbjamLibFonts && (
+        <LibFontsPanel
+          provider={globalThis.__pcbjamLibFonts}
+          scope={currentScope()}
+          apiBase={API_BASE_URL}
+          canUpload={!readOnly}
+          onClose={() => setFontsOpen(false)}
+        />
+      )}
+
       {ready && libScoped && !readOnly && activeLibsSourceRef.current && (
         <LibFilesPanel source={activeLibsSourceRef.current} tool={tool} />
       )}
@@ -2382,6 +2409,9 @@ export function WasmTool({
         onDismissLibSet={notices.dismissLibSetNotice}
         docReverted={notices.docReverted}
         onDismissDocReverted={notices.dismissDocReverted}
+        embeddedTooLarge={notices.embeddedTooLarge}
+        onDismissEmbeddedTooLarge={notices.dismissEmbeddedTooLarge}
+        syncTooLarge={notices.syncTooLarge}
         crossProbeNotice={notices.crossProbeNotice}
         onDismissCrossProbeNotice={notices.dismissCrossProbeNotice}
         sharedTabs={census.notice}

@@ -12,8 +12,12 @@
  *      in-browser validation.
  */
 
+import { documentTexts } from "./local-fonts";
+
 export interface OpenFlowOptions {
   log: (msg: string) => void;
+  /** The loading screen's status line ("Loading fonts…" while team library fonts download). */
+  onStatus?: (text: string) => void;
   timeoutMs?: number;
   /** Override the load-settle budget (kicadOpenFileBusy poll) — tests only. */
   settleTimeoutMs?: number;
@@ -114,6 +118,44 @@ function invokeProgrammaticOpen(
   const ret = mod.kicadOpenFile(absPath);
   log(`[open] invoked Module.kicadOpenFile(${absPath}) (async; awaiting settle)`);
   return ret;
+}
+
+/**
+ * Installed fonts (local-fonts.ts): a load cannot wait for the browser to read a font, so
+ * the faces the document names go into MEMFS before KiCad opens it. Bounded, never fatal.
+ */
+async function prefetchLocalFonts(win: ToolWindow, absPath: string, log: (m: string) => void): Promise<void> {
+  const fonts = globalThis.__pcbjamLocalFonts;
+  if (!fonts || fonts.state() === "unsupported" || !win.FS) return;
+  try {
+    await Promise.race([fonts.ready(), sleep(3000)]);
+    if (fonts.state() === "granted") await fonts.prefetchFor(documentTexts(win.FS, absPath));
+  } catch (e) {
+    log(`[fonts] prefetch skipped: ${e}`);
+  }
+}
+
+/** How long an open waits for the team library font list before it goes on without it. */
+const LIB_FONTS_LIST_WAIT_MS = 3000;
+
+/**
+ * Team library fonts (lib-fonts.ts), for the same reason: the fonts the document names are
+ * fetched before KiCad opens it, the first time per browser (then they come from IndexedDB).
+ * A document that names no library font costs nothing here.
+ */
+async function prefetchLibFonts(win: ToolWindow, absPath: string, opts: OpenFlowOptions): Promise<void> {
+  const fonts = globalThis.__pcbjamLibFonts;
+  if (!fonts || !win.FS) return;
+  try {
+    const texts = documentTexts(win.FS, absPath);
+    if (!texts.some((t) => t.includes("(face "))) return;
+    await Promise.race([fonts.ready(), sleep(LIB_FONTS_LIST_WAIT_MS)]);
+    if (fonts.named(texts).length === 0) return;
+    opts.onStatus?.("Loading fonts…");
+    await fonts.prefetchFor(texts);
+  } catch (e) {
+    opts.log(`[fonts] team library font prefetch skipped: ${e}`);
+  }
 }
 
 /** Heuristic: the editor frame title drops "untitled" once a real file is open. */
@@ -233,6 +275,8 @@ export async function openFileInTool(
   // automation while the hook is in flight — synthesizing input would re-enter
   // the suspended load and corrupt it.
   if (opts.open || hasProgrammaticHook(win)) {
+    await prefetchLocalFonts(win, absPath, log);
+    await prefetchLibFonts(win, absPath, opts);
     const ret = opts.open ? opts.open() : invokeProgrammaticOpen(win, absPath, log);
     // JSPI: contain the load Promise's rejection — a failed open clears the
     // busy gate (RAII) and reports through the settle path like it always

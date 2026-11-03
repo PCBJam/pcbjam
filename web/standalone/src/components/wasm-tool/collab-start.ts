@@ -18,6 +18,7 @@ import type { SaveBytes } from "@/wasm/save-flow";
 import type { KicadCollabHandle, KicadDocSession, KicadItemsWindow } from "@/wasm/collab";
 import {
   createSheetCollabManager,
+  registerEmbeddedHook,
   registerSheetChangedHook,
   registerSheetCreatedHook,
   registerSheetItemsHook,
@@ -28,6 +29,7 @@ import {
   type SheetItemsWindow,
 } from "@/wasm/collab/sheet-manager";
 import { clog, cwarn } from "@/wasm/collab/debug";
+import type { HeaderWindow } from "@/wasm/collab/header-sync";
 import { relativeProjectPath } from "./tool-navigation";
 import { COLLAB_TOOLS } from "./ui-helpers";
 
@@ -318,6 +320,12 @@ export async function startSheetCollab(
   registerSheetItemsHook(win as unknown as SheetItemsWindow, (abs, json) => {
     const rel = relativeProjectPath(opts.slug, abs);
     if (rel && rel.endsWith(".kicad_sch")) void manager.writeOffSheet(rel, json);
+  });
+
+  // Fonts embedded as texts use them (embedded_sync.h): to the root sheet's room.
+  registerEmbeddedHook(win as unknown as HeaderWindow, (abs, text) => {
+    const rel = relativeProjectPath(opts.slug, abs);
+    if (rel && rel.endsWith(".kicad_sch")) manager.syncEmbedded(rel, text);
   });
 
   // C++ sheet creation ("Add Sheet") → the child .kicad_sch was just written to MEMFS by

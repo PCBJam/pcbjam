@@ -26,11 +26,14 @@ const libItemUrl = (libId: string, kind: string, name: string): string =>
   `${encodeURIComponent(libId)}/items/${encodeURIComponent(kind)}/${encodeURIComponent(name)}`;
 import type { Model3dSource } from "./libs/models-source";
 import { installNgspiceService } from "./ngspice-service";
+import { installLocalFonts } from "./local-fonts";
+import { createLibFontsProvider, idbLibFontsCache } from "./lib-fonts";
 import { installOccService } from "./occ-service";
 import {
   buildFpLibTable,
   buildSymLibTable,
   installLibsProvider,
+  LIB_SET_CHANGED_EVENT,
   type LibInfo,
   type LibsSource,
 } from "./libs/source";
@@ -169,6 +172,12 @@ export interface BootOptions {
   /** Read-only session (anonymous/public viewer): never attempt writes at
    *  boot — in particular no default-user-lib create (see ensureWritableLib). */
   readOnly?: boolean;
+  /** The project's team-library font list (fonts 0002, `…/projects/<p>/fonts`). Read
+   *  alongside boot, never waited for; omitted outside projects. */
+  libFontsUrl?: string | null;
+  /** View-only sessions: where a library font's file is read instead of the library's
+   *  room, `<api>/api/scopes/<scope>/libs` (the item route; public libraries only). */
+  libFontsItemBase?: string | null;
 }
 
 let booted: { tool: Tool; promise: Promise<void> } | null = null;
@@ -418,6 +427,8 @@ async function doBoot(opts: BootOptions): Promise<void> {
     modelLibs,
     enumerateGate,
     readOnly,
+    libFontsUrl,
+    libFontsItemBase,
   } = opts;
   // Truthful fetch label: a warm start (download-completion marker present)
   // reads from the HTTP cache, so "Downloading" would be a lie — and vice versa.
@@ -483,6 +494,38 @@ async function doBoot(opts: BootOptions): Promise<void> {
     // ngspice service (eeschema simulator): same lazy pattern — synchronous
     // provider install here, worker fetched on first Inspect → Simulator.
     installNgspiceService(log);
+    // Installed fonts (Local Font Access, Chromium): reads the list now when the permission
+    // is already granted; the session menu asks for it otherwise.
+    installLocalFonts(window, log);
+    // Team library fonts: the list request starts now and nothing waits for it; a font's
+    // file loads through its library's stack when a document uses it (fonts 0002).
+    const readFont: ((libId: string, name: string) => Promise<Uint8Array | null>) | null = libFontsItemBase
+      ? async (libId, name) => {
+          const enc = encodeURIComponent;
+          const res = await fetch(`${libFontsItemBase}/${enc(libId)}/items/font/${enc(name)}`, { credentials: "include" });
+          return res.ok ? new Uint8Array(await res.arrayBuffer()) : null;
+        }
+      : libsSource?.getItemBytes
+        ? (libId, name) => libsSource.getItemBytes!(libId, "font", name)
+        : null;
+    if (libFontsUrl && readFont) {
+      const libFonts = createLibFontsProvider({
+        win: window as unknown as Parameters<typeof createLibFontsProvider>[0]["win"],
+        listUrl: libFontsUrl,
+        readFont,
+        cache: idbLibFontsCache(),
+        log,
+      });
+      globalThis.__pcbjamLibFonts = libFonts;
+      // A team library changed (an upload or delete in its files section announces
+      // `libset update`): re-read the list, quietly. The Font list shows it next time it
+      // opens; no toast and no library reload.
+      let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+      window.addEventListener(LIB_SET_CHANGED_EVENT, () => {
+        clearTimeout(refreshTimer);
+        refreshTimer = setTimeout(() => void libFonts.refresh(), 1000);
+      });
+    }
   }
 
   if (libsSource && libKinds.length) {

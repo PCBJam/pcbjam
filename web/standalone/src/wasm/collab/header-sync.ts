@@ -21,15 +21,19 @@
  */
 import {
   docToFile,
+  EMBEDDED_FILES_ROOM_BUDGET,
   fileToDoc,
+  SCH_ROOT_EMBEDDED_HEADS,
   syncLayoutToY,
   unquoteAtom,
   Y_KDOC_LAYOUT,
   type KicadDoc,
   type Slot,
+  type SyncLayoutOptions,
 } from "@pcbjam/shared";
 import type * as Y from "yjs";
 import { clog, cwarn } from "./debug";
+import { notifyEmbeddedTooLarge } from "./sync-limits";
 
 export const PCB_HEADER_HEADS: ReadonlySet<string> = new Set([
   "general",
@@ -45,6 +49,73 @@ export const PCB_HEADER_HEADS: ReadonlySet<string> = new Set([
 export const SCH_HEADER_HEADS: ReadonlySet<string> = new Set(["paper", "title_block"]);
 
 export const HEADER_ORIGIN = "header-sync";
+
+/** Transaction origin of the live embedded-fonts writes ({@link syncEmbeddedToY}). */
+export const EMBEDDED_ORIGIN = "embedded-sync";
+
+/** Where a document's layout baseline lives (one per room). */
+export interface BaselineStore {
+  get(): KicadDoc | undefined;
+  set(d: KicadDoc): void;
+}
+
+const EMBEDDED_FILES_HEAD: ReadonlySet<string> = new Set(["embedded_files"]);
+const EMBEDDED_FLAG_HEAD: ReadonlySet<string> = new Set(["embedded_fonts"]);
+
+/**
+ * Embedded files stay within EMBEDDED_FILES_ROOM_BUDGET in a room (fonts 0001): past it the
+ * room keeps its files and the user is told. The caller's baseline must keep them too, so
+ * that the files that fit sync once some are removed.
+ */
+function embeddedBudget(docPath: string, onOver: () => void): SyncLayoutOptions {
+  return {
+    embeddedFilesBudget: EMBEDDED_FILES_ROOM_BUDGET,
+    onEmbeddedOverBudget: (bytes) => {
+      onOver();
+      cwarn(`[embedded] ${docPath}: ${bytes} bytes of embedded files are past the room budget, not synced`);
+      notifyEmbeddedTooLarge({ docPath, bytes, budget: EMBEDDED_FILES_ROOM_BUDGET });
+    },
+  };
+}
+
+/**
+ * The editor's embedded fonts, live (wasm/bindings/embedded_sync.h): the C++ flush embeds
+ * the fonts texts use and hands over a document holding just (embedded_fonts …) and
+ * (embedded_files …) when they changed. Merge those heads into the room against the
+ * layout baseline (per file: a peer's embedded fonts stay), then advance the baseline for
+ * them only. The other direction stays on open: a peer picks the fonts up when it next
+ * loads the file.
+ */
+export function syncEmbeddedToY(doc: Y.Doc, text: string, store: BaselineStore, docPath: string): boolean {
+  const embedded = fileToDoc(text);
+  let over = false;
+  const changed = syncLayoutToY(embedded, doc, EMBEDDED_ORIGIN, store.get(), {
+    heads: SCH_ROOT_EMBEDDED_HEADS,
+    ...embeddedBudget(docPath, () => (over = true)),
+  });
+  const heads = over ? EMBEDDED_FLAG_HEAD : SCH_ROOT_EMBEDDED_HEADS;
+  const cur = store.get();
+  if (cur) store.set(withHeads(cur, embedded, heads));
+  else if (!over) store.set(embedded);
+  return changed;
+}
+
+/**
+ * A saved file's layout into the room (miss 08B) against the baseline, embedded files
+ * within their budget. Returns whether the room changed and the baseline to keep: the file,
+ * except for embedded files the room did not take.
+ */
+export function syncSaveToY(
+  fileDoc: KicadDoc,
+  doc: Y.Doc,
+  baseline: KicadDoc | undefined,
+  docPath: string,
+): { changed: boolean; baseline: KicadDoc } {
+  let over = false;
+  const changed = syncLayoutToY(fileDoc, doc, "layout-save", baseline, embeddedBudget(docPath, () => (over = true)));
+  const kept = over ? withHeads(fileDoc, baseline ?? { ...fileDoc, layout: [] }, EMBEDDED_FILES_HEAD) : fileDoc;
+  return { changed, baseline: kept };
+}
 
 /** pcbnew's header exports (kicad_editor exposes both sets; each no-ops for the other frame). */
 export interface HeaderModule {
@@ -138,12 +209,15 @@ export interface HeaderWindow {
     onHeader?: (text: string) => void;
     /** Apply-time resolution: the room's latest header payload, "" = nothing to apply. */
     resolveHeader?: () => string;
+    /** The live embedded fonts of the document saved at `absPath` ({@link syncEmbeddedToY}). */
+    onEmbedded?: (absPath: string, text: string) => void;
   };
 }
 
 export interface LayoutSync {
   /** Reconcile a just-saved file's layout (all heads) against the shared baseline. */
-  syncFromSave(fileDoc: KicadDoc): boolean;
+  /** `docPath` names the document in notices (embedded files past their budget). */
+  syncFromSave(fileDoc: KicadDoc, docPath: string): boolean;
   /** The layout the editor last agreed on (tests/inspection). */
   baseline(): KicadDoc | undefined;
   destroy(): void;
@@ -187,10 +261,15 @@ export function startLayoutSync(opts: {
   /** Initial baseline (the opened file) — ignored when `store` is given. */
   baseline?: KicadDoc;
   /** External baseline storage (the sheet pool keeps one per room). */
-  store?: { get(): KicadDoc | undefined; set(d: KicadDoc): void };
+  store?: BaselineStore;
   readOnly?: boolean;
   heads?: ReadonlySet<string>;
   root?: string;
+  /**
+   * Take the editor's live embedded fonts into this doc (`kicadCollab.onEmbedded`). For a
+   * single-room document; the sheet pool routes a schematic's to its root sheet's room.
+   */
+  embedded?: boolean;
 }): LayoutSync {
   const { doc, win } = opts;
   const heads = opts.heads ?? PCB_HEADER_HEADS;
@@ -299,10 +378,21 @@ export function startLayoutSync(opts: {
     layout.observe(onLayout);
   }
 
+  const onEmbedded = (absPath: string, text: string): void => {
+    if (destroyed) return;
+    try {
+      if (syncEmbeddedToY(doc, text, store, absPath)) clog("[embedded] local embedded fonts → room");
+    } catch (err) {
+      cwarn("[embedded] local embedded fonts sync failed", err);
+    }
+  };
+  const embedded = !opts.readOnly && !!opts.embedded;
+  if (embedded) win.kicadCollab = { ...win.kicadCollab, onEmbedded };
+
   return {
-    syncFromSave(fileDoc) {
-      const changed = syncLayoutToY(fileDoc, doc, "layout-save", store.get());
-      advance(fileDoc);
+    syncFromSave(fileDoc, docPath) {
+      const { changed, baseline } = syncSaveToY(fileDoc, doc, store.get(), docPath);
+      advance(baseline);
       return changed;
     },
     baseline: () => store.get(),
@@ -314,6 +404,9 @@ export function startLayoutSync(opts: {
         if (win.kicadCollab?.onHeader === onHeader) {
           win.kicadCollab = { ...win.kicadCollab, onHeader: undefined, resolveHeader: undefined };
         }
+      }
+      if (embedded && win.kicadCollab?.onEmbedded === onEmbedded) {
+        win.kicadCollab = { ...win.kicadCollab, onEmbedded: undefined };
       }
     },
   };

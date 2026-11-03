@@ -416,6 +416,17 @@ static bool kicadCrossProbeExec( std::string aCmd, bool aForce )
 }
 
 
+// The browser's installed fonts (Local Font Access; web/standalone/src/wasm/local-fonts.ts):
+// a JSON array of { id, family, style, path } that replaces the list the font lookup serves
+// (wasm/stubs/fontconfig_wasm.cpp). Touches only that list, so it is safe while a chain is
+// parked.
+extern "C" void pcbjam_local_fonts_set( const char* aJson );
+
+static void kicadSetLocalFonts( std::string aJson )
+{
+    pcbjam_local_fonts_set( aJson.c_str() );
+}
+
 // Test-only (cross-probe 0001 e2e): run a KiCad action by name from the event
 // loop, as a menu click would — e.g. "eeschema.EditorControl.selectOnPCB",
 // which otherwise lives only in the canvas context menu. Once RunAction returns
@@ -861,6 +872,9 @@ EMSCRIPTEN_BINDINGS(kicad_editor) {
     // Cross-tab cross-probing (cross-probe 0001).
     function("kicadCrossProbeExec", &kicadCrossProbeExec);
     function("kicadTestRunAction", &kicadTestRunAction);
+
+    // Installed fonts (Local Font Access).
+    function("kicadSetLocalFonts", &kicadSetLocalFonts);
 
     // Yjs collaborative bridge entry points — same JS contract as the standalone
     // bundles, dispatched on the active editor frame.

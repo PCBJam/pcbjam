@@ -8,7 +8,6 @@ import {
   kicadItemsMap,
   kicadLibSymbolsMap,
   parseItemsWireDelta,
-  syncLayoutToY,
   upsertLibSymbolsToY,
   wireLibSymbols,
   ydocHasState,
@@ -35,6 +34,8 @@ import {
   SCH_HEADER_HEADS,
   schHeaderAdapter,
   startLayoutSync,
+  syncEmbeddedToY,
+  syncSaveToY,
   type HeaderWindow,
   type LayoutSync,
   type SchHeaderModule,
@@ -84,6 +85,12 @@ export interface SheetCollabManager {
    * otherwise only carries them from seed time. No-op for unknown sheets.
    */
   syncLayoutFromSave(sheetPath: string, fileText: string): void;
+  /**
+   * The schematic's live embedded fonts (C++ `onEmbedded`, embedded_sync.h): they belong to
+   * the root sheet, so they go to ITS room whichever sheet is shown. No-op for unknown
+   * sheets and read-only viewers.
+   */
+  syncEmbedded(sheetPath: string, text: string): void;
   /**
    * A local commit touched items of a sheet that is NOT the shown one (annotate
    * all, global edits — the C++ `onSheetItems` hook, 2026-09-21 audit): write
@@ -518,9 +525,9 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
       try {
         // Writing to a PARKED room's doc marks it dirty via startWatch — fine:
         // the diff-on-rebind adopt makes the catch-up cost the real delta only.
-        if (syncLayoutToY(fileDoc, room.doc, "layout-save", baseline)) {
-          clog(`[sheet] layout save-sync: ${sheetPath} updated`);
-        }
+        const synced = syncSaveToY(fileDoc, room.doc, baseline, sheetPath);
+        room.layoutBaseline = synced.baseline;
+        if (synced.changed) clog(`[sheet] layout save-sync: ${sheetPath} updated`);
       } catch (err) {
         cwarn(`[sheet] layout save-sync failed for ${sheetPath}`, err);
       }
@@ -531,6 +538,29 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
     if (activate) {
       void activate.then(write).catch((err) => {
         cwarn(`[sheet] layout save-sync activate failed for ${sheetPath}`, err);
+      });
+    } else {
+      write();
+    }
+  }
+
+  function syncEmbedded(sheetPath: string, text: string): void {
+    const room = rooms.get(sheetPath);
+    if (!room || opts.readOnly || destroyed) return;
+    const write = (): void => {
+      // Same guard as the save-sync: never write a layout-only state into an empty room.
+      if (!room.seeded && !ydocHasState(room.doc)) return;
+      try {
+        const store = { get: () => room.layoutBaseline, set: (d: KicadDoc) => void (room.layoutBaseline = d) };
+        if (syncEmbeddedToY(room.doc, text, store, sheetPath)) clog(`[sheet] embedded fonts → ${sheetPath}`);
+      } catch (err) {
+        cwarn(`[sheet] embedded fonts sync failed for ${sheetPath}`, err);
+      }
+    };
+    const activate = room.session.provider.activate?.();
+    if (activate) {
+      void activate.then(write).catch((err) => {
+        cwarn(`[sheet] embedded fonts activate failed for ${sheetPath}`, err);
       });
     } else {
       write();
@@ -660,6 +690,7 @@ export function createSheetCollabManager(opts: SheetManagerOptions): SheetCollab
     onboard,
     invalidate,
     syncLayoutFromSave,
+    syncEmbedded,
     writeOffSheet,
     active,
     destroy,
@@ -683,6 +714,18 @@ export function registerSheetItemsHook(
   cb: (absPath: string, json: string) => void,
 ): void {
   win.kicadCollab = { ...win.kicadCollab, onSheetItems: cb };
+}
+
+/**
+ * Register the C++ → JS live embedded-fonts hook (`window.kicadCollab.onEmbedded(absPath,
+ * text)`, embedded_sync.h) for a schematic: `absPath` is the root sheet's file. Spread-merges
+ * like the sibling hooks.
+ */
+export function registerEmbeddedHook(
+  win: HeaderWindow,
+  cb: (absPath: string, text: string) => void,
+): void {
+  win.kicadCollab = { ...win.kicadCollab, onEmbedded: cb };
 }
 
 export interface SheetChangedWindow {

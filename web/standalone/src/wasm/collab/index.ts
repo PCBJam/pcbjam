@@ -303,6 +303,7 @@ export function attachKicadCollab(
     root: root ?? "kicad_pcb",
     baseline: opts?.layoutBaseline ?? opts?.seedDoc,
     readOnly: opts?.readOnly,
+    embedded: root === "kicad_pcb" || root === "kicad_sch",
   });
 
   return {

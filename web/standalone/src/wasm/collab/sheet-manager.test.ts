@@ -25,6 +25,8 @@ vi.mock("@pcbjam/shared", () => ({
   ydocHasState,
   syncLayoutToY,
   fileToDoc,
+  SCH_ROOT_EMBEDDED_HEADS: new Set(["embedded_fonts", "embedded_files"]),
+  EMBEDDED_FILES_ROOM_BUDGET: 16 * 1024 * 1024,
   kicadLibSymbolsMap: (doc: unknown) => ({
     observe: (cb: (ev: unknown, txn: unknown) => void) => {
       const set = libObservers.get(doc) ?? new Set();
@@ -289,6 +291,40 @@ describe("sheet-manager layout save-sync (hollow-room guard)", () => {
     ydocHasState.mockReturnValue(true); // Headers was seeded by a peer
     m.syncLayoutFromSave("Headers.kicad_sch", "(kicad_sch …)");
     expect(syncLayoutToY).toHaveBeenCalledTimes(2);
+  });
+
+  it("embedded fonts go to the root sheet's room while a subsheet is shown (fonts 0001)", async () => {
+    const m = makeManager();
+    await m.connectAll(["root.kicad_sch", "Headers.kicad_sch"]);
+    await m.switchTo("root.kicad_sch");
+    await m.switchTo("Headers.kicad_sch");
+    m.syncEmbedded("root.kicad_sch", "(kicad_sch (embedded_fonts yes))");
+    expect(syncLayoutToY).toHaveBeenCalledTimes(1);
+    const [, doc, origin, , opts] = syncLayoutToY.mock.calls[0] as unknown as [unknown, unknown, string, unknown, { heads: Set<string> }];
+    expect(doc).toBe(sessions.find((s) => s.room.endsWith(":root.kicad_sch"))!.doc);
+    expect(origin).toBe("embedded-sync");
+    expect([...opts.heads]).toEqual(["embedded_fonts", "embedded_files"]);
+  });
+
+  it("embedded fonts: nothing for an unknown sheet, an empty never-entered room, or a viewer", async () => {
+    const m = makeManager();
+    await m.connectAll(["root.kicad_sch", "Headers.kicad_sch"]);
+    m.syncEmbedded("missing.kicad_sch", "x");
+    m.syncEmbedded("Headers.kicad_sch", "x"); // never entered, empty doc
+    expect(syncLayoutToY).not.toHaveBeenCalled();
+    const viewer = createSheetCollabManager({
+      mod: {} as never,
+      win: {} as never,
+      scopeId: "S",
+      projectId: "P",
+      provider: { kind: "none" } as never,
+      seedDocForPath: () => undefined,
+      readOnly: true,
+      log: () => {},
+    });
+    await viewer.switchTo("root.kicad_sch");
+    viewer.syncEmbedded("root.kicad_sch", "x");
+    expect(syncLayoutToY).not.toHaveBeenCalled();
   });
 
   it("diffs each save against the layout the editor last agreed on (2026-09-21 audit)", async () => {

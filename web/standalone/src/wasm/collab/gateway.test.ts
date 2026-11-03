@@ -18,6 +18,7 @@ import {
   resetGatewayFenceForTests,
 } from "./gateway";
 import { resetIdleMonitorForTests } from "./idle-policy";
+import { GATEWAY_FRAME_LIMIT, SYNC_TOO_LARGE_EVENT } from "./sync-limits";
 
 /**
  * The gateway facade is a mini y-websocket client over one shared multiplexed
@@ -401,6 +402,60 @@ describe("gateway facade — presence channel", () => {
     ws.sent = [];
     ws.receiveFrame(ch, new Uint8Array([3]));
     expect(ws.frames().some((f) => f.type === 1)).toBe(true);
+  });
+});
+
+describe("gateway facade: a change past the message limit", () => {
+  it("is refused once, never resent on reconnect, and reported; presence still flows", async () => {
+    newProject();
+    const doc = new Y.Doc();
+    const facade = new GatewayDocFacade(doc, facadeOpts("big.kicad_sch"));
+    track(facade, doc);
+    // Just enough of a browser window for the notice.
+    const prevWindow = (globalThis as { window?: unknown }).window;
+    const win = new EventTarget();
+    (globalThis as { window?: unknown }).window = win;
+    cleanups.push(() => void ((globalThis as { window?: unknown }).window = prevWindow));
+    const reported: unknown[] = [];
+    win.addEventListener(SYNC_TOO_LARGE_EVENT, (e) => reported.push((e as CustomEvent).detail));
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    cleanups.push(() => errors.mockRestore());
+
+    const ws1 = FakeWebSocket.instances.at(-1)!;
+    ws1.open();
+    const ch = ws1.controls()[0]!.ch;
+    const step1 = ws1.frames().find((f) => f.type === 0)!;
+    const serverDoc = new Y.Doc();
+    cleanups.push(() => serverDoc.destroy());
+    ws1.receiveFrame(ch, step2From(serverDoc, step1.frame));
+    await facade.whenSynced();
+
+    ws1.sent = [];
+    doc.getMap("m").set("big", "x".repeat(GATEWAY_FRAME_LIMIT));
+    expect(ws1.frames(), "the change is not sent").toEqual([]);
+    expect(reported).toEqual([{ docPath: "big.kicad_sch", bytes: expect.any(Number) as number, limit: GATEWAY_FRAME_LIMIT }]);
+
+    // A small edit after it is not sent either: it would depend on the refused one.
+    doc.getMap("m").set("small", 1);
+    expect(ws1.frames().filter((f) => f.type === 0)).toEqual([]);
+
+    // Reconnect: the server's Step1 asks for everything it lacks; the answer is refused too.
+    vi.useFakeTimers();
+    cleanups.push(() => vi.useRealTimers());
+    ws1.drop();
+    vi.advanceTimersByTime(1_000);
+    const ws2 = FakeWebSocket.instances.at(-1)!;
+    ws2.open();
+    const enc = encoding.createEncoder();
+    encoding.writeVarUint(enc, 0);
+    syncProtocol.writeSyncStep1(enc, serverDoc);
+    ws2.receiveFrame(ch, encoding.toUint8Array(enc));
+    expect(ws2.frames().filter((f) => f.type === 0), "no sync frame at all").toEqual([]);
+    expect(reported, "reported once").toHaveLength(1);
+
+    // Presence still goes out.
+    facade.awareness.setLocalState({ user: "me" });
+    expect(ws2.frames().some((f) => f.type === 1)).toBe(true);
   });
 });
 

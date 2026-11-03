@@ -75,6 +75,7 @@
 #include <connectivity/connectivity_data.h>
 #include <nlohmann/json.hpp>
 #include "collab_common.h"
+#include "embedded_sync.h"
 #include "collab_presence_core.h"
 #include "plugin_board_geometry.h"
 #include "plugin_edits.h"
@@ -1021,6 +1022,71 @@ void checkHeader( BOARD& aBoard )
     }, h.c_str() );
 }
 
+// Embedded fonts, live (embedded_sync.h). The board file writes the board's embedded files
+// together with its footprints' (PCB_IO_KICAD_SEXPR::formatBoardLayers), so these heads do too.
+std::string g_lastEmbedded;
+
+std::string boardEmbeddedSignature( BOARD& aBoard, EMBEDDED_FILES& aAll )
+{
+    for( const auto& [name, file] : aBoard.GetEmbeddedFiles()->EmbeddedFileMap() )
+        aAll.AddFile( file );
+
+    for( FOOTPRINT* fp : aBoard.Footprints() )
+    {
+        for( const auto& [name, file] : fp->GetEmbeddedFiles()->EmbeddedFileMap() )
+            aAll.AddFile( file );
+    }
+
+    return pcbjam_embedded::signature( aBoard.GetEmbeddedFiles()->GetAreFontsEmbedded(), aAll );
+}
+
+void noteEmbeddedBaseline( BOARD& aBoard )
+{
+    EMBEDDED_FILES all;
+    g_lastEmbedded = boardEmbeddedSignature( aBoard, all );
+    all.ClearEmbeddedFiles( false ); // shared with the board: not freed here
+}
+
+void checkEmbedded( BOARD& aBoard )
+{
+    EMBEDDED_FILES* files = aBoard.GetEmbeddedFiles();
+
+    if( files->GetAreFontsEmbedded() )
+    {
+        std::set<wxString> fonts;
+
+        auto visit = [&]( BOARD_ITEM* aItem )
+        {
+            pcbjam_embedded::collect( dynamic_cast<EDA_TEXT*>( aItem ), fonts );
+        };
+
+        for( BOARD_ITEM* item : aBoard.Drawings() )
+        {
+            visit( item );
+            item->RunOnChildren( visit, RECURSE_MODE::RECURSE ); // table cells
+        }
+
+        for( FOOTPRINT* fp : aBoard.Footprints() )
+            fp->RunOnChildren( visit, RECURSE_MODE::RECURSE ); // fields and texts
+
+        pcbjam_embedded::embedFonts( *files, fonts );
+    }
+
+    EMBEDDED_FILES all;
+    std::string    sig = boardEmbeddedSignature( aBoard, all );
+
+    if( sig != g_lastEmbedded )
+    {
+        g_lastEmbedded = sig;
+        pcbjam_embedded::emit( toUtf8( aBoard.GetFileName() ),
+                               pcbjam_embedded::text( "kicad_pcb", SEXPR_BOARD_FILE_VERSION,
+                                                      "pcbnew", "", files->GetAreFontsEmbedded(),
+                                                      all ) );
+    }
+
+    all.ClearEmbeddedFiles( false );
+}
+
 void flushDiff()
 {
     g_flushScheduled = false;
@@ -1037,6 +1103,7 @@ void flushDiff()
         g_headerCheck = false;
         checkHeader( *board );
         checkProject( fr );
+        checkEmbedded( *board );
     }
 
     std::map<std::string, json> cur   = snapshotByUuid( *board );
@@ -1346,6 +1413,7 @@ void doApplyHeader( PCB_EDIT_FRAME* aFrame, const std::string& aQueued )
     {
         g_headerCheck = false;
         checkHeader( *board );
+        checkEmbedded( *board );
     }
 
     const std::string aText = pcbjam_collab::resolveHeaderPayload( aQueued );
@@ -2358,6 +2426,7 @@ std::string pcbCollabSnapshotItems()
     {
         noteHeaderBaseline( *board ); // the header this snapshot agrees on (WP4)
         noteProjectBaseline( pcbFrame() ); // …and the project settings (WP5)
+        noteEmbeddedBaseline( *board ); // …and the embedded fonts (embedded_sync.h)
 
         auto push = [&]( BOARD_ITEM* item )
         {

@@ -77,6 +77,7 @@
 #include <tool/coroutine.h>
 #include <pcbjam_remote_lock.h>
 #include "collab_common.h"
+#include "embedded_sync.h"
 #include "open_gate.h"
 #include "plugin_placement.h"
 #include "plugin_edits.h"
@@ -881,6 +882,68 @@ void schCheckHeader( SCH_EDIT_FRAME* aFrame )
     }, h.c_str() );
 }
 
+// Embedded fonts, live (embedded_sync.h). They belong to the schematic, written with its first
+// top-level sheet, so they go to that sheet's room whichever sheet is shown.
+std::string g_schLastEmbedded;
+
+void schNoteEmbedded( SCH_EDIT_FRAME* aFrame )
+{
+    const SCHEMATIC& sch = aFrame->Schematic();
+    g_schLastEmbedded = pcbjam_embedded::signature( sch.GetAreFontsEmbedded(),
+                                                    *sch.GetEmbeddedFiles() );
+}
+
+void schCheckEmbedded( SCH_EDIT_FRAME* aFrame )
+{
+    SCHEMATIC& sch = aFrame->Schematic();
+    SCH_SHEET* root = sch.GetTopLevelSheet( 0 );
+
+    if( !root || !root->GetScreen() )
+        return;
+
+    if( sch.GetAreFontsEmbedded() )
+    {
+        std::set<wxString> fonts;
+        std::set<SCH_SCREEN*>           screens;
+
+        auto visit = [&]( SCH_ITEM* aItem )
+        {
+            pcbjam_embedded::collect( dynamic_cast<EDA_TEXT*>( aItem ), fonts );
+        };
+
+        for( const SCH_SHEET_PATH& path : sch.Hierarchy() )
+        {
+            SCH_SCREEN* screen = path.LastScreen();
+
+            if( !screen || !screens.insert( screen ).second )
+                continue;
+
+            for( SCH_ITEM* item : screen->Items() )
+            {
+                visit( item );
+                item->RunOnChildren( visit, RECURSE_MODE::NO_RECURSE ); // fields, pins
+            }
+        }
+
+        pcbjam_embedded::embedFonts( *sch.GetEmbeddedFiles(), fonts );
+    }
+
+    std::string sig = pcbjam_embedded::signature( sch.GetAreFontsEmbedded(), *sch.GetEmbeddedFiles() );
+
+    if( sig == g_schLastEmbedded )
+        return;
+
+    g_schLastEmbedded = sig;
+
+    // (sheet_instances) marks the text as the hierarchy root's view, like a saved root sheet:
+    // the room accepts embedded files only between two root views (SCH_ROOT_EMBEDDED_HEADS).
+    pcbjam_embedded::emit( toUtf8( root->GetScreen()->GetFileName() ),
+                           pcbjam_embedded::text( "kicad_sch", SEXPR_SCHEMATIC_FILE_VERSION,
+                                                  "eeschema", " (sheet_instances)",
+                                                  sch.GetAreFontsEmbedded(),
+                                                  *sch.GetEmbeddedFiles() ) );
+}
+
 void flushDiff()
 {
     g_flushScheduled = false;
@@ -895,6 +958,7 @@ void flushDiff()
         g_schHeaderCheck = false;
         schCheckHeader( fr );
         schCheckProject( fr );
+        schCheckEmbedded( fr );
     }
 
     std::map<std::string, json> cur = snapshotByUuid( fr );
@@ -1294,6 +1358,7 @@ void doApplySchHeader( SCH_EDIT_FRAME* aFrame, const json& aQueued )
     {
         g_schHeaderCheck = false;
         schCheckHeader( aFrame );
+        schCheckEmbedded( aFrame );
     }
 
     const std::string latest = pcbjam_collab::resolveHeaderPayload( aQueued.dump() );
@@ -2347,6 +2412,7 @@ std::string schCollabSnapshotItems()
 
         rebaseline();
         schNoteHeader( fr ); // the header this snapshot agrees on (WP4 / S3)
+        schNoteEmbedded( fr ); // …and the embedded fonts (embedded_sync.h)
         g_schLastProject = schProjectText( fr ); // …and the project settings (WP5)
     }
 

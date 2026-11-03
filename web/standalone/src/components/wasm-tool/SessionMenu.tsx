@@ -12,7 +12,7 @@ import {
   Moon,
   PanelsTopLeft,
   RefreshCw,
-  Sun, MessageSquare, Eye, ArrowRightLeft, Smartphone } from "lucide-react";
+  Sun, MessageSquare, Eye, ArrowRightLeft, Smartphone, Type } from "lucide-react";
 import type { Tool } from "@pcbjam/shared";
 import { setTheme } from "@/lib/theme";
 import type { SourceDescriptor } from "@/lib/project-source-shared";
@@ -24,6 +24,8 @@ import { OverlayMenu, OverlayMenuSection, overlayKbdClass, overlayPressedClass, 
 import { openReportProblem } from "@/lib/diagnostics/report-problem-events";
 import { CHROME_HOTKEY_LABEL } from "./ui-helpers";
 import type { StaleLibEntry } from "./useLibNotices";
+import type { LocalFontsMenuState } from "./useLocalFonts";
+import type { LibFontsMenuState } from "./useLibFonts";
 import { PluginMenu, type PluginMenuProps } from "@/plugins/PluginMenu";
 import { Button, Kbd, Tip, Toggle } from "@pcbjam/ui";
 import { cn } from "@/lib/utils";
@@ -182,6 +184,10 @@ export function SessionMenu({
   onShow3D,
   jumpTool,
   plugins,
+  localFonts,
+  libFonts,
+  fontsOpen,
+  setFontsOpen,
 }: {
   tool: Tool;
   readOnly: boolean;
@@ -241,6 +247,13 @@ export function SessionMenu({
   jumpTool?: { tool: Tool; label: string; onClick: () => void } | null;
   /** `tutorialsOnly`: the session has `tutorials` but not `plugins` (plugins 0021) — no Plugins section. */
   plugins?: PluginMenuProps & { tutorialsOnly?: boolean };
+  /** Installed fonts (Local Font Access); null in browsers without the API. */
+  localFonts?: LocalFontsMenuState | null;
+  /** Team library fonts (fonts 0002): their count (the panel reads the list again on open). */
+  libFonts?: LibFontsMenuState | null;
+  /** The team fonts panel (LibFontsPanel) is open. */
+  fontsOpen?: boolean;
+  setFontsOpen?: (v: boolean) => void;
 }) {
   return (
     <OverlayMenu
@@ -486,6 +499,43 @@ export function SessionMenu({
             </Toggle>
           </Tip>
         )}
+        {/* Installed fonts (fonts 0001): the browser asks for the permission once, on this
+            click; after that KiCad's font lists include the computer's fonts. */}
+        {localFonts && (
+          <Tip
+            content={
+              localFonts.state === "granted"
+                ? "KiCad's font lists include this computer's fonts. Click to read them again after installing a font."
+                : localFonts.state === "denied"
+                  ? "Allow fonts for this site in the browser's site settings, then reload."
+                  : "Show this computer's fonts in KiCad's font lists. The browser asks once."
+            }
+          >
+            <Button
+              data-testid="local-fonts"
+              variant="plain"
+              size="row"
+              className={overlayRowClass}
+              disabled={localFonts.state === "denied"}
+              onClick={localFonts.request}
+            >
+              <Type size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
+              <span>
+                {localFonts.state === "granted"
+                  ? `Installed fonts (${localFonts.count})`
+                  : localFonts.state === "denied"
+                    ? "Installed fonts blocked"
+                    : "Use installed fonts"}
+              </span>
+            </Button>
+          </Tip>
+        )}
+        {/* Team library fonts (fonts 0002): listed in KiCad's font lists, fetched when a
+            document uses one. The row opens the team fonts panel (LibFontsPanel), where
+            members upload more; viewers see it only when public libraries give fonts. */}
+        {libFonts && (libFonts.count > 0 || !readOnly) && (
+          <LibFontsRow count={libFonts.count} readOnly={readOnly} open={fontsOpen ?? false} setOpen={setFontsOpen} />
+        )}
         {/* Light/dark toggle (comments-ux 0002): flips the shell theme;
             the F4 effect in WasmTool re-themes the GAL canvas through the
             bridge. Available to viewers too — theming isn't editing. */}
@@ -516,6 +566,35 @@ export function SessionMenu({
 }
 
 /** Closes the menu first, so the report's screenshot shows the editor, not the menu. */
+/** Opens the team fonts panel and closes the menu, which would cover the panel. */
+function LibFontsRow({ count, readOnly, open, setOpen }: { count: number; readOnly: boolean; open: boolean; setOpen?: (v: boolean) => void }) {
+  const closeMenu = useCloseOverlayMenu();
+  return (
+    <Tip
+      content={
+        readOnly
+          ? "Fonts from public libraries, in KiCad's font lists"
+          : "Your team's fonts, in KiCad's font lists. Upload more without leaving the editor."
+      }
+    >
+      <Toggle
+        data-testid="lib-fonts-toggle"
+        variant="ghost"
+        size="row"
+        pressed={open}
+        onPressedChange={(v) => {
+          if (v) closeMenu();
+          setOpen?.(v);
+        }}
+        className={overlayRowClass}
+      >
+        <Type size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
+        <span>{count > 0 ? `Team fonts (${count})` : "Add team fonts"}</span>
+      </Toggle>
+    </Tip>
+  );
+}
+
 function ReportProblemRow() {
   const closeMenu = useCloseOverlayMenu();
   return (
