@@ -299,6 +299,22 @@ export function libModelsSource(
   };
 }
 
+/**
+ * Ask `first`, then `second`: two team-library sources over disjoint path
+ * variables (the catalog's libraries, then the boot's model layers for the
+ * ones outside it), so each ref has one source that can answer it.
+ */
+export function chainModelSources(first: Model3dSource, second: Model3dSource): Model3dSource {
+  return {
+    async getModelBody(ref) {
+      return (await first.getModelBody(ref)) ?? (await second.getModelBody(ref));
+    },
+    async hasModel(ref) {
+      return (await first.hasModel(ref)) || (await second.hasModel(ref));
+    },
+  };
+}
+
 /** The boot payload's `modelLibs` entry `viewerLibModelsSource` consumes. */
 export type ViewerModelLib = Pick<ModelLibDescriptor, "id" | "paths" | "layer">;
 

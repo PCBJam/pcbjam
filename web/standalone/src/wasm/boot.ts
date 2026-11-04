@@ -16,7 +16,7 @@ import {
   LIB_ROOTS_DIR,
   stageLibModels,
 } from "./libs/models-bridge";
-import { libModelsSource, viewerLibModelsSource, type ViewerModelLib } from "./libs/models-source";
+import { chainModelSources, libModelsSource, viewerLibModelsSource, type ViewerModelLib } from "./libs/models-source";
 import { installLibDocPlaceholders } from "./libs/lib-docs";
 import { API_BASE_URL, currentScope } from "@/lib/config";
 
@@ -154,10 +154,11 @@ export interface BootOptions {
   /** 3D model source (lazy, per-board). Null/omitted ⇒ the viewer renders the
    *  bare board only, exactly as before models existed. */
   modelsSource?: Model3dSource | null;
-  /** Team-library models of a VIEW-ONLY session (boot payload `modelLibs`,
+  /** Team-library models the catalog doesn't carry (boot payload `modelLibs`,
    *  libs 0027): one sparse layer per library the project's boards reference.
-   *  Used only when the lib catalog carries no team library (viewers get
-   *  none); writers resolve their team libraries' models from the catalog. */
+   *  A view-only session's catalog has no team library; a writer's holds only
+   *  the libraries the project picks from (pricing 0006 T3c), so the boards'
+   *  parts from other ones get their models here. */
   modelLibs?: ReadonlyArray<ViewerModelLib> | null;
   /** Editor frame to open when the bundle serves more than one (e.g. `"fpedit"`
    *  so the pcbnew bundle opens the Footprint Editor). Passed through as
@@ -472,6 +473,7 @@ async function doBoot(opts: BootOptions): Promise<void> {
   // Seeded into KiCad's environment so the 3D model picker shortens a picked
   // file to the variable form; the model bytes still arrive via the bridge.
   let libRootVars: Record<string, string> = {};
+  let catalogModels: Model3dSource | null = null;
   // A library editor stages its own library's models once the runtime is up
   // (the file picker browses MEMFS); project sessions stay lazy.
   let stageModelsAfterBoot: (() => Promise<void>) | null = null;
@@ -569,10 +571,8 @@ async function doBoot(opts: BootOptions): Promise<void> {
       ];
       if (teamLibs.length && libsSource.getItemBytes) {
         const read = libsSource.getItemBytes.bind(libsSource);
-        installLibModelSource(
-          libModelsSource(teamLibs, (id, name) => read(id, "model3d", name)),
-          log,
-        );
+        catalogModels = libModelsSource(teamLibs, (id, name) => read(id, "model3d", name));
+        installLibModelSource(catalogModels, log);
         libRootVars = Object.fromEntries(
           teamLibs.map((l) => [l.paths!.pathVar, `${LIB_ROOTS_DIR}/${l.paths!.pathVar}`]),
         );
@@ -612,14 +612,20 @@ async function doBoot(opts: BootOptions): Promise<void> {
     }
   }
 
-  // View-only sessions (libs 0027): the catalog has no team library, so the
-  // team libraries' referenced models come through the boot's sparse layers.
-  if (modelLibs?.length && Object.keys(libRootVars).length === 0) {
-    installLibModelSource(viewerLibModelsSource(modelLibs), log);
-    libRootVars = Object.fromEntries(
-      modelLibs.map((l) => [l.paths.pathVar, `${LIB_ROOTS_DIR}/${l.paths.pathVar}`]),
-    );
-    log(`[3d] viewer team library model roots: ${Object.keys(libRootVars).join(", ")}`);
+  // Team libraries outside the catalog (libs 0027): a view-only session's
+  // catalog has none, a writer's only the project's pick set (pricing 0006
+  // T3c). Their referenced models come through the boot's sparse layers; a
+  // path variable the catalog already serves stays the catalog's.
+  const extraModelLibs = (modelLibs ?? []).filter((l) => !(l.paths.pathVar in libRootVars));
+  if (extraModelLibs.length) {
+    const viewer = viewerLibModelsSource(extraModelLibs);
+    installLibModelSource(catalogModels ? chainModelSources(catalogModels, viewer) : viewer, log);
+    const extraVars = extraModelLibs.map((l) => l.paths.pathVar);
+    libRootVars = {
+      ...libRootVars,
+      ...Object.fromEntries(extraVars.map((v) => [v, `${LIB_ROOTS_DIR}/${v}`])),
+    };
+    log(`[3d] boot-layer team library model roots: ${extraVars.join(", ")}`);
   }
 
   onStatus(fetchLabel);

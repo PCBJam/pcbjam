@@ -5,7 +5,7 @@ import {
   type SyncStackDescriptor,
 } from "@pcbjam/shared";
 import { memStore, type LayerStore } from "@pcbjam/sync-client";
-import { cdnModelsSource, libModelsSource, registryModelsSource, viewerLibModelsSource } from "./models-source";
+import { chainModelSources, cdnModelsSource, libModelsSource, registryModelsSource, viewerLibModelsSource } from "./models-source";
 
 const MANIFEST_URL = "https://cdn.test/libs/kicad-models/9.0.9/manifest.json";
 const BASE = "https://cdn.test/libs/kicad-models/9.0.9";
@@ -265,6 +265,28 @@ describe("libModelsSource (libs 0020)", () => {
     expect(await source.getModelBody("${MYPARTS_DIR}/other/sot23.step")).toBeNull();
     expect(await source.getModelBody("${OTHER_DIR}/3d/sub/sot23.step")).toBeNull();
     expect(await source.getModelBody("L.3dshapes/x.step")).toBeNull();
+  });
+});
+
+describe("chainModelSources (pricing 0006 T3c)", () => {
+  // The catalog's library, then a library outside it (the boot's model layer).
+  const catalog = libModelsSource([{ id: "lib-a", paths: { pathVar: "A_DIR", modelsDir: "3d" } }], async (_id, name) =>
+    name === "a.step" ? new Uint8Array([1]) : null,
+  );
+  const outside = libModelsSource([{ id: "lib-b", paths: { pathVar: "B_DIR", modelsDir: "3d" } }], async (_id, name) =>
+    name === "b.step" ? new Uint8Array([2]) : null,
+  );
+  const source = chainModelSources(catalog, outside);
+
+  it("answers each ref from the source that holds its path variable", async () => {
+    expect(await source.getModelBody("${A_DIR}/3d/a.step")).toEqual(new Uint8Array([1]));
+    expect(await source.getModelBody("${B_DIR}/3d/b.step")).toEqual(new Uint8Array([2]));
+    expect(await source.hasModel("${B_DIR}/3d/b.step")).toBe(true);
+  });
+
+  it("answers null when neither holds it", async () => {
+    expect(await source.getModelBody("${B_DIR}/3d/a.step")).toBeNull();
+    expect(await source.hasModel("${C_DIR}/3d/c.step")).toBe(false);
   });
 });
 
