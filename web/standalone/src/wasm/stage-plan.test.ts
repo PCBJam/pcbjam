@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  dropBundledLibRows,
   expandRefs,
   initialStageSet,
   placeholderDirs,
@@ -181,5 +182,33 @@ describe("wantsScopedStaging", () => {
     // The deployment-wide switch, which a URL flag still overrides.
     expect(wantsScopedStaging("", 500, true)).toBe(false);
     expect(wantsScopedStaging("?stage=scoped", 500, true)).toBe(true);
+  });
+});
+
+describe("dropBundledLibRows (pricing 0006 T3d)", () => {
+  const enc = new TextEncoder();
+  const dec = new TextDecoder();
+  const bundled = '  (lib (name "board")(type "KiCad")(uri "${KIPRJMOD}/libs/board/board.kicad_sym")(options "")(descr "pcbjam project abc"))';
+  const mine = '  (lib (name "Mine")(type "KiCad")(uri "${KIPRJMOD}/Mine.kicad_sym")(options "")(descr ""))';
+  const table = `(sym_lib_table\n  (version 7)\n${mine}\n${bundled}\n)\n`;
+
+  it("drops the row of a folder that isn't project files, so the registry library stays visible", () => {
+    const out = dec.decode(dropBundledLibRows("sym-lib-table", enc.encode(table), { projectDir: "", paths: ["a.kicad_sch"] }));
+    expect(out).toBe(`(sym_lib_table\n  (version 7)\n${mine}\n)\n`);
+  });
+
+  it("keeps it when the files came with the project (a repository imported elsewhere)", () => {
+    const bytes = enc.encode(table);
+    expect(
+      dropBundledLibRows("sym-lib-table", bytes, { projectDir: "", paths: ["libs/board/board.kicad_sym"] }),
+    ).toEqual(bytes);
+  });
+
+  it("leaves other files and tables of other folders alone", () => {
+    const bytes = enc.encode(table);
+    expect(dropBundledLibRows("a.kicad_sch", bytes, { projectDir: "", paths: [] })).toBe(bytes);
+    expect(dropBundledLibRows("sub/sym-lib-table", bytes, { projectDir: "", paths: [] })).toBe(bytes);
+    const plain = enc.encode(`(sym_lib_table\n${mine}\n)\n`);
+    expect(dropBundledLibRows("sym-lib-table", plain, { projectDir: "", paths: [] })).toBe(plain);
   });
 });

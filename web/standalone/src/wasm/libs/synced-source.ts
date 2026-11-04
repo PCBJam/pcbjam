@@ -610,6 +610,7 @@ export function syncedScopeLibsSource(
           // Same rule the server applies: org libs and mirrors are
           // kind-agnostic containers; origins/pins need >=1 item of the kind.
           l.type === "org" ||
+          l.type === "project" ||
           l.type === "mirror" ||
           (l.kindCounts?.[kind] ?? 0) > 0,
       )
@@ -690,6 +691,7 @@ export function syncedScopeLibsSource(
   return {
     listLibs: (kind) => listLibsPreferred(kind),
     createLib: remote.createLib?.bind(remote),
+    ensureProjectLib: remote.ensureProjectLib?.bind(remote),
     async getFpIndex(arg) {
       // The Add Symbol footprint list (libs 0029): every footprint library of
       // the session from the library index — official and other ingested

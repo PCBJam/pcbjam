@@ -13,7 +13,8 @@ import { usePendingPartCopySave } from "@/libs/part-copy-prompt";
 /**
  * libs 0031: the save modal. KiCad's Save / Save All reached parts of a
  * library the user can't write; every part the save writes is listed with
- * where it goes, read-only ones as copies in the team's default library.
+ * where it goes, read-only ones as copies in the project's library (the team's
+ * default one outside a project).
  * Cancel writes nothing and keeps the edits.
  */
 export function PartCopySaveDialog() {
@@ -31,7 +32,7 @@ export function PartCopySaveDialog() {
           <DialogDescription>
             {blocked
               ? "Some parts can't be saved: their library is read-only for you and they can't be copied."
-              : "Parts of a read-only library are saved as copies in your team's library."}
+              : "Parts of a read-only library are saved as copies."}
           </DialogDescription>
         </DialogHeader>
         <ul className="max-h-80 space-y-1 overflow-y-auto text-sm" data-testid="part-copy-save-rows">

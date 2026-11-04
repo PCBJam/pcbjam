@@ -9,7 +9,15 @@ import { deferBoardModelPrescan, prescanBoardModels } from "./libs/models-bridge
 import { openFileInTool } from "./open-flow";
 import { isLocalSettingsPath, viewerLocalSettings } from "@/lib/viewer-local-settings";
 import { installLazyDirs, type LazyDirs, type LazyFs } from "./lazy-dirs";
-import { expandRefs, hasReferences, initialStageSet, placeholderDirs, referencesIn } from "./stage-plan";
+import {
+  dropBundledLibRows,
+  expandRefs,
+  hasReferences,
+  initialStageSet,
+  placeholderDirs,
+  projectDirFor,
+  referencesIn,
+} from "./stage-plan";
 
 /**
  * The only thing the editor needs to know about a file to sync it into MEMFS:
@@ -208,7 +216,10 @@ async function syncProjectToMemfs(win: ToolWindow, opts: DriveOptions): Promise<
   // Scoped staging learns its total as references are followed.
   let total = opts.scoped && opts.projectSync ? 0 : opts.files.length;
   opts.onFileProgress?.(0, total);
+  const listed = opts.files.map((f) => f.path);
+  const tableCtx = { projectDir: projectDirFor(listed, opts.targetPath), paths: listed };
   const stageOne = (path: string, bytes: Uint8Array): void => {
+    bytes = dropBundledLibRows(path, bytes, tableCtx);
     if (opts.viewerLocalSettings && isLocalSettingsPath(path)) {
       const stripped = viewerLocalSettings(bytes);
       if (stripped !== bytes) opts.log(`[memfs] ${path}: selection filters dropped for the viewer`);

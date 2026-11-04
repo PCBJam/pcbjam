@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createPartCopyBridge, type PartCopyDeps, type SaveModalRequest } from './part-copy';
+import {
+  createPartCopyBridge,
+  type CopyDestination,
+  type CopyDestinationRequest,
+  type PartCopyDeps,
+  type SaveModalRequest,
+} from './part-copy';
 import type { LibInfo, LibsSource } from '@/wasm/libs/source';
 
 const DEVICE: LibInfo = { id: 'dev-id', name: 'Device', type: 'origin' };
@@ -18,6 +24,7 @@ function fakeDeps(over: {
   items?: Array<{ kind: string; name: string }>;
   libScoped?: boolean;
   confirm?: boolean;
+  pick?: CopyDestination | null;
 } = {}) {
   const calls: string[] = [];
   const items = over.items ?? [];
@@ -29,6 +36,7 @@ function fakeDeps(over: {
     ),
   } as unknown as LibsSource;
   const modals: SaveModalRequest[] = [];
+  const picks: CopyDestinationRequest[] = [];
   const notices: Array<{ state: string; message: string; link?: { href: string } }> = [];
   const mod = {
     kicadLibsInvalidate: vi.fn((kind: string, lib: string) => { calls.push(`invalidate:${kind}:${lib}`); }),
@@ -52,11 +60,12 @@ function fakeDeps(over: {
     module: () => mod,
     addLib: vi.fn(async (_s, detail) => { calls.push(`addLib:${detail.name}`); return true; }),
     confirmSave: vi.fn(async (req) => { modals.push(req); return over.confirm ?? true; }),
+    pickDestination: vi.fn(async (req) => { picks.push(req); return over.pick === undefined ? (req.destinations[1] ?? null) : over.pick; }),
     notify: (n) => { notices.push(n); },
     sleep: vi.fn(async () => {}),
     log: vi.fn(),
   };
-  return { deps, calls, items, modals, notices, mod };
+  return { deps, calls, items, modals, notices, mod, picks };
 }
 
 const saved = (name: string, created = false) => ({ status: 200, body: { state: 'saved', target: { libId: TEAM.id, lib: 'acme', name, created }, replaced: false } });
@@ -80,6 +89,89 @@ describe('libs 0031 part copy: banner notice', () => {
     const n = bridge.notice('footprint', 'Device', 'R');
     expect(n?.button).toBeUndefined();
     expect(n?.message).toContain('Only members of acme can copy footprints');
+  });
+});
+
+describe('pricing 0006 T3d part copy: inside a project', () => {
+  const projectTarget = (canCopy: boolean) => ({
+    '/part-copy-target': () => ({ status: 200, body: { canCopy, libId: null, lib: 'my-board', project: true } }),
+  });
+
+  it('offers the project library to whoever can edit the project', async () => {
+    const { deps } = fakeDeps({ routes: projectTarget(true) });
+    const bridge = createPartCopyBridge(deps);
+    await bridge.prime();
+    expect(bridge.notice('symbol', 'Device', 'R')?.button).toBe('Copy to "my-board" library');
+    expect(bridge.notice('symbol', 'Theirs', 'X')?.message).toContain("it's a library of acme");
+  });
+
+  it('readers and commenters get the plain banner', async () => {
+    const { deps } = fakeDeps({ routes: projectTarget(false) });
+    const bridge = createPartCopyBridge(deps);
+    await bridge.prime();
+    expect(bridge.notice('symbol', 'Device', 'R')).toEqual({ message: 'Device is read-only for you (it belongs to KiCad).' });
+  });
+});
+
+describe('pricing 0006 T3b part copy: the library browser picks', () => {
+  const projects = {
+    '/api/me/editable-projects': () => ({
+      status: 200,
+      body: [
+        { scope: 'acme', slug: 'board', name: 'Board' },
+        { scope: 'other', slug: 'shared', name: 'Shared' },
+      ],
+    }),
+  };
+
+  it('the button opens a picker and the copy goes to the picked project', async () => {
+    const bodies: Array<{ path: string; body: unknown }> = [];
+    const f = fakeDeps({
+      libScoped: true,
+      pick: { scope: 'other', project: 'shared', label: 'other / Shared' },
+      routes: {
+        ...projects,
+        '/copy-to-team': (body, path) => {
+          bodies.push({ path: path!, body });
+          return { status: 200, body: { state: 'existing', target: { libId: 'lib-1', lib: 'shared', name: 'R', created: false } } };
+        },
+      },
+    });
+    const bridge = createPartCopyBridge(f.deps);
+    await bridge.prime();
+    expect(bridge.notice('symbol', 'Device', 'R')?.button).toBe('Copy to...');
+    bridge.copy('symbol', 'Device', 'R');
+    await vi.waitFor(() => expect(f.notices.at(-1)?.state).toBe('done'));
+    expect(f.picks[0]?.destinations.map((d) => d.label)).toEqual(['acme (library of acme)', 'Board', 'other / Shared']);
+    expect(bodies[0]?.path).toContain('/api/scopes/other/libs/');
+    expect(bodies[0]?.body).toEqual({ kind: 'symbol', name: 'R', project: 'shared' });
+    expect(f.notices.at(-1)?.link?.href).toBe('/other/libs/lib-1?tool=symbol_editor');
+  });
+
+  it('cancelling the picker copies nothing', async () => {
+    const f = fakeDeps({ libScoped: true, pick: null, routes: projects });
+    const bridge = createPartCopyBridge(f.deps);
+    await bridge.prime();
+    bridge.copy('symbol', 'Device', 'R');
+    await vi.waitFor(() => expect(f.picks).toHaveLength(1));
+    expect(f.calls.some((c) => c.includes('copy-to-team'))).toBe(false);
+    expect(f.notices).toEqual([]);
+  });
+
+  it("someone who isn't on the team only sees their projects", async () => {
+    const f = fakeDeps({
+      libScoped: true,
+      pick: null,
+      routes: {
+        ...projects,
+        '/part-copy-target': () => ({ status: 200, body: { canCopy: false, libId: null, lib: 'acme', project: false } }),
+      },
+    });
+    const bridge = createPartCopyBridge(f.deps);
+    await bridge.prime();
+    bridge.copy('symbol', 'Device', 'R');
+    await vi.waitFor(() => expect(f.picks).toHaveLength(1));
+    expect(f.picks[0]?.destinations.map((d) => d.project)).toEqual(['board', 'shared']);
   });
 });
 

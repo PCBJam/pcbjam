@@ -200,6 +200,30 @@ export function referencesIn(
   return out;
 }
 
+/**
+ * pricing 0006 T3d: a Git push writes the project's library out as KiCad files with
+ * rows in the project's lib tables (`descr "pcbjam project <id>"`). Here that
+ * folder is not project files, the library comes from the registry, so its row
+ * must not shadow it. A row whose folder is in the listing (a repository imported
+ * elsewhere) stays.
+ */
+export function dropBundledLibRows(
+  path: string,
+  bytes: Uint8Array,
+  ctx: { projectDir: string; paths: readonly string[] },
+): Uint8Array {
+  if (!LIB_TABLE_NAMES.has(baseOf(path)) || dirOf(path) !== ctx.projectDir) return bytes;
+  const text = new TextDecoder().decode(bytes);
+  if (!text.includes('"pcbjam project ')) return bytes;
+  const kept = text.split("\n").filter((line) => {
+    if (!/\(descr "pcbjam project [^"]*"\)/.test(line)) return true;
+    const m = line.match(/\(uri\s+(?:"((?:[^"\\]|\\.)*)"|([^\s)]+))\s*\)/);
+    const target = m ? resolveProjectRef(ctx.projectDir, m[1] ?? m[2]!) : null;
+    return !!target && ctx.paths.some((p) => p === target || p.startsWith(`${target}/`));
+  });
+  return new TextEncoder().encode(kept.join("\n"));
+}
+
 /** The listed paths a set of references names. */
 export function expandRefs(refs: readonly StageRef[], paths: readonly string[]): string[] {
   if (!refs.length) return [];

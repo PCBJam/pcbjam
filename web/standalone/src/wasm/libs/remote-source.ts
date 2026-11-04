@@ -94,6 +94,26 @@ export function remoteLibsSource(
       return res.ok;
     },
 
+    ...(project
+      ? {
+          async ensureProjectLib(): Promise<LibInfo | null> {
+            const res = await fetch(`${apiBase}/api/scopes/${enc(scope)}/project-library`, {
+              method: "POST",
+              headers: { ...reqHeaders, "Content-Type": "application/json" },
+              body: "{}",
+              credentials: "include",
+            });
+            if (!res.ok) return null;
+            const { lib } = (await res.json()) as {
+              lib: { id: string; name: string; nickname?: string; description?: string | null; type: string; sync?: LibInfo["sync"] } | null;
+            };
+            return lib
+              ? { id: lib.id, name: lib.nickname ?? lib.name, description: lib.description ?? null, type: lib.type, sync: lib.sync ?? null }
+              : null;
+          },
+        }
+      : {}),
+
     async createLib(name: string): Promise<LibInfo | null> {
       const res = await client.createLib({ params: { scope }, body: { name } });
       if (res.status !== 201) return null;

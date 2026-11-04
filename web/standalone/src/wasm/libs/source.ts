@@ -20,7 +20,7 @@ export interface LibInfo {
   /** Display nickname for the sym-lib-table row. */
   name: string;
   description?: string | null;
-  /** 'origin' | 'mirror' | 'user' | 'org' — drives "ensure a writable lib
+  /** 'origin' | 'mirror' | 'user' | 'org' | 'project' — drives "ensure a writable lib
    *  exists" at boot. 'org' is the private platform's name for a scope's own
    *  writable lib (renamed from 'user' in the team-libs rework); the example
    *  backend and local sources still say 'user'. */
@@ -163,6 +163,9 @@ export interface LibsSource {
    * conflict). Used by boot to ensure the owner has a writable target.
    */
   createLib?(name: string): Promise<LibInfo | null>;
+  /** Inside a project (private platform): the library new parts go to, made if
+   *  this user has nowhere to save; null when they do or can't. Absent elsewhere. */
+  ensureProjectLib?(): Promise<LibInfo | null>;
   /**
    * The publish-time footprint index as raw JSON text:
    *   { schema, tag, libs: { "<libId>": [["<name>", <uniquePadCount>], …] } }

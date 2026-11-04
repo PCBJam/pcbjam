@@ -1,7 +1,9 @@
 /**
  * libs 0031: the page half of "copy instead of override". A part of a library
  * the user can't write (a KiCad library, a frozen override, another team's
- * public library) is copied into the team's default library and edited there.
+ * public library) is copied and edited there: inside a project into the project's
+ * library (pricing 0006 T3d), in the library browser into the team's default
+ * library or a project the user picks (T3b).
  * KiCad calls `window.pcbjamPartCopy` from wasm/bindings/part_copy_symbol.h and
  * part_copy_footprint.h:
  *
@@ -12,7 +14,7 @@
  *    library reloads in the editor and the copy opens.
  *  - `save(request)`: Save / Save All reached parts of a read-only library. The
  *    modal lists every part and where it goes; on Save the edited parts are
- *    written into the team library, the editor reloads it, and KiCad reverts
+ *    written into that library, the editor reloads it, and KiCad reverts
  *    the originals and opens the copy that was on screen.
  *
  * Placed parts are never switched: the design keeps the original until the
@@ -24,12 +26,12 @@ import { API_BASE_URL, userSlug } from "@/lib/config";
 import { getActiveEditor, type ActiveEditor } from "@/wasm/active-editor";
 import { addAnnouncedLib } from "@/wasm/libs/runtime-add";
 import type { LibInfo, LibsSource } from "@/wasm/libs/source";
-import { askPartCopySave } from "./part-copy-prompt";
+import { askPartCopyDestination, askPartCopySave } from "./part-copy-prompt";
 
 export type PartKind = "symbol" | "footprint";
 
 export interface CopyTarget {
-  /** Null in a preview when the team's default library doesn't exist yet. */
+  /** Null in a preview when the library doesn't exist yet. */
   libId: string | null;
   /** Its lib-table nickname in the editor. */
   lib: string;
@@ -77,6 +79,23 @@ export interface BannerNotice {
   button?: string;
 }
 
+/** One place the library browser's copy can go. */
+export interface CopyDestination {
+  /** The team the copy lands in. */
+  scope: string;
+  /** The project (slug) whose library takes it; none: the team's default library. */
+  project?: string;
+  /** What the picker and the messages call it. */
+  label: string;
+}
+
+export interface CopyDestinationRequest {
+  kind: PartKind;
+  lib: string;
+  name: string;
+  destinations: CopyDestination[];
+}
+
 export interface PartCopyNotify {
   /** Same id = the same toast, updated. */
   id: string;
@@ -95,6 +114,8 @@ export interface PartCopyDeps {
   module(): Record<string, unknown> | undefined;
   addLib: typeof addAnnouncedLib;
   confirmSave(request: SaveModalRequest): Promise<boolean>;
+  /** The library browser's picker; null when the user cancels. */
+  pickDestination(request: CopyDestinationRequest): Promise<CopyDestination | null>;
   notify(n: PartCopyNotify): void;
   sleep(ms: number): Promise<void>;
   log(message: string): void;
@@ -104,6 +125,8 @@ interface TargetInfo {
   canCopy: boolean;
   libId: string | null;
   lib: string;
+  /** The project's library (inside a project); else the team's default one. */
+  project?: boolean;
 }
 
 const enc = encodeURIComponent;
@@ -158,30 +181,68 @@ export function createPartCopyBridge(deps: PartCopyDeps) {
         : owner === "mirror"
           ? `${lib} is read-only: overrides of KiCad parts can't be changed any more.`
           : owner === "org"
-            ? `${lib} is read-only for you (it belongs to another team).`
+            ? target?.project
+              ? `${lib} is read-only for you (it's a library of ${ed.scope}).`
+              : `${lib} is read-only for you (it belongs to another team).`
             : `${lib} is read-only for you.`;
+    // Readers and commenters of a project get the plain banner (pricing 0007).
+    if (target?.project && !target.canCopy) return { message };
+    // The library browser picks where it goes (pricing 0006 T3b).
+    if (deps.libScoped()) return { message, button: "Copy to..." };
     if (target && !target.canCopy) return { message: `${message} Only members of ${ed.scope} can copy ${kind}s into its libraries.` };
     return { message, button: `Copy to "${teamLibName(ed)}" library` };
   }
 
   function copy(kind: PartKind, lib: string, name: string): void {
-    void runCopy(kind, lib, name).catch((e) => deps.log(`[part-copy] copy failed: ${String(e)}`));
+    void startCopy(kind, lib, name).catch((e) => deps.log(`[part-copy] copy failed: ${String(e)}`));
   }
 
-  async function runCopy(kind: PartKind, lib: string, name: string): Promise<void> {
+  async function startCopy(kind: PartKind, lib: string, name: string): Promise<void> {
+    const ed = deps.editor();
+    if (!ed?.source) return;
+    if (!deps.libScoped()) return runCopy(kind, lib, name);
+    const destinations = await copyDestinations(ed);
+    if (destinations.length === 0) {
+      deps.notify({ id: `part-copy:${kind}:${lib}:${name}`, state: "error", message: `You have nowhere to copy ${lib}:${name} to.` });
+      return;
+    }
+    const picked = destinations.length === 1 ? destinations[0]! : await deps.pickDestination({ kind, lib, name, destinations });
+    if (picked) await runCopy(kind, lib, name, picked);
+  }
+
+  /** The team's default library (when the user is a member) and the projects they can edit. */
+  async function copyDestinations(ed: ActiveEditor): Promise<CopyDestination[]> {
+    const out: CopyDestination[] = [];
+    if (target?.canCopy !== false) out.push({ scope: ed.scope, label: `${teamLibName(ed)} (library of ${ed.scope})` });
+    try {
+      const res = await deps.fetch("/api/me/editable-projects", { method: "GET" }, ed);
+      if (res.status === 200) {
+        for (const p of res.body as Array<{ scope: string; slug: string; name: string }>) {
+          out.push({ scope: p.scope, project: p.slug, label: p.scope === ed.scope ? p.name : `${p.scope} / ${p.name}` });
+        }
+      }
+    } catch (e) {
+      deps.log(`[part-copy] project list failed: ${String(e)}`);
+    }
+    return out;
+  }
+
+  async function runCopy(kind: PartKind, lib: string, name: string, dest?: CopyDestination): Promise<void> {
     const ed = deps.editor();
     if (!ed?.source) return;
     const id = `part-copy:${kind}:${lib}:${name}`;
-    deps.notify({ id, state: "progress", message: `Copying ${lib}:${name} to "${teamLibName(ed)}"…` });
+    const scope = dest?.scope ?? ed.scope;
+    const body = { kind, name, ...(dest?.project ? { project: dest.project } : {}) };
+    deps.notify({ id, state: "progress", message: `Copying ${lib}:${name} to "${dest?.label ?? teamLibName(ed)}"…` });
     try {
       const source = await libIdOf(ed, lib);
-      let res = await copyRequest(ed, source, { kind, name });
+      let res = await copyRequest(ed, source, body, scope);
       for (let i = 0; res.status === 409 && busyOperation(res.body) && i < BUSY_RETRIES; i++) {
-        await waitOperation(ed, source, busyOperation(res.body)!);
-        res = await copyRequest(ed, source, { kind, name });
+        await waitOperation(ed, source, busyOperation(res.body)!, scope);
+        res = await copyRequest(ed, source, body, scope);
       }
       const out = expectOk(res) as { state: string; target: CopyTarget & { libId: string }; operation?: { id: string } };
-      if (out.state === "copying" && out.operation) await waitOperation(ed, out.target.libId, out.operation.id);
+      if (out.state === "copying" && out.operation) await waitOperation(ed, out.target.libId, out.operation.id, scope);
 
       const libScoped = deps.libScoped();
       if (libScoped) {
@@ -189,7 +250,7 @@ export function createPartCopyBridge(deps: PartCopyDeps) {
           id,
           state: "done",
           message: `Copied to "${out.target.lib}" as ${out.target.name}.`,
-          link: { label: "Open", href: libEditorHref(ed, out.target.libId, kind) },
+          link: { label: "Open", href: libEditorHref(scope, out.target.libId, kind) },
         });
         return;
       }
@@ -249,7 +310,7 @@ export function createPartCopyBridge(deps: PartCopyDeps) {
           id,
           state: "done",
           message: `Saved to "${first.targetLib}": ${copied.map((c) => c.targetName).join(", ")}.`,
-          link: { label: "Open", href: libEditorHref(ed, first.libId, kind) },
+          link: { label: "Open", href: libEditorHref(ed.scope, first.libId, kind) },
         });
       } else {
         // Before answering KiCad: the copies' libraries must reload ahead of
@@ -283,13 +344,13 @@ export function createPartCopyBridge(deps: PartCopyDeps) {
     return found.id;
   }
 
-  function copyRequest(ed: ActiveEditor, libId: string, body: Record<string, unknown>) {
-    return deps.fetch(`/api/scopes/${enc(ed.scope)}/libs/${enc(libId)}/items/copy-to-team`, { method: "POST", body }, ed);
+  function copyRequest(ed: ActiveEditor, libId: string, body: Record<string, unknown>, scope = ed.scope) {
+    return deps.fetch(`/api/scopes/${enc(scope)}/libs/${enc(libId)}/items/copy-to-team`, { method: "POST", body }, ed);
   }
 
-  async function waitOperation(ed: ActiveEditor, libId: string, operationId: string): Promise<void> {
+  async function waitOperation(ed: ActiveEditor, libId: string, operationId: string, scope = ed.scope): Promise<void> {
     for (;;) {
-      const res = await deps.fetch(`/api/scopes/${enc(ed.scope)}/libs/${enc(libId)}/items/transfer/${enc(operationId)}`, { method: "GET" }, ed);
+      const res = await deps.fetch(`/api/scopes/${enc(scope)}/libs/${enc(libId)}/items/transfer/${enc(operationId)}`, { method: "GET" }, ed);
       const op = (expectOk(res) as { operation: { status: string; error: string | null } }).operation;
       if (op.status === "succeeded") return;
       if (op.status === "failed") throw new PartCopyError(op.error ?? "the copy failed");
@@ -311,7 +372,7 @@ export function createPartCopyBridge(deps: PartCopyDeps) {
     const listed =
       addedLibs.has(key) || (await source.listLibs(kind).then((libs) => libs.some((l) => l.id === t.libId), () => false));
     if (!listed) {
-      const info: LibInfo = { id: t.libId, name: t.lib, type: "org" };
+      const info: LibInfo = { id: t.libId, name: t.lib, type: target?.project ? "project" : "org" };
       const shim = { listLibs: async (k?: string) => (k === kind ? [info] : []) } as unknown as LibsSource;
       if (await deps.addLib(shim, { op: "add", libId: t.libId, name: t.lib }, deps.log)) addedLibs.add(key);
       else deps.log(`[part-copy] ${t.lib} could not be added to the session`);
@@ -344,7 +405,7 @@ function busyOperation(body: unknown): string | null {
 function expectOk(res: { status: number; body: unknown }): unknown {
   if (res.status === 200 || res.status === 202) return res.body;
   const message = (res.body as { message?: string } | null)?.message;
-  if (res.status === 403) throw new PartCopyError(message ?? "you can't copy parts into this team's libraries");
+  if (res.status === 403) throw new PartCopyError(message ?? "you can't copy parts there");
   throw new PartCopyError(message ?? `the server answered ${res.status}`);
 }
 
@@ -365,8 +426,8 @@ function copiedMessage(kind: PartKind, lib: string, name: string, t: CopyTarget,
     : `Copied ${lib}:${name} to ${where}. ${switchHint(kind)}`;
 }
 
-function libEditorHref(ed: ActiveEditor, libId: string, kind: PartKind): string {
-  return `/${enc(ed.scope)}/libs/${enc(libId)}?tool=${TOOL_OF[kind]}`;
+function libEditorHref(scope: string, libId: string, kind: PartKind): string {
+  return `/${enc(scope)}/libs/${enc(libId)}?tool=${TOOL_OF[kind]}`;
 }
 
 function defaultDeps(opts: { libScoped: boolean }): PartCopyDeps {
@@ -390,6 +451,7 @@ function defaultDeps(opts: { libScoped: boolean }): PartCopyDeps {
     module: () => (globalThis as { Module?: Record<string, unknown> }).Module,
     addLib: addAnnouncedLib,
     confirmSave: askPartCopySave,
+    pickDestination: askPartCopyDestination,
     notify: (n) => {
       const options = {
         id: n.id,

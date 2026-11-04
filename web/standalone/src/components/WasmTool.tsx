@@ -29,6 +29,7 @@ import { redirectTargetFor } from "@/lib/redirect";
 import { loadSessionIdentity, seedSessionIdentity, sessionIdentity } from "@/lib/session-identity";
 import { useThemeValue } from "@/lib/theme";
 import { bootKicadTool } from "@/wasm/boot";
+import { waitForEditorFrame } from "@/wasm/open-flow";
 import {
   autoDownloadEnabled,
   isWasmDownloaded,
@@ -171,6 +172,7 @@ import { OverlayHost } from "@/overlay/OverlayHost";
 import { setTourDoc } from "@/overlay/tours/checkpoints";
 import { savePartAndPlace } from "@/libs/save-part";
 import { installPartCopyBridge } from "@/libs/part-copy";
+import { PartCopyDestinationDialog } from "@/components/wasm-tool/PartCopyDestinationDialog";
 import { PartCopySaveDialog } from "@/components/wasm-tool/PartCopySaveDialog";
 import {
   chromeSetter,
@@ -1650,6 +1652,12 @@ export function WasmTool({
         // bundles have no lock export and nothing project-mutating to lock —
         // they proceed (saves are already MEMFS-only above).
         if (readOnly) {
+          // A route with no file (a library editor, a bare /-/pcbnew) opened
+          // nothing, so nothing above waited for the runtime: the export lands
+          // after the FS, and the lock refuses until the frame exists.
+          if (openResult === "none" && tool !== "gerbview" && tool !== "calculator") {
+            await waitForEditorFrame(win, 60_000);
+          }
           const setRo = (
             win.Module as
               | { kicadSetReadOnly?: (v: boolean) => boolean | Promise<boolean> }
@@ -2402,6 +2410,7 @@ export function WasmTool({
 
       {/* libs 0031: Save reached parts of a read-only library. */}
       <PartCopySaveDialog />
+      <PartCopyDestinationDialog />
 
       <NoticeStack
         ready={ready}

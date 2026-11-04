@@ -53,7 +53,7 @@ const DEFAULT_USER_LIB_NAME = "My Symbols";
  */
 export function hasWritableLib(lists: Iterable<LibInfo[]>): boolean {
   return [...lists].some((libs) =>
-    libs.some((l) => l.type === "user" || l.type === "org"),
+    libs.some((l) => l.type === "user" || l.type === "org" || l.type === "project"),
   );
 }
 
@@ -71,14 +71,22 @@ export function hasWritableLib(lists: Iterable<LibInfo[]>): boolean {
  * whole session (observed on staging: anonymous open of a public schematic).
  */
 export async function ensureWritableLib(
-  source: Pick<LibsSource, "createLib">,
+  source: Pick<LibsSource, "createLib" | "ensureProjectLib">,
   listsByKind: Iterable<LibInfo[]>,
   opts: { readOnly?: boolean; log: (msg: string) => void; name?: string },
 ): Promise<LibInfo | null> {
   const lists = [...listsByKind];
-  if (opts.readOnly || !source.createLib || hasWritableLib(lists)) return null;
+  if (opts.readOnly) return null;
+  // Inside a project, new parts go to the project's library: the backend decides
+  // whether this user needs it now (a team library they can't write is no help).
+  const inProject = !!source.ensureProjectLib;
+  if (inProject) {
+    if (lists.some((libs) => libs.some((l) => l.type === "project"))) return null;
+  } else if (!source.createLib || hasWritableLib(lists)) return null;
   try {
-    const created = await source.createLib(opts.name ?? DEFAULT_USER_LIB_NAME);
+    const created = inProject
+      ? await source.ensureProjectLib!()
+      : await source.createLib!(opts.name ?? DEFAULT_USER_LIB_NAME);
     if (!created) return null;
     for (const libs of lists) libs.push(created);
     opts.log(`[libs] created default user lib "${created.name}"`);

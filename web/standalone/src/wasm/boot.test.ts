@@ -34,6 +34,32 @@ describe("hasWritableLib", () => {
  * project has no writable lib, so boot POSTed createLib, the session gate
  * 401'd, and the throw escaped the caller's try — seeding EMPTY lib tables.
  */
+describe("ensureWritableLib inside a project (pricing 0006 T3d)", () => {
+  const log = () => {};
+  const projectLib = { id: "p", name: "my-board", type: "project" };
+
+  it("asks for the project library instead of creating My Symbols, even with team libraries listed", async () => {
+    const createLib = vi.fn();
+    const ensureProjectLib = vi.fn(async () => projectLib);
+    const sym = [{ id: "t", name: "Team", type: "org" }];
+    expect(await ensureWritableLib({ createLib, ensureProjectLib }, [sym], { log })).toBe(projectLib);
+    expect(createLib).not.toHaveBeenCalled();
+    expect(sym).toContain(projectLib);
+  });
+
+  it("doesn't ask when it is listed, or read-only", async () => {
+    const ensureProjectLib = vi.fn(async () => projectLib);
+    await ensureWritableLib({ ensureProjectLib }, [[projectLib]], { log });
+    await ensureWritableLib({ ensureProjectLib }, [[]], { readOnly: true, log });
+    expect(ensureProjectLib).not.toHaveBeenCalled();
+  });
+
+  it("a backend that says no keeps the session going", async () => {
+    const ensureProjectLib = vi.fn(async () => null);
+    expect(await ensureWritableLib({ ensureProjectLib }, [[]], { log })).toBeNull();
+  });
+});
+
 describe("ensureWritableLib", () => {
   const log = () => {};
 

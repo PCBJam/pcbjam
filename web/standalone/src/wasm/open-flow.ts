@@ -237,6 +237,17 @@ async function waitForOpenSettled(
   return true;
 }
 
+/** The editor's frame is up: the runtime initialized and its embind exports are registered. */
+export function waitForEditorFrame(win: ToolWindow, timeoutMs: number) {
+  return waitFor(
+    () =>
+      visible(win, {}).some(
+        (e) => /Frame$/.test(e.typeName) || e.name.endsWith("Frame"),
+      ),
+    timeoutMs,
+  );
+}
+
 export async function openFileInTool(
   win: ToolWindow,
   absPath: string,
@@ -254,13 +265,7 @@ export async function openFileInTool(
   // load — see boot.ts seedKicadConfig). Waiting
   // for a visible Frame guarantees the runtime is initialized, the hook is
   // registered, and a top window exists — so we probe only after this point.
-  const ready = await waitFor(
-    () =>
-      visible(win, {}).some(
-        (e) => /Frame$/.test(e.typeName) || e.name.endsWith("Frame"),
-      ),
-    timeoutMs,
-  );
+  const ready = await waitForEditorFrame(win, timeoutMs);
   if (!ready) {
     log("[open] app frame never became visible");
     return "failed";
