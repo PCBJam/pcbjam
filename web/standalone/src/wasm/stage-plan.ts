@@ -201,8 +201,8 @@ export function referencesIn(
 }
 
 /**
- * pricing 0006 T3d: a Git push writes the project's library out as KiCad files with
- * rows in the project's lib tables (`descr "pcbjam project <id>"`). Here that
+ * pricing 0006 T3e: a project library in the project's repository has rows in the
+ * project's lib tables (`descr "pcbjam project <id>"`) for desktop KiCad. Here that
  * folder is not project files, the library comes from the registry, so its row
  * must not shadow it. A row whose folder is in the listing (a repository imported
  * elsewhere) stays.

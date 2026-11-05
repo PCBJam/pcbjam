@@ -77,8 +77,8 @@ export async function ensureWritableLib(
 ): Promise<LibInfo | null> {
   const lists = [...listsByKind];
   if (opts.readOnly) return null;
-  // Inside a project, new parts go to the project's library: the backend decides
-  // whether this user needs it now (a team library they can't write is no help).
+  // Inside a project, new parts go to the project's library, whatever team
+  // libraries are listed.
   const inProject = !!source.ensureProjectLib;
   if (inProject) {
     if (lists.some((libs) => libs.some((l) => l.type === "project"))) return null;

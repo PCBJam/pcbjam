@@ -163,8 +163,8 @@ export interface LibsSource {
    * conflict). Used by boot to ensure the owner has a writable target.
    */
   createLib?(name: string): Promise<LibInfo | null>;
-  /** Inside a project (private platform): the library new parts go to, made if
-   *  this user has nowhere to save; null when they do or can't. Absent elsewhere. */
+  /** Inside a project (private platform): the library new parts go to, made if it
+   *  doesn't exist yet; null when this user can't save there. Absent elsewhere. */
   ensureProjectLib?(): Promise<LibInfo | null>;
   /**
    * The publish-time footprint index as raw JSON text:
