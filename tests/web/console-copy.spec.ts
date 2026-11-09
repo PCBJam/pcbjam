@@ -90,6 +90,27 @@ test('Ctrl+C copies a console-log selection instead of being eaten by wx', async
     })
     .toBeGreaterThan(0);
 
+  // The same for a panel marked `data-native-copy`.
+  await page.evaluate(() => {
+    const panel = document.createElement('aside');
+    panel.setAttribute('data-native-copy', '');
+    panel.innerHTML = '<p>The ATmega328P runs from 1.8 to 5.5 V.</p>';
+    document.body.appendChild(panel);
+    const range = document.createRange();
+    range.selectNodeContents(panel.querySelector('p')!.firstChild!);
+    const sel = window.getSelection();
+    sel?.removeAllRanges();
+    sel?.addRange(range);
+  });
+  const copiedBefore = await page.evaluate(() => (window as unknown as { __copyFired: number }).__copyFired);
+  await page.keyboard.press('ControlOrMeta+c');
+  await expect
+    .poll(() => page.evaluate(() => (window as unknown as { __copyFired: number }).__copyFired), {
+      message: 'no copy event — wx swallowed Ctrl+C with the selection in a data-native-copy panel',
+      timeout: 5000,
+    })
+    .toBeGreaterThan(copiedBefore);
+
   // A canvas pointerdown collapses the console selection (wx preventDefaults the
   // native collapse), so a stale log selection cannot keep stealing Ctrl+C.
   await page.evaluate(() => {

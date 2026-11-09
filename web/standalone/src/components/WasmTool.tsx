@@ -772,8 +772,9 @@ export function WasmTool({
   // wx's window-level keydown handler forwards Ctrl/Cmd+C to the wasm app and
   // preventDefaults it, so the browser's native "copy selection" never runs —
   // log text could be selected but not copied. When the selection lives in the
-  // console panel, intercept the chord in the CAPTURE phase (ahead of wx's
-  // bubble-phase listener) and stop propagation; the default copy still fires.
+  // console panel, or in a panel marked `data-native-copy`,
+  // intercept the chord in the CAPTURE phase (ahead of wx's bubble-phase
+  // listener) and stop propagation; the default copy still fires.
   // A canvas mousedown would normally collapse a selection, but wx
   // preventDefaults that too — mirror it, or a stale log selection would keep
   // stealing the editor's own Ctrl+C.
@@ -781,7 +782,8 @@ export function WasmTool({
     const selectionInConsole = () => {
       const sel = window.getSelection();
       if (!sel || sel.isCollapsed || !sel.anchorNode) return false;
-      return consolePanelRef.current?.contains(sel.anchorNode) ?? false;
+      const el = sel.anchorNode instanceof Element ? sel.anchorNode : sel.anchorNode.parentElement;
+      return (consolePanelRef.current?.contains(sel.anchorNode) ?? false) || !!el?.closest("[data-native-copy]");
     };
     const onKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "c" && selectionInConsole())
