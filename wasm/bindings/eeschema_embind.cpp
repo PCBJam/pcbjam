@@ -1509,6 +1509,21 @@ pcbjam_presence::CORE& presenceCore()
                     .ResolveItem( id, nullptr, /*allowNull*/ true );
         };
 
+        // Plugin highlight (plugins 0025 §5.4): eeschema highlights one connection at a time,
+        // as its highlight-net tool does; the first named net wins.
+        c.netExists = []( EDA_DRAW_FRAME* fr, const wxString& name ) -> bool
+        {
+            CONNECTION_GRAPH* graph = static_cast<SCH_EDIT_FRAME*>( fr )->Schematic().ConnectionGraph();
+            return graph && graph->FindFirstSubgraphByName( name ) != nullptr;
+        };
+
+        c.showNets = []( EDA_DRAW_FRAME* fr, const std::vector<wxString>& names )
+        {
+            SCH_EDIT_FRAME* sch = static_cast<SCH_EDIT_FRAME*>( fr );
+            sch->SetHighlightedConnection( names.empty() ? wxString() : names.front() );
+            sch->GetToolManager()->RunAction( SCH_ACTIONS::updateNetHighlighting );
+        };
+
         c.drawPeerShapes = []( pcbjam_presence::CORE& aCore, EDA_DRAW_FRAME* aFrame,
                                const pcbjam_presence::PEER& peer, const KIGFX::COLOR4D& color,
                                double px )
@@ -3650,6 +3665,11 @@ std::string schPluginSelectItems( std::string aUuidsJson )
     return presenceCore().pluginSelect( aUuidsJson );
 }
 
+std::string schPluginHighlight( std::string aJson )
+{
+    return presenceCore().pluginHighlight( aJson );
+}
+
 // Test probe (0007): the current remote soft-lock set as `[{uuid, name}]`.
 std::string schCollabTestGetLocked()
 {
@@ -4076,6 +4096,7 @@ EMSCRIPTEN_BINDINGS(eeschema) {
     // Selection soft-locks (0007).
     function("kicadCollabReleaseSelection", &schCollabReleaseSelection);
     function("kicadPluginSelectItems", &schPluginSelectItems);
+    function("kicadPluginHighlight", &schPluginHighlight);
     function("kicadPluginSelectVersion", &pluginSelectVersion);
     function("kicadCollabTestGetLocked", &schCollabTestGetLocked);
     function("kicadCollabTestSelectFirst", &schCollabTestSelectFirst);

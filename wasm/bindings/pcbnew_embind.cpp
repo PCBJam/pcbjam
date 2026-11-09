@@ -70,6 +70,8 @@
 #include <pgm_base.h>
 #include <settings/settings_manager.h>
 #include <view/view.h>
+#include <gal/painter.h>
+#include <netinfo.h>
 #include <view/view_overlay.h>
 #include <pcb_draw_panel_gal.h>
 #include <connectivity/connectivity_data.h>
@@ -79,6 +81,7 @@
 #include "collab_presence_core.h"
 #include "plugin_board_geometry.h"
 #include "plugin_edits.h"
+#include "plugin_placement.h"
 #include "update_pcb.h"
 #include <chrono>
 #include <mail_type.h>
@@ -2216,6 +2219,26 @@ pcbjam_presence::CORE& presenceCore()
                     ->ResolveItem( id, /*aAllowNullptrReturn*/ true );
         };
 
+        // Plugin highlight (plugins 0025 §5.4): KiCad's net highlight, as the highlight-net tool sets it.
+        c.netExists = []( EDA_DRAW_FRAME* fr, const wxString& name ) -> bool
+        {
+            return static_cast<PCB_EDIT_FRAME*>( fr )->GetBoard()->FindNet( name ) != nullptr;
+        };
+
+        c.showNets = []( EDA_DRAW_FRAME* fr, const std::vector<wxString>& names )
+        {
+            BOARD*        board = static_cast<PCB_EDIT_FRAME*>( fr )->GetBoard();
+            std::set<int> codes;
+
+            for( const wxString& name : names )
+                if( NETINFO_ITEM* net = board->FindNet( name ) )
+                    codes.insert( net->GetNetCode() );
+
+            KIGFX::VIEW* view = fr->GetCanvas()->GetView();
+            view->GetPainter()->GetSettings()->SetHighlight( codes, !codes.empty() );
+            view->UpdateAllLayersColor();
+        };
+
         c.drawPeerShapes = []( pcbjam_presence::CORE& aCore, EDA_DRAW_FRAME* aFrame,
                                const pcbjam_presence::PEER& peer, const KIGFX::COLOR4D& color,
                                double px )
@@ -3141,6 +3164,11 @@ static int pluginSelectVersion()
 std::string pcbPluginSelectItems( std::string aUuidsJson )
 {
     return presenceCore().pluginSelect( aUuidsJson );
+}
+
+std::string pcbPluginHighlight( std::string aJson )
+{
+    return presenceCore().pluginHighlight( aJson );
 }
 
 // Test probe (0007): the current remote soft-lock set as `[{uuid, name}]`.
@@ -4120,6 +4148,10 @@ std::string pcbPlaceImportedItem( std::string aSexpr )
 {
     json out;
 
+    if( PCBJAM_READ_ONLY::IsReadOnly() || aSexpr.empty() || aSexpr.size() > 512 * 1024
+        || aSexpr.find( '\0' ) != std::string::npos )
+        return json{ { "ok", false }, { "error", "invalid or read-only import" } }.dump();
+
     if( pcbjam_open::busy() ) // open in flight (open_gate.h) — see pcbCollabApply
     {
         out["ok"] = false;
@@ -4136,17 +4168,40 @@ std::string pcbPlaceImportedItem( std::string aSexpr )
         return out.dump();
     }
 
+    // A receipt the host polls (kicadImportedItemStatus), as schPlaceImportedItem: "placed"
+    // only after the commit, "cancelled" on Esc, a cancel, or a board that changed under it.
+    const int operation = pcbjam_plugin_placement::begin();
+
+    if( !operation )
+        return json{ { "ok", false }, { "error", "another import is active" } }.dump();
+
+    const auto generation = pcbjam_open::generation();
+
     // Same CallAfter + COROUTINE context as kicadCollabApplyItems. The body
     // stays on the apply slot for the whole placement (RunSynchronousAction
     // suspends inside its wxMilliSleep); remote applies queue behind it.
-    pcbjam_collab::runOnCoroutine( fr, [fr, aSexpr]()
+    pcbjam_collab::runOnCoroutine( fr, [fr, aSexpr, operation, generation]()
     {
+        const auto permitted = [fr, operation, generation]()
+        {
+            return pcbjam_plugin_placement::allowed( operation ) && !pcbjam_open::busy()
+                   && pcbjam_open::generation() == generation && pcbFrame() == fr
+                   && !PCBJAM_READ_ONLY::IsReadOnly();
+        };
+
+        if( !permitted() )
+        {
+            pcbjam_plugin_placement::finish( operation, "cancelled" );
+            return;
+        }
+
         BOARD*      board = fr->GetBoard();
         BOARD_ITEM* item = makeFromBlob( *board, aSexpr );
 
         if( !item )
         {
             EM_ASM( { console.log( "[import-item] pcbnew: blob parse failed" ); } );
+            pcbjam_plugin_placement::finish( operation, "error", "native footprint parse failed" );
             return;
         }
 
@@ -4154,6 +4209,7 @@ std::string pcbPlaceImportedItem( std::string aSexpr )
         {
             EM_ASM( { console.log( "[import-item] pcbnew: blob is not a footprint" ); } );
             delete item;
+            pcbjam_plugin_placement::finish( operation, "error", "no footprint in import" );
             return;
         }
 
@@ -4190,13 +4246,40 @@ std::string pcbPlaceImportedItem( std::string aSexpr )
         vc->SetCursorPosition( vc->GetMousePosition(), false );
         tm->ProcessEvent( EVENTS::SelectedEvent );
 
-        if( tm->RunSynchronousAction( PCB_ACTIONS::move, &commit ) )
+        pcbjam_plugin_placement::current().status = "placing";
+        pcbjam_plugin_placement::current().cancelNative = [fr, generation, operation]()
+        {
+            if( pcbFrame() != fr || pcbjam_open::busy() || pcbjam_open::generation() != generation )
+            {
+                pcbjam_plugin_placement::finish( operation, "cancelled" );
+                return;
+            }
+
+            fr->CallAfter( [fr, generation, operation]()
+            {
+                if( pcbjam_plugin_placement::current().id == operation
+                    && pcbjam_plugin_placement::current().status == "placing"
+                    && pcbjam_plugin_placement::current().cancelled && pcbFrame() == fr
+                    && !pcbjam_open::busy() && pcbjam_open::generation() == generation )
+                    fr->GetToolManager()->CancelTool();
+            } );
+        };
+
+        // The guard again at the commit: a cancel or a reload during the move reverts it.
+        if( tm->RunSynchronousAction( PCB_ACTIONS::move, &commit ) && permitted() )
+        {
             commit.Push( wxT( "Place Footprint" ) );
+            pcbjam_plugin_placement::finish( operation, "placed" );
+        }
         else
+        {
             commit.Revert();
+            pcbjam_plugin_placement::finish( operation, "cancelled" );
+        }
     } );
 
     out["ok"] = true;
+    out["operation"] = operation;
     return out.dump();
 }
 
@@ -4625,6 +4708,9 @@ EMSCRIPTEN_BINDINGS(pcbnew) {
     // v2 items bridge: per-item s-expr payloads (ysync 0008).
     function("kicadCollabApplyItems", &pcbCollabApplyItems);
     function("kicadPlaceImportedItem", &pcbPlaceImportedItem);
+    function("kicadPluginPlacementVersion", &pcbjam_plugin_placement::version);
+    function("kicadImportedItemStatus", &pcbjam_plugin_placement::status);
+    function("kicadCancelImportedItem", &pcbjam_plugin_placement::cancel);
     // Plugin edits (plugins 0023): one local, undoable commit; receipts as for placement.
     function("kicadPluginEditItems", &pcbPluginEditItems);
     function("kicadPluginEditStatus", &pcbjam_plugin_edit::status);
@@ -4662,6 +4748,7 @@ EMSCRIPTEN_BINDINGS(pcbnew) {
     // Selection soft-locks (0007).
     function("kicadCollabReleaseSelection", &pcbCollabReleaseSelection);
     function("kicadPluginSelectItems", &pcbPluginSelectItems);
+    function("kicadPluginHighlight", &pcbPluginHighlight);
     function("kicadPluginSelectVersion", &pluginSelectVersion);
     function("kicadPluginBoardGeometry", &pcbPluginBoardGeometry);
     function("kicadPluginBoardGeometryVersion", &pcbjam_plugin_geometry::version);

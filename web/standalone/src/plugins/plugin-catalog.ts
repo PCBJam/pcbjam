@@ -95,6 +95,7 @@ export interface PackageHost {
       updatePcb?(request: { dryRun: boolean; deleteUnused: boolean }, signal: AbortSignal): Promise<unknown>;
       pickPoint?(prompt: string, signal: AbortSignal): Promise<{ x: number; y: number } | null>;
       openFile?(path: string, signal: AbortSignal): Promise<{ status: 'opened' | 'cancelled' }>;
+      highlight?(request: { ids: string[]; nets: string[]; durationMs: number }): Promise<{ highlighted: string[]; missing: string[]; nets: string[]; missingNets: string[] }>;
       hashServing?: { userId: string; uiOrigin: string; placementEnabled: boolean; editsEnabled?: boolean };
       selectItems?(ids: string[], signal: AbortSignal): Promise<{ selected: string[]; held: string[]; missing: string[] }>;
       saveFile?(

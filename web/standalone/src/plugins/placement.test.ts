@@ -114,6 +114,16 @@ describe('hosted native placement lifecycle',()=>{
     const hook=vi.fn();await expect(placeClipboard('(footprint "x")','eeschema',new AbortController().signal,{beforeNative:hook})).rejects.toThrow(/lib_symbols/);expect(hook).not.toHaveBeenCalled();
     delete (globalThis as any).window;
   });
+  it('placeClipboard places the footprint the worker sanitized on a board',async()=>{
+    vi.useFakeTimers();answering({ok:true,text:'(footprint "Lib:R" (layer "F.Cu"))'});
+    const mod=native();mod.kicadImportedItemStatus.mockReturnValue(JSON.stringify({status:'placed'}));
+    mod.kicadPlaceImportedItem.mockReturnValue(JSON.stringify({ok:true,operation:1}));
+    (globalThis as any).window={Module:mod};
+    const placed=placeClipboard('(footprint "Lib:R" (layer "F.Cu") (model "x.step"))','pcbnew',new AbortController().signal);
+    await vi.advanceTimersByTimeAsync(100);expect(await placed).toEqual({status:'placed'});
+    expect(mod.kicadPlaceImportedItem).toHaveBeenCalledWith('(footprint "Lib:R" (layer "F.Cu"))');
+    delete (globalThis as any).window;
+  });
   it('terminates a stuck preflight worker within its budget',async()=>{
     vi.useFakeTimers();const terminate=vi.fn();
     vi.stubGlobal('Worker',class{terminate=terminate;postMessage=vi.fn();});

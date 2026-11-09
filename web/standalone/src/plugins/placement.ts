@@ -35,14 +35,16 @@ export async function validateInWorker(request:ValidationRequest,signal:AbortSig
     worker.onmessage=event=>{
       if(event.data?.ok!==true)return finish(new Error(String(event.data?.error??'Invalid import').slice(0,400)));
       if(request.kind==='footprint'&&typeof event.data.text!=='string')return finish(new Error('Import validation failed'));
-      finish(undefined,request.kind==='footprint'?event.data.text:undefined);
+      // A footprint (stored or placed on a board) comes back sanitized; a symbol as sent.
+      finish(undefined,typeof event.data.text==='string'?event.data.text:undefined);
     };
     worker.postMessage(request);
   });}finally{worker.terminate();}
 }
 
-export async function preflightPlacement(text:string,tool:string,signal:AbortSignal) {
-  await validateInWorker({text,tool},signal);
+/** The text to place: a board footprint comes back without 3D models or embedded files. */
+export async function preflightPlacement(text:string,tool:string,signal:AbortSignal):Promise<string> {
+  return (await validateInWorker({text,tool},signal)).text;
 }
 
 /**
@@ -54,12 +56,12 @@ export async function preflightPlacement(text:string,tool:string,signal:AbortSig
  */
 export async function placeClipboard(sexpr:string,tool:string,signal:AbortSignal,hooks:{beforeNative?:()=>Promise<void>}={}):Promise<{status:'placed'|'cancelled'}> {
   validatePlacement(sexpr,tool);
-  await preflightPlacement(sexpr,tool,signal);
+  const text=await preflightPlacement(sexpr,tool,signal);
   await hooks.beforeNative?.();
   signal.throwIfAborted();
   const mod=placementModule();
   if(!mod||mod.kicadOpenFileBusy?.())throw new Error('The editor is not ready for placement');
-  return placeImportedItem(mod,sexpr,signal);
+  return placeImportedItem(mod,text,signal);
 }
 
 /** Resolves after native commit or cancellation, never after the queue acknowledgement. */

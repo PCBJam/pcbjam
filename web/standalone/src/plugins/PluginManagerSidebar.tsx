@@ -23,6 +23,7 @@ import { isHostedUi } from '@pcbjam/plugin-platform/hosted-ui-contract.mjs';
 import { approvalOrder } from '@pcbjam/shared';
 import { updatePcb } from './update-pcb';
 import { pickPoint } from './pick-point';
+import { clearHighlight, highlight } from './highlight';
 import { directPermissions } from '@pcbjam/plugin-platform/network-contract.mjs';
 import { KICAD_VERSION_DIR } from '@/wasm/constants';
 import { useTrustedPrompt } from '@/overlay/trusted-prompts';
@@ -213,7 +214,7 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
           },
           openExternal: (proposal, signal) => requestUser<{status:'opened'|'cancelled'}>(signal,finish=>({kind:'external',url:proposal.url,site:proposal.site,finish,signal,authorize:()=>authorizeOperation('ui.openExternal')})),
           saveFile: (proposal, signal) => requestUser<{status:'download-requested'|'cancelled'}>(signal,finish=>({kind:'download',name:proposal.name,content:proposal.kind,bytes:proposal.bytes,finish,signal,authorize:()=>authorizeOperation(SAVE_METHODS[proposal.kind])})),
-          context: () => { const { tool, fileName, readOnly } = liveRef.current; return { tool, fileName, readOnly, canEditItems: !readOnly && !!editModule(), canSelectItems: !!selectModule(), canReadGeometry: tool === 'pcbnew' && !!geometryModule(), canPlaceItems: !readOnly && !!placementModule() && (!hostedPlugins || tool==='eeschema' && placementModule()?.kicadPluginPlacementVersion?.()===1) }; },
+          context: () => { const { tool, fileName, readOnly } = liveRef.current; return { tool, fileName, readOnly, canEditItems: !readOnly && !!editModule(), canSelectItems: !!selectModule(), canReadGeometry: tool === 'pcbnew' && !!geometryModule(), canPlaceItems: !readOnly && !!placementModule() && (!hostedPlugins || placementModule()?.kicadPluginPlacementVersion?.()===1) }; },
           selectItems: ids => selectItems(ids),
           // Guided tours + pointers (overlay-system 0003): drawn by the host with the plugin's name,
           // cleared when this instance stops (abort.signal).
@@ -253,6 +254,7 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
           // plugins 0025 §5.4: KiCad's Update PCB, approved in this panel's own dialog.
           updatePcb: (request, signal) => updatePcb(request, signal, (changes, s) => requestUser<boolean>(s, finish => ({ kind: 'updatePcb', changes, finish }))),
           pickPoint: (prompt, signal) => pickPoint(prompt, liveRef.current.tool, signal),
+          highlight: async (request) => highlight(request),
           openFile: async (path, signal) => {
             if (!await requestUser<boolean>(signal, finish => ({ kind: 'openFile', path, finish }))) return { status: 'cancelled' as const };
             window.location.assign(fileUrl(path));
@@ -272,7 +274,7 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
       else instanceRef.current = instance;
       if (!abort.signal.aborted) setStatus(selected === BUILTIN ? 'Read only · Current board' : hostedPlugins ? (active?.source === 'marketplace' ? 'Published by PCBJam · Signed in' : active?.source === 'tutorial' ? 'Tutorial by PCBJam · Signed in' : 'Private plugin · Signed in') : 'Local development plugin');
     })().catch(error => fail(error instanceof Error ? error.message : 'Plugin could not start'));
-    return () => { abort.abort(); instance?.dispose(); instanceRef.current = undefined; doc.off('update', changed); };
+    return () => { abort.abort(); instance?.dispose(); instanceRef.current = undefined; doc.off('update', changed); clearHighlight(); };
     // A persistent panel isn't restarted by a file, tool or read-only switch: it follows them below.
   }, [...(persistent ? [] : [doc, fileName, tool, readOnly]), persistent, attempt, selected, active?.digest, active?.generation, active?.enabled, project?.id, project?.scope, project?.name]);
 
@@ -281,6 +283,7 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
     if (!persistent || !doc || !project) return;
     const instance = instanceRef.current;
     if (!instance?.updateContext) return;
+    clearHighlight(); // what it highlighted belongs to the document it was in
     const documents = createDocumentAPI({doc,project,fileName,files:()=>projectFilesRef.current ?? [],signal:new AbortController().signal,
       selection:()=>getLocalSelection().uuids,subscribeSelection:subscribeLocalSelection,geometry:openGeometry});
     void instance.updateContext({ documents }).catch((error: unknown) => setStatus(error instanceof Error ? error.message : 'Plugin stopped'));

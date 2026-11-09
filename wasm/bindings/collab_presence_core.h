@@ -128,6 +128,11 @@ struct CORE
     /** Resolve a KIID to a live item, or nullptr (releaseSelection). */
     std::function<EDA_ITEM*( EDA_DRAW_FRAME*, const KIID& )> resolveItem;
 
+    /** Plugin highlight (plugins 0025 §5.4): does the open document have a net of this name,
+     *  and show exactly these nets highlighted (empty: none). Editor-specific. */
+    std::function<bool( EDA_DRAW_FRAME*, const wxString& )> netExists;
+    std::function<void( EDA_DRAW_FRAME*, const std::vector<wxString>& )> showNets;
+
     /** Draw ONE peer's selection boxes + cross-app ghosts into the overlays
      *  (item resolution and exact-outline rendering are editor-specific).
      *  Cursors and pins are drawn by the shared redraw loop. */
@@ -937,6 +942,120 @@ struct CORE
         } );
 
         return json( { { "ok", true }, { "selected", selected }, { "held", held }, { "missing", missing } } )
+                .dump();
+    }
+
+    static constexpr size_t PLUGIN_HIGHLIGHT_NETS_MAX = 32;
+
+    /** Items a plugin brightened, so the next highlight (or a clear) can take them back. */
+    std::vector<KIID> pluginBrightened;
+    /** A plugin's nets are showing: only then does a clear touch the net highlight, so a
+     *  plugin that never highlighted nets leaves the user's own alone. */
+    bool pluginNetsShown = false;
+
+    /**
+     * kicadPluginHighlight (plugins 0025 §5.4): `{ids, nets}` brightens these items and
+     * highlights these nets the way KiCad's own net highlight does, replacing what a plugin
+     * highlighted before; both empty clears it. Changes nothing in the document. Answers
+     * `{ok, highlighted, missing, nets, missingNets}` (CallAfter does the drawing).
+     */
+    std::string pluginHighlight( const std::string& aJson )
+    {
+        auto refuse = []( const char* aCode ) {
+            return json( { { "ok", false }, { "error", aCode } } ).dump();
+        };
+
+        json j = json::parse( aJson, nullptr, /*allow_exceptions*/ false );
+
+        if( j.is_discarded() || !j.is_object() || !j.value( "ids", json::array() ).is_array()
+            || !j.value( "nets", json::array() ).is_array() )
+            return refuse( "INVALID" );
+
+        const json idsIn = j.value( "ids", json::array() ), netsIn = j.value( "nets", json::array() );
+
+        if( idsIn.size() > PLUGIN_SELECT_MAX || netsIn.size() > PLUGIN_HIGHLIGHT_NETS_MAX )
+            return refuse( "INVALID" );
+
+        if( pcbjam_open::busy() )
+            return refuse( "NO_EDITOR" );
+
+        EDA_DRAW_FRAME* fr = frame();
+
+        if( !fr || !selectionTool( fr ) || !netExists || !showNets )
+            return refuse( "NO_EDITOR" );
+
+        std::vector<KIID>     ids;
+        std::vector<wxString> nets;
+        std::set<KIID>        seen;
+        json highlighted = json::array(), missing = json::array(), netsOut = json::array(),
+             missingNets = json::array();
+
+        for( const json& u : idsIn )
+        {
+            if( !u.is_string() || u.get_ref<const std::string&>().size() > 64 )
+                return refuse( "INVALID" );
+
+            const std::string& text = u.get_ref<const std::string&>();
+            KIID               id( wxString::FromUTF8( text.c_str() ) );
+
+            if( !seen.insert( id ).second )
+                continue;
+
+            if( resolveItem( fr, id ) )
+            {
+                ids.push_back( id );
+                highlighted.push_back( text );
+            }
+            else
+                missing.push_back( text );
+        }
+
+        for( const json& n : netsIn )
+        {
+            if( !n.is_string() || n.get_ref<const std::string&>().size() > 256 )
+                return refuse( "INVALID" );
+
+            const wxString name = wxString::FromUTF8( n.get_ref<const std::string&>().c_str() );
+
+            if( netExists( fr, name ) )
+            {
+                nets.push_back( name );
+                netsOut.push_back( n );
+            }
+            else
+                missingNets.push_back( n );
+        }
+
+        fr->CallAfter( [this, fr, ids, nets]() {
+            SELECTION_TOOL* st = selectionTool( fr );
+
+            if( !st || frame() != fr )
+                return;
+
+            for( const KIID& id : pluginBrightened )
+                if( EDA_ITEM* item = resolveItem( fr, id ) )
+                    st->UnbrightenItem( item );
+
+            pluginBrightened.clear();
+
+            for( const KIID& id : ids )
+            {
+                if( EDA_ITEM* item = resolveItem( fr, id ) )
+                {
+                    st->BrightenItem( item );
+                    pluginBrightened.push_back( id );
+                }
+            }
+
+            if( !nets.empty() || pluginNetsShown )
+                showNets( fr, nets );
+
+            pluginNetsShown = !nets.empty();
+            fr->GetCanvas()->Refresh();
+        } );
+
+        return json( { { "ok", true }, { "highlighted", highlighted }, { "missing", missing },
+                       { "nets", netsOut }, { "missingNets", missingNets } } )
                 .dump();
     }
 
