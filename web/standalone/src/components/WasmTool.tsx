@@ -174,6 +174,7 @@ import { savePartAndPlace } from "@/libs/save-part";
 import { installPartCopyBridge } from "@/libs/part-copy";
 import { PartCopyDestinationDialog } from "@/components/wasm-tool/PartCopyDestinationDialog";
 import { PartCopySaveDialog } from "@/components/wasm-tool/PartCopySaveDialog";
+import { startStallWatch } from "@/wasm/stall-watch";
 import {
   chromeSetter,
   show3DOpener,
@@ -385,6 +386,8 @@ export function WasmTool({
     setReviewerSelectionsVisible(reviewerSelections);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- initial sync only
   }, []);
+  // KiCad parked on a wait takes no input: say so in the console, with what it waits on.
+  React.useEffect(() => startStallWatch(), []);
   const lastCommentsDocRef = React.useRef<{ doc: import("yjs").Doc | undefined; docPath: string } | null>(null);
   const startedRef = React.useRef(false);
   // Mobile device (features/mobile): boot installs the touch-gesture shim.
