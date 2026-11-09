@@ -2,7 +2,7 @@ import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { runKicadTools } from "./kicad-tools.ts";
-import { BACKGROUND, BOARD_PRESETS, parseCrop, parseMarks, prepareSvg, rasterize, type BoardPreset } from "./shot.ts";
+import { BACKGROUND, BOARD_PRESETS, parseCrop, parseMarks, pickSheetSvg, prepareSvg, rasterize, type BoardPreset } from "./shot.ts";
 
 /** Parsed `--name value` options of a command. */
 export type Options = Record<string, string | undefined>;
@@ -58,11 +58,13 @@ export async function schematicShot(sch: string | undefined, out: string | undef
     }
     // One SVG per sheet: <root>.svg, <root>-<sheet>.svg …
     const svgs = (await readdir(dir)).filter((f) => f.endsWith(".svg")).sort((a, b) => a.length - b.length);
-    const root = basename(sch).replace(/\.kicad_sch$/, "");
-    const sheet = opts.sheet?.toLowerCase().replace(/\.kicad_sch$/, "");
-    const pick = sheet ? svgs.find((f) => f.toLowerCase().includes(sheet)) : (svgs.find((f) => f === `${root}.svg`) ?? svgs[0]);
+    const { pick, ambiguous } = pickSheetSvg(svgs, basename(sch).replace(/\.kicad_sch$/, ""), opts.sheet);
     if (!pick) {
-      process.stderr.write(`${sch}: no sheet ${opts.sheet ?? ""} in the plot (have: ${svgs.join(", ")})\n`);
+      process.stderr.write(
+        ambiguous
+          ? `${sch}: sheet ${opts.sheet} is more than one (${ambiguous.join(", ")}): name it whole\n`
+          : `${sch}: no sheet ${opts.sheet ?? ""} in the plot (have: ${svgs.join(", ")})\n`,
+      );
       return 2;
     }
     await writeShot(await readFile(join(dir, pick), "utf8"), out, opts, BACKGROUND.schematic);

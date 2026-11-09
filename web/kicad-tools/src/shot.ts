@@ -128,6 +128,23 @@ export async function rasterize(svg: string, widthPx: number): Promise<Uint8Arra
   return new Uint8Array(png);
 }
 
+/**
+ * The plotted SVG of one sheet. KiCad names them `<root>.svg` and `<root>-<sheet path>.svg`, the
+ * path's names joined by "-" ("board-CH1", "board-IO-Sub"). `sheet` is a name or a path ("CH1",
+ * "/IO/Sub"), matched whole: "CH1" is not "CH10". A part of a name picks only when one sheet has
+ * it; otherwise `ambiguous` lists them. No `sheet`: the root.
+ */
+export function pickSheetSvg(svgs: string[], root: string, sheet?: string): { pick?: string; ambiguous?: string[] } {
+  const stem = (f: string) => f.replace(/\.svg$/i, "").toLowerCase();
+  const top = root.toLowerCase();
+  if (!sheet) return { pick: svgs.find((f) => stem(f) === top) ?? svgs[0] };
+  const want = sheet.replace(/\.kicad_sch$/i, "").replace(/^\/+/, "").replace(/\//g, "-").toLowerCase();
+  const exact = svgs.find((f) => stem(f) === `${top}-${want}` || stem(f) === want);
+  if (exact) return { pick: exact };
+  const partial = svgs.filter((f) => stem(f).includes(want));
+  return partial.length === 1 ? { pick: partial[0] } : partial.length ? { ambiguous: partial } : {};
+}
+
 /** Parse "cx,cy,halfW,halfH" (mm). */
 export function parseCrop(raw: string | undefined): CropMm | null {
   if (!raw) return null;

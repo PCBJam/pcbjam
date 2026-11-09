@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseCrop, parseMarks, prepareSvg, rasterize } from "../src/shot.ts";
+import { parseCrop, parseMarks, pickSheetSvg, prepareSvg, rasterize } from "../src/shot.ts";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +7,22 @@ import { classifyRef, modelRefs, prepareBoard } from "../src/step.ts";
 
 const PLOT =
   '<?xml version="1.0"?>\n<svg xmlns="http://www.w3.org/2000/svg" width="297.0022mm" height="210.0072mm" viewBox="0.0000 0.0000 297.0022 210.0072">\n<g/></svg>';
+
+describe("a schematic shot's sheet", () => {
+  const svgs = ["board.svg", "board-CH1.svg", "board-CH10.svg", "board-IO-Sub.svg", "board-Power.svg"];
+  it("picks the sheet named whole, by name or path, and the root without one", () => {
+    expect(pickSheetSvg(svgs, "board").pick).toBe("board.svg");
+    expect(pickSheetSvg(svgs, "board", "CH1").pick).toBe("board-CH1.svg");
+    expect(pickSheetSvg(svgs, "board", "ch10").pick).toBe("board-CH10.svg");
+    expect(pickSheetSvg(svgs, "board", "/IO/Sub").pick).toBe("board-IO-Sub.svg");
+    expect(pickSheetSvg(svgs, "board", "board").pick).toBe("board.svg");
+  });
+  it("takes part of a name only when one sheet has it, and says which ones when more do", () => {
+    expect(pickSheetSvg(svgs, "board", "Pow").pick).toBe("board-Power.svg");
+    expect(pickSheetSvg(svgs, "board", "CH")).toEqual({ ambiguous: ["board-CH1.svg", "board-CH10.svg"] });
+    expect(pickSheetSvg(svgs, "board", "Audio")).toEqual({});
+  });
+});
 
 describe("shots", () => {
   it("crops to an area in page mm and keeps the mm sizing", () => {
