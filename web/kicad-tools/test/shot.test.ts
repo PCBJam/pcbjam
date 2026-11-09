@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseCrop, prepareSvg, rasterize } from "../src/shot.ts";
+import { parseCrop, parseMarks, prepareSvg, rasterize } from "../src/shot.ts";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,6 +21,24 @@ describe("shots", () => {
     const rect = out.indexOf('<rect x="5" y="5" width="10" height="10" fill="#001023"/>');
     expect(rect).toBeGreaterThan(out.indexOf("<svg"));
     expect(rect).toBeLessThan(out.indexOf("<g/>"));
+  });
+
+  it("draws marks on top of the plot, and takes only numbers and short words as labels", () => {
+    const marks = parseMarks('[{"x":10,"y":20,"w":7.62,"h":7.62,"label":"1"},{"x":30,"y":40,"w":5,"h":5,"label":"helper"}]');
+    expect(marks).toEqual([
+      { x: 10, y: 20, w: 7.62, h: 7.62, label: "1" },
+      { x: 30, y: 40, w: 5, h: 5, label: "helper" },
+    ]);
+    const out = prepareSvg(PLOT, { background: "#F5F4EF", marks });
+    expect(out.indexOf('<g id="pcbjam-marks">')).toBeGreaterThan(out.indexOf("<g/>"));
+    expect(out.trimEnd().endsWith("</g>\n</svg>")).toBe(true);
+    expect(out).toContain('<rect x="10" y="20" width="7.62" height="7.62" fill="none"');
+    expect(out).toContain(">helper</text>");
+    expect(parseMarks(undefined)).toEqual([]);
+    expect(() => parseMarks('[{"x":1,"y":1,"w":1,"h":1,"label":"<script>"}]')).toThrow(/letters or digits/);
+    expect(() => parseMarks('[{"x":1,"y":1,"w":0,"h":1,"label":"1"}]')).toThrow(/w, h above 0/);
+    expect(() => parseMarks("not json")).toThrow(/JSON array/);
+    expect(() => parseMarks(JSON.stringify(Array.from({ length: 51 }, () => ({ x: 1, y: 1, w: 1, h: 1, label: "1" }))))).toThrow(/at most 50/);
   });
 
   it("parses --crop", () => {

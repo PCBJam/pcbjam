@@ -25,8 +25,44 @@ export interface CropMm {
   halfH: number;
 }
 
-/** Crop (page mm) and put a background behind a KiCad plot SVG. */
-export function prepareSvg(svg: string, opts: { crop?: CropMm | null; background?: string | null }): string {
+/** A box to draw on a shot, page mm, with a short label (a check's issue numbers, say). */
+export interface MarkMm {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  label: string;
+}
+
+/** At most this many marks on one shot. */
+export const MAX_MARKS = 50;
+
+/**
+ * Parse `--marks` (a JSON array of {x, y, w, h, label}, page mm). Labels are
+ * 1-8 letters or digits, so nothing but a number or a word reaches the SVG.
+ */
+export function parseMarks(raw: string | undefined): MarkMm[] {
+  if (!raw) return [];
+  let list: unknown;
+  try {
+    list = JSON.parse(raw);
+  } catch {
+    throw new Error("--marks wants a JSON array of {x, y, w, h, label}");
+  }
+  if (!Array.isArray(list) || list.length > MAX_MARKS) throw new Error(`--marks wants at most ${MAX_MARKS} marks`);
+  return list.map((m: Record<string, unknown>) => {
+    const [x, y, w, h] = [m?.x, m?.y, m?.w, m?.h].map(Number) as [number, number, number, number];
+    const label = String(m?.label ?? "");
+    const sane = (v: number) => Number.isFinite(v) && Math.abs(v) <= 10000;
+    if (![x, y, w, h].every(sane) || w <= 0 || h <= 0 || !/^[A-Za-z0-9]{1,8}$/.test(label)) {
+      throw new Error("--marks: each mark is {x, y, w, h} in mm (w, h above 0) and a label of 1-8 letters or digits");
+    }
+    return { x, y, w, h, label };
+  });
+}
+
+/** Crop (page mm), put a background behind a KiCad plot SVG, and draw `marks` on top. */
+export function prepareSvg(svg: string, opts: { crop?: CropMm | null; background?: string | null; marks?: MarkMm[] }): string {
   let out = svg;
   const vb = /viewBox="([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)"/.exec(out);
   if (!vb) throw new Error("not a KiCad plot: no viewBox");
@@ -46,6 +82,18 @@ export function prepareSvg(svg: string, opts: { crop?: CropMm | null; background
       out.slice(0, open + 1) +
       `\n<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${opts.background}"/>` +
       out.slice(open + 1);
+  }
+  if (opts.marks?.length) {
+    // Last drawn: right before the root's closing tag, so the boxes sit on top of the plot.
+    const boxes = opts.marks
+      .map(
+        (m) =>
+          `<rect x="${m.x}" y="${m.y}" width="${m.w}" height="${m.h}" fill="none" stroke="#D62828" stroke-width="0.4"/>` +
+          `<text x="${m.x}" y="${m.y - 0.6}" fill="#D62828" font-family="sans-serif" font-weight="bold" font-size="2.5">${m.label}</text>`,
+      )
+      .join("\n");
+    const close = out.lastIndexOf("</svg>");
+    out = `${out.slice(0, close)}<g id="pcbjam-marks">\n${boxes}\n</g>\n${out.slice(close)}`;
   }
   return out;
 }

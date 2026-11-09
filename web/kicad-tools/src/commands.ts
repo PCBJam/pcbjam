@@ -2,14 +2,14 @@ import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { runKicadTools } from "./kicad-tools.ts";
-import { BACKGROUND, BOARD_PRESETS, parseCrop, prepareSvg, rasterize, type BoardPreset } from "./shot.ts";
+import { BACKGROUND, BOARD_PRESETS, parseCrop, parseMarks, prepareSvg, rasterize, type BoardPreset } from "./shot.ts";
 
 /** Parsed `--name value` options of a command. */
 export type Options = Record<string, string | undefined>;
 
 async function writeShot(svg: string, out: string, opts: Options, defaultBackground: string): Promise<void> {
   const background = opts.background === "none" ? null : (opts.background ?? defaultBackground);
-  const prepared = prepareSvg(svg, { crop: parseCrop(opts.crop), background });
+  const prepared = prepareSvg(svg, { crop: parseCrop(opts.crop), background, marks: parseMarks(opts.marks) });
   if (out.toLowerCase().endsWith(".svg")) {
     await writeFile(out, prepared);
   } else {
@@ -46,7 +46,7 @@ export async function boardShot(pcb: string | undefined, out: string | undefined
 
 export async function schematicShot(sch: string | undefined, out: string | undefined, opts: Options): Promise<number> {
   if (!sch || !out) {
-    process.stderr.write("usage: pcbjam-tools schematic-shot <file.kicad_sch> <out.png|svg> [--sheet …] [--crop …]\n");
+    process.stderr.write("usage: pcbjam-tools schematic-shot <file.kicad_sch> <out.png|svg> [--sheet …] [--crop …] [--marks <json>]\n");
     return 2;
   }
   const dir = await mkdtemp(join(tmpdir(), "pcbjam-shot-"));
