@@ -19,6 +19,7 @@ import { verifyPluginAccount } from './verify-account';
 import { mountRemoteProvider, type PartRequest } from '@/remote-provider/host';
 import { savePartAndPlace } from '@/libs/save-part';
 import { providerPermissions } from '@pcbjam/plugin-platform/remote-provider-contract.mjs';
+import { isHostedUi } from '@pcbjam/plugin-platform/hosted-ui-contract.mjs';
 import { directPermissions } from '@pcbjam/plugin-platform/network-contract.mjs';
 import { KICAD_VERSION_DIR } from '@/wasm/constants';
 import { useTrustedPrompt } from '@/overlay/trusted-prompts';
@@ -45,6 +46,13 @@ type Prompt = {kind:'external';url:string;site:string;finish(value:{status:'open
   | { kind: 'pluginPart'; part: PluginPartSummary; finish(accept: boolean): void }
   // A large plugin edit (plugins 0023): the user confirms it before the native commit.
   | { kind: 'edit'; label: string; upserts: number; removes: number; finish(accept: boolean): void };
+/** A hosted UI that follows the editor across files instead of restarting (plugins 0025 §5.3). */
+const isPersistent = (plugin: Descriptor) => {
+  const ui = (plugin.manifest as { ui?: unknown }).ui;
+  return isHostedUi(ui) && ui.persistent === true;
+};
+/** What a mounted plugin offers the sidebar: a persistent one follows switches and takes events. */
+type PluginInstance = { dispose(): void; updateContext?(next: { documents?: unknown }): Promise<void>; emit?(name: string, data: unknown): void };
 const isProvider = (plugin?: Descriptor | null) => plugin?.manifest.kind === 'remote-provider';
 const PROVIDER_PANEL_SIZE = { width: 520, height: 680 };
 
@@ -131,6 +139,12 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
       promptRef.current = next; setPrompt(next); signal.addEventListener('abort', abort, { once: true });
     });
   }
+  // A persistent hosted panel (plugins 0025 §5.3) is mounted once per plugin and project: it reads
+  // the editor's current file, tool and read-only state from here, and follows switches below.
+  const liveRef = React.useRef({ doc, fileName, tool, readOnly });
+  liveRef.current = { doc, fileName, tool, readOnly };
+  const persistent = !!active && isPersistent(active);
+  const instanceRef = React.useRef<PluginInstance | undefined>(undefined);
   React.useEffect(() => {
     if (active?.enabled===false) {setStatus('Plugin disabled');return;}
     if (!selected || !doc || !container.current || (!active && selected !== BUILTIN)) return;
@@ -186,15 +200,15 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
           },
           openExternal: (proposal, signal) => requestUser<{status:'opened'|'cancelled'}>(signal,finish=>({kind:'external',url:proposal.url,site:proposal.site,finish,signal,authorize:()=>authorizeOperation('ui.openExternal')})),
           saveFile: (proposal, signal) => requestUser<{status:'download-requested'|'cancelled'}>(signal,finish=>({kind:'download',name:proposal.name,content:proposal.kind,bytes:proposal.bytes,finish,signal,authorize:()=>authorizeOperation(SAVE_METHODS[proposal.kind])})),
-          context: () => ({ tool, fileName, readOnly, canEditItems: !readOnly && !!editModule(), canSelectItems: !!selectModule(), canReadGeometry: tool === 'pcbnew' && !!geometryModule(), canPlaceItems: !readOnly && !!placementModule() && (!hostedPlugins || tool==='eeschema' && placementModule()?.kicadPluginPlacementVersion?.()===1) }),
+          context: () => { const { tool, fileName, readOnly } = liveRef.current; return { tool, fileName, readOnly, canEditItems: !readOnly && !!editModule(), canSelectItems: !!selectModule(), canReadGeometry: tool === 'pcbnew' && !!geometryModule(), canPlaceItems: !readOnly && !!placementModule() && (!hostedPlugins || tool==='eeschema' && placementModule()?.kicadPluginPlacementVersion?.()===1) }; },
           selectItems: ids => selectItems(ids),
           // Guided tours + pointers (overlay-system 0003): drawn by the host with the plugin's name,
           // cleared when this instance stops (abort.signal).
-          tours: toursRef.current = pluginTourAdapter({ pluginKey: pluginKey(active), pluginName: active.manifest.name, project: project?.id ?? null, tool: () => tool, signal: abort.signal,
+          tours: toursRef.current = pluginTourAdapter({ pluginKey: pluginKey(active), pluginName: active.manifest.name, project: project?.id ?? null, tool: () => liveRef.current.tool, signal: abort.signal,
             onTourStart: () => setCollapseSignal(n => n + 1),
             onTourEnd: () => { if (panelHiddenRef.current && !abort.signal.aborted && viewRef.current?.kind === 'plugin') onViewChange(null); } }),
           // The shown schematic sheet, on engines that have the reads.
-          sheet: tool === 'eeschema' && typeof (window as unknown as { Module?: { kicadSheetNets?: unknown } }).Module?.kicadSheetNets === 'function' ? pluginSheetAdapter() : undefined,
+          sheet: (persistent || tool === 'eeschema') && typeof (window as unknown as { Module?: { kicadSheetNets?: unknown } }).Module?.kicadSheetNets === 'function' ? pluginSheetAdapter() : undefined,
           // Parts the plugin ships (overlay-system 0003): confirmed, then saved into plugin_<id> only.
           savePart: pluginPartSaver({
             pluginId: active.manifest.id,
@@ -207,6 +221,7 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
           // Plugin edits (plugins 0023): one native commit, Undo reverts it. Large edits wait for the
           // user; the operation is authorized again right before the native step.
           editItems: async ({ method, ...edit }, signal) => {
+            const { tool, readOnly } = liveRef.current;
             if (readOnly) throw editError('READ_ONLY');
             validateEdit(edit, tool);
             const mod = editModule();
@@ -223,18 +238,43 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
             return outcome;
           },
           requestPlacement: (proposal, signal) => {
+            const { tool, readOnly } = liveRef.current;
             if (readOnly) throw new Error('This document is read-only');
             validatePlacement(proposal.sexpr, tool);
-            return requestUser<{ status: string }>(signal, (finish,fail) => ({ kind: 'placement', ...proposal, finish, fail, signal, authorize:()=>authorizeOperation('editor.requestPlacement') }));
+            return requestUser<{ status: string }>(signal, (finish,fail) => ({ kind: 'placement', ...proposal, finish, fail, signal, authorize:()=>authorizeOperation('editor.requestPlacement') }))
+              .then(outcome => { instanceRef.current?.emit?.('placement.finished', outcome); return outcome; });
           },
           onDisconnected: fail,
         });
       }
       if (abort.signal.aborted) instance?.dispose();
-      else setStatus(selected === BUILTIN ? 'Read only · Current board' : hostedPlugins ? (active?.source === 'marketplace' ? 'Published by PCBJam · Signed in' : active?.source === 'tutorial' ? 'Tutorial by PCBJam · Signed in' : 'Private plugin · Signed in') : 'Local development plugin');
+      else instanceRef.current = instance;
+      if (!abort.signal.aborted) setStatus(selected === BUILTIN ? 'Read only · Current board' : hostedPlugins ? (active?.source === 'marketplace' ? 'Published by PCBJam · Signed in' : active?.source === 'tutorial' ? 'Tutorial by PCBJam · Signed in' : 'Private plugin · Signed in') : 'Local development plugin');
     })().catch(error => fail(error instanceof Error ? error.message : 'Plugin could not start'));
-    return () => { abort.abort(); instance?.dispose(); doc.off('update', changed); };
-  }, [doc, fileName, tool, readOnly, attempt, selected, active?.digest, active?.generation, active?.enabled, project?.id, project?.scope, project?.name]);
+    return () => { abort.abort(); instance?.dispose(); instanceRef.current = undefined; doc.off('update', changed); };
+    // A persistent panel isn't restarted by a file, tool or read-only switch: it follows them below.
+  }, [...(persistent ? [] : [doc, fileName, tool, readOnly]), persistent, attempt, selected, active?.digest, active?.generation, active?.enabled, project?.id, project?.scope, project?.name]);
+
+  // plugins 0025 §5.3: the persistent panel follows the editor, and hears about selection and edits.
+  React.useEffect(() => {
+    if (!persistent || !doc || !project) return;
+    const instance = instanceRef.current;
+    if (!instance?.updateContext) return;
+    const documents = createDocumentAPI({doc,project,fileName,files:()=>projectFilesRef.current ?? [],signal:new AbortController().signal,
+      selection:()=>getLocalSelection().uuids,subscribeSelection:subscribeLocalSelection,geometry:openGeometry});
+    void instance.updateContext({ documents }).catch((error: unknown) => setStatus(error instanceof Error ? error.message : 'Plugin stopped'));
+  }, [persistent, doc, fileName, tool, readOnly, project?.id]);
+  React.useEffect(() => {
+    if (!persistent || !doc) return;
+    let revision = 0, timer: ReturnType<typeof setTimeout> | undefined;
+    const edited = () => {
+      revision++;
+      if (!timer) timer = setTimeout(() => { timer = undefined; instanceRef.current?.emit?.('document.changed', { revision }); }, 500);
+    };
+    doc.on('update', edited);
+    const offSelection = subscribeLocalSelection(() => instanceRef.current?.emit?.('selection.changed', { ids: getLocalSelection().uuids }));
+    return () => { doc.off('update', edited); offSelection?.(); clearTimeout(timer); };
+  }, [persistent, doc]);
 
   const prepare = async (files: File[], zip: boolean) => {
     setBusy(true); setNotice(''); setCandidate(null);
