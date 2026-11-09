@@ -321,7 +321,12 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
             {candidate.providerMetadata.originSet.length > 1 && <p className="break-all">Downloads from: {candidate.providerMetadata.originSet.join(', ')}</p>}
             <p>Parts: {candidate.providerMetadata.supportedAssetTypes.join(', ')} · up to {Math.round(candidate.providerMetadata.maxDownloadBytes / 1048576)} MiB per part · no sign-in</p>
           </div>}
-          {candidate.backends?.filter(b => b.kind !== 'remote-provider').map(backend=><div key={backend.endpoint} className="my-3 rounded border border-amber-500/40 p-2">
+          {candidate.backends?.filter(b => b.kind === 'hosted-ui').map(backend=><div key={backend.endpoint} className="my-3 rounded border border-amber-500/40 p-2">
+            <p className="break-all font-semibold">{backend.origin}</p>
+            <p>This plugin's interface is a page from this site, shown inside PCBJam. The site runs its own code and sees what the plugin's interface sends it.</p>
+            <p>{backend.ready?'Approved by PCBJam':backend.status==='approved'?'Awaiting PCBJam setup.':'Not ready: '+backend.status+' - ask PCBJam to review this site.'}</p>
+          </div>)}
+          {candidate.backends?.filter(b => b.kind !== 'remote-provider' && b.kind !== 'hosted-ui').map(backend=><div key={backend.endpoint} className="my-3 rounded border border-amber-500/40 p-2">
             <p className="break-all font-semibold">{backend.origin}</p>
             <p>{backend.methods?.join(', ')}: {backend.paths?.join(', ')}</p>
             <p>This plugin can send data it is allowed to read to this backend.</p>
