@@ -13,7 +13,7 @@ export interface Descriptor {
   enabled?: boolean;
   /** Installed from the marketplace (published by PCBJam), a private upload, or by starting a
    *  tutorial (overlay-system 0005: runs like any plugin, hidden from the plugin lists). */
-  source?: 'marketplace' | 'upload' | 'tutorial';
+  source?: 'marketplace' | 'upload' | 'tutorial' | 'platform';
   /** Published in the marketplace: may load from content-hash URLs (plugins 0022 M2). */
   published?: boolean;
   fileMetadata?: Record<string, { sha256: string; bytes: number }>;

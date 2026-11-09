@@ -272,7 +272,7 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
       }
       if (abort.signal.aborted) instance?.dispose();
       else instanceRef.current = instance;
-      if (!abort.signal.aborted) setStatus(selected === BUILTIN ? 'Read only · Current board' : hostedPlugins ? (active?.source === 'marketplace' ? 'Published by PCBJam · Signed in' : active?.source === 'tutorial' ? 'Tutorial by PCBJam · Signed in' : 'Private plugin · Signed in') : 'Local development plugin');
+      if (!abort.signal.aborted) setStatus(selected === BUILTIN ? 'Read only · Current board' : hostedPlugins ? (active?.source === 'marketplace' ? 'Published by PCBJam · Signed in' : active?.source === 'tutorial' ? 'Tutorial by PCBJam · Signed in' : active?.source === 'platform' ? 'Turned on for you by PCBJam · Signed in' : 'Private plugin · Signed in') : 'Local development plugin');
     })().catch(error => fail(error instanceof Error ? error.message : 'Plugin could not start'));
     return () => { abort.abort(); instance?.dispose(); instanceRef.current = undefined; doc.off('update', changed); clearHighlight(); };
     // A persistent panel isn't restarted by a file, tool or read-only switch: it follows them below.
