@@ -28,7 +28,7 @@ import {
   type LibsSyncState,
   libIndexEnabled,
 } from "./source";
-import { createLibIndexStore, fnv, type LibIndexStore, type StaticLibIndex } from "./lib-index-store";
+import { createLibIndexStore, fnv, peekLookups, type LibIndexResult, type LibIndexStore, type StaticLibIndex } from "./lib-index-store";
 import { projectFootprintRows } from "./project-fp-index";
 import type { FootprintIndexRow } from "@pcbjam/shared";
 
@@ -123,6 +123,19 @@ export function syncedLibsSource(
   function serveCold(index: StaticLibIndex): void {
     coldServed.set(index.kind, new Set(index.names));
     void ensure().catch(() => {});
+  }
+  /** The library index: the server's while the library isn't cached, else the stack's rows. */
+  const lookups = peekLookups();
+  async function libIndexFor(kind: "symbol" | "footprint"): Promise<LibIndexResult | null> {
+    const coldIndex = await cold();
+    if (coldIndex && coldIndex.kind === kind && !openStack) {
+      serveCold(coldIndex);
+      return coldIndex;
+    }
+    // The rows follow the stack: a remote change, our own save or delete
+    // changes an entry hash, and the next request recomputes only that row.
+    const { stack } = await ensure();
+    return libIndexStore().libIndex(stack, kind);
   }
   /** The stack opened after a cold answer: invalidate what it changes. */
   async function reconcileCold(stack: SyncStack, info: LibInfo): Promise<void> {
@@ -307,27 +320,18 @@ export function syncedLibsSource(
         return { kind, name, body: bytes };
       });
     },
-    async getLibIndex(_id, kind) {
-      const coldIndex = await cold();
-      if (coldIndex && coldIndex.kind === kind && !openStack) {
-        serveCold(coldIndex);
-        return coldIndex;
-      }
-      // The rows follow the stack: a remote change, our own save or delete
-      // changes an entry hash, and the next request recomputes only that row.
-      const { stack } = await ensure();
-      return libIndexStore().libIndex(stack, kind);
-    },
+    getLibIndex: (_id, kind) => libIndexFor(kind),
     peekLibIndex(_id, kind) {
       if (!openStack && coldValue?.kind === kind) return coldValue;
       const stack = openStack;
       const known = stack ? libIndexStore().peek(stack, kind) : undefined;
-      if (known === undefined) {
-        void ensure()
-          .then(({ stack: s }) => libIndexStore().libIndex(s, kind))
-          .catch(() => {});
-      }
-      return known;
+      if (known !== undefined) return known;
+      // The library didn't open a moment ago: no index, so the warm-up moves on.
+      if (lookups.failed(kind)) return null;
+      // Through the cold path, as a request would: a library not cached yet is
+      // answered from its server index instead of downloading its bundle first.
+      lookups.start(kind, () => libIndexFor(kind));
+      return undefined;
     },
     async getItemBody(_id, kind, name): Promise<string | null> {
       const coldIndex = await cold();
@@ -699,9 +703,12 @@ export function syncedScopeLibsSource(
       // here — plus the project's own .pretty folders from MEMFS. The 0014
       // shape, `{ schema, v, libs: { <key>: [[name, uniquePads], …] } }`, keyed
       // by the /mnt/pcbjam/<id> tail or, for a project folder, its path.
+      // With `have` (key -> token, what the editor holds: its background
+      // warm-up pulls the libraries page by page) the answer is a delta:
+      // `libs` only where the token differs, `tokens` for every current key.
       // ?libindex=0: today's behaviour (the remote source has no index).
       if (!libIndexEnabled()) return (await remote.getFpIndex?.(arg)) ?? null;
-      let req: { v?: string; projectLibs?: string[] } = {};
+      let req: { v?: string; projectLibs?: string[]; have?: Record<string, string> } = {};
       try {
         req = arg ? JSON.parse(arg) : {};
       } catch {
@@ -711,21 +718,37 @@ export function syncedScopeLibsSource(
       const indexes = await mapLimit(libs, 8, (l) =>
         forLib(l.id).getLibIndex!(l.id, "footprint").catch(() => null),
       );
-      const out: Record<string, Array<[string, number]>> = {};
-      const tokens: string[] = [];
+      const entries: Array<{ key: string; token: string; vPart: string; rows: () => Array<[string, number]> }> = [];
       libs.forEach((l, i) => {
         const idx = indexes[i];
         if (!idx) return; // can't be had: the C++ side skips (and traces) it
-        out[l.id] = (idx.rows as FootprintIndexRow[]).map((r) => [r.n, r.up]);
-        tokens.push(`${l.id}:${idx.token}`);
+        entries.push({
+          key: l.id,
+          token: idx.token,
+          vPart: `${l.id}:${idx.token}`,
+          rows: () => (idx.rows as FootprintIndexRow[]).map((r) => [r.n, r.up]),
+        });
       });
       for (const p of projectFootprintRows(Array.isArray(req.projectLibs) ? req.projectLibs : [])) {
-        out[p.dir] = p.rows;
-        tokens.push(p.token);
+        entries.push({ key: p.dir, token: p.token, vPart: p.token, rows: () => p.rows });
       }
-      const v = fnv(tokens.join("\n"));
+      const v = fnv(entries.map((e) => e.vPart).join("\n"));
       if (req.v === v) return "=";
-      if (fpIndexMemo?.v !== v) fpIndexMemo = { v, text: JSON.stringify({ schema: 1, v, libs: out }) };
+      const have = req.have && typeof req.have === "object" ? req.have : null;
+      if (have) {
+        const out: Record<string, Array<[string, number]>> = {};
+        const tokens: Record<string, string> = {};
+        for (const e of entries) {
+          tokens[e.key] = e.token;
+          if (have[e.key] !== e.token) out[e.key] = e.rows();
+        }
+        return JSON.stringify({ schema: 1, v, libs: out, tokens });
+      }
+      if (fpIndexMemo?.v !== v) {
+        const out: Record<string, Array<[string, number]>> = {};
+        for (const e of entries) out[e.key] = e.rows();
+        fpIndexMemo = { v, text: JSON.stringify({ schema: 1, v, libs: out }) };
+      }
       return fpIndexMemo.text;
     },
     async syncState(kind): Promise<LibsSyncState | null> {

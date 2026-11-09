@@ -1,7 +1,7 @@
 import { peekNamespaces, SyncStack, type SyncStackOptions } from "@pcbjam/sync-client";
 import { mapLimit } from "@pcbjam/shared";
 import type { LibInfo, LibItemInfo, LibsSource, LibsSyncState } from "./source";
-import { createLibIndexStore, type LibIndexStore } from "./lib-index-store";
+import { createLibIndexStore, peekLookups, type LibIndexStore } from "./lib-index-store";
 
 /**
  * A read-only, no-backend `LibsSource` that serves the FULL default KiCad symbol
@@ -52,6 +52,7 @@ export function cdnLibsSource(
   // indexed in the browser from its bodies, once, then served from IndexedDB.
   const libIndex = opts?.libIndex ?? createLibIndexStore({ fetchImpl });
   const settled = new Map<string, SyncStack>();
+  const peeks = peekLookups();
 
   let manifestP: Promise<CdnLibsManifest> | null = null;
   let fpIndexP: Promise<string | null> | null = null;
@@ -253,12 +254,12 @@ export function cdnLibsSource(
     peekLibIndex(libId, kind) {
       const stack = settled.get(libId);
       const known = stack ? libIndex.peek(stack, kind) : undefined;
-      if (known === undefined) {
-        void openStack(libId)
-          .then((s) => libIndex.libIndex(s, kind))
-          .catch(() => {});
-      }
-      return known;
+      if (known !== undefined) return known;
+      const key = `${kind}\t${libId}`;
+      // The library didn't open a moment ago: no index, so the warm-up moves on.
+      if (peeks.failed(key)) return null;
+      peeks.start(key, () => openStack(libId).then((s) => libIndex.libIndex(s, kind)));
+      return undefined;
     },
     async prepareLibIndexes(kind, signal): Promise<void> {
       try {

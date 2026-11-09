@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { encodeBundle, sha256Hex, type SyncManifest } from "@pcbjam/shared";
 import { memStore, type LayerStore } from "@pcbjam/sync-client";
 import { cdnLibsSource } from "./cdn-source";
@@ -216,5 +216,22 @@ describe("cdn libs source", () => {
       storeFactory: () => memStore(),
     });
     expect(await noIndex.getFpIndex!()).toBeNull();
+  });
+
+  it("a peek on a library that won't open answers no index and doesn't open it again on every ask", async () => {
+    const top = { schema: 1, tag: "9.0.0", libs: [{ id: "Gone", name: "Gone", kind: "footprint", itemCount: 1 }] };
+    let opens = 0;
+    const fetchImpl = (async (url: string) => {
+      if (url === MANIFEST_URL) return { ok: true, json: async () => top };
+      if (url.startsWith(`${BASE}/Gone/`)) opens++;
+      return { ok: false, status: 404 };
+    }) as unknown as typeof fetch;
+    const src = cdnLibsSource(MANIFEST_URL, { fetchImpl, storeFactory: () => memStore() });
+
+    expect(src.peekLibIndex!("Gone", "footprint")).toBeUndefined(); // starts the open
+    await vi.waitFor(() => expect(src.peekLibIndex!("Gone", "footprint")).toBeNull());
+    const after = opens;
+    for (let i = 0; i < 5; i++) expect(src.peekLibIndex!("Gone", "footprint")).toBeNull();
+    expect(opens).toBe(after);
   });
 });

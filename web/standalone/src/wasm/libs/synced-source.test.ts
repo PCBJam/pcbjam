@@ -699,4 +699,20 @@ describe("syncedScopeLibsSource.getFpIndex (libs 0029)", () => {
     const third = JSON.parse((await src.getFpIndex!(req(second.v)))!);
     expect(third.libs.A).toEqual([["R_A", 2], ["R_C", 2]]);
   });
+
+  it("with `have` answers only the libraries whose token differs, and every current token", async () => {
+    const rows = { "org:A": [{ n: "R_A", up: 2, pc: 2 }], "org:B": [{ n: "R_B", up: 3, pc: 3 }] };
+    const src = source(rows);
+    const tokenA = JSON.stringify(rows["org:A"]);
+    const ask = (have: Record<string, string>, v?: string) => src.getFpIndex!(JSON.stringify({ v, have, projectLibs: [] }));
+
+    // The warm-up already holds A (and a library that has gone since).
+    const delta = JSON.parse((await ask({ A: tokenA, Gone: "x" }))!);
+    expect(delta.libs).toEqual({ B: [["R_B", 3]] });
+    expect(delta.tokens).toEqual({ A: tokenA, B: JSON.stringify(rows["org:B"]) });
+    expect(await ask(delta.tokens, delta.v)).toBe("=");
+
+    // The full answer (no `have`) carries the same version.
+    expect(JSON.parse((await src.getFpIndex!(JSON.stringify({ projectLibs: [] })))!).v).toBe(delta.v);
+  });
 });

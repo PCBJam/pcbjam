@@ -56,7 +56,8 @@ export interface LibIndexStore {
   libIndex(stack: SyncStack, kind: LibIndexKind): Promise<LibIndexResult | null>;
   /**
    * The answer `libIndex` would give, when it is already known and current:
-   * a result, null (no index), or undefined (not computed yet).
+   * a result, null (no index), or undefined (not computed yet). A library with
+   * an unpushed write keeps its last answer here until the push lands.
    */
   peek(stack: SyncStack, kind: LibIndexKind): LibIndexResult | null | undefined;
   /**
@@ -181,25 +182,36 @@ export function createLibIndexStore(opts: LibIndexStoreOptions = {}): LibIndexSt
 
   interface Memo {
     sig: string;
+    /** {@link signature}'s `stable`: what a peek matches. */
+    stable: string;
     value?: LibIndexResult | null;
     promise: Promise<LibIndexResult | null>;
   }
   const memos = new WeakMap<SyncStack, Map<LibIndexKind, Memo>>();
   let uncacheable = 0;
 
-  /** What the rows depend on: each layer's identity and its entries of `kind`. */
-  function signature(layers: ReturnType<SyncStack["layerEntries"]>, kind: LibIndexKind): string {
+  /**
+   * What the rows depend on: each layer's identity and its entries of `kind`.
+   * An unpushed write has no hash yet, so `sig` never matches an answer built
+   * on it. `stable` marks such an entry by its size instead: a peek (the
+   * warm-up, which must not rebuild on every ask) takes the rows parsed from
+   * that write's body until its push lands and gives it a hash.
+   */
+  function signature(layers: ReturnType<SyncStack["layerEntries"]>, kind: LibIndexKind): { sig: string; stable: string } {
     const prefix = `${kind}/`;
     let sig = "";
+    let stable = "";
     for (const { descriptor, entries } of layers) {
-      sig += `\n#${descriptor.namespace}|${descriptor.digest ?? ""}`;
+      const head = `\n#${descriptor.namespace}|${descriptor.digest ?? ""}`;
+      sig += head;
+      stable += head;
       for (const [p, e] of Object.entries(entries)) {
         if (!p.startsWith(prefix)) continue;
-        // An unpushed write has no hash yet: never reuse an answer built on it.
         sig += `\n${p}\t${e.hash || `!${++uncacheable}`}`;
+        stable += `\n${p}\t${e.hash || `!${e.size}`}`;
       }
     }
-    return sig;
+    return { sig, stable };
   }
 
   async function build(stack: SyncStack, kind: LibIndexKind, layers: ReturnType<SyncStack["layerEntries"]>): Promise<LibIndexResult | null> {
@@ -283,13 +295,14 @@ export function createLibIndexStore(opts: LibIndexStoreOptions = {}): LibIndexSt
       } catch {
         return Promise.resolve(null);
       }
-      const sig = signature(layers, kind);
+      const { sig, stable } = signature(layers, kind);
       let byKind = memos.get(stack);
       if (!byKind) memos.set(stack, (byKind = new Map()));
       const memo = byKind.get(kind);
       if (memo?.sig === sig) return memo.promise;
       const next: Memo = {
         sig,
+        stable,
         promise: build(stack, kind, layers).catch((err) => {
           log(`[libindex] index failed: ${String(err)}`);
           return null;
@@ -323,7 +336,7 @@ export function createLibIndexStore(opts: LibIndexStoreOptions = {}): LibIndexSt
       } catch {
         return null;
       }
-      return signature(layers, kind) === memo.sig ? memo.value : undefined;
+      return signature(layers, kind).stable === memo.stable ? memo.value : undefined;
     },
   };
 }
@@ -434,6 +447,37 @@ export function idbRowCache(): LibIndexRowCache {
         tx.onerror = () => resolve();
         tx.onabort = () => resolve();
       });
+    },
+  };
+}
+
+
+/** How long a peek answers "no index" after its library's lookup failed. */
+export const PEEK_RETRY_MS = 10_000;
+
+/**
+ * The lookups a source's `peekLibIndex` starts (the warm-up asks it again and
+ * again while a library isn't ready): at most one in flight per key, and none
+ * for {@link PEEK_RETRY_MS} after one failed, so a library that can't be opened
+ * isn't opened again on every ask.
+ */
+export function peekLookups(now: () => number = Date.now) {
+  const inFlight = new Set<string>();
+  const failedAt = new Map<string, number>();
+  return {
+    /** The key's last lookup failed recently: answer "no index" for now. */
+    failed(key: string): boolean {
+      const t = failedAt.get(key);
+      return t !== undefined && now() - t < PEEK_RETRY_MS;
+    },
+    /** Start `run` unless one is in flight for `key`. */
+    start(key: string, run: () => Promise<unknown>): void {
+      if (inFlight.has(key)) return;
+      inFlight.add(key);
+      void run().then(
+        () => failedAt.delete(key),
+        () => failedAt.set(key, now()),
+      ).finally(() => inFlight.delete(key));
     },
   };
 }

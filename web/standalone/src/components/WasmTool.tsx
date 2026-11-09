@@ -175,6 +175,8 @@ import { installPartCopyBridge } from "@/libs/part-copy";
 import { PartCopyDestinationDialog } from "@/components/wasm-tool/PartCopyDestinationDialog";
 import { PartCopySaveDialog } from "@/components/wasm-tool/PartCopySaveDialog";
 import { startStallWatch } from "@/wasm/stall-watch";
+import { startInputWatch } from "@/wasm/input-watch";
+import { toast } from "@pcbjam/ui";
 import {
   chromeSetter,
   show3DOpener,
@@ -388,6 +390,18 @@ export function WasmTool({
   }, []);
   // KiCad parked on a wait takes no input: say so in the console, with what it waits on.
   React.useEffect(() => startStallWatch(), []);
+  // The browser stopped sending mouse moves (clicks land where no move went): say so.
+  React.useEffect(
+    () =>
+      startInputWatch({
+        onToast: () =>
+          toast.warning(
+            "Your browser has stopped sending mouse movements to the editor, so the crosshair won't follow the mouse. A browser extension or the browser itself can cause this: try closing all your browser windows and opening them again.",
+            { duration: Infinity, testId: "input-teleport-toast" },
+          ),
+      }),
+    [],
+  );
   const lastCommentsDocRef = React.useRef<{ doc: import("yjs").Doc | undefined; docPath: string } | null>(null);
   const startedRef = React.useRef(false);
   // Mobile device (features/mobile): boot installs the touch-gesture shim.
@@ -1260,13 +1274,19 @@ export function WasmTool({
         void presyncSettled.then(() => append(mark("presync:settled")));
         // The library index (libs 0028): once the bodies are local, have every
         // symbol library's rows ready (server rows, or computed off the main
-        // thread) before the first Add Symbol asks. Not on the mobile layout.
+        // thread) before the first Add Symbol asks, then the footprint
+        // libraries' (the warm-up pulls them page by page after the symbols,
+        // and an answer that isn't ready yet is "~", never a wait). Not on the
+        // mobile layout.
         const libIndexPrepared: Promise<boolean> =
           tool === "eeschema" && source?.prepareLibIndexes && libIndexEnabled() && !isMobileMode()
             ? presyncSettled
                 .then(() => source.prepareLibIndexes!("symbol", presyncAbort.signal))
                 .then(() => {
                   append(mark("libindex:ready"));
+                  void source.prepareLibIndexes!("footprint", presyncAbort.signal).then(() =>
+                    append(mark("libindex:footprints-ready")),
+                  );
                   return true;
                 })
             : Promise.resolve(false);

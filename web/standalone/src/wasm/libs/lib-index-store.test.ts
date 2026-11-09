@@ -9,7 +9,7 @@ import {
   type SyncManifest,
 } from "@pcbjam/shared";
 import { memStore, SyncStack, type LayerDescriptor, type LayerStore } from "@pcbjam/sync-client";
-import { createLibIndexStore, memRowCache, type LibIndexCompute, type LibIndexRowCache } from "./lib-index-store";
+import { createLibIndexStore, memRowCache, peekLookups, PEEK_RETRY_MS, type LibIndexCompute, type LibIndexRowCache } from "./lib-index-store";
 import { installLibsProvider, type LibsSource } from "./source";
 import { syncedLibsSource } from "./synced-source";
 
@@ -204,6 +204,57 @@ describe("lib index store", () => {
     expect((await s2.libIndex(first, "symbol"))!.rows.map((r) => r.n)).toEqual(["B"]);
   });
 
+  it("an unpushed write: libIndex parses it again on every call, a peek keeps the last answer until the push lands", async () => {
+    const b = fakeBackend();
+    b.layer(mirror("T").url, { "symbol/A": sym("A"), "symbol/B": sym("B") });
+    // Hold our own save's upload, so the write stays unpushed (no hash).
+    let release!: () => void;
+    const upload = new Promise<void>((r) => (release = r));
+    const fetchImpl = (async (input: unknown, init?: RequestInit) => {
+      if (init?.method === "PUT") await upload;
+      return b.fetchImpl(input as string, init);
+    }) as typeof fetch;
+    const stack = new SyncStack({ layers: [mirror("T")], fetchImpl, realtime: "shared-only", storeFactory: () => memStore() });
+    await stack.open();
+    const { compute, parsed } = countingCompute();
+    const store = createLibIndexStore({ fetchImpl, rowCache: memRowCache(), compute });
+    await store.libIndex(stack, "symbol");
+
+    const pushed = stack.push("symbol/B", enc.encode(sym("B", `(property "Description" "new")`)));
+    await vi.waitFor(() => expect(stack.layerEntries()[0]!.entries["symbol/B"]!.hash).toBe(""));
+    const pending = (await store.libIndex(stack, "symbol"))!;
+    expect(pending.rows.find((r) => r.n === "B")).toMatchObject({ d: "new" });
+    expect(store.peek(stack, "symbol")).toBe(pending);
+    expect(store.peek(stack, "symbol")).toBe(pending);
+    const n = parsed.length;
+    await store.libIndex(stack, "symbol");
+    expect(parsed.slice(n)).toEqual(["symbol/B"]); // never reused: parsed again
+
+    release();
+    await pushed;
+    expect(store.peek(stack, "symbol")).toBeUndefined(); // it has a hash now: build again
+    const landed = (await store.libIndex(stack, "symbol"))!;
+    expect(store.peek(stack, "symbol")).toBe(landed);
+  });
+
+  it("peek lookups: one in flight per key; after a failure none for a while", async () => {
+    let t = 0;
+    const lookups = peekLookups(() => t);
+    let runs = 0;
+    let fail!: (e: Error) => void;
+    lookups.start("L1", () => (runs++, new Promise((_, rej) => (fail = rej))));
+    lookups.start("L1", () => (runs++, Promise.resolve()));
+    expect(runs).toBe(1);
+    expect(lookups.failed("L1")).toBe(false);
+    fail(new Error("open failed"));
+    await vi.waitFor(() => expect(lookups.failed("L1")).toBe(true));
+    t = PEEK_RETRY_MS;
+    expect(lookups.failed("L1")).toBe(false);
+    lookups.start("L1", () => (runs++, Promise.resolve()));
+    expect(runs).toBe(2);
+    await vi.waitFor(() => expect(lookups.failed("L1")).toBe(false));
+  });
+
   it("a body that won't index, or a server index with bad paths, gives null", async () => {
     const b = fakeBackend();
     b.layer(mirror("T").url, { "symbol/A": sym("A"), "symbol/Broken": "((" });
@@ -355,6 +406,29 @@ describe("cold run (libs 0028 phase 7)", () => {
     await vi.waitFor(() => expect(invalidated).toEqual(["symbol:Device"]));
     // From now on the stack answers, overrides included.
     expect((await source.getLibIndex!("L1", "symbol"))!.rows.find((r) => r.n === "R")).toMatchObject({ fl: { LCSC: "C1" } });
+  });
+
+  it("a peek on a cold library is answered from the server index, not after the bundle", async () => {
+    const b = fakeBackend();
+    const items = { "footprint/R_0603": "(footprint R_0603 (pad 1 smd rect) (pad 2 smd rect))" };
+    b.layer(`${ORIGINS}/L1/V1`, items);
+    b.servePack([b.serveIndex("L1", "V1", "footprint", items)]);
+    const release = b.holdBundle(`${ORIGINS}/L1/V1`);
+    const stores = new Map<string, LayerStore>();
+    const source = syncedLibsSource("L1", {
+      apiBase: API,
+      scope: "s",
+      fetchImpl: b.fetchImpl,
+      realtime: "shared-only",
+      storeFactory: (ns) => stores.get(ns) ?? stores.set(ns, memStore()).get(ns)!,
+      stackFor: () => ({ lib: { id: "L1", name: "Resistors" }, layers: [origin("L1", "V1")] }),
+      libIndex: createLibIndexStore({ originsBase: ORIGINS, fetchImpl: b.fetchImpl, rowCache: memRowCache() }),
+    });
+
+    expect(source.peekLibIndex!("L1", "footprint")).toBeUndefined(); // starts the cold path
+    // The bundle is still held: the answer can only be the server's rows.
+    await vi.waitFor(() => expect(source.peekLibIndex!("L1", "footprint")?.rows.map((r) => r.n)).toEqual(["R_0603"]));
+    release();
   });
 
   it("a cached static layer takes the stack, as before", async () => {
