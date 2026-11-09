@@ -20,6 +20,9 @@ import { mountRemoteProvider, type PartRequest } from '@/remote-provider/host';
 import { savePartAndPlace } from '@/libs/save-part';
 import { providerPermissions } from '@pcbjam/plugin-platform/remote-provider-contract.mjs';
 import { isHostedUi } from '@pcbjam/plugin-platform/hosted-ui-contract.mjs';
+import { approvalOrder } from '@pcbjam/shared';
+import { updatePcb } from './update-pcb';
+import { pickPoint } from './pick-point';
 import { directPermissions } from '@pcbjam/plugin-platform/network-contract.mjs';
 import { KICAD_VERSION_DIR } from '@/wasm/constants';
 import { useTrustedPrompt } from '@/overlay/trusted-prompts';
@@ -45,7 +48,17 @@ type Prompt = {kind:'external';url:string;site:string;finish(value:{status:'open
   // A QuickJS plugin's own part (parts.save): the user confirms the write into the plugin's team library.
   | { kind: 'pluginPart'; part: PluginPartSummary; finish(accept: boolean): void }
   // A large plugin edit (plugins 0023): the user confirms it before the native commit.
-  | { kind: 'edit'; label: string; upserts: number; removes: number; finish(accept: boolean): void };
+  | { kind: 'edit'; label: string; upserts: number; removes: number; finish(accept: boolean): void }
+  // Update PCB from Schematic (plugins 0025 §5.4): the changes that remove or rewire, in the editor's own dialog.
+  | { kind: 'updatePcb'; changes: string[]; finish(accept: boolean): void }
+  // Another file of the project, opened in the editor (plugins 0025 §5.4).
+  | { kind: 'openFile'; path: string; finish(accept: boolean): void };
+/** The editor page for another file of the open project (the current path's file segment replaced). */
+const fileUrl = (path: string) => {
+  const at = location.pathname.indexOf('/projects/');
+  const slugEnd = location.pathname.indexOf('/', at + '/projects/'.length);
+  return location.pathname.slice(0, slugEnd) + '/' + path.split('/').map(encodeURIComponent).join('/');
+};
 /** A hosted UI that follows the editor across files instead of restarting (plugins 0025 §5.3). */
 const isPersistent = (plugin: Descriptor) => {
   const ui = (plugin.manifest as { ui?: unknown }).ui;
@@ -236,6 +249,14 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
             const outcome = await applyEdit(mod, { ...edit, label: `${active.manifest.name}: ${edit.label}` }, signal).finally(done);
             setNotice(`${active.manifest.name} changed this ${tool === 'pcbnew' ? 'board' : 'sheet'}. Undo reverts it.`);
             return outcome;
+          },
+          // plugins 0025 §5.4: KiCad's Update PCB, approved in this panel's own dialog.
+          updatePcb: (request, signal) => updatePcb(request, signal, (changes, s) => requestUser<boolean>(s, finish => ({ kind: 'updatePcb', changes, finish }))),
+          pickPoint: (prompt, signal) => pickPoint(prompt, liveRef.current.tool, signal),
+          openFile: async (path, signal) => {
+            if (!await requestUser<boolean>(signal, finish => ({ kind: 'openFile', path, finish }))) return { status: 'cancelled' as const };
+            window.location.assign(fileUrl(path));
+            return { status: 'opened' as const };
           },
           requestPlacement: (proposal, signal) => {
             const { tool, readOnly } = liveRef.current;
@@ -460,6 +481,17 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
         <p>{active?.manifest.name} wants to apply <strong>{prompt.label}</strong>: {prompt.upserts} items added or changed, {prompt.removes} deleted in this {tool === 'pcbnew' ? 'board' : 'sheet'}.</p>
         <p className="my-2 text-neutral-500 dark:text-white/60">Undo reverts the whole edit in one step.</p>
         <Button variant="outline" size="xs" onClick={() => prompt.finish(true)}>Apply edit</Button>{' '}<Button variant="outline" size="xs" onClick={() => prompt.finish(false)}>Cancel</Button>
+      </section>}
+      {prompt?.kind === 'updatePcb' && <section aria-label="Approve Update PCB" className="mt-3 rounded border border-amber-500/40 p-3">
+        <p>{active?.manifest.name} wants to update the board from the schematic. These changes can break a layout:</p>
+        <p className="my-1 text-neutral-500 dark:text-white/60">{approvalOrder(prompt.changes).counts.map(c => `${c.count} ${c.kind}`).join(' · ')}</p>
+        <ul className="my-2 max-h-40 list-disc overflow-auto pl-4 text-xs">{approvalOrder(prompt.changes).lines.map((line, i) => <li key={i}>{line}</li>)}</ul>
+        <p className="my-2 text-neutral-500 dark:text-white/60">Undo reverts the whole update in one step.</p>
+        <Button variant="outline" size="xs" onClick={() => prompt.finish(true)}>Approve and update</Button>{' '}<Button variant="outline" size="xs" onClick={() => prompt.finish(false)}>Decline</Button>
+      </section>}
+      {prompt?.kind === 'openFile' && <section aria-label="Confirm opening a file" className="mt-3 rounded border border-sky-500/40 p-3">
+        <p>{active?.manifest.name} wants to open <strong>{prompt.path}</strong> in the editor.</p>
+        <Button variant="outline" size="xs" onClick={() => prompt.finish(true)}>Open it</Button>{' '}<Button variant="outline" size="xs" onClick={() => prompt.finish(false)}>Cancel</Button>
       </section>}
       {prompt?.kind === 'placement' && <section aria-label="Confirm plugin placement" className="mt-3 rounded border border-sky-500/40 p-3">
         <p>{active?.manifest.name} requests placement of <strong>{prompt.label}</strong>.</p>

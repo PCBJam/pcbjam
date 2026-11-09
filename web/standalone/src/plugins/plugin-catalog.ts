@@ -91,6 +91,10 @@ export interface PackageHost {
       localChecks?: boolean;
       network?: boolean;
       editItems?(proposal: { method: 'board.edit' | 'schematic.edit'; label: string; upsert: { sexpr: string }[]; remove: string[]; libSymbols?: string[] }, signal: AbortSignal): Promise<{ status: 'applied'; added: string[]; changed: string[]; removed: string[] } | { status: 'cancelled' }>;
+      // plugins 0025 §5.4: Update PCB (approved in the editor), a clicked point, another file.
+      updatePcb?(request: { dryRun: boolean; deleteUnused: boolean }, signal: AbortSignal): Promise<unknown>;
+      pickPoint?(prompt: string, signal: AbortSignal): Promise<{ x: number; y: number } | null>;
+      openFile?(path: string, signal: AbortSignal): Promise<{ status: 'opened' | 'cancelled' }>;
       hashServing?: { userId: string; uiOrigin: string; placementEnabled: boolean; editsEnabled?: boolean };
       selectItems?(ids: string[], signal: AbortSignal): Promise<{ selected: string[]; held: string[]; missing: string[] }>;
       saveFile?(
@@ -113,7 +117,7 @@ export interface PackageHost {
       /** The shown schematic sheet (overlay-system 0003). */
       sheet?: { symbols(): unknown[]; connectivity(): unknown[] };
     }
-  ): Promise<{ dispose(): void }>;
+  ): Promise<{ dispose(): void; updateContext?(next: { documents?: unknown }): Promise<void>; emit?(name: string, data: unknown): void }>;
 }
 
 export const BUILTIN = "__board-inspector";
