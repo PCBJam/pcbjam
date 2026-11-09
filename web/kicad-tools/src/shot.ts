@@ -61,11 +61,22 @@ export async function rasterize(svg: string, widthPx: number): Promise<Uint8Arra
   } catch {
     throw new Error("PNG output needs the optional 'sharp' package (npm i sharp) — or ask for SVG");
   }
-  const vb = /viewBox="[-\d.]+\s+[-\d.]+\s+([-\d.]+)\s+[-\d.]+"/.exec(svg);
-  const widthMm = vb ? Number(vb[1]) : 297;
-  // librsvg renders at `density` dpi; pick it so the result is ~widthPx wide.
-  const density = Math.min(2400, Math.max(36, (widthPx / (widthMm / 25.4)) * 1.05));
-  const png = await sharp(Buffer.from(svg), { density }).resize({ width: widthPx }).png().toBuffer();
+  const input = Buffer.from(svg);
+  // Pick the density that renders ~widthPx wide, then resize to exactly that.
+  // For a plot sized in mm the rendered width grows with density² (librsvg
+  // turns mm into pixels at `density`, sharp scales by density/72 again), so
+  // a formula linear in density overshot ~10× on small crops and tripped
+  // sharp's pixel limit ("Input image exceeds pixel limit"). Measure the width
+  // at two densities (header only, nothing is rendered) and solve instead.
+  const widthAt = async (density: number) => (await sharp(input, { density }).metadata()).width ?? 0;
+  const base = await widthAt(72);
+  let density = 150;
+  if (base > 0) {
+    const exponent = Math.max(1, Math.round(Math.log2((await widthAt(144)) / base)));
+    density = 72 * ((widthPx * 1.05) / base) ** (1 / exponent);
+  }
+  density = Math.min(2400, Math.max(36, density));
+  const png = await sharp(input, { density }).resize({ width: widthPx }).png().toBuffer();
   return new Uint8Array(png);
 }
 
