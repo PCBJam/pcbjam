@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import * as Y from 'yjs';
 import { docToY, fileToDoc, docToFile, yToDoc, kicadItemsMap, Y_KDOC_META } from '@pcbjam/shared';
 import { createDocumentAPI } from './document-api';
+import { setCopyContext } from '@/lib/copy-context';
 const text = '(kicad_sch (version 20250114) (lib_symbols (symbol "Local:R" (symbol "R_0_1"))) (symbol (lib_id "Local:R") (uuid "s1") (pin "1" (uuid "p1"))) (wire (uuid "w1")))';
 function fixture(version = 2) {
     const doc = new Y.Doc(), abort = new AbortController();
@@ -36,6 +37,16 @@ describe('plugin current-document adapter', () => {
         expect(f.api.catalog().map(v => v.name)).toEqual(['main.kicad_sch', 'board.kicad_pcb']);
     }
     finally {
+        f.close();
+    } });
+    it('names the tab\'s working copy when it is not the default one (plugins 0025)', () => { const f = fixture(); try {
+        setCopyContext({ copy: { id: 'c1', label: 'feature', kind: 'branch', generation: 1, isDefault: false } });
+        expect(f.api.projectInfo()).toEqual({ id: 'p1', scope: 'scope', name: 'test', copy: { id: 'c1', label: 'feature' } });
+        setCopyContext({ copy: { id: 'c0', label: 'main', kind: 'default', generation: 1, isDefault: true } });
+        expect(f.api.projectInfo()).toEqual({ id: 'p1', scope: 'scope', name: 'test' });
+    }
+    finally {
+        setCopyContext(null);
         f.close();
     } });
     it('lists the project as it is now, not as it was when the plugin started', () => { const f = fixture(); try {

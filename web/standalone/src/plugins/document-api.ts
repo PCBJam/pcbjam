@@ -1,4 +1,5 @@
 import * as Y from 'yjs';
+import { currentCopyRef } from '@/lib/copy-context';
 import { kicadItemsMap, kicadLibSymbolsMap, yToItemUnchecked, streamBodyJson, Y_KDOC_META, Y_KDOC_LAYOUT } from '@pcbjam/shared';
 const MAX_BYTES = 1024 * 1024;
 /** Copy selected JSON/Yjs values with a shared budget before toJSON/serialization. */
@@ -87,7 +88,13 @@ export function createDocumentAPI(options: {
     };
     type Item = ReturnType<typeof item>;
     return {
-        projectInfo: () => { live(); return { ...options.project }; },
+        projectInfo: () => {
+            live();
+            // The working copy this tab shows (git-integration 0004), when it isn't the project's
+            // default: a plugin's own server works on the same one (plugins 0025).
+            const copy = currentCopyRef();
+            return { ...options.project, ...(copy && !copy.isDefault ? { copy: { id: copy.id, label: copy.label } } : {}) };
+        },
         catalog: () => {
             live();
             const files = options.files();
