@@ -19,7 +19,7 @@ export interface ValidationRequest {
 /**
  * One bounded validation in a throwaway Worker from the plugin runtime bundle, so
  * third-party text is never parsed on the editor's thread. Resolves with the text
- * the worker answered (the sanitized footprint), or the input for a symbol.
+ * the worker answered: the sanitized footprint, or the symbol without fields that name a file.
  */
 export async function validateInWorker(request:ValidationRequest,signal:AbortSignal,timeoutMs=1000):Promise<{text:string}> {
   signal.throwIfAborted();
@@ -35,14 +35,14 @@ export async function validateInWorker(request:ValidationRequest,signal:AbortSig
     worker.onmessage=event=>{
       if(event.data?.ok!==true)return finish(new Error(String(event.data?.error??'Invalid import').slice(0,400)));
       if(request.kind==='footprint'&&typeof event.data.text!=='string')return finish(new Error('Import validation failed'));
-      // A footprint (stored or placed on a board) comes back sanitized; a symbol as sent.
+      // A footprint (stored or placed on a board) or a symbol comes back sanitized.
       finish(undefined,typeof event.data.text==='string'?event.data.text:undefined);
     };
     worker.postMessage(request);
   });}finally{worker.terminate();}
 }
 
-/** The text to place: a board footprint comes back without 3D models or embedded files. */
+/** The text to place: a footprint without 3D models or embedded files, a symbol without fields that name a file. */
 export async function preflightPlacement(text:string,tool:string,signal:AbortSignal):Promise<string> {
   return (await validateInWorker({text,tool},signal)).text;
 }
