@@ -268,6 +268,8 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
               .then(outcome => { instanceRef.current?.emit?.('placement.finished', outcome); return outcome; });
           },
           onDisconnected: fail,
+          // A dev page that reloaded itself (its server restarted): start it again.
+          onPageReloaded: restart,
         });
       }
       if (abort.signal.aborted) instance?.dispose();

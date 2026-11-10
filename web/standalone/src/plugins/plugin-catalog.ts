@@ -84,6 +84,8 @@ export interface PackageHost {
         signal: AbortSignal
       ): Promise<{ status: string }>;
       onDisconnected(message: string): void;
+      /** A dev page (localhost) reloaded itself: start the plugin again (plugins 0025 §12). */
+      onPageReloaded?(): void;
       documents?: ReturnType<typeof createDocumentAPI>;
       storageBinding?(): string | null;
       authorize?(signal: AbortSignal): Promise<void>;
