@@ -37,6 +37,7 @@ add_executable( kicad_tools
     ${KICAD_WASM_LAYER}/cli/pcb_convert_stubs.cpp
     ${KICAD_WASM_LAYER}/cli/sym_convert_main.cpp
     ${KICAD_WASM_LAYER}/cli/pcb_convert_main.cpp
+    ${KICAD_WASM_LAYER}/cli/pcb_update_headless.cpp
     ${KICAD_WASM_LAYER}/cli/kicad_tools_main.cpp
     )
 

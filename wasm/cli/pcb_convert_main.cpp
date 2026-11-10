@@ -53,6 +53,18 @@
  *             <exit-code>" stderr lines with the single-flag codes. Exit: 0
  *             when the loop completed, 2 usage.
  *
+ *   update:   pcb_convert --update-from-netlist [--dry-run] [--delete-unused] [--relink]
+ *                         [--footprints <dir>] [--expect <approved.json>]
+ *                         [--answer <out.json>] <board.kicad_pcb> <netlist.net> [<out.kicad_pcb>]
+ *             Update PCB from Schematic without an editor (mcp 0006): KiCad's
+ *             BOARD_NETLIST_UPDATER with the dialog's defaults; footprints
+ *             from <dir>/<Nick>.pretty/<Name>.kicad_mod (pcb_update_headless.cpp).
+ *             JSON on stdout (and in --answer's file) as the editor binding answers (report lines,
+ *             added refs, odd names); a real run writes <out>, and with
+ *             --expect refuses (CHANGED) unless its action lines are exactly
+ *             the approved ones. Exit: 0 answered, 2 usage, 4 load failure,
+ *             5 write failure.
+ *
  * No GUI, no renderer, no embind bindings. Wired into pcbnew/CMakeLists.txt
  * behind the KICAD_PCB_CONVERTER_WASM option (see
  * scripts/kicad/build-pcb_convert.sh).
@@ -67,6 +79,7 @@
 #include <cstring>
 #include <fstream>
 #include <memory>
+#include <set>
 #include <string>
 #include <unistd.h>
 #include <unordered_set>
@@ -115,7 +128,15 @@
 #include <properties/property_mgr.h>
 #include <reporter.h>
 #include <settings/settings_manager.h>
+#include <autorouter/spread_footprints.h>
+#include <netlist_reader/board_netlist_updater.h>
+#include <netlist_reader/netlist_reader.h>
+#include <netlist_reader/pcb_netlist.h>
+#include <tool/tool_manager.h>
 #include <widgets/report_severity.h>
+
+/** Where --update-from-netlist staged its footprints (pcb_update_headless.cpp). */
+extern std::string g_pcbjamFootprintDir;
 
 // ── minimal KiCad runtime (mirror of sym_convert_main.cpp's LINT_PGM) ─────────
 
@@ -974,6 +995,258 @@ void runFabBatch( const char* aInPath, const char* aOutDir, const std::vector<st
     }
 }
 
+
+// ── update from netlist (mcp 0006) ────────────────────────────────────────────
+// KiCad's Update PCB from Schematic without an editor: BOARD_NETLIST_UPDATER on a bare
+// TOOL_MANAGER (KiCad's own QA pattern), with the Update PCB dialog's defaults as the editor
+// binding uses them (wasm/bindings/pcbnew_embind.cpp runUpdater), and the same answer shape.
+// Footprints load from the staged folder through pcb_update_headless.cpp's hooks.
+
+/** The updater's report, line by line, with KiCad's severity (the editor binding's shape). */
+class JSON_LINES_REPORTER : public REPORTER
+{
+public:
+    using REPORTER::Report;
+
+    REPORTER& Report( const wxString& aText, SEVERITY aSeverity = RPT_SEVERITY_UNDEFINED ) override
+    {
+        REPORTER::Report( aText, aSeverity );
+
+        if( aText.IsEmpty() ) // the updater's spacers between sections
+            return *this;
+
+        const char* severity = aSeverity == RPT_SEVERITY_ERROR     ? "error"
+                               : aSeverity == RPT_SEVERITY_WARNING ? "warning"
+                               : aSeverity == RPT_SEVERITY_ACTION  ? "action"
+                                                                   : "info";
+        m_lines.push_back( nlohmann::json{ { "severity", severity }, { "text", std::string( aText.ToUTF8() ) } } );
+        return *this;
+    }
+
+    nlohmann::json m_lines = nlohmann::json::array();
+};
+
+
+nlohmann::json updateFailure( const char* aCode, const std::string& aMessage )
+{
+    return nlohmann::json{ { "status", "error" }, { "code", aCode }, { "error", aMessage } };
+}
+
+
+/** The netlist file eeschema wrote (kicad_tools --netlist): null on success, else the failure. */
+nlohmann::json readNetlist( const char* aPath, NETLIST& aNetlist )
+{
+    try
+    {
+        KICAD_NETLIST_READER reader( new FILE_LINE_READER( wxString::FromUTF8( aPath ) ), &aNetlist );
+        reader.LoadNetlist();
+    }
+    catch( const IO_ERROR& e )
+    {
+        return updateFailure( "NETLIST", std::string( e.What().ToUTF8() ) );
+    }
+
+    nlohmann::json unannotated = nlohmann::json::array();
+
+    for( unsigned i = 0; i < aNetlist.GetCount(); i++ )
+    {
+        if( aNetlist.GetComponent( i )->GetReference().EndsWith( wxS( "?" ) ) )
+            unannotated.push_back( std::string( aNetlist.GetComponent( i )->GetReference().ToUTF8() ) );
+    }
+
+    if( !unannotated.empty() )
+    {
+        nlohmann::json out = updateFailure( "NOT_ANNOTATED", "Some symbols have no reference number yet: annotate the schematic first" );
+        out["refs"] = unannotated;
+        return out;
+    }
+
+    return nullptr;
+}
+
+
+/** References a report line can't bound (the editor binding's oddReferences). */
+nlohmann::json oddReferences( BOARD* aBoard, NETLIST& aNetlist )
+{
+    std::set<wxString> refs;
+
+    for( unsigned i = 0; i < aNetlist.GetCount(); i++ )
+        refs.insert( aNetlist.GetComponent( i )->GetReference() );
+
+    for( FOOTPRINT* fp : aBoard->Footprints() )
+        refs.insert( fp->GetReference() );
+
+    nlohmann::json odd = nlohmann::json::array();
+
+    for( const wxString& ref : refs )
+    {
+        bool plain = !ref.IsEmpty();
+
+        for( wxUniChar c : ref )
+            plain = plain && c.IsAscii() && ( wxIsalnum( c ) || wxString( wxS( "_#+-.?*~/" ) ).Find( c ) != wxNOT_FOUND );
+
+        if( !plain )
+            odd.push_back( std::string( ref.ToUTF8() ) );
+    }
+
+    return odd;
+}
+
+
+/** One updater pass with the dialog's defaults; its report, and with `aAdded` what it added. */
+nlohmann::json runUpdater( TOOL_MANAGER& aMgr, BOARD* aBoard, NETLIST& aNetlist, bool aDryRun, bool aDeleteUnused,
+                           bool aRelink, std::vector<FOOTPRINT*>* aAdded )
+{
+    aNetlist.SortByReference();
+    aNetlist.SetFindByTimeStamp( !aRelink );
+    aNetlist.SetReplaceFootprints( true );
+
+    JSON_LINES_REPORTER   reporter;
+    BOARD_NETLIST_UPDATER updater( &aMgr, aBoard );
+    updater.SetReporter( &reporter );
+    updater.SetIsDryRun( aDryRun );
+    updater.SetLookupByTimestamp( !aRelink );
+    updater.SetDeleteUnusedFootprints( aDeleteUnused );
+    updater.SetReplaceFootprints( true );
+    updater.SetTransferGroups( false );
+    updater.SetApplyDesignBlockLayouts( false );
+    updater.SetOverrideLocks( false );
+    updater.SetUpdateFields( true );
+    updater.SetRemoveExtraFields( false );
+    updater.UpdateNetlist( aNetlist );
+    updater.SetReporter( nullptr );
+
+    if( aAdded )
+        *aAdded = updater.GetAddedFootprints();
+
+    return reporter.m_lines;
+}
+
+
+nlohmann::json actionLines( const nlohmann::json& aReport )
+{
+    nlohmann::json out = nlohmann::json::array();
+
+    for( const nlohmann::json& line : aReport )
+    {
+        if( line["severity"] == "action" )
+            out.push_back( line["text"] );
+    }
+
+    return out;
+}
+
+
+/**
+ * --update-from-netlist: the answer as JSON on stdout (the editor binding's doUpdatePcb shape);
+ * a real run writes the updated board to aOutPath. With aExpectPath (a JSON array of action
+ * lines a person approved), a real run first previews and refuses with CHANGED when the update
+ * isn't exactly that. Exit 0 answered (status done or error), 2 usage, 4 load failure,
+ * 5 write failure.
+ */
+int runUpdateFromNetlist( const char* aBoardPath, const char* aNetlistPath, const char* aFootprintDir,
+                          const char* aExpectPath, const char* aAnswerPath, bool aDryRun, bool aDeleteUnused,
+                          bool aRelink, const char* aOutPath )
+{
+    BOARD* brd = loadBoardHeadless( aBoardPath );
+
+    if( !brd )
+        return 4;
+
+    g_pcbjamFootprintDir = aFootprintDir ? aFootprintDir : "";
+
+    // On stdout, and in aAnswerPath when given (the tools pool reads files, not stdout).
+    auto answer = [aAnswerPath]( const nlohmann::json& aJson )
+    {
+        const std::string text = aJson.dump();
+        std::printf( "%s\n", text.c_str() );
+
+        if( aAnswerPath )
+        {
+            std::ofstream out( aAnswerPath );
+            out << text << '\n';
+
+            if( !out )
+                return 5;
+        }
+
+        return 0;
+    };
+
+    NETLIST netlist;
+
+    if( nlohmann::json failure = readNetlist( aNetlistPath, netlist ); !failure.is_null() )
+        return answer( failure );
+
+    TOOL_MANAGER mgr;
+    mgr.SetEnvironment( brd, nullptr, nullptr, nullptr, nullptr );
+
+    const nlohmann::json oddNames = oddReferences( brd, netlist );
+
+    if( aDryRun )
+    {
+        const nlohmann::json report = runUpdater( mgr, brd, netlist, true, aDeleteUnused, aRelink, nullptr );
+        return answer( { { "status", "done" }, { "dryRun", true }, { "added", nlohmann::json::array() },
+                         { "report", report }, { "oddNames", oddNames } } );
+    }
+
+    if( aExpectPath )
+    {
+        nlohmann::json expect;
+
+        try
+        {
+            std::ifstream in( aExpectPath );
+            expect = nlohmann::json::parse( in );
+        }
+        catch( ... )
+        {
+            std::fprintf( stderr, "%s: error: not a JSON array of approved lines\n", aExpectPath );
+            return 2;
+        }
+
+        NETLIST check;
+
+        if( nlohmann::json failure = readNetlist( aNetlistPath, check ); !failure.is_null() )
+            return answer( failure );
+
+        if( actionLines( runUpdater( mgr, brd, check, true, aDeleteUnused, aRelink, nullptr ) ) != expect )
+            return answer( updateFailure( "CHANGED", "The update changed since it was previewed: preview it again" ) );
+    }
+
+    std::vector<FOOTPRINT*> added;
+    const nlohmann::json    report = runUpdater( mgr, brd, netlist, false, aDeleteUnused, aRelink, &added );
+    nlohmann::json          addedRefs = nlohmann::json::array();
+
+    for( FOOTPRINT* fp : added )
+        addedRefs.push_back( std::string( fp->GetReference().ToUTF8() ) );
+
+    // Where the editor puts them: under the board outline, or mid-page on a board without one.
+    if( !added.empty() )
+    {
+        const BOX2I    edges = brd->GetBoardEdgesBoundingBox();
+        const VECTOR2I page( brd->GetPageSettings().GetWidthIU( pcbIUScale.IU_PER_MILS ),
+                             brd->GetPageSettings().GetHeightIU( pcbIUScale.IU_PER_MILS ) );
+        const VECTOR2I target = edges.GetWidth() > 0
+                                        ? VECTOR2I( edges.GetLeft(), edges.GetBottom() + pcbIUScale.mmToIU( 5 ) )
+                                        : VECTOR2I( page.x / 2, page.y / 2 );
+        SpreadFootprints( &added, target, true );
+    }
+
+    try
+    {
+        PCB_IO_MGR::Save( PCB_IO_MGR::KICAD_SEXP, wxString::FromUTF8( aOutPath ), brd );
+    }
+    catch( const IO_ERROR& ioe )
+    {
+        std::fprintf( stderr, "%s: error: %s\n", aOutPath, (const char*) ioe.Problem().ToUTF8() );
+        return 5;
+    }
+
+    return answer( { { "status", "done" }, { "dryRun", false }, { "added", addedRefs },
+                     { "report", report }, { "oddNames", oddNames } } );
+}
+
 } // namespace
 
 
@@ -1475,13 +1748,71 @@ int pcbConvertMain( int argc, char** argv )
         _exit( 0 );
     }
 
+    if( argc >= 2 && std::strcmp( argv[1], "--update-from-netlist" ) == 0 )
+    {
+        wxDisableAsserts();
+
+        bool        dryRun = false, deleteUnused = false, relink = false;
+        const char* footprints = nullptr;
+        const char* expect = nullptr;
+        const char* answerPath = nullptr;
+        int         arg = 2;
+
+        while( arg < argc && std::strncmp( argv[arg], "--", 2 ) == 0 )
+        {
+            if( std::strcmp( argv[arg], "--dry-run" ) == 0 )
+                dryRun = true;
+            else if( std::strcmp( argv[arg], "--delete-unused" ) == 0 )
+                deleteUnused = true;
+            else if( std::strcmp( argv[arg], "--relink" ) == 0 )
+                relink = true;
+            else if( std::strcmp( argv[arg], "--footprints" ) == 0 && arg + 1 < argc )
+                footprints = argv[++arg];
+            else if( std::strcmp( argv[arg], "--expect" ) == 0 && arg + 1 < argc )
+                expect = argv[++arg];
+            else if( std::strcmp( argv[arg], "--answer" ) == 0 && arg + 1 < argc )
+                answerPath = argv[++arg];
+            else
+                break;
+
+            arg++;
+        }
+
+        // A real run writes the board: <out> is required then.
+        if( arg + 2 > argc || ( !dryRun && arg + 3 > argc ) )
+        {
+            std::fprintf( stderr, "usage: kicad_tools --update-from-netlist [--dry-run] [--delete-unused] [--relink]\n"
+                                  "           [--footprints <dir>] [--expect <approved.json>] [--answer <out.json>]\n"
+                                  "           <board.kicad_pcb> <netlist.net> [<out.kicad_pcb>]\n" );
+            return 2;
+        }
+
+        int rc = 4;
+
+        try
+        {
+            rc = runUpdateFromNetlist( argv[arg], argv[arg + 1], footprints, expect, answerPath, dryRun,
+                                       deleteUnused, relink, dryRun ? nullptr : argv[arg + 2] );
+        }
+        catch( const std::exception& e )
+        {
+            std::fprintf( stderr, "%s: error: %s\n", argv[arg], e.what() );
+        }
+
+        // Same static-dtor rationale as --drc above.
+        std::fflush( nullptr );
+        _exit( rc );
+    }
+
     std::fprintf( stderr, "usage: kicad_tools --drc [--json] [--strict] <file.kicad_pcb> [<out>]\n"
                           "       kicad_tools --gerbers <file.kicad_pcb> [<outdir>]\n"
                           "       kicad_tools --drill <file.kicad_pcb> [<outdir>]\n"
                           "       kicad_tools --plot-board [--pdf] [--layers <a,b,...>] <file.kicad_pcb> [<out>]\n"
                           "       kicad_tools --ipc356 <file.kicad_pcb> [<out.ipc>]\n"
                           "       kicad_tools --fab-components <file.kicad_pcb> [<out.json>]\n"
-                          "       kicad_tools --fab-batch <file.kicad_pcb> <outdir> <kind>[,<kind>...]\n" );
+                          "       kicad_tools --fab-batch <file.kicad_pcb> <outdir> <kind>[,<kind>...]\n"
+                          "       kicad_tools --update-from-netlist [--dry-run] [--delete-unused] [--footprints <dir>]\n"
+                          "                   [--expect <approved.json>] <board.kicad_pcb> <netlist.net> [<out>]\n" );
     return 2;
 }
 

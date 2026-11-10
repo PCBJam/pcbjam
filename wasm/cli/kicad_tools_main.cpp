@@ -15,6 +15,9 @@
  *     kicad_tools --fab-batch <file.kicad_pcb> <outdir> <kind>[,<kind>...]
  *                       (several of the board exports on one load; verdicts
  *                       as "FAB-BATCH <kind> <exit-code>" stderr lines)
+ *     kicad_tools --update-from-netlist [--dry-run] [--delete-unused] [--footprints <dir>]
+ *                       [--expect <approved.json>] <board.kicad_pcb> <netlist.net> [<out>]
+ *                       (Update PCB from Schematic without an editor, mcp 0006)
  *
  *   eeschema side (sym_convert_main.cpp) — everything else:
  *     kicad_tools --convert-lib <input.lib> <output.kicad_sym>
@@ -63,7 +66,8 @@ int main( int argc, char** argv )
              || std::strcmp( argv[1], "--plot-board" ) == 0
              || std::strcmp( argv[1], "--ipc356" ) == 0
              || std::strcmp( argv[1], "--fab-components" ) == 0
-             || std::strcmp( argv[1], "--fab-batch" ) == 0 ) )
+             || std::strcmp( argv[1], "--fab-batch" ) == 0
+             || std::strcmp( argv[1], "--update-from-netlist" ) == 0 ) )
     {
         rc = pcbConvertMain( argc, argv );
     }
