@@ -51,6 +51,22 @@ describe('applyEdit', () => {
     await expect(applyEdit(refused, { label: 'x', upsert: [track], remove: [] }, new AbortController().signal)).rejects.toMatchObject({ code: 'BUSY' });
   });
 
+  // macropad (11/06): a started edit can't be withdrawn; polling it forever left every later edit BUSY.
+  it('answers STILL_RUNNING for a started edit past the deadline, and passes FAILED on', async () => {
+    vi.useFakeTimers();
+    try {
+      const mod = engine({ ok: true, operation: 4 }, [{ status: 'queued' }], false);
+      const pending = applyEdit(mod, { label: 'x', upsert: [track], remove: [] }, new AbortController().signal);
+      const settled = expect(pending).rejects.toMatchObject({ code: 'STILL_RUNNING' });
+      await vi.advanceTimersByTimeAsync(30_000);
+      await settled;
+    } finally {
+      vi.useRealTimers();
+    }
+    const died = engine({ ok: true, operation: 5 }, [{ status: 'error', code: 'FAILED', ids: [] }]);
+    await expect(applyEdit(died, { label: 'x', upsert: [track], remove: [] }, new AbortController().signal)).rejects.toMatchObject({ code: 'FAILED' });
+  });
+
   it('withdraws a queued edit when the plugin stops', async () => {
     const mod = engine({ ok: true, operation: 3 }, [{ status: 'queued' }]);
     const abort = new AbortController();

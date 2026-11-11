@@ -2,6 +2,7 @@
 #include <climits>
 #include <string>
 #include <nlohmann/json.hpp>
+#include "collab_common.h"
 // Plugin edit receipts (plugins 0023): a plugin's create / change / delete of items runs as one
 // local KiCad commit on the apply queue; JS polls its result. One edit at a time. Host-only:
 // guest plugins never see these handles.
@@ -21,8 +22,20 @@ struct Operation
     std::string result = R"({"status":"expired"})";
 };
 inline Operation& current() { static Operation value; return value; }
+inline void finish( int id, const nlohmann::json& aResult );
+inline nlohmann::json error( const char* aCode, nlohmann::json aIds = nlohmann::json::array() );
+// A started edit with no apply body running ended without a result: its body threw, or its
+// activation died and drainApplies() reaped it, knowing nothing of this receipt. Close it as
+// FAILED, or every later edit is refused as pending for the page's life (macropad, 11/06).
+inline void reapOrphan()
+{
+    if( current().pending && current().started && !pcbjam_collab::applyBusy() )
+        finish( current().id, error( "FAILED" ) );
+}
+// 0 while another edit is pending (EDIT_PENDING to the caller).
 inline int begin()
 {
+    reapOrphan();
     if( current().pending || current().id == INT_MAX ) return 0;
     const int id = current().id + 1;
     current() = Operation{};
@@ -46,6 +59,7 @@ inline void finish( int id, const nlohmann::json& aResult )
 }
 inline std::string status( int id )
 {
+    reapOrphan();
     return current().id == id ? current().result : std::string( R"({"status":"expired"})" );
 }
 // Withdraw an edit that has not started; one that already runs finishes normally.
@@ -84,7 +98,7 @@ inline bool wellFormed( const nlohmann::json& aReq )
         if( !r.is_string() || r.get_ref<const std::string&>().size() != 36 ) return false;
     return total <= MAX_TOTAL_BYTES;
 }
-inline nlohmann::json error( const char* aCode, nlohmann::json aIds = nlohmann::json::array() )
+inline nlohmann::json error( const char* aCode, nlohmann::json aIds )
 {
     return nlohmann::json{ { "status", "error" }, { "code", aCode }, { "ids", std::move( aIds ) } };
 }

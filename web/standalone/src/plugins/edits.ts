@@ -27,7 +27,11 @@ const MESSAGES: Record<string, string> = {
   MISSING: 'Some items are not in this document',
   INVALID: 'The edit has an item this editor cannot apply',
   UNKNOWN_NET: 'An item names a net the board does not have (nets go by name, like (net "GND"))',
-  BUSY: 'The editor is busy: finish the current tool first',
+  BUSY: 'The editor is opening a file',
+  TOOL_ACTIVE: 'The editor is busy: finish the current tool first',
+  EDIT_PENDING: 'Another edit is still being applied',
+  FAILED: 'The editor stopped while applying the edit; nothing may have changed',
+  STILL_RUNNING: 'The editor is still applying the edit after 30 s; it may still land, as one undo step',
   READ_ONLY: 'This document is read-only',
   NO_EDITOR: 'The editor is not ready',
   TOO_LARGE: `An edit changes 1 to ${EDIT_LIMITS.items} items, at most ${EDIT_LIMITS.totalBytes / 1048576} MiB`,
@@ -80,8 +84,12 @@ export async function applyEdit(mod: EditModule, edit: EditRequest, signal: Abor
       signal.removeEventListener('abort', abort);
       error ? reject(error) : resolve(outcome!);
     };
-    // Only a queued edit can be withdrawn; one that started finishes and is one undo step.
-    const withdraw = (code: string) => { if (mod.kicadCancelPluginEdit!(id)) finish(Object.assign(new Error(code === 'TIMEOUT' ? 'The editor did not apply the edit in time' : 'Plugin edit cancelled'), { code })); };
+    // Only a queued edit can be withdrawn; one that started finishes and is one undo step. A
+    // started one past the deadline is answered STILL_RUNNING instead of polled forever.
+    const withdraw = (code: string) => {
+      if (mod.kicadCancelPluginEdit!(id)) finish(Object.assign(new Error(code === 'TIMEOUT' ? 'The editor did not apply the edit in time' : 'Plugin edit cancelled'), { code }));
+      else if (code === 'TIMEOUT') finish(editError('STILL_RUNNING'));
+    };
     const abort = () => withdraw('CANCELLED');
     const deadline = setTimeout(() => withdraw('TIMEOUT'), 30000);
     const poll = setInterval(() => {

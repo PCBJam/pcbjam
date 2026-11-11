@@ -2147,8 +2147,12 @@ json doPluginEdit( SCH_EDIT_FRAME* aFrame, const json& aReq )
 {
     using pcbjam_plugin_edit::error;
 
-    if( pcbjam_open::busy() || !aFrame->ToolStackIsEmpty() )
+    if( pcbjam_open::busy() )
         return error( "BUSY" );
+
+    // The person is in the middle of a tool (a move, a wire): not "opening a file".
+    if( !aFrame->ToolStackIsEmpty() )
+        return error( "TOOL_ACTIVE" );
 
     if( PCBJAM_READ_ONLY::IsReadOnly() )
         return error( "READ_ONLY" );
@@ -3833,7 +3837,7 @@ std::string schPluginEditItems( std::string aJson )
     const int operation = pcbjam_plugin_edit::begin();
 
     if( !operation )
-        return refuse( "BUSY" );
+        return refuse( "EDIT_PENDING" );
 
     pcbjam_collab::runOnCoroutine( fr, [fr, req, operation]()
     {
