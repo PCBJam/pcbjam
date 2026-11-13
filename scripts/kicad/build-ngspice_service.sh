@@ -14,6 +14,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../common/env.sh"
+source "${SCRIPT_DIR}/../common/versions.sh"
 
 # Parse arguments
 CLEAN=0
@@ -46,6 +47,7 @@ emcmake cmake "${WASM_COMPAT}/ngspice-service" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_RUNTIME_OUTPUT_DIRECTORY="${NGSPICE_SERVICE_BUILD}/ngspice_service" \
     -DNGSPICE_SYSROOT="${SYSROOT}" \
+    -DNGSPICE_SOURCE_DIR="${DEPS_ROOT}/ngspice-${NGSPICE_VERSION}" \
     -DNGSPICE_EH_FLAGS="${DEPS_EH_FLAGS}"
 
 emmake make -j${JOBS}
