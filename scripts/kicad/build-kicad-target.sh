@@ -623,6 +623,8 @@ compile_embind_tu() {
     _includes+=" -I${KICAD_DIR}/thirdparty"
     # libcontext.h lives one level deeper; tool/coroutine.h does #include <libcontext.h>
     _includes+=" -I${KICAD_DIR}/thirdparty/libcontext"
+    # pegtl.hpp: the SPICE netlist exporter's header (sim_symbols.h) reaches it via sim/sim_value.h
+    _includes+=" -I${KICAD_DIR}/thirdparty/pegtl"
     _includes+=" -I${SYSROOT}/include"
 
     # KiCad requires C++20 for concepts
