@@ -1,16 +1,20 @@
 /**
  * Live simulation, the page's side of "which library part does each symbol of
- * the open schematic get".
+ * the open schematic get", and of "which circuit runs".
  *
  * Two sources meet here:
  *   - the schematic editor says what is drawn: `Module.kicadSimSymbols()`
  *     (wasm/bindings/sim_symbols.h, eeschema builds only) returns every symbol
- *     of every sheet with its fields and the net of each pin;
+ *     of every sheet with its fields and the net of each pin, and
+ *     `Module.kicadSimNetlist()` (wasm/bindings/sim_netlist.h) returns KiCad's
+ *     own SPICE netlist of the same schematic;
  *   - the simulation library says what it has: a published snapshot of parts,
  *     read with the client in @pcbjam/shared (sim-library).
  * The matcher of the same package then gives one line per symbol: a part is
- * used, a part is suggested, simulation is switched off for it, or nothing
- * fits.
+ * used, a part is suggested, simulation is switched off for it, KiCad's own
+ * model runs it, or nothing fits. `prepare()` goes one step further and writes
+ * the circuit a simulator runs: KiCad's netlist with the library parts in the
+ * place of the matched symbols.
  *
  * Nothing is written into the schematic and nothing is kept between two reads
  * except the library itself: it is opened once per reader, so a page works
@@ -20,17 +24,24 @@
  * builds the page's reader from VITE_SIM_LIBRARY_URL).
  */
 import {
+  kicadModels as kicadModelsOf,
   matchSymbols,
   openLibrary,
+  prepareRun,
+  readEditorNetlist,
   readEditorSymbols,
+  type EditorNetlist,
   type EditorSymbol,
   type Match,
+  type PreparedRun,
   type SimLibrary,
 } from "@pcbjam/shared/sim-library";
 
-/** Bridge surface: the schematic editor's read (eeschema builds). */
+/** Bridge surface: the schematic editor's reads (eeschema builds). */
 export interface SimSymbolsModule {
   kicadSimSymbols(): string;
+  /** KiCad's SPICE netlist. Missing in an editor build older than the netlist step. */
+  kicadSimNetlist?(): string;
 }
 
 /** True when the loaded wasm can list the schematic's symbols for simulation. */
@@ -45,12 +56,23 @@ export interface SimPartsOptions {
   /** Symbol uuid -> part id or "off": a pick that is not written on the symbol (yet). */
   overrides?: Record<string, string>;
   /**
-   * The references KiCad itself writes a working SPICE line for (a resistor, a
-   * symbol with a built-in model). They come from the netlist step. Left out,
-   * a symbol the library has no part for reads "none", which then only means
-   * "no library part": see `kicadModelsKnown`.
+   * The references KiCad itself writes a real SPICE line for (a resistor, a
+   * symbol with a built-in model). Left out, they are read from the editor's
+   * netlist. An editor build without the netlist read cannot say: a symbol the
+   * library has no part for then reads "none", which only means "no library
+   * part": see `kicadModelsKnown`.
    */
   kicadModels?: Set<string>;
+}
+
+export interface SimRunOptions {
+  /** Symbol uuid -> part id or "off": a pick that is not written on the symbol (yet). */
+  overrides?: Record<string, string>;
+  /**
+   * true (the default): the parts' inputs can be set while it runs, and the
+   * run never ends. false: a plain circuit that any ngspice takes.
+   */
+  live?: boolean;
 }
 
 export interface SimParts {
@@ -62,8 +84,12 @@ export interface SimParts {
   symbols: EditorSymbol[];
   /** Symbols excluded from simulation in KiCad (the symbol or its sheet). Not matched. */
   excluded: EditorSymbol[];
-  /** False when `kicadModels` was left out: "none" then does not say that KiCad cannot simulate the symbol. */
+  /** False when nothing said which symbols KiCad simulates itself: "none" then does not say that KiCad cannot simulate the symbol. */
   kicadModelsKnown: boolean;
+  /** KiCad's netlist of the same moment. Null when the editor build cannot write it. */
+  netlist: EditorNetlist | null;
+  /** What KiCad's netlist export complained about (a model file that was not found, ...), in its words. */
+  problems: string[];
 }
 
 export interface SimPartsReader {
@@ -77,6 +103,14 @@ export interface SimPartsReader {
    * understood (no schematic open, or an editor build older than this page).
    */
   read(mod: SimSymbolsModule, options?: SimPartsOptions): Promise<SimParts>;
+  /**
+   * The circuit of the schematic as it is now: KiCad's netlist with the
+   * library parts in the place of the matched symbols, the model files it
+   * includes, and what can be set and shown while it runs. The parts that are
+   * used are downloaded. `errors` of the answer says what stops a run.
+   * Rejects like read(), and when the editor build cannot write the netlist.
+   */
+  prepare(mod: SimSymbolsModule, options?: SimRunOptions): Promise<PreparedRun>;
 }
 
 export function simPartsReader(
@@ -104,13 +138,25 @@ export function simPartsReader(
       // After the wait, and in one go with the matching: the answer is the
       // schematic at one moment, not a mix of two.
       const { symbols, excluded } = readEditorSymbols(mod.kicadSimSymbols());
+      const netlist = mod.kicadSimNetlist ? readEditorNetlist(mod.kicadSimNetlist()) : null;
+      const models = kicadModels ?? (netlist ? kicadModelsOf(netlist) : undefined);
       return {
         library: lib,
-        matches: matchSymbols(lib.index, symbols, { overrides, kicadModels }),
+        matches: matchSymbols(lib.index, symbols, { overrides, kicadModels: models }),
         symbols,
         excluded,
-        kicadModelsKnown: kicadModels !== undefined,
+        kicadModelsKnown: models !== undefined,
+        netlist,
+        problems: netlist ? netlist.messages.filter((m) => m.severity !== "info").map((m) => m.text) : [],
       };
+    },
+    async prepare(mod, { overrides, live } = {}) {
+      if (!mod.kicadSimNetlist) throw new Error("this editor build cannot write the netlist");
+      const lib = await library();
+      // Both reads after the wait and back to back: one moment of the schematic.
+      const { symbols } = readEditorSymbols(mod.kicadSimSymbols());
+      const netlist = readEditorNetlist(mod.kicadSimNetlist());
+      return prepareRun({ library: lib, symbols, netlist, overrides, live });
     },
   };
 }

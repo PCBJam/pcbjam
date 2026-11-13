@@ -14,12 +14,13 @@ import {
 
 /**
  * Floating "Simulation parts" list (live simulation, first version): one line
- * per symbol of the open schematic, every sheet, saying what the simulation
- * library has for it: a live part, a suggestion, switched off, or no library
- * part. Read-only: nothing here changes the schematic.
+ * per symbol of the open schematic, every sheet, saying what runs it in a
+ * simulation: a library part, a suggestion, KiCad's own model, or nothing.
+ * Below the rows: what KiCad's netlist export complained about, if anything.
+ * Read-only: nothing here changes the schematic.
  *
- * The rows come from wasm/sim-parts.ts (the editor's `kicadSimSymbols` read
- * matched against the published library). The list is read when the panel
+ * The rows come from wasm/sim-parts.ts (the editor's `kicadSimSymbols` and
+ * `kicadSimNetlist` reads matched against the published library). The list is read when the panel
  * opens, on the refresh button, and a moment after every change of the bound
  * collab doc (the active sheet's room), so it follows edits without a wasm
  * push of its own.
@@ -38,7 +39,7 @@ const REFRESH_QUIET_MS = 400;
 type View =
   | { status: "loading" }
   | { status: "error"; message: string }
-  | { status: "ready"; version: string; rows: SimPartRow[] };
+  | { status: "ready"; version: string; rows: SimPartRow[]; problems: string[] };
 
 const STATE_CLASS: Record<SimPartState, string> = {
   live: "text-emerald-600 dark:text-emerald-300",
@@ -97,7 +98,7 @@ export function SimPartsPanel({
     reader.read(mod).then(
       (parts) => {
         if (turn !== latest.current) return;
-        setView({ status: "ready", version: parts.library.version, rows: simPartRows(parts) });
+        setView({ status: "ready", version: parts.library.version, rows: simPartRows(parts), problems: parts.problems });
         setBusy(false);
       },
       (err: unknown) => {
@@ -236,6 +237,16 @@ export function SimPartsPanel({
               </div>
             </Tip>
           ))}
+          {view.status === "ready" &&
+            view.problems.map((text, i) => (
+              <p
+                key={i}
+                data-testid="sim-parts-problem"
+                className="border-t border-black/5 px-3 py-1 text-[11px] text-amber-700 dark:border-white/5 dark:text-amber-300"
+              >
+                KiCad: {text}
+              </p>
+            ))}
           {view.status === "ready" && (
             <p
               data-testid="sim-parts-library-version"
