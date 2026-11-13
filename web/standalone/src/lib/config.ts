@@ -160,6 +160,7 @@ import {
   syncedLibsSource,
   syncedScopeLibsSource,
 } from "@/wasm/libs/synced-source";
+import { simPartsReader, type SimPartsReader } from "@/wasm/sim-parts";
 
 /**
  * Which Yjs collab provider this deployment uses (one active per env), and its
@@ -320,6 +321,25 @@ export const CDN_LIBS_MANIFEST_URL =
  *  See wasm/libs/models-source.ts + docs/features/3d-models. */
 export const CDN_MODELS_MANIFEST_URL =
   import.meta.env.VITE_MODELS_MANIFEST_URL || null;
+
+/** The folder the simulation library is published in (no trailing slash): the
+ *  one that holds `current.json`, e.g. https://cdn.example.com/sim-library.
+ *  The schematic editor reads the library's index from here and matches the
+ *  schematic's symbols against it (wasm/sim-parts.ts). Unset ⇒ nothing is
+ *  asked for and live simulation is off. The host must answer cross-origin
+ *  requests (CORS), like the WASM CDN does. */
+export const SIM_LIBRARY_URL =
+  (import.meta.env.VITE_SIM_LIBRARY_URL || "").replace(/\/+$/, "") || null;
+
+let simParts: SimPartsReader | null = null;
+
+/** The page's one reader of the simulation library (null ⇒ live simulation
+ *  off). One per page, not per tool boot: the library is opened at its first
+ *  read and the page then stays on that snapshot until it is reloaded. */
+export function simPartsConfig(): SimPartsReader | null {
+  if (!SIM_LIBRARY_URL) return null;
+  return (simParts ??= simPartsReader(SIM_LIBRARY_URL));
+}
 
 /** The 3D model source for a tool boot (null ⇒ models disabled). One instance
  *  per call — WasmTool keeps a single instance per boot like the libs source.
