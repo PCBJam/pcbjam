@@ -199,12 +199,16 @@ async function start(mod, m) {
     // ends before that.
     const until = performance.now() + FIRST_POINT_WAIT_MS;
     for (;;) {
+      // The points first, the problem after: the simulation thread goes on
+      // between the two reads, and a part's problem is always there before the
+      // run's first point. The other order could miss it and say "fine".
+      const points = mod.livePoints();
       const problem = mod.liveProblem();
       if (problem) {
         await stopRun(mod);
         return { error: problem };
       }
-      if (mod.livePoints() > 0) return { ok: true };
+      if (points > 0) return { ok: true };
       if (mod.liveRunState() === 0) {
         // its last lines are still on their way
         for (let i = 0; i < 100 && !runEnded; i++) await sleep(5);

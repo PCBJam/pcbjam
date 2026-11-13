@@ -519,21 +519,47 @@ std::mutex  s_problemMutex;
 std::string s_runProblem;  // the first code part of this run that could not be loaded, in words
 std::string s_lastProblem; // the last one that was reported
 
-// A code part could not be loaded (s_dlError says why). d_cosim asks for the same part under
-// several file names, so the same words come several times: they are reported once.
-void partProblem()
+// A code part could not be loaded, or its new code could not be swapped in. d_cosim asks
+// for the same part under several file names, so the same words come several times: they
+// are reported once.
+void partProblem( const char* aWords )
 {
     std::lock_guard<std::mutex> lock( s_problemMutex );
 
-    if( s_lastProblem == s_dlError )
+    if( s_lastProblem == aWords )
         return;
 
-    s_lastProblem = s_dlError;
+    s_lastProblem = aWords;
 
     if( s_runProblem.empty() )
-        s_runProblem = s_dlError;
+        s_runProblem = aWords;
 
-    emitEvt( EVT_PART, s_dlError, 2, 0 );
+    emitEvt( EVT_PART, aWords, 2, 0 );
+}
+
+const char* const MSG_PART_CHANGED = "code part '%s' is not what was loaded: its bytes changed in memory";
+
+enum class PART_FETCH { OK, MISSING, CHANGED };
+
+// The bytes registered under a name. EVERY load goes through here, the first one of a
+// circuit and a swap while it runs: the bytes have been in this program's memory since
+// they were registered, and a part that is no longer what came in is not run.
+PART_FETCH fetchPart( const std::string& aName, std::vector<uint8_t>& aBytes, int& aNameGen )
+{
+    unsigned sum = 0;
+    {
+        std::lock_guard<std::mutex> lock( s_partMutex );
+        auto                        it = s_partBytes.find( aName );
+
+        if( it == s_partBytes.end() )
+            return PART_FETCH::MISSING;
+
+        aBytes = it->second;
+        aNameGen = s_partNameGen[aName];
+        sum = s_partSum[aName];
+    }
+
+    return fnv1a( aBytes.data(), aBytes.size() ) == sum ? PART_FETCH::OK : PART_FETCH::CHANGED;
 }
 
 } // namespace
@@ -676,16 +702,29 @@ static void pjReloadIfChanged( PartInst* aInst )
 
     aInst->seenGen = gen;
 
-    std::vector<uint8_t> bytes;
     {
         std::lock_guard<std::mutex> lock( s_partMutex );
-        const int                   nameGen = s_partNameGen[aInst->name];
 
-        if( nameGen == aInst->nameGen )
-            return;
+        if( s_partNameGen[aInst->name] == aInst->nameGen )
+            return; // another part's code changed, not this one's
+    }
 
-        aInst->nameGen = nameGen;
-        bytes = s_partBytes[aInst->name];
+    std::vector<uint8_t> bytes;
+    int                  nameGen = 0;
+    const PART_FETCH     got = fetchPart( aInst->name, bytes, nameGen );
+
+    if( got == PART_FETCH::MISSING )
+        return;
+
+    aInst->nameGen = nameGen;
+
+    if( got == PART_FETCH::CHANGED )
+    {
+        // the old module stays; the run is reported as having a problem
+        char words[200];
+        snprintf( words, sizeof words, MSG_PART_CHANGED, aInst->name.c_str() );
+        partProblem( words );
+        return;
     }
 
     if( pj_part_load( bytes.data(), (int) bytes.size(), aInst->key, (int) aInst ) != 0 )
@@ -768,34 +807,19 @@ void* __wrap_dlopen( const char* aPath, int aFlags )
 
     std::vector<uint8_t> bytes;
     int                  nameGen = 0;
-    unsigned             sum = 0;
-    bool                 known = false;
-    {
-        std::lock_guard<std::mutex> lock( s_partMutex );
-        auto                        it = s_partBytes.find( name );
+    const PART_FETCH     got = fetchPart( name, bytes, nameGen );
 
-        if( it != s_partBytes.end() )
-        {
-            known = true;
-            bytes = it->second;
-            nameGen = s_partNameGen[name];
-            sum = s_partSum[name];
-        }
-    }
-
-    if( !known )
+    if( got == PART_FETCH::MISSING )
     {
         setDlError( "no code part named '%s' is loaded", name.c_str() );
-        partProblem();
+        partProblem( s_dlError );
         return nullptr;
     }
 
-    // The bytes have been in this program's memory since they were registered. A part that
-    // is no longer what came in is not run.
-    if( fnv1a( bytes.data(), bytes.size() ) != sum )
+    if( got == PART_FETCH::CHANGED )
     {
-        setDlError( "code part '%s' is not what was loaded: its bytes changed in memory", name.c_str() );
-        partProblem();
+        setDlError( MSG_PART_CHANGED, name.c_str() );
+        partProblem( s_dlError );
         return nullptr;
     }
 
@@ -820,7 +844,7 @@ void* __wrap_dlopen( const char* aPath, int aFlags )
     if( pj_part_load( bytes.data(), (int) bytes.size(), inst->key, (int) inst ) != 0 )
     {
         setDlError( "code part '%s' could not be started (its own lines say why)", name.c_str() );
-        partProblem();
+        partProblem( s_dlError );
         delete inst;
         return nullptr;
     }

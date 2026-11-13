@@ -338,8 +338,9 @@ test.describe('live simulation engine', () => {
         expect(await start(page, host, { part: false, partName: 'not-there' })).toEqual(
             { error: "no code part named 'not-there' is loaded" });
         expect((await frame(page, host)).running, 'ngspice would go on without the part').toBe(false);
-        const problems = (await hostState(page, host)).log.filter((l) => l[0] === 'problem');
-        expect(problems, 'said once, however often ngspice asked').toEqual(
+        // the log comes in batches, a moment after the answer
+        await expect.poll(async () => (await hostState(page, host)).log.filter((l) => l[0] === 'problem'),
+            { message: 'said once, however often ngspice asked', timeout: 10000, intervals: [50] }).toEqual(
             [['problem', "no code part named 'not-there' is loaded"]]);
 
         // With the part, the same session runs.
@@ -374,7 +375,7 @@ test.describe('live simulation engine', () => {
         expect((await hostState(page, fresh)).fatal).toBeNull();
     });
 
-    test('a code part whose bytes changed in memory is refused', async ({ page }) => {
+    test('a code part whose bytes changed in memory is refused, at the start and when it is swapped in', async ({ page }) => {
         await open(page);
         // Straight at the module, without the worker script: the test has to reach into the
         // engine's memory, which the worker's protocol rightly has no command for.
@@ -418,9 +419,45 @@ test.describe('live simulation engine', () => {
                 const halted2 = await halt();
                 heap()[at + 40] ^= 0xff;                       // and back
                 const repaired = await problemAfterStart();
+
+                // The same rule for new code that arrives while the circuit runs. The run is
+                // held while the new bytes are put in and changed, so the engine takes them
+                // only after that. The same module with an empty custom section at its end
+                // is different bytes and the same code.
+                const withTail = (letter: number) => {
+                    const bytes = new Uint8Array(part.length + 4);
+                    bytes.set(part);
+                    bytes.set([0, 2, 1, letter], part.length);
+                    return bytes;
+                };
+                mod.liveSetPaused(true);
+                for (let last = -1, t = mod.liveSnapshot().t; t !== last;) {
+                    await sleep(30);
+                    last = t;
+                    t = mod.liveSnapshot().t;
+                }
+                mod.liveRegisterPart('test-part', withTail(0x78));
+                heap()[mod.livePartAt('test-part') + 40] ^= 0xff;
+                mod.liveSetPaused(false);
+                let swapRefused = 'nothing happened';
+                for (let i = 0; i < 1000; i++) {
+                    const s = mod.liveSnapshot();
+                    if (s.problem) { swapRefused = s.problem; break; }
+                    await sleep(10);
+                }
+                // new code that is whole is taken
+                const swapsBefore = lines.filter((l) => l[0] === 4 && l[2] === 1).length;
+                mod.liveRegisterPart('test-part', withTail(0x79));
+                let swapped: string | null = null;
+                for (let i = 0; i < 1000 && swapped === null; i++) {
+                    const swaps = lines.filter((l) => l[0] === 4 && l[2] === 1);
+                    if (swaps.length > swapsBefore) swapped = swaps[swaps.length - 1]![1];
+                    else await sleep(10);
+                }
+
                 const halted3 = await halt();
                 (self as any).postMessage({
-                    at, good, damaged, repaired, halted: [halted1, halted2, halted3],
+                    at, good, damaged, repaired, swapRefused, swapsBefore, swapped, halted: [halted1, halted2, halted3],
                     problems: lines.filter((l) => l[0] === 4 && l[2] === 2).map((l) => l[1]),
                 });
             };
@@ -443,7 +480,15 @@ test.describe('live simulation engine', () => {
         expect(result.good.problem, 'the part as it came in runs').toBe('');
         expect(result.damaged.problem).toBe("code part 'test-part' is not what was loaded: its bytes changed in memory");
         expect(result.repaired.problem, 'with its bytes back it runs again').toBe('');
+        expect(result.swapRefused, 'new code that changed in memory is not swapped in')
+            .toBe("code part 'test-part' is not what was loaded: its bytes changed in memory");
+        expect(result.swapsBefore, 'and the old code stayed').toBe(0);
+        expect(result.swapped, 'new code that is whole is swapped in').toMatch(/^test-part: new code loaded at t=/);
         expect(result.halted).toEqual([0, 0, 0]);
-        expect(result.problems).toEqual(["code part 'test-part' is not what was loaded: its bytes changed in memory"]);
+        // said once per run it happened in: at the start of the second run, at the swap in the third
+        expect(result.problems).toEqual([
+            "code part 'test-part' is not what was loaded: its bytes changed in memory",
+            "code part 'test-part' is not what was loaded: its bytes changed in memory",
+        ]);
     });
 });
