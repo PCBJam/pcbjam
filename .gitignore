@@ -21,6 +21,8 @@ cmake-build-*/
 # WebAssembly output (but not Makefiles that end in .wasm)
 *.wasm
 !Makefile.wasm
+# a compiled test part the live-engine spec loads (source and build command next to it)
+!tests/fixtures/sim-live/*.wasm
 *.js.map
 *.wasm.map
 

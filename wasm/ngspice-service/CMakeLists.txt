@@ -4,6 +4,11 @@
 # client stub (wasm/stubs/sharedspice_client.cpp); the editor bundle links no
 # ngspice code at all.
 #
+# The same module also carries the live-simulation engine (ngspice_live.cpp:
+# pacing, inputs, a stream of values, code parts). A live session runs in a
+# second Worker of its own and uses only the live* entry points; the simulator
+# window's Worker never touches them.
+#
 # Unlike occ_service this module contains NO KiCad or wxWidgets code, so it is
 # NOT hooked into the kicad CMake tree: it configures standalone against the
 # sysroot artifacts produced by scripts/deps/build-ngspice.sh (see
@@ -39,12 +44,24 @@ if( NOT NGSPICE_EH_FLAGS )
 endif()
 separate_arguments( NGSPICE_EH_FLAGS_LIST UNIX_COMMAND "${NGSPICE_EH_FLAGS}" )
 
+# ngspice_live.cpp speaks ngspice's co-simulation contract (d_cosim), whose
+# header ngspice does not install. Take that one header from the ngspice source
+# tree the dep build extracted, into the build folder; the rest of the tree
+# stays off the include path.
+if( NOT NGSPICE_SOURCE_DIR OR NOT EXISTS "${NGSPICE_SOURCE_DIR}/src/include/ngspice/cosim.h" )
+    message( FATAL_ERROR "pass -DNGSPICE_SOURCE_DIR=<deps/ngspice-<version>> (the extracted ngspice source)" )
+endif()
+configure_file( "${NGSPICE_SOURCE_DIR}/src/include/ngspice/cosim.h"
+                "${CMAKE_BINARY_DIR}/ngspice-headers/ngspice/cosim.h" COPYONLY )
+
 set( NGSPICE_LIB_DIR "${NGSPICE_SYSROOT}/lib" )
 set( NGSPICE_CM_DIR "${NGSPICE_SYSROOT}/lib/ngspice" )
 
-add_executable( ngspice_service ngspice_service_main.cpp )
+add_executable( ngspice_service ngspice_service_main.cpp ngspice_live.cpp )
 
-target_include_directories( ngspice_service PRIVATE "${NGSPICE_SYSROOT}/include" )
+target_include_directories( ngspice_service PRIVATE
+    "${NGSPICE_SYSROOT}/include"
+    "${CMAKE_BINARY_DIR}/ngspice-headers" )
 
 # The sysroot libngspice.a is built with XSPICE; sharedspice.h guards the
 # XSPICE-only declarations (ngCM_Input_Path & co.) behind this define.
@@ -71,9 +88,14 @@ target_link_libraries( ngspice_service PRIVATE
     "${NGSPICE_CM_DIR}/ngcm_common.a"
     )
 
+# --wrap: ngspice's d_cosim loads a code part with dlopen/dlsym/dlclose/dlerror.
+# ngspice_live.cpp answers those four calls for a live session and hands every
+# other call on to the C library's own (__real_*), so the simulator window's
+# Worker behaves exactly as without them.
+#
 # spinit is embedded at the path main() points SPICE_LIB_DIR at, so ngspice's
 # own init (incl. the `codemodel .../<cm>.cm` lines the registry resolves by
 # basename) runs identically to a native install regardless of the prefix the
 # dep build happened to use.
 set_target_properties( ngspice_service PROPERTIES
-    LINK_FLAGS "-O2 -g0 --bind -pthread ${NGSPICE_EH_FLAGS} -sMODULARIZE=1 -sEXPORT_NAME=NgspiceService -sENVIRONMENT=worker,node -sEXIT_RUNTIME=0 -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=256MB -sMAXIMUM_MEMORY=4GB -sPTHREAD_POOL_SIZE=4 -sPTHREAD_POOL_SIZE_STRICT=0 -sPTHREAD_POOL_DELAY_LOAD=1 -sSTACK_SIZE=4MB -sDEFAULT_PTHREAD_STACK_SIZE=2MB --embed-file ${NGSPICE_SYSROOT}/share/ngspice/scripts/spinit@/ngspice/scripts/spinit" )
+    LINK_FLAGS "-O2 -g0 --bind -pthread ${NGSPICE_EH_FLAGS} -Wl,--wrap=dlopen -Wl,--wrap=dlsym -Wl,--wrap=dlclose -Wl,--wrap=dlerror -sMODULARIZE=1 -sEXPORT_NAME=NgspiceService -sENVIRONMENT=worker,node -sEXIT_RUNTIME=0 -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=256MB -sMAXIMUM_MEMORY=4GB -sPTHREAD_POOL_SIZE=4 -sPTHREAD_POOL_SIZE_STRICT=0 -sPTHREAD_POOL_DELAY_LOAD=1 -sSTACK_SIZE=4MB -sDEFAULT_PTHREAD_STACK_SIZE=2MB --embed-file ${NGSPICE_SYSROOT}/share/ngspice/scripts/spinit@/ngspice/scripts/spinit" )
