@@ -12,8 +12,11 @@ import { shotPath } from '../e2e/utils/element-tracker';
  *   - the panel lists one row per symbol from the editor's own read
  *     (kicadSimSymbols: all sheets, one row for the three units of U1, no
  *     power symbols), matched against the published library: the resistors
- *     are live, the valve is a suggestion, the rest has no library part, and
- *     the mounting holes (excluded from simulation in the file) say so;
+ *     are live, the valve is a suggestion, and the mounting holes (excluded
+ *     from simulation in the file) say so;
+ *   - for the symbols without a library part it says what KiCad's own
+ *     netlist (kicadSimNetlist) has: the capacitors run with KiCad's model,
+ *     the connectors are not simulated;
  *   - a library that cannot be reached is said in the panel, in words.
  *
  * The library is a published snapshot of static files. The e2e build points
@@ -21,9 +24,10 @@ import { shotPath } from '../e2e/utils/element-tracker';
  * (playwright-web.config.ts); nothing is there, each test answers it. The
  * reference backend has no /api/me, so the test answers that too.
  *
- * Needs a wasm build exporting kicadSimSymbols; an older bundle hides the
- * menu row (feature-detected), which fails the first assertion: rebuild +
- * `npm run setup:kicad`.
+ * Needs a wasm build exporting kicadSimSymbols and kicadSimNetlist. A bundle
+ * without the first hides the menu row (feature-detected), which fails the
+ * first assertion; one without the second cannot tell KiCad's models apart:
+ * rebuild + `npm run setup:kicad`.
  */
 
 const SCOPE = 'default';
@@ -116,12 +120,13 @@ test.describe('simulation parts panel', () => {
       ['R3', 'live', /100K.*Test resistor.*live/],
       ['R4', 'live', /Test resistor.*live/],
       ['U1', 'suggested', /ECC83.*Test valve.*suggestion/],
-      ['C1', 'none', /10uF.*no library part/],
-      ['C2', 'none', /680nF.*no library part/],
-      ['P1', 'none', /IN.*no library part/],
-      ['P2', 'none', /OUT.*no library part/],
-      ['P3', 'none', /POWER.*no library part/],
-      ['P4', 'none', /CONN_2.*no library part/],
+      // no library part: KiCad's netlist says what happens to them
+      ['C1', 'kicad', /10uF.*KiCad's model/],
+      ['C2', 'kicad', /680nF.*KiCad's model/],
+      ['P1', 'none', /IN.*not simulated/],
+      ['P2', 'none', /OUT.*not simulated/],
+      ['P3', 'none', /POWER.*not simulated/],
+      ['P4', 'none', /CONN_2.*not simulated/],
       // the demo's mounting holes are excluded from simulation in KiCad
       ['P5', 'excluded', /MOUNTING_HOLE.*excluded/],
       ['P6', 'excluded', /MOUNTING_HOLE.*excluded/],
@@ -135,6 +140,8 @@ test.describe('simulation parts panel', () => {
       await expect(rows.nth(i)).toHaveAttribute('data-state', state);
     }
     await expect(page.getByTestId('sim-parts-live-count')).toHaveText('4 live');
+    // KiCad's netlist export had nothing to complain about on this schematic.
+    await expect(page.getByTestId('sim-parts-problem')).toHaveCount(0);
     await expect(page.getByTestId('sim-parts-library-version')).toHaveText(`Library ${SNAPSHOT}`);
 
     // The rows are the editor's own read, nothing more and nothing less.

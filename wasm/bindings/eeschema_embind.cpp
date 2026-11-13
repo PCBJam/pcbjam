@@ -88,6 +88,7 @@
 #include "pcbjam_async_policy.h"
 #include "part_copy_symbol.h"
 #include "sim_symbols.h"
+#include "sim_netlist.h"
 #include <algorithm>
 #include <cstring>
 #include <typeinfo>
@@ -2833,6 +2834,14 @@ std::string schSimSymbols()
 }
 
 
+// Live simulation: KiCad's SPICE netlist of the whole hierarchy, every statement marked
+// with the symbol it belongs to (sim_netlist.h). A read.
+std::string schSimNetlist()
+{
+    return pcbjam_sim::netlist( schFrame() );
+}
+
+
 // ── ysync-review repro hooks ─────────────────────────────────────────────────
 // Local-edit test hooks for the ysync-review repro e2e (docs/features/
 // ysync-review on the ysync-review branch): each drives a REAL SCH_COMMIT via
@@ -4054,6 +4063,7 @@ EMSCRIPTEN_BINDINGS(eeschema) {
     // Live simulation: the hierarchy's symbols, fields and pin nets (tool-unique name,
     // merged-image safe).
     function("kicadSimSymbols", &schSimSymbols);
+    function("kicadSimNetlist", &schSimNetlist);
 
 #ifndef KICAD_MERGED_EMBIND
     // JS names ALSO registered by pcbnew_embind.cpp — in the merged image these are
