@@ -49,6 +49,8 @@ interface ImportMetaEnv {
   readonly VITE_APP_URL?: string;
   /** "1" ⇒ honor `?user=`/`?libowner=` identity overrides (dev/e2e harnesses only — NEVER production builds). */
   readonly VITE_ALLOW_USER_OVERRIDE?: string;
+  /** The folder the simulation library is published in (holds current.json), e.g. https://cdn.example.com/sim-library; unset ⇒ live simulation off. */
+  readonly VITE_SIM_LIBRARY_URL?: string;
 }
 
 interface ImportMeta {

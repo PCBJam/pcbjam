@@ -53,6 +53,9 @@ function parseArgs(argv) {
     // Where the brand lives (e.g. https://app.pcbjam.com/brand); set ⇒ the page links its
     // stylesheet, icons and social image (ui-components 0001 §4.3). Omitted ⇒ neutral.
     brandBase: null,
+    // The folder the simulation library is published in (the one that holds current.json),
+    // as a full URL. Omitted ⇒ the editor asks for no library and live simulation is off.
+    simLibrary: null,
   };
   for (let i = 2; i < argv.length; i++) {
     const next = () => argv[++i];
@@ -69,6 +72,7 @@ function parseArgs(argv) {
       case "--errors-env": a.errorsEnv = next(); break;
       case "--app-base": a.appBase = next(); break;
       case "--brand-base": a.brandBase = next(); break;
+      case "--sim-library": a.simLibrary = next(); break;
       default: throw new Error(`unknown arg: ${argv[i]}`);
     }
   }
@@ -80,6 +84,10 @@ function parseArgs(argv) {
   a.yjsEndpoint = (a.yjsEndpoint || a.apiBase).replace(/\/+$/, "");
   if (a.appBase) a.appBase = a.appBase.replace(/\/+$/, "");
   if (a.brandBase) a.brandBase = a.brandBase.replace(/\/+$/, "");
+  if (a.simLibrary) {
+    if (!/^https:\/\/[^\s?#]+$/.test(a.simLibrary)) throw new Error("--sim-library must be an https URL without a query");
+    a.simLibrary = a.simLibrary.replace(/\/+$/, "");
+  }
   return a;
 }
 
@@ -146,6 +154,7 @@ async function main() {
     // VITE_STANDALONE_URL pointing the other way).
     ...(a.appBase ? { VITE_APP_URL: a.appBase } : {}),
     ...(a.brandBase ? { VITE_BRAND_BASE: a.brandBase } : {}),
+    ...(a.simLibrary ? { VITE_SIM_LIBRARY_URL: a.simLibrary } : {}),
   };
 
   console.log(`build-editor: tag=${a.tag} api=${a.apiBase} cdn=${a.cdn}`);
@@ -160,6 +169,7 @@ async function main() {
   console.log(`  VITE_ERRORS_DSN=${env.VITE_ERRORS_DSN ? `(set, env=${env.VITE_ERRORS_ENV})` : "(off)"}`);
   console.log(`  VITE_APP_URL=${env.VITE_APP_URL || "(unset — no non-editor redirect)"}`);
   console.log(`  VITE_BRAND_BASE=${env.VITE_BRAND_BASE || "(unset - neutral look)"}`);
+  console.log(`  VITE_SIM_LIBRARY_URL=${env.VITE_SIM_LIBRARY_URL || "(unset - live simulation off)"}`);
 
   // Keep the dev-only WASM symlink out of the bundle (CDN serves it).
   const hadWasm = existsSync(publicWasm) || isSymlink(publicWasm);

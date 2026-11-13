@@ -161,8 +161,8 @@ export default defineConfig({
       // Standalone editor: vite build → vite preview (build-preview.mjs).
       // The VITE_* flags are baked in at BUILD time here (the dev server used
       // to read them live): API base, the browser-local IDB project store the
-      // missing-file tool-switch spec needs, and per-run e2e identity via
-      // ?user= (0009). turbo.json lists them in globalEnv so the build cache
+      // missing-file tool-switch spec needs, per-run e2e identity via
+      // ?user= (0009) and the simulation library's address. turbo.json lists them in globalEnv so the build cache
       // re-keys when they change.
       command: 'pnpm --filter @pcbjam/standalone e2e:preview',
       cwd: '../web',
@@ -176,6 +176,9 @@ export default defineConfig({
         VITE_API_BASE_URL: BACKEND_URL,
         VITE_LOCAL_PROJECTS: 'idb',
         VITE_ALLOW_USER_OVERRIDE: '1',
+        // Live simulation's part library. Nothing is served there: the spec
+        // that needs it answers the requests itself (sim-parts-panel.spec.ts).
+        VITE_SIM_LIBRARY_URL: '/e2e-sim-library',
       },
     },
   ],

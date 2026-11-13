@@ -1,6 +1,7 @@
 // Extracted from WasmTool.tsx (2026-08-25 split) — behavior unchanged.
 import * as React from "react";
 import {
+  Activity,
   AlertTriangle,
   Box,
   Crosshair,
@@ -178,6 +179,9 @@ export function SessionMenu({
   hasImport,
   importOpen,
   setImportOpen,
+  hasSimParts,
+  simPartsOpen,
+  setSimPartsOpen,
   canToggleChrome,
   chromeHidden,
   onToggleChrome,
@@ -235,6 +239,10 @@ export function SessionMenu({
   hasImport: boolean;
   importOpen: boolean;
   setImportOpen: (v: boolean) => void;
+  /** Live simulation is on for this session and the schematic can be read for it. */
+  hasSimParts: boolean;
+  simPartsOpen: boolean;
+  setSimPartsOpen: (v: boolean) => void;
   /** The loaded bundle exports kicadSetChrome. */
   canToggleChrome: boolean;
   chromeHidden: boolean;
@@ -462,6 +470,21 @@ export function SessionMenu({
             >
               <FilePlus size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
               <span>{importOpen ? "Hide import" : "Import from file"}</span>
+            </Toggle>
+          </Tip>
+        )}
+        {hasSimParts && (
+          <Tip content="Live simulation - what the part library has for each symbol">
+            <Toggle
+              data-testid="sim-parts-panel-toggle"
+              variant="ghost"
+              size="row"
+              pressed={simPartsOpen}
+              onPressedChange={setSimPartsOpen}
+              className={overlayRowClass}
+            >
+              <Activity size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
+              <span>{simPartsOpen ? "Hide simulation parts" : "Simulation parts"}</span>
             </Toggle>
           </Tip>
         )}

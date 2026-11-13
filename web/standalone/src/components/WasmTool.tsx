@@ -21,6 +21,7 @@ import {
   modelsSourceConfig,
   presenceUser,
   PRESENCE_TUNER_ENABLED,
+  simPartsConfig,
   yjsProviderConfig,
   type DocSource,
 } from "@/lib/config";
@@ -105,11 +106,13 @@ import { ImportItemPanel } from "@/components/ImportItemPanel";
 import { LibFilesPanel } from "@/components/LibFilesPanel";
 import { LibFontsPanel } from "@/components/LibFontsPanel";
 import { hasImportBridge, type ImportModule } from "@/wasm/import-item";
+import { hasSimSymbols, type SimSymbolsModule } from "@/wasm/sim-parts";
 import { localPluginLab, usePluginCatalog, type PluginView } from "@/plugins/plugin-catalog";
 import { useSessionFeature } from "@/lib/session-identity";
 import { useTutorialFromUrl } from "@/plugins/tutorials";
 import { SelectionInspector } from "@/components/SelectionInspector";
 import { hasSheetsBridge, SheetPanel, type SheetsModule } from "@/components/SheetPanel";
+import { SimPartsPanel } from "@/components/SimPartsPanel";
 import { bindLocalSelectionFeed } from "@/wasm/collab/local-selection";
 import {
   type SheetCollabManager,
@@ -590,6 +593,7 @@ export function WasmTool({
   // lab turns plugins on without a backend.
   const pluginsOn = useSessionFeature("plugins");
   const tutorialsOn = useSessionFeature("tutorials");
+  const liveSimulationOn = useSessionFeature("liveSimulation");
   // Tutorials run on the plugin machinery without `plugins` (plugins 0021):
   // the server then lists tutorials only, and the Session menu shows the
   // Tutorials section without the Plugins one.
@@ -624,6 +628,8 @@ export function WasmTool({
   }, []);
   // POC import-from-file panel (import-item): session-only, not persisted.
   const [importOpen, setImportOpen] = React.useState<boolean>(false);
+  // Simulation parts list (live simulation): session-only, not persisted.
+  const [simPartsOpen, setSimPartsOpen] = React.useState<boolean>(false);
   const [inspectorOpen, setInspectorOpenState] = React.useState<boolean>(() => {
     try {
       const stored = localStorage.getItem(INSPECTOR_OPEN_KEY);
@@ -2189,6 +2195,16 @@ export function WasmTool({
     return hasImportBridge(mod) ? mod : null;
   }, [ready, tool]);
 
+  // Simulation parts (live simulation), eeschema sessions only: the backend
+  // turned `liveSimulation` on for this session, the build knows where the
+  // part library is published, and the editor build has the read.
+  const simParts = React.useMemo(() => (liveSimulationOn ? simPartsConfig() : null), [liveSimulationOn]);
+  const simPartsMod = React.useMemo<SimSymbolsModule | null>(() => {
+    if (!ready || tool !== "eeschema" || !simParts) return null;
+    const mod = (window as { Module?: unknown }).Module;
+    return hasSimSymbols(mod) ? mod : null;
+  }, [ready, tool, simParts]);
+
   // Sheet bridge (sheet-panel), eeschema sessions only. Re-evaluated on every
   // sheet switch (activeSheetPath) so a hierarchy that only gains sub-sheets
   // later ("Add Sheet") surfaces the panel; hidden for a flat schematic.
@@ -2341,6 +2357,9 @@ export function WasmTool({
           hasImport={importMod !== null}
           importOpen={importOpen}
           setImportOpen={setImportOpen}
+          hasSimParts={simPartsMod !== null}
+          simPartsOpen={simPartsOpen}
+          setSimPartsOpen={setSimPartsOpen}
           canToggleChrome={setChromeFn !== null}
           chromeHidden={chromeHidden}
           onToggleChrome={() => toggleChromeHidden()}
@@ -2403,6 +2422,11 @@ export function WasmTool({
       {/* POC (import-item): add a local .kicad_sym / .kicad_mod to the canvas. */}
       {ready && importOpen && importMod && (
         <ImportItemPanel mod={importMod} tool={tool} onClose={() => setImportOpen(false)} />
+      )}
+
+      {/* Live simulation, first piece: what the part library has for each symbol. */}
+      {ready && simPartsOpen && simPartsMod && simParts && (
+        <SimPartsPanel mod={simPartsMod} reader={simParts} doc={panelDoc} onClose={() => setSimPartsOpen(false)} />
       )}
 
       {/* Team fonts (fonts 0002): the session menu's "Team fonts" row opens it. */}
