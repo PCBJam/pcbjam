@@ -65,6 +65,10 @@ test('a terminal uncaught error raises the blue fatal overlay with the console o
       intervals: [1000],
     })
     .toMatch(/demo — PCB Editor/i);
+  // The title comes before `ready`: until then the boot overlay (or the lib fat-load overlay,
+  // both `inset-0 z-30`, crash-screen blue) covers the editor, and a report's screenshot rightly
+  // shows it. Crash the editor once it shows (staging 2026-11-16 threw while it was still up).
+  await expect(page.locator('div.inset-0.z-30')).toHaveCount(0, { timeout: 150000 });
 
   // Note whether the DOM floor is ever added while React is alive: it used to
   // go up in the same tick as the fatal and cover React's overlay (and its
