@@ -139,7 +139,8 @@ export function simPartsReader(
       // schematic at one moment, not a mix of two.
       const { symbols, excluded } = readEditorSymbols(mod.kicadSimSymbols());
       const netlist = mod.kicadSimNetlist ? readEditorNetlist(mod.kicadSimNetlist()) : null;
-      const models = kicadModels ?? (netlist ? kicadModelsOf(netlist) : undefined);
+      // With the symbols: a line of KiCad that names a model nothing defines is no model.
+      const models = kicadModels ?? (netlist ? kicadModelsOf(netlist, symbols) : undefined);
       return {
         library: lib,
         matches: matchSymbols(lib.index, symbols, { overrides, kicadModels: models }),
@@ -154,9 +155,9 @@ export function simPartsReader(
       if (!mod.kicadSimNetlist) throw new Error("this editor build cannot write the netlist");
       const lib = await library();
       // Both reads after the wait and back to back: one moment of the schematic.
-      const { symbols } = readEditorSymbols(mod.kicadSimSymbols());
+      const { symbols, excluded } = readEditorSymbols(mod.kicadSimSymbols());
       const netlist = readEditorNetlist(mod.kicadSimNetlist());
-      return prepareRun({ library: lib, symbols, netlist, overrides, live });
+      return prepareRun({ library: lib, symbols, excluded, netlist, overrides, live });
     },
   };
 }
@@ -236,7 +237,7 @@ export function simPartRows(parts: SimParts): SimPartRow[] {
           : { ...base, state: "kicad", part: "", label: "KiCad's model", note: "Runs with KiCad's own model." };
       case "none":
         return parts.kicadModelsKnown
-          ? { ...base, state: "none", part: "", label: "not simulated", note: "Neither the library nor KiCad has a model for this symbol." }
+          ? { ...base, state: "none", part: "", label: "not simulated", note: "Neither the library nor KiCad has a model for this symbol. A live run leaves it out." }
           : { ...base, state: "none", part: "", label: "no library part", note: "The library has no part for this symbol. KiCad's own model is used when the symbol has one." };
     }
   });

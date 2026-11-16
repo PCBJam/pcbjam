@@ -9,6 +9,7 @@ vi.mock("./wasm-assets", () => ({ resolveWasmBase: async () => "http://wasm.test
 import type { LiveEngine, LiveEngineOptions, LiveFrame } from "./live-engine";
 import {
   createLiveSession,
+  leftOutNote,
   hasToolbarButton,
   LIVE_BUTTON_ID,
   LIVE_BUTTON_PLAY,
@@ -51,6 +52,7 @@ function gate<T>() {
 }
 
 function setup(over: { prepare?: SimPartsReader["prepare"]; watchMs?: number; frameMs?: number } = {}) {
+  const notes: string[] = [];
   const button = vi.fn((_id: string, _tooltip: string, _icon: string) => true);
   const mod: SimSymbolsModule & ToolbarButtonModule = {
     kicadSimSymbols: () => "{}",
@@ -81,6 +83,7 @@ function setup(over: { prepare?: SimPartsReader["prepare"]; watchMs?: number; fr
     mod,
     reader,
     onError: (text) => errors.push(text),
+    onNote: (text) => notes.push(text),
     onState: (state) => states.push(state),
     watchMs: over.watchMs ?? 250,
     frameMs: over.frameMs ?? 50,
@@ -93,7 +96,7 @@ function setup(over: { prepare?: SimPartsReader["prepare"]; watchMs?: number; fr
   const press = (id = LIVE_BUTTON_ID) => mod.onHostToolbarButton!(id);
   /** Let what a click started run to its end. */
   const settle = () => vi.advanceTimersByTimeAsync(0);
-  return { mod, button, prepare, engine, errors, states, session, press, settle, engineOptions: () => engineOptions };
+  return { mod, button, prepare, engine, errors, notes, states, session, press, settle, engineOptions: () => engineOptions };
 }
 
 const PLAY = [LIVE_BUTTON_ID, LIVE_BUTTON_PLAY.tooltip, LIVE_BUTTON_PLAY.icon];
@@ -409,5 +412,45 @@ describe("hasToolbarButton", () => {
     expect(hasToolbarButton({ kicadSchToolbarButton: () => true })).toBe(true);
     expect(hasToolbarButton({ kicadSimSymbols: () => "" })).toBe(false);
     expect(hasToolbarButton(undefined)).toBe(false);
+  });
+});
+
+describe("symbols a run leaves out", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("are named once the circuit runs, and the circuit runs", async () => {
+    const { session, press, settle, notes, errors } = setup({ prepare: async () => prepared({ notSimulated: ["Q1", "U1"] }) });
+    press();
+    await settle();
+    expect(session.state).toBe("running");
+    expect(notes).toEqual(["Not simulated, nothing has a model for them: Q1, U1. The rest of the circuit runs."]);
+    expect(errors).toEqual([]);
+  });
+
+  it("are not named when nothing is left out, or when the circuit does not start", async () => {
+    const fine = setup();
+    fine.press();
+    await fine.settle();
+    expect(fine.notes).toEqual([]);
+
+    const refused = setup({ prepare: async () => prepared({ notSimulated: ["Q1"] }) });
+    refused.engine.start.mockRejectedValueOnce(new Error("ngspice did not run the circuit"));
+    refused.press();
+    await refused.settle();
+    expect(refused.session.state).toBe("idle");
+    expect(refused.notes).toEqual([]);
+    expect(refused.errors).toEqual(["Live simulation did not start: ngspice did not run the circuit"]);
+  });
+
+  it("one is named by itself, many are counted", () => {
+    expect(leftOutNote([])).toBeNull();
+    expect(leftOutNote(["Q1"])).toBe("Q1 is not simulated: nothing has a model for it. The rest of the circuit runs.");
+    expect(leftOutNote(["J1", "J2", "J3", "J4", "J5", "J6"])).toContain("J1, J2, J3, J4, J5, J6. The rest");
+    expect(leftOutNote(["J1", "J2", "J3", "J4", "J5", "J6", "J7", "J8"])).toContain("J1, J2, J3, J4, J5, J6 and 2 more. The rest");
   });
 });

@@ -12,6 +12,8 @@ import { openOverlayMenu } from './overlay-menu';
  *     schematic, builds its circuit and runs it in the live engine: the button
  *     becomes "Stop live simulation" only once the circuit's first moment is
  *     solved. A click on Stop brings Play back, and it plays again;
+ *   - a symbol nobody has a model for is left out: the rest of the circuit
+ *     runs, a notice names the symbol and the sheet marks it;
  *   - a circuit the simulator does not run stays on Play and says why, in the
  *     simulator's words;
  *   - KiCad puts the button at the far end of its toolbar, which a window of
@@ -21,7 +23,9 @@ import { openOverlayMenu } from './overlay-menu';
  *
  * The schematics are tests/fixtures/demo/live-sim: `run` is a 5 V source and
  * a resistor; `no-model` adds a diode nobody has a model for (KiCad writes a
- * line that names its Value, "red", as the model).
+ * line that names its Value, "red", as the model); in `raw-model` the diode
+ * asks for exactly that line itself (Sim.Device "SPICE"), so it is the user's
+ * own line and stays in the circuit.
  *
  * The library is a published snapshot of static files; the e2e build points
  * VITE_SIM_LIBRARY_URL at /e2e-sim-library (playwright-web.config.ts) and the
@@ -159,11 +163,35 @@ test.describe('live simulation: Play and Stop', () => {
     await expect(page.getByTestId('live-sim-error')).toHaveCount(0);
   });
 
-  test('a circuit the simulator does not run says why and stays on Play', async ({ page }) => {
+  test('a symbol nobody has a model for is left out; the rest runs and the page says which one', async ({ page }) => {
     test.setTimeout(300000);
     await answerSession(page, true);
     await serveEmptyLibrary(page);
     await bootSchematic(page, 'live-sim/no-model.kicad_sch');
+
+    await expectTool(page, PLAY, true, 'the Play button is on the toolbar');
+    expect(await clickByTooltip(page, PLAY, { elementType: 'tool' })).toBe(true);
+    await expectTool(page, STOP, true, 'the circuit runs without D1: the button is Stop');
+    await expect(page.getByTestId('live-sim-note'), 'a notice names the symbol').toContainText(
+      'D1 is not simulated: nothing has a model for it. The rest of the circuit runs.',
+    );
+    await expect(page.getByTestId('live-sim-error')).toHaveCount(0);
+    // and the sheet marks it
+    const layer = page.getByTestId('live-layer');
+    await expect(layer).toHaveAttribute('data-left-out', '1', { timeout: 30000 });
+    await expect(layer.getByTestId('live-left-out')).toHaveAttribute('data-ref', 'D1');
+
+    expect(await clickByTooltip(page, STOP, { elementType: 'tool' })).toBe(true);
+    await expectTool(page, PLAY, true, 'stopped: the button is Play again');
+    await expect(layer, 'the marks go with the run').toHaveCount(0);
+  });
+
+  test('a circuit the simulator does not run says why and stays on Play', async ({ page }) => {
+    test.setTimeout(300000);
+    await answerSession(page, true);
+    await serveEmptyLibrary(page);
+    // D1 asks for the line "D1 ... red" itself: the user's own line is not left out
+    await bootSchematic(page, 'live-sim/raw-model.kicad_sch');
 
     await expectTool(page, PLAY, true, 'the Play button is on the toolbar');
     expect(await clickByTooltip(page, PLAY, { elementType: 'tool' })).toBe(true);

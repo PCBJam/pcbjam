@@ -210,6 +210,40 @@ export function widgetsFor(
 }
 
 /** A widget's box on the screen, in CSS px relative to the canvas. */
+/** A symbol on the open sheet that the run leaves out, and the box its mark is drawn on. */
+export interface LeftOutMark {
+  key: string;
+  ref: string;
+  uuid: string;
+  box: WidgetBox;
+}
+
+/** How far the mark stands off the symbol's drawing, in mm. */
+const LEFT_OUT_MARGIN_MM = 0.6;
+
+/**
+ * The symbols of the open sheet that the run leaves out because nothing has a
+ * model for them. The references are those of this use of the sheet, so a sheet
+ * that is used twice marks the right ones. A symbol of several units is marked
+ * on each unit.
+ */
+export function leftOutFor(run: Pick<PreparedRun, "notSimulated">, places: SheetPlaces): LeftOutMark[] {
+  if (!run.notSimulated.length) return [];
+  const refs = new Set(run.notSimulated);
+  const m = LEFT_OUT_MARGIN_MM * places.iuPerMm;
+  return places.symbols
+    .filter((sym) => refs.has(sym.ref))
+    .map((sym) => {
+      const [x0, y0, x1, y1] = sym.body;
+      return {
+        key: `${places.sheet}:${sym.uuid}:left-out`,
+        ref: sym.ref,
+        uuid: sym.uuid,
+        box: { x: x0 - m, y: y0 - m, w: x1 - x0 + 2 * m, h: y1 - y0 + 2 * m, anchor: "corner" as const },
+      };
+    });
+}
+
 export interface ScreenBox {
   left: number;
   top: number;
