@@ -171,12 +171,11 @@ export function usePluginCatalog(enabled: boolean) {
     try {
       const host = await packageHost();
       const result = await host.listPlugins();
+      // Housekeeping, not waited for: the records it drops are keyed by an old storage epoch or an
+      // uninstalled plugin, so nothing reads them. While the editor's first boot fills IndexedDB a
+      // transaction waits up to ~40 s, and the plugins menu said "Loading plugins…" meanwhile.
       if (hostedPlugins && result.userId)
-        await host.cleanupPluginStorage(
-          API_BASE_URL,
-          result.userId,
-          result.plugins
-        );
+        void host.cleanupPluginStorage(API_BASE_URL, result.userId, result.plugins).catch(() => {});
       if (current !== generation.current) return;
       account.current = hostedPlugins && result.userId && result.uiOrigin
         ? { userId: result.userId, uiOrigin: result.uiOrigin, placementEnabled: result.placementEnabled === true, editsEnabled: result.editsEnabled === true } : null;
