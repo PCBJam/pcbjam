@@ -1,4 +1,4 @@
-import type { PreparedRun } from "@pcbjam/shared/sim-library";
+import type { Power, PreparedRun } from "@pcbjam/shared/sim-library";
 import {
   circuitOf,
   createLiveEngine,
@@ -29,6 +29,11 @@ import type { SimPartsReader, SimSymbolsModule } from "./sim-parts";
  *
  * A symbol that nothing has a model for does not stop the circuit: it is left
  * out, the rest runs, and `onNote` gets one sentence that names it.
+ *
+ * A schematic that draws no source still runs: a supply wire whose name states
+ * a voltage (+5V) is powered by that name, and `onNote` says which wires were,
+ * which supply wires were not (VCC: no voltage in the name), and which battery
+ * runs with a voltage its value does not say.
  *
  * When the simulation cannot start, or stops by itself, `onError` gets one
  * sentence for the user and the button is Play again. Nothing is restarted
@@ -71,8 +76,11 @@ export interface LiveSessionOptions {
   reader: SimPartsReader;
   /** One sentence for the user: why it did not start, or why it stopped. */
   onError: (text: string) => void;
-  /** One sentence for the user about a run that started: what it runs without. */
-  onNote?: (text: string) => void;
+  /**
+   * A notice for the user about a run that started: what it runs without ("left-out"),
+   * or where its power comes from ("power").
+   */
+  onNote?: (text: string, about: LiveNoteAbout) => void;
   onState?: (state: LiveSessionState) => void;
   /** A line for the app's own log. */
   log?: (msg: string) => void;
@@ -106,16 +114,40 @@ export interface LiveSession {
   dispose(): void;
 }
 
-/** How many left-out symbols the note names before it counts the rest. */
+export type LiveNoteAbout = "left-out" | "power";
+
+/** How many symbols or wires a note names before it counts the rest. */
 const NAMED_IN_NOTE = 6;
+
+/** "a, b, c and 2 more": the first few of a list. */
+const firstFew = (items: readonly string[]): string => {
+  const more = items.length - NAMED_IN_NOTE;
+  return `${items.slice(0, NAMED_IN_NOTE).join(", ")}${more > 0 ? ` and ${more} more` : ""}`;
+};
 
 /** The sentence about the symbols a run leaves out. Null when there are none. */
 export function leftOutNote(refs: readonly string[]): string | null {
   if (!refs.length) return null;
   if (refs.length === 1) return `${refs[0]} is not simulated: nothing has a model for it. The rest of the circuit runs.`;
-  const named = refs.slice(0, NAMED_IN_NOTE).join(", ");
-  const more = refs.length - NAMED_IN_NOTE;
-  return `Not simulated, nothing has a model for them: ${named}${more > 0 ? ` and ${more} more` : ""}. The rest of the circuit runs.`;
+  return `Not simulated, nothing has a model for them: ${firstFew(refs)}. The rest of the circuit runs.`;
+}
+
+/**
+ * The notice about where a run's power comes from, when the schematic does not draw all of
+ * it: the supply wires powered by their names, the supply wires that stay without power, and
+ * the batteries whose voltage is the part's own. Null when there is nothing to say.
+ */
+export function powerNote(power: Power): string | null {
+  const out: string[] = [];
+  const { byName, noVolts, assumed } = power;
+  if (byName.length === 1) out.push(`${byName[0]?.net} is powered with ${byName[0]?.volts} V, by its name.`);
+  else if (byName.length) out.push(`Powered by their names: ${firstFew(byName.map((s) => `${s.net} with ${s.volts} V`))}.`);
+  if (noVolts.length === 1) out.push(`${noVolts[0]} is not powered: its name does not say a voltage. A battery or a voltage source on the wire powers it.`);
+  else if (noVolts.length) out.push(`Not powered, their names do not say a voltage: ${firstFew(noVolts)}. A battery or a voltage source on a wire powers it.`);
+  const runs = assumed.map((a) => `${a.ref} runs with ${a.value}${a.unit ? ` ${a.unit}` : ""}`);
+  if (assumed.length === 1) out.push(`${runs[0]}: its value does not say the ${(assumed[0]?.label ?? "").toLowerCase()}.`);
+  else if (assumed.length) out.push(`${firstFew(runs)}: their values do not say it.`);
+  return out.length ? out.join(" ") : null;
 }
 
 const WATCH_MS = 250;
@@ -242,7 +274,9 @@ export function createLiveSession(options: LiveSessionOptions): LiveSession {
       set("running");
       startWatch(mine);
       const note = leftOutNote(prepared.notSimulated);
-      if (note) options.onNote?.(note);
+      if (note) options.onNote?.(note, "left-out");
+      const power = powerNote(prepared.power);
+      if (power) options.onNote?.(power, "power");
     } catch (e) {
       if (mine !== epoch) return;
       set("idle");

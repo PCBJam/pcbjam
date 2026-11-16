@@ -296,9 +296,13 @@ describe("the parts of the open schematic", () => {
       // the nets of the symbols without a line (K1, and R9 that KiCad excludes) get a path to ground
       "Rpj_left_1 /KEY 0 1g",
       "Rpj_left_2 /X 0 1g",
+      // the schematic draws no source: the wire +5V is powered by its name
+      "Vpj_supply_1 pj_supply_1 0 DC 5",
+      "Rpj_supply_1 pj_supply_1 +5V 10m",
       ".tran 1m 100000 0 1m",
       ".end",
     ]);
+    expect(run.power).toEqual({ byName: [{ net: "+5V", volts: 5 }], noVolts: [], assumed: [] });
     // K1 is only a suggestion: it is left out, and so is its placeholder line.
     expect(run.notSimulated).toEqual(["K1"]);
     expect(run.placed.map((p) => [p.ref, p.partId, p.name])).toEqual([["D1", "led", "XD1"], ["SW1", "push-button", "XSW1"]]);
@@ -316,7 +320,10 @@ describe("the parts of the open schematic", () => {
 
     // a pick that is not on the symbol yet, and the plain circuit
     const picked = await simPartsReader(BASE, { fetch: fetchImpl }).prepare(editorWithNetlist(), { overrides: { "uuid-K1": "push-button" }, live: false });
-    expect(picked.deck.slice(-4)).toEqual(["XK1 GND /KEY PJ_BUTTON", "XSW1 GND /BTN PJ_BUTTON", "Rpj_left_1 /X 0 1g", ".end"]);
+    expect(picked.deck.slice(-6)).toEqual([
+      "XK1 GND /KEY PJ_BUTTON", "XSW1 GND /BTN PJ_BUTTON", "Rpj_left_1 /X 0 1g",
+      "Vpj_supply_1 pj_supply_1 0 DC 5", "Rpj_supply_1 pj_supply_1 +5V 10m", ".end",
+    ]);
     expect(picked.notSimulated).toEqual([]);
     expect(picked.files.find((f) => f.path.includes("push-button"))?.text).toBe(BUTTON_MODEL);
   });
