@@ -50,7 +50,7 @@ function gate<T>() {
   return { promise, open, fail };
 }
 
-function setup(over: { prepare?: SimPartsReader["prepare"]; watchMs?: number } = {}) {
+function setup(over: { prepare?: SimPartsReader["prepare"]; watchMs?: number; frameMs?: number } = {}) {
   const button = vi.fn((_id: string, _tooltip: string, _icon: string) => true);
   const mod: SimSymbolsModule & ToolbarButtonModule = {
     kicadSimSymbols: () => "{}",
@@ -83,6 +83,7 @@ function setup(over: { prepare?: SimPartsReader["prepare"]; watchMs?: number } =
     onError: (text) => errors.push(text),
     onState: (state) => states.push(state),
     watchMs: over.watchMs ?? 250,
+    frameMs: over.frameMs ?? 50,
     createEngine: (options) => {
       engineOptions = options;
       return engine as unknown as LiveEngine;
@@ -331,6 +332,67 @@ describe("live session", () => {
     expect(mod.onHostToolbarButton).toBeUndefined();
     await session.click();
     expect(engine.start).not.toHaveBeenCalled();
+  });
+
+  // --- the values, for the widgets on the sheet ------------------------------
+
+  it("hands every look at the running circuit to who listens, and looks faster meanwhile", async () => {
+    const { engine, session, press, settle } = setup({ watchMs: 250, frameMs: 50 });
+    press();
+    await settle();
+    expect(session.state).toBe("running");
+    // nobody listens: one look per 250 ms
+    await vi.advanceTimersByTimeAsync(500);
+    expect(engine.frame).toHaveBeenCalledTimes(2);
+
+    const seen: number[] = [];
+    engine.frame.mockImplementation(async () => frame({ t: engine.frame.mock.calls.length }));
+    const off = session.onFrame((f) => seen.push(f.t));
+    await vi.advanceTimersByTimeAsync(200);
+    expect(engine.frame).toHaveBeenCalledTimes(6); // four more in 200 ms
+    expect(seen).toEqual([3, 4, 5, 6]);
+
+    // nobody listens any more: slow again, and the listener hears nothing
+    off();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(engine.frame).toHaveBeenCalledTimes(8);
+    expect(seen).toEqual([3, 4, 5, 6]);
+    off(); // twice is once
+  });
+
+  it("a listener from before Play hears the run, and nothing after Stop", async () => {
+    const { session, press, settle } = setup({ frameMs: 50 });
+    const seen: LiveFrame[] = [];
+    session.onFrame((f) => seen.push(f));
+    await vi.advanceTimersByTimeAsync(300);
+    expect(seen).toEqual([]); // nothing runs
+    press();
+    await settle();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(seen.length).toBe(2);
+    press(); // Stop
+    await settle();
+    await vi.advanceTimersByTimeAsync(300);
+    expect(seen.length).toBe(2);
+  });
+
+  it("the look that ends the run is not handed on, and a listener that throws stops nothing", async () => {
+    const { engine, session, errors, press, settle } = setup({ frameMs: 50 });
+    const seen: number[] = [];
+    session.onFrame(() => {
+      throw new Error("a widget broke");
+    });
+    session.onFrame((f) => seen.push(f.t));
+    press();
+    await settle();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(seen).toEqual([1, 1]); // the second listener still hears
+    expect(session.state).toBe("running");
+    engine.frame.mockImplementation(async () => frame({ t: 2, running: false }));
+    await vi.advanceTimersByTimeAsync(50);
+    expect(session.state).toBe("idle");
+    expect(seen).toEqual([1, 1]);
+    expect(errors).toEqual(["Live simulation stopped by itself."]);
   });
 
   it("an editor that is gone does not make dispose throw", () => {

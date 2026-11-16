@@ -100,6 +100,7 @@ import {
 } from "@/wasm/collab/comments";
 import { PresenceRoster } from "@/components/PresenceRoster";
 import { CommentLayer } from "@/components/CommentLayer";
+import { LiveLayer } from "@/components/LiveLayer";
 import { hasTunerBridge, PresenceTuner, type TunerModule } from "@/components/PresenceTuner";
 import { hasLayersBridge, LayerPanel, type LayersModule } from "@/components/LayerPanel";
 import { ImportItemPanel } from "@/components/ImportItemPanel";
@@ -108,6 +109,7 @@ import { LibFontsPanel } from "@/components/LibFontsPanel";
 import { hasImportBridge, type ImportModule } from "@/wasm/import-item";
 import { hasSimSymbols, type SimSymbolsModule } from "@/wasm/sim-parts";
 import { createLiveSession, hasToolbarButton, type LiveSession, type LiveSessionState } from "@/wasm/live-session";
+import { hasSimPlaces } from "@/wasm/live-overlay";
 import { localPluginLab, usePluginCatalog, type PluginView } from "@/plugins/plugin-catalog";
 import { useSessionFeature } from "@/lib/session-identity";
 import { useTutorialFromUrl } from "@/plugins/tutorials";
@@ -2230,6 +2232,7 @@ export function WasmTool({
       setLiveState("idle");
     };
   }, [simPartsMod, simParts, append]);
+  const liveLayerLog = React.useCallback((msg: string) => append(`[live-sim] ${msg}`), [append]);
   const liveSimMenu = React.useMemo(
     () => (liveSession ? { state: liveState, onClick: () => void liveSession.click() } : null),
     [liveSession, liveState],
@@ -2420,6 +2423,12 @@ export function WasmTool({
             name: p.user.name || p.user.id,
           }))}
         />
+      )}
+
+      {/* Live simulation: while a circuit runs, its parts' widgets on the open
+          sheet (a zone over a push button, a glow on an LED). Mounted per run. */}
+      {ready && liveSession && liveState === "running" && hasSimPlaces(simPartsMod) && (
+        <LiveLayer session={liveSession} mod={simPartsMod} log={liveLayerLog} />
       )}
 
       {/* Viewer panels (viewer-panels): floating layer selector + selection
