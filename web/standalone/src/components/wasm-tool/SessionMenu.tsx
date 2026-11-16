@@ -15,7 +15,7 @@ import {
   Play,
   RefreshCw,
   Square,
-  Sun, MessageSquare, Eye, ArrowRightLeft, Smartphone, Type, Magnet, LayoutGrid, Check, Pin, PinOff } from "lucide-react";
+  Sun, MessageSquare, Eye, ArrowRightLeft, Smartphone, Type, Magnet, LayoutGrid, Check, Pin, PinOff, Volume2, VolumeX } from "lucide-react";
 import type { Tool } from "@pcbjam/shared";
 import { setTheme } from "@/lib/theme";
 import type { SourceDescriptor } from "@/lib/project-source-shared";
@@ -252,7 +252,12 @@ export function SessionMenu({
    * Play and Stop of live simulation, when this session has it: where the run
    * stands, and what a click does. The same as the button on KiCad's toolbar.
    */
-  liveSim: { state: LiveSessionState; onClick: () => void } | null;
+  liveSim: {
+    state: LiveSessionState;
+    onClick: () => void;
+    /** Set while a circuit runs that has a part that is heard: muted or not, and the way to change it. */
+    sound?: { muted: boolean; onMuted: (muted: boolean) => void } | null;
+  } | null;
   /** The loaded bundle exports kicadSetChrome. */
   canToggleChrome: boolean;
   chromeHidden: boolean;
@@ -498,6 +503,7 @@ export function SessionMenu({
         {(liveSim || hasSimParts) && (
           <OverlayMenuSub id="simulation" label="Simulation" icon={Activity}>
             {liveSim && <LiveSimRow state={liveSim.state} onClick={liveSim.onClick} />}
+            {liveSim?.sound && <LiveSoundRow muted={liveSim.sound.muted} onMuted={liveSim.sound.onMuted} />}
             {hasSimParts && (
               <Tip content="Live simulation - what the part library has for each symbol">
                 <Toggle
@@ -685,6 +691,30 @@ function LiveSimRow({ state, onClick }: { state: LiveSessionState; onClick: () =
         <Icon size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
         <span>{label}</span>
       </Button>
+    </Tip>
+  );
+}
+
+/**
+ * The sound of live simulation, on or off: a buzzer of the running circuit is played
+ * through the computer's speakers. Only there while such a circuit runs.
+ */
+function LiveSoundRow({ muted, onMuted }: { muted: boolean; onMuted: (muted: boolean) => void }) {
+  const Icon = muted ? VolumeX : Volume2;
+  return (
+    <Tip content="The buzzers of the running circuit are played through this computer's speakers">
+      <Toggle
+        data-testid="live-sim-sound"
+        data-muted={muted}
+        variant="ghost"
+        size="row"
+        pressed={!muted}
+        onPressedChange={(on) => onMuted(!on)}
+        className={overlayRowClass}
+      >
+        <Icon size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
+        <span>{muted ? "Unmute simulation sound" : "Mute simulation sound"}</span>
+      </Toggle>
     </Tip>
   );
 }
