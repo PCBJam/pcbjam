@@ -89,6 +89,7 @@
 #include "part_copy_symbol.h"
 #include "sim_symbols.h"
 #include "sim_netlist.h"
+#include "host_toolbar_button.h"
 #include <algorithm>
 #include <cstring>
 #include <typeinfo>
@@ -2842,6 +2843,14 @@ std::string schSimNetlist()
 }
 
 
+// A button of the page on the schematic editor's top toolbar, through KiCad's own way for
+// plugin buttons (host_toolbar_button.h). Live simulation's Play is the first.
+bool schToolbarButton( const std::string& aId, const std::string& aTooltip, const std::string& aIcon )
+{
+    return pcbjam_toolbar::setButton( PLUGIN_ACTION_SCOPE::SCHEMATIC, aId, aTooltip, aIcon );
+}
+
+
 // ── ysync-review repro hooks ─────────────────────────────────────────────────
 // Local-edit test hooks for the ysync-review repro e2e (docs/features/
 // ysync-review on the ysync-review branch): each drives a REAL SCH_COMMIT via
@@ -4064,6 +4073,8 @@ EMSCRIPTEN_BINDINGS(eeschema) {
     // merged-image safe).
     function("kicadSimSymbols", &schSimSymbols);
     function("kicadSimNetlist", &schSimNetlist);
+    // A button of the page on the schematic editor's toolbar (tool-unique name).
+    function("kicadSchToolbarButton", &schToolbarButton);
 
 #ifndef KICAD_MERGED_EMBIND
     // JS names ALSO registered by pcbnew_embind.cpp — in the merged image these are

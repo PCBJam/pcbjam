@@ -12,13 +12,16 @@ import {
   ListTree,
   Moon,
   PanelsTopLeft,
+  Play,
   RefreshCw,
+  Square,
   Sun, MessageSquare, Eye, ArrowRightLeft, Smartphone, Type } from "lucide-react";
 import type { Tool } from "@pcbjam/shared";
 import { setTheme } from "@/lib/theme";
 import type { SourceDescriptor } from "@/lib/project-source-shared";
 import type { PresencePeer } from "@/wasm/collab/presence";
 import type { FollowTarget } from "@/wasm/collab/follow-user";
+import { LIVE_BUTTON_PLAY, LIVE_BUTTON_STOP, type LiveSessionState } from "@/wasm/live-session";
 import { PresenceRoster } from "@/components/PresenceRoster";
 import { SourceChip } from "@/components/SourceChip";
 import { OverlayMenu, OverlayMenuSection, overlayKbdClass, overlayPressedClass, overlayRowClass, useCloseOverlayMenu } from "@/components/OverlayMenu";
@@ -182,6 +185,7 @@ export function SessionMenu({
   hasSimParts,
   simPartsOpen,
   setSimPartsOpen,
+  liveSim,
   canToggleChrome,
   chromeHidden,
   onToggleChrome,
@@ -243,6 +247,11 @@ export function SessionMenu({
   hasSimParts: boolean;
   simPartsOpen: boolean;
   setSimPartsOpen: (v: boolean) => void;
+  /**
+   * Play and Stop of live simulation, when this session has it: where the run
+   * stands, and what a click does. The same as the button on KiCad's toolbar.
+   */
+  liveSim: { state: LiveSessionState; onClick: () => void } | null;
   /** The loaded bundle exports kicadSetChrome. */
   canToggleChrome: boolean;
   chromeHidden: boolean;
@@ -488,6 +497,7 @@ export function SessionMenu({
             </Toggle>
           </Tip>
         )}
+        {liveSim && <LiveSimRow state={liveSim.state} onClick={liveSim.onClick} />}
         {tool === "pcbnew" && onShow3D && (
           <Tip content="Open the 3D viewer">
             <Button
@@ -614,6 +624,45 @@ function LibFontsRow({ count, readOnly, open, setOpen }: { count: number; readOn
         <Type size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
         <span>{count > 0 ? `Team fonts (${count})` : "Add team fonts"}</span>
       </Toggle>
+    </Tip>
+  );
+}
+
+/**
+ * Play and Stop of live simulation: what the button on KiCad's toolbar does.
+ * KiCad puts that button at the far end of its toolbar, where a narrow window
+ * does not show it, and a session with the toolbars hidden has none. Closes
+ * the menu, which would cover the schematic.
+ */
+function LiveSimRow({ state, onClick }: { state: LiveSessionState; onClick: () => void }) {
+  const closeMenu = useCloseOverlayMenu();
+  const stops = state === "running" || state === "stopping";
+  const label =
+    state === "starting"
+      ? "Starting live simulation..."
+      : state === "stopping"
+        ? "Stopping live simulation..."
+        : stops
+          ? LIVE_BUTTON_STOP.tooltip
+          : LIVE_BUTTON_PLAY.tooltip;
+  const Icon = stops ? Square : Play;
+  return (
+    <Tip content={stops ? "Stop the circuit that runs" : "Run the circuit of this schematic, live"}>
+      <Button
+        data-testid="live-sim-toggle"
+        data-live-state={state}
+        variant="plain"
+        size="row"
+        className={overlayRowClass}
+        disabled={state === "starting" || state === "stopping"}
+        onClick={() => {
+          closeMenu();
+          onClick();
+        }}
+      >
+        <Icon size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
+        <span>{label}</span>
+      </Button>
     </Tip>
   );
 }

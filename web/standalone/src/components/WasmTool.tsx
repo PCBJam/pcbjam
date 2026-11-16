@@ -107,6 +107,7 @@ import { LibFilesPanel } from "@/components/LibFilesPanel";
 import { LibFontsPanel } from "@/components/LibFontsPanel";
 import { hasImportBridge, type ImportModule } from "@/wasm/import-item";
 import { hasSimSymbols, type SimSymbolsModule } from "@/wasm/sim-parts";
+import { createLiveSession, hasToolbarButton, type LiveSession, type LiveSessionState } from "@/wasm/live-session";
 import { localPluginLab, usePluginCatalog, type PluginView } from "@/plugins/plugin-catalog";
 import { useSessionFeature } from "@/lib/session-identity";
 import { useTutorialFromUrl } from "@/plugins/tutorials";
@@ -2205,6 +2206,35 @@ export function WasmTool({
     return hasSimSymbols(mod) ? mod : null;
   }, [ready, tool, simParts]);
 
+  // Live simulation's Play and Stop (wasm/live-session.ts). The button is on
+  // the schematic editor's own toolbar, at its far end; the Session menu has
+  // the same click, for a window too narrow to show that end and for a session
+  // with the toolbars hidden. The same gates as the parts list, and an editor
+  // build that can write the netlist and show a button of the page. Leaving
+  // the editor stops what runs and takes the button away.
+  const [liveSession, setLiveSession] = React.useState<LiveSession | null>(null);
+  const [liveState, setLiveState] = React.useState<LiveSessionState>("idle");
+  React.useEffect(() => {
+    if (!simPartsMod || !simParts || !simPartsMod.kicadSimNetlist || !hasToolbarButton(simPartsMod)) return;
+    const session = createLiveSession({
+      mod: simPartsMod,
+      reader: simParts,
+      onError: (text) => toast.error(text, { duration: 15_000, testId: "live-sim-error" }),
+      onState: setLiveState,
+      log: (msg) => append(`[live-sim] ${msg}`),
+    });
+    setLiveSession(session);
+    return () => {
+      session.dispose();
+      setLiveSession(null);
+      setLiveState("idle");
+    };
+  }, [simPartsMod, simParts, append]);
+  const liveSimMenu = React.useMemo(
+    () => (liveSession ? { state: liveState, onClick: () => void liveSession.click() } : null),
+    [liveSession, liveState],
+  );
+
   // Sheet bridge (sheet-panel), eeschema sessions only. Re-evaluated on every
   // sheet switch (activeSheetPath) so a hierarchy that only gains sub-sheets
   // later ("Add Sheet") surfaces the panel; hidden for a flat schematic.
@@ -2360,6 +2390,7 @@ export function WasmTool({
           hasSimParts={simPartsMod !== null}
           simPartsOpen={simPartsOpen}
           setSimPartsOpen={setSimPartsOpen}
+          liveSim={liveSimMenu}
           canToggleChrome={setChromeFn !== null}
           chromeHidden={chromeHidden}
           onToggleChrome={() => toggleChromeHidden()}
