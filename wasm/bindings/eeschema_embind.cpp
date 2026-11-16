@@ -89,6 +89,7 @@
 #include "part_copy_symbol.h"
 #include "sim_symbols.h"
 #include "sim_netlist.h"
+#include "sim_places.h"
 #include "host_toolbar_button.h"
 #include <algorithm>
 #include <cstring>
@@ -2843,6 +2844,14 @@ std::string schSimNetlist()
 }
 
 
+// Live simulation: where the symbols of the open sheet are, for the widgets the page puts
+// on them (sim_places.h). A pure read.
+std::string schSimPlaces()
+{
+    return pcbjam_sim::places( schFrame() );
+}
+
+
 // A button of the page on the schematic editor's top toolbar, through KiCad's own way for
 // plugin buttons (host_toolbar_button.h). Live simulation's Play is the first.
 bool schToolbarButton( const std::string& aId, const std::string& aTooltip, const std::string& aIcon )
@@ -4073,6 +4082,7 @@ EMSCRIPTEN_BINDINGS(eeschema) {
     // merged-image safe).
     function("kicadSimSymbols", &schSimSymbols);
     function("kicadSimNetlist", &schSimNetlist);
+    function("kicadSimPlaces", &schSimPlaces);
     // A button of the page on the schematic editor's toolbar (tool-unique name).
     function("kicadSchToolbarButton", &schToolbarButton);
 

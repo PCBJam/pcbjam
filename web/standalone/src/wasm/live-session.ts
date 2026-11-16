@@ -73,6 +73,8 @@ export interface LiveSessionOptions {
   log?: (msg: string) => void;
   /** How often the running circuit is looked at, in ms (default 250). */
   watchMs?: number;
+  /** The same while somebody listens to the looks (onFrame), in ms (default 33). */
+  frameMs?: number;
   /** For tests: makes the engine. */
   createEngine?: (options: LiveEngineOptions) => LiveEngine;
 }
@@ -85,6 +87,12 @@ export interface LiveSession {
   readonly engine: LiveEngine;
   /** The last look at the running circuit. Null when nothing runs. */
   readonly lastFrame: LiveFrame | null;
+  /**
+   * Hears every look at the running circuit: the values the widgets on the
+   * sheet show. While somebody listens, the looks come faster. Returns the
+   * way to stop listening.
+   */
+  onFrame(listener: (frame: LiveFrame) => void): () => void;
   /** What a click on the button does: Play when idle, Stop when it runs. */
   click(): Promise<void>;
   play(): Promise<void>;
@@ -94,6 +102,7 @@ export interface LiveSession {
 }
 
 const WATCH_MS = 250;
+const FRAME_MS = 33;
 const KEPT_LOG_LINES = 40;
 
 const words = (e: unknown): string => (e instanceof Error ? e.message : String(e));
@@ -102,6 +111,8 @@ export function createLiveSession(options: LiveSessionOptions): LiveSession {
   const { mod, reader, onError, onState } = options;
   const log = options.log ?? (() => {});
   const watchMs = options.watchMs ?? WATCH_MS;
+  const frameMs = options.frameMs ?? FRAME_MS;
+  const listeners = new Set<(frame: LiveFrame) => void>();
 
   let state: LiveSessionState = "idle";
   let run: PreparedRun | null = null;
@@ -155,6 +166,12 @@ export function createLiveSession(options: LiveSessionOptions): LiveSession {
     watchTimer = null;
   }
 
+  /** One look per tick; faster while the widgets on the sheet listen. */
+  function startWatch(mine: number): void {
+    stopWatch();
+    watchTimer = setInterval(() => void watch(mine), listeners.size ? frameMs : watchMs);
+  }
+
   /** The run is over without a click on Stop. */
   function ended(text: string): void {
     stopWatch();
@@ -176,6 +193,14 @@ export function createLiveSession(options: LiveSessionOptions): LiveSession {
       } else if (!frame || !frame.running) {
         const why = [...recent].reverse().find((line) => /error|too small|singular/i.test(line));
         ended(why ? `Live simulation stopped by itself: ${why}` : "Live simulation stopped by itself.");
+      } else {
+        for (const listener of [...listeners]) {
+          try {
+            listener(frame);
+          } catch (e) {
+            log(`live simulation: a listener of the values failed: ${words(e)}`);
+          }
+        }
       }
     } catch (e) {
       // a crash: onCrash has told the user already
@@ -198,7 +223,7 @@ export function createLiveSession(options: LiveSessionOptions): LiveSession {
       if (mine !== epoch) return;
       run = prepared;
       set("running");
-      watchTimer = setInterval(() => void watch(mine), watchMs);
+      startWatch(mine);
     } catch (e) {
       if (mine !== epoch) return;
       set("idle");
@@ -249,6 +274,17 @@ export function createLiveSession(options: LiveSessionOptions): LiveSession {
     get lastFrame() {
       return lastFrame;
     },
+    onFrame(listener) {
+      const retime = () => {
+        if (state === "running" && watchTimer !== null) startWatch(epoch);
+      };
+      const first = listeners.size === 0;
+      listeners.add(listener);
+      if (first) retime();
+      return () => {
+        if (listeners.delete(listener) && listeners.size === 0) retime();
+      };
+    },
     click,
     play,
     stop,
@@ -257,6 +293,7 @@ export function createLiveSession(options: LiveSessionOptions): LiveSession {
       disposed = true;
       epoch++;
       stopWatch();
+      listeners.clear();
       run = null;
       lastFrame = null;
       state = "idle";
