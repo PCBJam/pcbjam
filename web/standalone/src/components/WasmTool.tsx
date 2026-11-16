@@ -2222,7 +2222,10 @@ export function WasmTool({
       mod: simPartsMod,
       reader: simParts,
       onError: (text) => toast.error(text, { duration: 15_000, testId: "live-sim-error" }),
-      onNote: (text) => toast.info(text, { duration: 10_000, testId: "live-sim-note" }),
+      onNote: (text, about) =>
+        about === "power"
+          ? toast.info(text, { duration: 15_000, testId: "live-sim-power" })
+          : toast.info(text, { duration: 10_000, testId: "live-sim-note" }),
       onState: setLiveState,
       log: (msg) => append(`[live-sim] ${msg}`),
     });

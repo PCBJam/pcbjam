@@ -30,6 +30,12 @@ import { openOverlayMenu } from './overlay-menu';
  *   - while a KiCad dialog is open the widgets are not drawn;
  *   - Stop takes them away.
  *
+ * A second schematic, named-supply.kicad_sch, draws no source at all: a wire
+ * named +5V by its power symbol feeds a resistor and a lamp, and a wire named
+ * VCC a resistor. The wire +5V is powered by its name, so the lamp lights at
+ * the level 5 V gives it, and a notice says which wire was powered and which
+ * was not (VCC: its name states no voltage).
+ *
  * The library is a published snapshot of static files; the e2e build points
  * VITE_SIM_LIBRARY_URL at /e2e-sim-library (playwright-web.config.ts) and the
  * test answers it with five small parts of its own. The reference backend has
@@ -141,8 +147,8 @@ async function turnFeatureOn(page: Page): Promise<void> {
 
 // --- the app -----------------------------------------------------------------
 
-async function bootSchematic(page: Page): Promise<void> {
-  await page.goto(`/${SCOPE}/projects/demo/live-sim/widgets.kicad_sch`);
+async function bootSchematic(page: Page, file = 'widgets'): Promise<void> {
+  await page.goto(`/${SCOPE}/projects/demo/live-sim/${file}.kicad_sch`);
   await expect(page.locator('#canvas')).toBeVisible({ timeout: 180000 });
   await expect
     .poll(() => page.title(), { timeout: 120000, intervals: [1000] })
@@ -332,6 +338,29 @@ test.describe('live simulation: the widgets on the sheet', () => {
     expect(await thumb.evaluate((el) => el === document.activeElement), 'the knob does not keep the keyboard').toBe(false);
 
     // --- Stop takes the widgets away -----------------------------------------
+    await clickRow(page, 'idle');
+    await expect(layer(page)).toHaveCount(0);
+  });
+
+  test('a schematic that draws no source runs: a wire named +5V is powered by its name', async ({ page }) => {
+    test.setTimeout(300000);
+    await turnFeatureOn(page);
+    await serveLibrary(page);
+    await bootSchematic(page, 'named-supply');
+
+    await clickRow(page, 'running');
+    await expect(page.getByTestId('live-sim-error')).toHaveCount(0);
+    const notice = page.getByTestId('live-sim-power');
+    await expect(notice, 'the notice names the wire and its voltage').toContainText('+5V is powered with 5 V, by its name.');
+    await expect(notice, 'and the supply wire that got nothing').toContainText('VCC is not powered: its name does not say a voltage.');
+
+    // The lamp is 330 ohm behind R1's 330 ohm: 5 V drives 7.6 mA through it, of the 10 mA
+    // that is full level. Only 5 V on the wire gives that level.
+    const lamp = widget(page, 'glow', 'L1');
+    await expect(layer(page)).toHaveAttribute('data-widgets', '1', { timeout: 30000 });
+    await expect.poll(() => level(lamp), { message: 'L1 is lit by the 5 V of its wire', timeout: 30000 }).toBeGreaterThan(0.74);
+    expect(await level(lamp)).toBeLessThan(0.78);
+
     await clickRow(page, 'idle');
     await expect(layer(page)).toHaveCount(0);
   });

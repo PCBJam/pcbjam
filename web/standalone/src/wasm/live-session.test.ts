@@ -14,6 +14,7 @@ import {
   LIVE_BUTTON_ID,
   LIVE_BUTTON_PLAY,
   LIVE_BUTTON_STOP,
+  powerNote,
   type LiveSessionState,
   type ToolbarButtonModule,
 } from "./live-session";
@@ -27,6 +28,7 @@ const prepared = (over: Partial<PreparedRun> = {}): PreparedRun => ({
   codeParts: [],
   placed: [],
   notSimulated: [],
+  power: { byName: [], noVolts: [], assumed: [] },
   notes: [],
   errors: [],
   plan: [],
@@ -53,6 +55,7 @@ function gate<T>() {
 
 function setup(over: { prepare?: SimPartsReader["prepare"]; watchMs?: number; frameMs?: number } = {}) {
   const notes: string[] = [];
+  const abouts: string[] = [];
   const button = vi.fn((_id: string, _tooltip: string, _icon: string) => true);
   const mod: SimSymbolsModule & ToolbarButtonModule = {
     kicadSimSymbols: () => "{}",
@@ -83,7 +86,7 @@ function setup(over: { prepare?: SimPartsReader["prepare"]; watchMs?: number; fr
     mod,
     reader,
     onError: (text) => errors.push(text),
-    onNote: (text) => notes.push(text),
+    onNote: (text, about) => { notes.push(text); abouts.push(about); },
     onState: (state) => states.push(state),
     watchMs: over.watchMs ?? 250,
     frameMs: over.frameMs ?? 50,
@@ -96,7 +99,7 @@ function setup(over: { prepare?: SimPartsReader["prepare"]; watchMs?: number; fr
   const press = (id = LIVE_BUTTON_ID) => mod.onHostToolbarButton!(id);
   /** Let what a click started run to its end. */
   const settle = () => vi.advanceTimersByTimeAsync(0);
-  return { mod, button, prepare, engine, errors, notes, states, session, press, settle, engineOptions: () => engineOptions };
+  return { mod, button, prepare, engine, errors, notes, abouts, states, session, press, settle, engineOptions: () => engineOptions };
 }
 
 const PLAY = [LIVE_BUTTON_ID, LIVE_BUTTON_PLAY.tooltip, LIVE_BUTTON_PLAY.icon];
@@ -452,5 +455,72 @@ describe("symbols a run leaves out", () => {
     expect(leftOutNote(["Q1"])).toBe("Q1 is not simulated: nothing has a model for it. The rest of the circuit runs.");
     expect(leftOutNote(["J1", "J2", "J3", "J4", "J5", "J6"])).toContain("J1, J2, J3, J4, J5, J6. The rest");
     expect(leftOutNote(["J1", "J2", "J3", "J4", "J5", "J6", "J7", "J8"])).toContain("J1, J2, J3, J4, J5, J6 and 2 more. The rest");
+  });
+});
+
+describe("where the power of a run comes from", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+  const none = { byName: [], noVolts: [], assumed: [] };
+
+  it("is said once the circuit runs, in a notice of its own", async () => {
+    const power = { ...none, byName: [{ net: "+5V", volts: 5 }] };
+    const { session, press, settle, notes, abouts, errors } = setup({ prepare: async () => prepared({ notSimulated: ["U1"], power }) });
+    press();
+    await settle();
+    expect(session.state).toBe("running");
+    expect(notes).toEqual([
+      "U1 is not simulated: nothing has a model for it. The rest of the circuit runs.",
+      "+5V is powered with 5 V, by its name.",
+    ]);
+    expect(abouts).toEqual(["left-out", "power"]);
+    expect(errors).toEqual([]);
+  });
+
+  it("is not said when the schematic draws all of it, or when the circuit does not start", async () => {
+    const drawn = setup();
+    drawn.press();
+    await drawn.settle();
+    expect(drawn.notes).toEqual([]);
+
+    const refused = setup({ prepare: async () => prepared({ power: { ...none, noVolts: ["VCC"] } }) });
+    refused.engine.start.mockRejectedValueOnce(new Error("ngspice did not run the circuit"));
+    refused.press();
+    await refused.settle();
+    expect(refused.notes).toEqual([]);
+  });
+
+  it("names the wires powered by their names, with the voltage each got", () => {
+    expect(powerNote(none)).toBeNull();
+    expect(powerNote({ ...none, byName: [{ net: "+5V", volts: 5 }] })).toBe("+5V is powered with 5 V, by its name.");
+    expect(powerNote({ ...none, byName: [{ net: "-12V", volts: -12 }, { net: "+3V3", volts: 3.3 }, { net: "GNDA", volts: 0 }] }))
+      .toBe("Powered by their names: -12V with -12 V, +3V3 with 3.3 V, GNDA with 0 V.");
+    const many = ["+1V0", "+1V2", "+1V8", "+2V5", "+3V3", "+5V", "+9V", "+12V"].map((net) => ({ net, volts: 1 }));
+    expect(powerNote({ ...none, byName: many })).toContain("+5V with 1 V and 2 more.");
+  });
+
+  it("names the supply wires that stay without power, and what powers one", () => {
+    expect(powerNote({ ...none, noVolts: ["VCC"] }))
+      .toBe("VCC is not powered: its name does not say a voltage. A battery or a voltage source on the wire powers it.");
+    expect(powerNote({ ...none, noVolts: ["VCC", "VDD"] }))
+      .toBe("Not powered, their names do not say a voltage: VCC, VDD. A battery or a voltage source on a wire powers it.");
+  });
+
+  it("names the batteries that run with a voltage their value does not say", () => {
+    const bt2 = { ref: "BT2", label: "Voltage", value: "1.5", unit: "V" };
+    expect(powerNote({ ...none, assumed: [bt2] })).toBe("BT2 runs with 1.5 V: its value does not say the voltage.");
+    expect(powerNote({ ...none, assumed: [bt2, { ref: "BT4", label: "Voltage", value: "9", unit: "V" }] }))
+      .toBe("BT2 runs with 1.5 V, BT4 runs with 9 V: their values do not say it.");
+  });
+
+  it("is one notice for all of it", () => {
+    expect(powerNote({ byName: [{ net: "+5V", volts: 5 }], noVolts: ["VCC"], assumed: [{ ref: "BT1", label: "Voltage", value: "9", unit: "V" }] })).toBe(
+      "+5V is powered with 5 V, by its name. VCC is not powered: its name does not say a voltage. A battery or a voltage source on the wire powers it. "
+      + "BT1 runs with 9 V: its value does not say the voltage.",
+    );
   });
 });
