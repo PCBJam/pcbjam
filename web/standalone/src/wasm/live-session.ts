@@ -27,6 +27,9 @@ import type { SimPartsReader, SimSymbolsModule } from "./sim-parts";
  * The circuit is the schematic at the moment of Play: an edit made while it
  * runs is in the next run.
  *
+ * A symbol that nothing has a model for does not stop the circuit: it is left
+ * out, the rest runs, and `onNote` gets one sentence that names it.
+ *
  * When the simulation cannot start, or stops by itself, `onError` gets one
  * sentence for the user and the button is Play again. Nothing is restarted
  * without a click.
@@ -68,6 +71,8 @@ export interface LiveSessionOptions {
   reader: SimPartsReader;
   /** One sentence for the user: why it did not start, or why it stopped. */
   onError: (text: string) => void;
+  /** One sentence for the user about a run that started: what it runs without. */
+  onNote?: (text: string) => void;
   onState?: (state: LiveSessionState) => void;
   /** A line for the app's own log. */
   log?: (msg: string) => void;
@@ -99,6 +104,18 @@ export interface LiveSession {
   stop(): Promise<void>;
   /** Stops, throws the engine away and takes the button off the toolbar. */
   dispose(): void;
+}
+
+/** How many left-out symbols the note names before it counts the rest. */
+const NAMED_IN_NOTE = 6;
+
+/** The sentence about the symbols a run leaves out. Null when there are none. */
+export function leftOutNote(refs: readonly string[]): string | null {
+  if (!refs.length) return null;
+  if (refs.length === 1) return `${refs[0]} is not simulated: nothing has a model for it. The rest of the circuit runs.`;
+  const named = refs.slice(0, NAMED_IN_NOTE).join(", ");
+  const more = refs.length - NAMED_IN_NOTE;
+  return `Not simulated, nothing has a model for them: ${named}${more > 0 ? ` and ${more} more` : ""}. The rest of the circuit runs.`;
 }
 
 const WATCH_MS = 250;
@@ -224,6 +241,8 @@ export function createLiveSession(options: LiveSessionOptions): LiveSession {
       run = prepared;
       set("running");
       startWatch(mine);
+      const note = leftOutNote(prepared.notSimulated);
+      if (note) options.onNote?.(note);
     } catch (e) {
       if (mine !== epoch) return;
       set("idle");

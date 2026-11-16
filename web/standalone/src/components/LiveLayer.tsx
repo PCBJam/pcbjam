@@ -23,6 +23,8 @@
  *     field has the keyboard. A zone never takes the keyboard; the slider
  *     keeps the keys that are pressed on it to itself (End would be KiCad's
  *     "double-click at the cursor") and gives the keyboard back after a drag;
+ *   - a symbol the run leaves out (nothing has a model for it) gets a dashed
+ *     frame and, when there is room, the words "not simulated";
  *   - KiCad draws its dialogs on the canvas, under this layer: while one is
  *     open the widgets are not drawn (a zone that is held lets go), and while
  *     a modal one is open the editor is not asked anything.
@@ -35,9 +37,11 @@ import type { LiveFrame } from "@/wasm/live-engine";
 import {
   createInputSender,
   formatValue,
+  leftOutFor,
   readPlaces,
   screenBox,
   widgetsFor,
+  type LeftOutMark,
   type LiveWidget,
   type ScreenBox,
   type SheetPlaces,
@@ -352,6 +356,27 @@ function Meter({ widget, box }: WidgetProps): React.ReactElement {
   );
 }
 
+/** Below this many CSS px per mm the mark of a left-out symbol has no words: too small to read. */
+const WORDS_PX_PER_MM = 3.5;
+
+/** A symbol the run leaves out because nothing has a model for it: a dashed frame, and the words when there is room. */
+function LeftOut({ mark, box, words }: { mark: LeftOutMark; box: ScreenBox; words: boolean }): React.ReactElement {
+  return (
+    <div
+      data-testid="live-left-out"
+      data-ref={mark.ref}
+      className="pointer-events-none absolute rounded-sm border border-dashed border-neutral-500/80 bg-neutral-400/15 dark:border-white/50 dark:bg-white/10"
+      style={boxStyle(box)}
+    >
+      {words && (
+        <span className="absolute bottom-full left-0 mb-0.5 whitespace-nowrap rounded-sm bg-white/80 px-1 text-[9px] font-medium leading-tight text-neutral-600 dark:bg-neutral-900/80 dark:text-white/70">
+          not simulated
+        </span>
+      )}
+    </div>
+  );
+}
+
 /** The widgets this page can draw. A part that names another one runs without it. */
 const WIDGETS: Record<string, { draw: (props: WidgetProps) => React.ReactElement | null; ownSize?: true }> = {
   "press-zone": { draw: PressZone },
@@ -522,6 +547,7 @@ export function LiveLayer({ session, mod, log = noLog }: LiveLayerProps): React.
     () => (run && places ? widgetsFor(run, places) : { widgets: [], notes: [] }),
     [run, places],
   );
+  const leftOut = React.useMemo(() => (run && places ? leftOutFor(run, places) : []), [run, places]);
   const said = React.useRef("");
   React.useEffect(() => {
     const text = notes.join("; ");
@@ -545,6 +571,7 @@ export function LiveLayer({ session, mod, log = noLog }: LiveLayerProps): React.
         data-testid="live-layer"
         data-sheet={places.sheet}
         data-widgets={widgets.length}
+        data-left-out={leftOut.length}
         className="pointer-events-none absolute z-20 overflow-hidden"
         style={{ left: rect.x, top: rect.y, width: rect.width, height: rect.height }}
       >
@@ -559,6 +586,11 @@ export function LiveLayer({ session, mod, log = noLog }: LiveLayerProps): React.
           if (right < -margin || bottom < -margin || box.left > rect.width + margin || box.top > rect.height + margin) return null;
           const Draw = kind.draw;
           return <Draw key={widget.key} widget={widget} box={box} />;
+        })}
+        {leftOut.map((mark) => {
+          const box = screenBox(mark.box, toPx, pxPerUnit);
+          if (box.left + (box.width ?? 0) < 0 || box.top + (box.height ?? 0) < 0 || box.left > rect.width || box.top > rect.height) return null;
+          return <LeftOut key={mark.key} mark={mark} box={box} words={pxPerUnit * places.iuPerMm >= WORDS_PX_PER_MM} />;
         })}
       </div>
     </Context.Provider>

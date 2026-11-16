@@ -4,6 +4,7 @@ import {
   createInputSender,
   formatValue,
   hasSimPlaces,
+  leftOutFor,
   placeBox,
   readPlaces,
   screenBox,
@@ -277,5 +278,29 @@ describe("formatValue", () => {
     expect(formatValue(0, "V")).toBe("0.00 V");
     expect(formatValue(1e-15, "V")).toBe("0.00 V");
     expect(formatValue(Number.NaN, "V")).toBe("? V");
+  });
+});
+
+describe("leftOutFor", () => {
+  it("marks the open sheet's symbols that the run leaves out, around their drawing", () => {
+    const marks = leftOutFor({ notSimulated: ["Q1", "R7", "U9"] }, sheet("/Key 1/", ["SW1", "D1"]));
+    expect(marks.map((m) => [m.ref, m.uuid, m.key])).toEqual([
+      ["U9", "u-odd", "/Key 1/:u-odd:left-out"],
+      ["R7", "u-other", "/Key 1/:u-other:left-out"],
+    ]);
+    // the drawing (47..53 x 38..42 mm) and 0.6 mm around it
+    expect(marks[0]!.box).toEqual({ x: 46.4 * MM, y: 37.4 * MM, w: 7.2 * MM, h: 5.2 * MM, anchor: "corner" });
+  });
+
+  it("goes by the references of this use of the sheet", () => {
+    // the same drawing is SW1 on one use of the sheet and SW2 on the other
+    expect(leftOutFor({ notSimulated: ["SW2"] }, sheet("/Key 1/", ["SW1", "D1"]))).toEqual([]);
+    expect(leftOutFor({ notSimulated: ["SW2"] }, sheet("/Key 2/", ["SW2", "D2"])).map((m) => m.ref)).toEqual(["SW2"]);
+  });
+
+  it("marks every unit of a symbol that has several, and nothing when the run leaves nothing out", () => {
+    const two: SheetPlaces = { sheet: "/", iuPerMm: MM, symbols: [symbol({ uuid: "u-a", ref: "U1" }), symbol({ uuid: "u-b", ref: "U1", x: 90 * MM })] };
+    expect(leftOutFor({ notSimulated: ["U1"] }, two).map((m) => m.uuid)).toEqual(["u-a", "u-b"]);
+    expect(leftOutFor({ notSimulated: [] }, two)).toEqual([]);
   });
 });

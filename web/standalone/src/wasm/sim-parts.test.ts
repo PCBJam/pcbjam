@@ -293,6 +293,9 @@ describe("the parts of the open schematic", () => {
       "R1 /LED +5V 330",
       "XD1 /LED GND PJ_LED",
       "XSW1 GND /BTN PJ_BUTTON",
+      // the nets of the symbols without a line (K1, and R9 that KiCad excludes) get a path to ground
+      "Rpj_left_1 /KEY 0 1g",
+      "Rpj_left_2 /X 0 1g",
       ".tran 1m 100000 0 1m",
       ".end",
     ]);
@@ -313,7 +316,7 @@ describe("the parts of the open schematic", () => {
 
     // a pick that is not on the symbol yet, and the plain circuit
     const picked = await simPartsReader(BASE, { fetch: fetchImpl }).prepare(editorWithNetlist(), { overrides: { "uuid-K1": "push-button" }, live: false });
-    expect(picked.deck.slice(-3)).toEqual(["XK1 GND /KEY PJ_BUTTON", "XSW1 GND /BTN PJ_BUTTON", ".end"]);
+    expect(picked.deck.slice(-4)).toEqual(["XK1 GND /KEY PJ_BUTTON", "XSW1 GND /BTN PJ_BUTTON", "Rpj_left_1 /X 0 1g", ".end"]);
     expect(picked.notSimulated).toEqual([]);
     expect(picked.files.find((f) => f.path.includes("push-button"))?.text).toBe(BUTTON_MODEL);
   });
