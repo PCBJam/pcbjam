@@ -5,12 +5,13 @@ import {
   formatValue,
   hasSimPlaces,
   leftOutFor,
+  mixColors,
   placeBox,
   readPlaces,
   screenBox,
   widgetsFor,
   type SheetPlaces,
-  type SymbolPlace,
+  type SymbolPlace, sliderText, countValue, soundRings,
 } from "./live-overlay";
 
 const MM = 10000; // the editor's units per millimetre
@@ -187,6 +188,125 @@ describe("widgetsFor", () => {
     expect(widgets[0]!.box.x).toBe(90 * MM);
   });
 
+  it("a symbol with several switches has a zone for each, with its contact drawn in it", () => {
+    // two rows of one symbol: each its own input, its own rectangle and the line that moves
+    const toggle = (name: string): DeckInput => ({
+      ref: "SW1", partId: "dip", vector: `v.xsw1.v${name}`, initial: 0,
+      input: { name, type: "toggle", source: `V${name}`, off: 0, on: 1, default: "off" },
+    });
+    const dip = {
+      parts: new Map([["dip", part("dip", [
+        { widget: "toggle-zone", place: { rect: [-4, 1, 4, 3] }, input: "sw1", label: "1", lines: [{ off: [-2, 2, 2, 3], on: [-2, 2, 2, 2] }] },
+        { widget: "toggle-zone", place: { rect: [-4, -1, 4, 1] }, input: "sw2", label: "2", lines: [{ off: [-2, 0, 2, 1], on: [-2, 0, 2, 0] }] },
+      ])]]),
+      placed: [placed({ ref: "SW1", uuid: "u-sw", sheet: "/", partId: "dip" })],
+      inputs: [toggle("sw1"), toggle("sw2")],
+      signals: [],
+    };
+    const places = (m: SymbolPlace["m"]): SheetPlaces => ({ sheet: "/", iuPerMm: MM, symbols: [symbol({ uuid: "u-sw", m })] });
+    const { widgets, notes } = widgetsFor(dip, places([1, 0, 0, -1]));
+    expect(notes).toEqual([]);
+    expect(widgets.map((w) => [w.input?.vector, w.props])).toEqual([["v.xsw1.vsw1", { label: "1" }], ["v.xsw1.vsw2", { label: "2" }]]);
+    // the symbol is at (50, 40) mm: the upper row is the box from (46, 37), 8 by 2 mm
+    expect(widgets[0]!.box).toEqual({ x: 46 * MM, y: 37 * MM, w: 8 * MM, h: 2 * MM, anchor: "corner" });
+    expect(widgets[1]!.box).toEqual({ x: 46 * MM, y: 39 * MM, w: 8 * MM, h: 2 * MM, anchor: "corner" });
+    // the line in fractions of its box: open it rises to the box's top edge, closed it lies level
+    expect(widgets[0]!.lines).toEqual([{ off: [0.25, 0.5, 0.75, 0], on: [0.25, 0.5, 0.75, 0.5] }]);
+    expect(widgets[1]!.lines).toEqual(widgets[0]!.lines);
+
+    // turned a quarter: the row stands upright, and the line turns with it
+    const turned = widgetsFor(dip, places([0, -1, -1, 0])).widgets[0]!;
+    expect(turned.box).toEqual({ x: 47 * MM, y: 36 * MM, w: 2 * MM, h: 8 * MM, anchor: "corner" });
+    expect(turned.lines).toEqual([{ off: [0.5, 0.75, 0, 0.25], on: [0.5, 0.75, 0.5, 0.25] }]);
+  });
+
+  it("a zone over the whole symbol draws its contact too; a widget without a size on the sheet has none", () => {
+    const lines = [{ off: [-2, 0, 2, 1], on: [-2, 0, 2, 0] }];
+    const one = {
+      parts: new Map([["sw", part("sw", [
+        { widget: "press-zone", place: { over: "bbox", margin: [1, 1] }, input: "pressed", lines },
+        { widget: "press-zone", place: { below: "bbox" }, input: "pressed", lines },
+        { widget: "press-zone", place: { over: "bbox" }, input: "pressed", lines: [{ off: [0, 0, 1], on: [0, 0, 1, 1] }] },
+      ])]]),
+      placed: [placed({ ref: "SW1", uuid: "u-sw", sheet: "/", partId: "sw" })],
+      inputs: [momentary("SW1")],
+      signals: [],
+    };
+    const { widgets } = widgetsFor(one, { sheet: "/", iuPerMm: MM, symbols: [symbol({ uuid: "u-sw" })] });
+    // the box is (44, 36) to (56, 43) mm: 12 by 7
+    expect(widgets[0]!.lines![0]!.off.map((v) => Math.round(v * 1000) / 1000)).toEqual([0.333, 0.571, 0.667, 0.429]);
+    expect(widgets[0]!.props).toEqual({});
+    expect(widgets[1]!.lines).toBeUndefined();
+    // a line that is not four numbers: the zone is there, without a drawing
+    expect(widgets[2]!.lines).toBeUndefined();
+  });
+
+  it("a part's overlay sits where its line for this symbol says, and turns with the symbol", () => {
+    // a digit: its face is measured from the place where this symbol draws its small digit
+    const bars = ["a", "b", "c", "d", "e", "f", "g"];
+    const digit = (origin?: [number, number]) => ({
+      parts: new Map([["digit", part("digit", [
+        { widget: "seven-segment", place: { rect: [-2, -1, 3, 7] }, signals: bars, color: "$color" },
+        { widget: "glow", place: { at: "origin", size: [4, 4] }, signal: "a" },
+      ])]]),
+      placed: [placed({ ref: "U1", uuid: "u-sw", sheet: "/", partId: "digit", settings: { color: { value: "green", from: "field" } }, ...(origin ? { origin } : {}) })],
+      inputs: [],
+      signals: bars.map((name): DeckSignal => ({ ref: "U1", partId: "digit", name, vector: `v.xu1.v${name}#branch` })),
+    });
+    const places = (m: SymbolPlace["m"]): SheetPlaces => ({ sheet: "/", iuPerMm: MM, symbols: [symbol({ uuid: "u-sw", m })] });
+    // without a place of its own it is measured from the symbol's origin, (50, 40) mm; Y is up in the drawing
+    const plain = widgetsFor(digit(), places([1, 0, 0, -1])).widgets;
+    expect(plain[0]!.box).toEqual({ x: 48 * MM, y: 33 * MM, w: 5 * MM, h: 8 * MM, anchor: "corner" });
+    expect(plain[0]!.signals?.map((s) => s.vector)).toEqual(bars.map((b) => `v.xu1.v${b}#branch`));
+    expect(plain[0]!.props).toEqual({ color: "green" });
+    // 1 mm to the right and 3 mm up: both widgets move with it
+    const [face, glow] = widgetsFor(digit([1, 3]), places([1, 0, 0, -1])).widgets;
+    expect(face!.box).toEqual({ x: 49 * MM, y: 30 * MM, w: 5 * MM, h: 8 * MM, anchor: "corner" });
+    expect(glow!.box).toEqual({ x: 51 * MM, y: 37 * MM, w: 4 * MM, h: 4 * MM, anchor: "center" });
+    // the symbol turned a quarter: the place turns with it
+    expect(widgetsFor(digit([1, 3]), places([0, -1, -1, 0])).widgets[0]!.box).toEqual({ x: 40 * MM, y: 36 * MM, w: 8 * MM, h: 5 * MM, anchor: "corner" });
+  });
+
+  it("a relay's contacts are drawn by a widget that is no zone: bound to its signal, measured from the first arm", () => {
+    const relay = (origin: [number, number]) => ({
+      parts: new Map([["relay", part("relay", [
+        { widget: "contact", place: { rect: [-3, -3, 3, 5] }, signal: "pulled", lines: [{ off: [0, -2, -2, 4], on: [0, -2, 2, 4] }] },
+      ])]]),
+      placed: [placed({ ref: "K1", uuid: "u-sw", sheet: "/", partId: "relay", settings: {}, origin })],
+      inputs: [],
+      signals: [{ ref: "K1", partId: "relay", name: "pulled", vector: "v.xk1.vstate#branch" }] satisfies DeckSignal[],
+    });
+    const places: SheetPlaces = { sheet: "/", iuPerMm: MM, symbols: [symbol({ uuid: "u-sw", m: [1, 0, 0, -1] })] };
+    // the symbol is at (50, 40) mm; the arm's foot 5 mm to the right of it
+    const { widgets, notes } = widgetsFor(relay([5, 0]), places);
+    expect(notes).toEqual([]);
+    expect(widgets).toHaveLength(1);
+    const [contact] = widgets;
+    expect(contact).toMatchObject({ widget: "contact", ref: "K1", box: { x: 52 * MM, y: 35 * MM, w: 6 * MM, h: 8 * MM, anchor: "corner" } });
+    expect(contact!.signal?.vector).toBe("v.xk1.vstate#branch");
+    expect(contact!.input).toBeUndefined();
+    // the arm in fractions of the box: from its foot up to the left at rest, up to the right when pulled in
+    const close = (got: number[], want: number[]) => got.forEach((v, i) => expect(v).toBeCloseTo(want[i]!, 6));
+    close(contact!.lines![0]!.off, [3 / 6, 7 / 8, 1 / 6, 1 / 8]);
+    close(contact!.lines![0]!.on, [3 / 6, 7 / 8, 5 / 6, 1 / 8]);
+  });
+
+  it("a light for several currents has them all, and reads its colours out of the settings", () => {
+    const two = {
+      parts: new Map([["dual", part("dual", [{ widget: "glow-mix", place: { at: "origin", size: [13, 13] }, signals: ["led1", "led2"], colors: ["$color1", "$color2", "blue"], full: 0.008 }])]]),
+      placed: [placed({ ref: "D1", uuid: "u-led", sheet: "/", partId: "dual", settings: { color1: { value: "red", from: "default" }, color2: { value: "yellow", from: "field" } } })],
+      inputs: [],
+      signals: ["led1", "led2"].map((name, i): DeckSignal => ({ ref: "D1", partId: "dual", name, vector: `v.xd1.v${i + 1}#branch` })),
+    };
+    const { widgets, notes } = widgetsFor(two, { sheet: "/", iuPerMm: MM, symbols: [symbol({ uuid: "u-led" })] });
+    expect(notes).toEqual([]);
+    expect(widgets[0]!.signals?.map((s) => s.vector)).toEqual(["v.xd1.v1#branch", "v.xd1.v2#branch"]);
+    expect(widgets[0]!.props).toEqual({ colors: ["red", "yellow", "blue"], full: 0.008 });
+    // a signal the run does not have: the widget is left out, with a note
+    two.signals.pop();
+    expect(widgetsFor(two, { sheet: "/", iuPerMm: MM, symbols: [symbol({ uuid: "u-led" })] })).toEqual({ widgets: [], notes: ['D1, widget "glow-mix": the run does not have all of its signals'] });
+  });
+
   it("says what it left out: a placement it does not know, an input the run does not have", () => {
     const { notes } = widgetsFor(run(), sheet("/Key 1/", ["SW1", "D1"]));
     expect(notes).toEqual([
@@ -281,6 +401,43 @@ describe("formatValue", () => {
   });
 });
 
+describe("countValue", () => {
+  it("a count is whole and has no prefix: three digits that count", () => {
+    expect([0, 0.4, 87.6, 1200, 5454.4, 12345, -5939.2].map((v) => countValue(v, "rpm"))).toEqual(["0 rpm", "0 rpm", "88 rpm", "1200 rpm", "5450 rpm", "12300 rpm", "-5940 rpm"]);
+    // what is left of a motor that has stopped is no number to show
+    expect([1e-9, -0.2].map((v) => countValue(v, "rpm"))).toEqual(["0 rpm", "0 rpm"]);
+    expect(countValue(Number.NaN, "rpm")).toBe("? rpm");
+  });
+});
+
+describe("soundRings", () => {
+  it("none while a part is silent, one more with every step of its loudness", () => {
+    expect([0, 0.005, 0.01, 0.09, 0.1, 0.42, 0.5, 1, 1.4].map(soundRings)).toEqual([0, 0, 1, 1, 2, 2, 3, 3, 3]);
+    // the other way round a signal is no sound
+    expect(soundRings(-1)).toBe(0);
+  });
+});
+
+describe("sliderText", () => {
+  it("without a unit: where the slider stands in its range", () => {
+    expect([0, 0.5, 1].map((v) => sliderText(v, 0, 1))).toEqual(["0 %", "50 %", "100 %"]);
+    expect(sliderText(25, -40, 125)).toBe("39 %");
+  });
+
+  it("with a unit: the value itself, as fine as one step of the slider", () => {
+    // a thermistor: 165 degrees in a hundred steps
+    expect([-40, -0.4, 24.7, 125].map((v) => sliderText(v, -40, 125, "°C"))).toEqual(["-40 °C", "0 °C", "25 °C", "125 °C"]);
+    // a range of 5: a twentieth per step
+    expect(sliderText(1.25, 0, 5, "V")).toBe("1.25 V");
+    expect(sliderText(2, 0, 5, "V")).toBe("2 V");
+  });
+
+  it("on a log scale: ten to the power of the value, in two digits", () => {
+    const lux = (v: number) => sliderText(v, -1, 5, "lx", true);
+    expect([-1, 0, 1, 2, 2.06, 3, 3.12, 5].map(lux)).toEqual(["0.1 lx", "1 lx", "10 lx", "100 lx", "110 lx", "1 klx", "1.3 klx", "100 klx"]);
+  });
+});
+
 describe("leftOutFor", () => {
   it("marks the open sheet's symbols that the run leaves out, around their drawing", () => {
     const marks = leftOutFor({ notSimulated: ["Q1", "R7", "U9"] }, sheet("/Key 1/", ["SW1", "D1"]));
@@ -302,5 +459,39 @@ describe("leftOutFor", () => {
     const two: SheetPlaces = { sheet: "/", iuPerMm: MM, symbols: [symbol({ uuid: "u-a", ref: "U1" }), symbol({ uuid: "u-b", ref: "U1", x: 90 * MM })] };
     expect(leftOutFor({ notSimulated: ["U1"] }, two).map((m) => m.uuid)).toEqual(["u-a", "u-b"]);
     expect(leftOutFor({ notSimulated: [] }, two)).toEqual([]);
+  });
+});
+
+describe("mixColors", () => {
+  const red = [255, 58, 40] as const;
+  const green = [50, 215, 90] as const;
+  const blue = [64, 140, 255] as const;
+
+  it("one colour alone is that colour, however weak", () => {
+    expect(mixColors([red, green, blue], [1, 0, 0])).toEqual([255, 58, 40]);
+    expect(mixColors([red, green, blue], [0, 0.1, 0])).toEqual([59, 255, 107]);
+    expect(mixColors([red, green], [0, 1])).toEqual([59, 255, 107]);
+  });
+
+  it("two colours give the colour between them", () => {
+    // red and green: yellow; green and blue: cyan
+    expect(mixColors([red, green], [1, 1])).toEqual([255, 228, 109]);
+    expect(mixColors([red, green, blue], [1, 1, 0])).toEqual([255, 228, 109]);
+    expect(mixColors([red, green, blue], [0, 1, 1])).toEqual([82, 255, 248]);
+    // the weaker one only tints
+    expect(mixColors([red, green], [1, 0.2])).toEqual([255, 97, 56]);
+  });
+
+  it("what three colours have in common is white", () => {
+    expect(mixColors([red, green, blue], [1, 1, 1])).toEqual([255, 255, 255]);
+    expect(mixColors([red, green, blue], [0.3, 0.3, 0.3])).toEqual([255, 255, 255]);
+    // red stronger than the other two: white with a warm tint
+    const [r, g, b] = mixColors([red, green, blue], [1, 0.68, 0.68]);
+    expect([r, g > b, b > 230]).toEqual([255, true, true]);
+  });
+
+  it("nothing lit: the first colour, the light is dark anyway", () => {
+    expect(mixColors([red, green], [0, 0])).toEqual([255, 58, 40]);
+    expect(mixColors([], [])).toEqual([0, 0, 0]);
   });
 });

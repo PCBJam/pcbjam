@@ -101,6 +101,7 @@ import {
 import { PresenceRoster } from "@/components/PresenceRoster";
 import { CommentLayer } from "@/components/CommentLayer";
 import { LiveLayer } from "@/components/LiveLayer";
+import { LiveSound, useLiveSoundMuted } from "@/components/LiveSound";
 import { hasTunerBridge, PresenceTuner, type TunerModule } from "@/components/PresenceTuner";
 import { hasLayersBridge, LayerPanel, type LayersModule } from "@/components/LayerPanel";
 import { ImportItemPanel } from "@/components/ImportItemPanel";
@@ -109,6 +110,7 @@ import { LibFontsPanel } from "@/components/LibFontsPanel";
 import { hasImportBridge, type ImportModule } from "@/wasm/import-item";
 import { hasSimSymbols, type SimSymbolsModule } from "@/wasm/sim-parts";
 import { createLiveSession, hasToolbarButton, type LiveSession, type LiveSessionState } from "@/wasm/live-session";
+import { tonesFor } from "@/wasm/live-sound";
 import { hasSimPlaces } from "@/wasm/live-overlay";
 import { localPluginLab, usePluginCatalog, type PluginView } from "@/plugins/plugin-catalog";
 import { useSessionFeature } from "@/lib/session-identity";
@@ -2237,9 +2239,23 @@ export function WasmTool({
     };
   }, [simPartsMod, simParts, append]);
   const liveLayerLog = React.useCallback((msg: string) => append(`[live-sim] ${msg}`), [append]);
-  const liveSimMenu = React.useMemo(
-    () => (liveSession ? { state: liveState, onClick: () => void liveSession.click() } : null),
+  // What is heard of it (wasm/live-sound.ts): the menu has the mute switch while a
+  // circuit runs that has a part with a tone of its own.
+  const [liveSoundIsMuted, setLiveSoundMuted] = useLiveSoundMuted();
+  const liveSoundParts = React.useMemo(
+    () => (liveSession?.run && liveState === "running" ? tonesFor(liveSession.run).length : 0),
     [liveSession, liveState],
+  );
+  const liveSimMenu = React.useMemo(
+    () =>
+      liveSession
+        ? {
+            state: liveState,
+            onClick: () => void liveSession.click(),
+            sound: liveSoundParts > 0 ? { muted: liveSoundIsMuted, onMuted: setLiveSoundMuted } : null,
+          }
+        : null,
+    [liveSession, liveState, liveSoundParts, liveSoundIsMuted, setLiveSoundMuted],
   );
 
   // Sheet bridge (sheet-panel), eeschema sessions only. Re-evaluated on every
@@ -2432,8 +2448,10 @@ export function WasmTool({
       {/* Live simulation: while a circuit runs, its parts' widgets on the open
           sheet (a zone over a push button, a glow on an LED). Mounted per run. */}
       {ready && liveSession && liveState === "running" && hasSimPlaces(simPartsMod) && (
-        <LiveLayer session={liveSession} mod={simPartsMod} log={liveLayerLog} />
+        <LiveLayer session={liveSession} mod={simPartsMod} log={liveLayerLog} project={projectId} />
       )}
+      {/* And what is heard of it: a buzzer of the circuit, on whatever sheet. */}
+      {ready && liveSession && liveState === "running" && <LiveSound session={liveSession} />}
 
       {/* Viewer panels (viewer-panels): floating layer selector + selection
           inspector for canvas-only sessions — the React stand-ins for the wx

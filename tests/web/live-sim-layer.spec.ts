@@ -36,9 +36,45 @@ import { openOverlayMenu } from './overlay-menu';
  * the level 5 V gives it, and a notice says which wire was powered and which
  * was not (VCC: its name states no voltage).
  *
+ * The same schematic runs once more with another part on its lamp symbol: one
+ * with seven currents, shown as a 7-segment digit and as one light that mixes
+ * two of them. Three of the currents flow, so the digit shows a 7 and the
+ * light is yellow (red and green). The part's line for the symbol says where
+ * on the symbol its overlay sits, and both widgets are there.
+ *
+ * The first schematic runs once more with its two lamp symbols as relay coils.
+ * A relay moves its contact by itself: the coil's current pulls it in, and the
+ * app draws the contact where it is now. Holding the key pulls L1 in and
+ * letting go lets it fall back; the switch pulls L2 in and it stays.
+ *
+ * And once with its dial as a sensor that is set by hand: a resistor that
+ * follows a temperature. Its slider says the degrees it is set to, not a
+ * percentage, and the meter shows what that temperature does to the circuit.
+ *
+ * And once with its lamps as parts that turn and sound (a motor, a buzzer): a
+ * mark goes round on the symbol while the part has current, a number says
+ * its turns a minute as a whole number, and rings spread from it. Without
+ * current the mark stands still and there are no rings.
+ *
+ * The part that sounds has a tone of its own, 2000 Hz, so it is also heard:
+ * the page plays it while the part sounds (wasm/live-sound.ts). One test
+ * reads the sound itself, in Chromium: a tap on what goes to the speakers
+ * says how loud it is and at which pitch. The Session menu has a row that
+ * mutes it, only while a circuit runs that has such a part.
+ *
+ * The slider and the meter's number are tags: they hang under their symbols
+ * and can cover what is drawn there. A tag is dragged off it with the mouse
+ * (the meter anywhere, the slider by its words: its knob is dragged along
+ * the track). It then stays that far from its symbol on the sheet, through a
+ * zoom and into the next run, with a thin line to where it belongs. The
+ * editor does not hear the drag. A double-click puts the tag back. Zoomed
+ * out, the tags are drawn smaller; zoomed in close, they grow with the
+ * sheet. Where they were put is kept in the browser, nothing of it in the
+ * schematic.
+ *
  * The library is a published snapshot of static files; the e2e build points
  * VITE_SIM_LIBRARY_URL at /e2e-sim-library (playwright-web.config.ts) and the
- * test answers it with five small parts of its own. The reference backend has
+ * test answers it with small parts of its own. The reference backend has
  * no /api/me; the test answers that too.
  *
  * Needs a wasm build with kicadSimPlaces, kicadSimNetlist and an
@@ -79,7 +115,11 @@ const PARTS: TestPart[] = [
   part('e2e-toggle', 'Test:TOGGLE', 'E2E_TOGGLE',
     ".subckt E2E_TOGGLE 1 2\nVctl ctl 0 dc 0\nR1 1 2 r = '100meg * exp(-20.7 * V(ctl))'\n.ends E2E_TOGGLE\n", {
       inputs: [{ name: 'closed', type: 'toggle', source: 'Vctl', off: 0, on: 1, default: 'off' }],
-      overlay: [{ widget: 'toggle-zone', place: { over: 'bbox', margin: [1.5, 1.5] }, input: 'closed' }],
+      // the contact that moves: tilted while the switch is open, on the symbol's middle line while it is closed
+      overlay: [{
+        widget: 'toggle-zone', place: { over: 'bbox', margin: [1.5, 1.5] }, input: 'closed',
+        lines: [{ off: [0, -1.5, 1.2, 1.2], on: [0, -1.5, 0, 1.5] }],
+      }],
     }),
   // 330 ohm: 15 mA from 5 V. `full` is 10 mA, so a lit lamp is at full level.
   part('e2e-lamp', 'Test:LAMP', 'E2E_LAMP',
@@ -105,11 +145,81 @@ const PARTS: TestPart[] = [
 const sha256 = (text: string) => createHash('sha256').update(text).digest('hex');
 const fileEntry = (name: string, text: string) => ({ name, sha256: sha256(text), bytes: Buffer.byteLength(text) });
 
-/** The snapshot's files by path: what a publish of these five parts writes. */
-function snapshotFiles(): Record<string, string> {
+// The lamp symbol as a part with seven currents. Behind R1's 330 ohm, the bars a, b and c are
+// 1 k each and carry 2.5 mA; d to g are 100 Meg and carry nothing. `full` is 2 mA.
+const BARS = ['a', 'b', 'c', 'd', 'e', 'f', 'g'];
+const DIGIT_PARTS: TestPart[] = [
+  part('e2e-digit', 'Test:LAMP', 'E2E_DIGIT',
+    `.subckt E2E_DIGIT 1 2\n${BARS.map((s) => `V${s} 1 n${s} dc 0\nR${s} n${s} 2 ${'abc'.includes(s) ? '1k' : '100meg'}`).join('\n')}\n.ends E2E_DIGIT\n`, {
+      // the overlay is measured from a point 2 mm above the symbol's origin
+      fits: [{ symbol: 'Test:LAMP', origin: [0, 2] }],
+      signals: BARS.map((s) => ({ name: s, current: `V${s}` })),
+      overlay: [
+        { widget: 'seven-segment', place: { rect: [-3, -4, 3, 4] }, signals: BARS, full: 0.002, color: 'green' },
+        { widget: 'glow-mix', place: { at: 'origin', size: [10, 10] }, signals: ['a', 'b', 'd'], full: 0.002, colors: ['red', 'green', 'blue'] },
+      ],
+    }),
+];
+
+// The lamp symbols as relay coils, with the model of the library's relay parts: a coil with
+// its inductance (69 ohm, 5 V), an armature that pulls in above two thirds of the coil's
+// current and lets go under a quarter, and the position as a current (1 A is pulled in).
+// The contact itself has no pins here: the symbol has two, and they are the coil's.
+const RELAY_PARTS: TestPart[] = [
+  ...PARTS.filter((p) => p.manifest.id !== 'e2e-lamp'),
+  part('e2e-relay', 'Test:LAMP', 'E2E_RELAY', [
+    '.subckt E2E_RELAY 1 2',
+    'Rcoil 1 m1 69', 'Vsense m1 m2 dc 0', 'Lcoil m2 2 139m', 'Rkick 1 2 1.4k',
+    'Bpull p 0 V = abs(I(Vsense)) * 13.9',
+    'Vone one 0 dc 1', 'Sarm one s p 0 E2EARM', 'Rrest s 0 10', 'Rarm s st 1k', 'Carm st 0 1u',
+    'Bstate b 0 V = V(st)', 'Rstate b l 1', 'Vstate l 0 dc 0',
+    '.model E2EARM SW(VT=0.45 VH=0.2 RON=10m ROFF=1G)',
+    '.ends E2E_RELAY', '',
+  ].join('\n'), {
+    signals: [{ name: 'pulled', current: 'Vstate' }],
+    // the arm: from its foot up to the left at rest, up to the right when pulled in
+    overlay: [{ widget: 'contact', place: { rect: [-3, -3, 3, 3] }, signal: 'pulled', lines: [{ off: [0, -2, -1.5, 2], on: [0, -2, 1.5, 2] }] }],
+  }),
+];
+
+// The dial symbol as a temperature sensor: 1 k at 25 degrees, 1 % more for every degree.
+// Over the 1 k of R2 the meter reads 2.50 V at 25 degrees, 1.67 V at 125 and 3.70 V at -40.
+const SENSOR_PARTS: TestPart[] = [
+  ...PARTS.filter((p) => p.manifest.id !== 'e2e-dial'),
+  part('e2e-sensor', 'Test:DIAL', 'E2E_SENSOR',
+    ".subckt E2E_SENSOR 1 2\nVtemp temp 0 dc 25\nR1 1 2 r = '1000 * (1 + 0.01 * (V(temp) - 25))'\n.ends E2E_SENSOR\n", {
+      inputs: [{ name: 'temperature', type: 'range', source: 'Vtemp', min: -40, max: 125, default: 25 }],
+      overlay: [{ widget: 'slider', place: { below: 'bbox', gap: 2 }, input: 'temperature', unit: '°C' }],
+    }),
+];
+
+// The lamp symbols as parts that turn and sound. 500 ohm: 10 mA from 5 V, which is the full
+// speed and the full loudness; the part follows its current within 20 ms. Its speed leaves
+// it as a current (1 A is the full speed), and so do its turns a minute (1200 at the most).
+const MOVER_PARTS: TestPart[] = [
+  ...PARTS.filter((p) => p.manifest.id !== 'e2e-lamp'),
+  part('e2e-mover', 'Test:LAMP', 'E2E_MOVER', [
+    '.subckt E2E_MOVER 1 2',
+    'Vsense 1 m dc 0', 'R1 m 2 500',
+    'Bgo g 0 V = I(Vsense) * 100', 'Rw g w 1k', 'Cw w 0 20u',
+    'Bspeed sv 0 V = V(w)', 'Rspeed sv si 1', 'Vspeed si 0 dc 0',
+    'Brpm rv 0 V = V(w) * 1200', 'Rrpm rv ri 1', 'Vrpm ri 0 dc 0',
+    '.ends E2E_MOVER', '',
+  ].join('\n'), {
+    signals: [{ name: 'speed', current: 'Vspeed' }, { name: 'rpm', current: 'Vrpm' }],
+    overlay: [
+      { widget: 'spin', place: { rect: [-3, -3, 3, 3] }, signal: 'speed' },
+      { widget: 'meter', place: { below: 'bbox', gap: 2 }, signal: 'rpm', unit: 'rpm', prefix: false },
+      { widget: 'sound', place: { at: 'origin', size: [14, 14] }, signal: 'speed', tone: 2000 },
+    ],
+  }),
+];
+
+/** The snapshot's files by path: what a publish of these parts writes. */
+function snapshotFiles(parts: TestPart[]): Record<string, string> {
   const files: Record<string, string> = { 'current.json': JSON.stringify({ schema: 1, version: SNAPSHOT }) };
   const index = { schema: 1, version: SNAPSHOT, parts: [] as unknown[], emulators: [] };
-  for (const { manifest, model } of PARTS) {
+  for (const { manifest, model } of parts) {
     const id = manifest.id as string;
     const manifestText = JSON.stringify(manifest, null, 2);
     files[`${SNAPSHOT}/parts/${id}/part.json`] = manifestText;
@@ -123,8 +233,8 @@ function snapshotFiles(): Record<string, string> {
   return files;
 }
 
-async function serveLibrary(page: Page): Promise<void> {
-  const files = snapshotFiles();
+async function serveLibrary(page: Page, parts: TestPart[] = PARTS): Promise<void> {
+  const files = snapshotFiles(parts);
   await page.route('**/e2e-sim-library/**', (route: Route) => {
     const path = new URL(route.request().url()).pathname.replace(/^\/e2e-sim-library\//, '');
     const body = files[path];
@@ -270,6 +380,11 @@ test.describe('live simulation: the widgets on the sheet', () => {
     await clickRow(page, 'running');
     await expect(layer(page)).toHaveAttribute('data-sheet', '/', { timeout: 30000 });
     await expect(layer(page)).toHaveAttribute('data-widgets', '6');
+    // no part of this circuit has a tone of its own: nothing is played, and the menu has no row for it
+    await expect(page.getByTestId('live-sound-out')).toHaveCount(0);
+    await openOverlayMenu(page);
+    await expect(page.getByTestId('live-sim-sound')).toHaveCount(0);
+    await closeOverlayMenu(page);
     const key = widget(page, 'press', 'K1');
     const toggle = widget(page, 'toggle', 'S1');
     const lamp1 = widget(page, 'glow', 'L1');
@@ -303,12 +418,28 @@ test.describe('live simulation: the widgets on the sheet', () => {
     await expect.poll(() => level(lamp1), { message: 'letting go puts it out', timeout: 15000 }).toBeLessThan(0.05);
 
     // --- the switch: on after a click, off after the next --------------------
+    const contact = toggle.getByTestId('live-zone-lines');
     await expect(toggle).toHaveAttribute('data-on', 'false');
+    await expect(contact).toHaveAttribute('data-position', 'off');
+    await expect(key.getByTestId('live-zone-lines'), 'a zone whose part draws no contact has none').toHaveCount(0);
     await toggle.click();
     await expect(toggle).toHaveAttribute('data-on', 'true');
+    await expect(contact).toHaveAttribute('data-position', 'on');
+    await expect
+      .poll(async () => {
+        const sym = await symbolOf(page, 'S1');
+        const want = await onScreen(page, [sym.x, sym.y - 1.5 * MM, sym.x, sym.y + 1.5 * MM]);
+        const got = await contact.locator('line').evaluate((el) => {
+          const r = el.getBoundingClientRect();
+          return { x: r.x + r.width / 2, y: r.y, h: r.height };
+        });
+        return Math.max(Math.abs(got.x - want.x), Math.abs(got.y - want.y), Math.abs(got.h - want.h));
+      }, { message: 'closed, the contact is drawn on the middle line of S1, 3 mm long', timeout: 15000 })
+      .toBeLessThanOrEqual(1.5);
     await expect.poll(() => level(lamp2), { message: 'the switch lights its lamp, and it stays lit', timeout: 15000 }).toBeGreaterThan(0.9);
     await toggle.click();
     await expect(toggle).toHaveAttribute('data-on', 'false');
+    await expect(contact).toHaveAttribute('data-position', 'off');
     await expect.poll(() => level(lamp2), { message: 'the next click puts it out', timeout: 15000 }).toBeLessThan(0.05);
 
     // --- the dial: the meter follows ----------------------------------------
@@ -363,6 +494,472 @@ test.describe('live simulation: the widgets on the sheet', () => {
 
     await clickRow(page, 'idle');
     await expect(layer(page)).toHaveCount(0);
+  });
+
+  test('a part with several currents: a digit lights its bars, a light mixes its colours', async ({ page }) => {
+    test.setTimeout(300000);
+    await turnFeatureOn(page);
+    await serveLibrary(page, DIGIT_PARTS);
+    await bootSchematic(page, 'named-supply');
+
+    await clickRow(page, 'running');
+    await expect(layer(page)).toHaveAttribute('data-widgets', '2', { timeout: 30000 });
+
+    // the bars a, b and c carry a current: the digit shows a 7
+    const digit = widget(page, 'seven-segment', 'L1');
+    await expect(digit, 'the bars that carry a current are lit').toHaveAttribute('data-lit', 'abc', { timeout: 30000 });
+    const shown = (bar: string) => digit.locator(`[data-segment="${bar}"]`).evaluate((el) => Number((el as SVGElement).style.opacity));
+    await expect.poll(() => shown('a'), { message: 'a lit bar is drawn at full strength' }).toBeGreaterThan(0.95);
+    expect(await shown('d'), 'an unlit bar stays a faint shape on the dark face').toBeCloseTo(0.1, 2);
+    await expect(digit.locator('[data-segment]'), 'seven bars and no point: the part has seven currents').toHaveCount(7);
+
+    // red and green lit, blue dark: one yellow light
+    const light = widget(page, 'glow', 'L1');
+    await expect(light, 'the light has the level of each of its currents').toHaveAttribute('data-levels', '1.00 1.00 0.00', { timeout: 30000 });
+    await expect(light, 'and the colour red and green mix to').toHaveAttribute('data-color', '255 228 109');
+    await expect.poll(() => level(light), { message: 'the strongest current says how bright it is' }).toBeGreaterThan(0.95);
+
+    // Both sit where the part's line for this symbol says: 2 mm above the symbol's origin.
+    // The digit's face is 6 by 8 mm around that point, the light is centred on it.
+    await expect
+      .poll(async () => {
+        const sym = await symbolOf(page, 'L1');
+        const want = await onScreen(page, [sym.x - iu(3), sym.y - iu(6), sym.x + iu(3), sym.y + iu(2)]);
+        const face = await rectOf(digit);
+        const glow = await rectOf(light);
+        return Math.max(
+          Math.abs(face.x - want.x), Math.abs(face.y - want.y), Math.abs(face.w - want.w), Math.abs(face.h - want.h),
+          Math.abs(glow.x + glow.w / 2 - (want.x + want.w / 2)), Math.abs(glow.y + glow.h / 2 - (want.y + want.h / 2)),
+        );
+      }, { message: 'the digit and the light are at the place the part names on this symbol', timeout: 15000 })
+      .toBeLessThanOrEqual(1.5);
+
+    await clickRow(page, 'idle');
+    await expect(layer(page)).toHaveCount(0);
+  });
+
+  test('a relay moves its contact by itself: pulled in while its coil has current', async ({ page }) => {
+    test.setTimeout(300000);
+    await turnFeatureOn(page);
+    await serveLibrary(page, RELAY_PARTS);
+    await bootSchematic(page);
+
+    await clickRow(page, 'running');
+    await expect(page.getByTestId('live-sim-error')).toHaveCount(0);
+    await expect(layer(page)).toHaveAttribute('data-widgets', '6', { timeout: 30000 });
+    const relay1 = widget(page, 'contact', 'L1');
+    const relay2 = widget(page, 'contact', 'L2');
+    const arm = relay1.getByTestId('live-zone-lines');
+    await expect(relay1, 'at rest while the key is open').toHaveAttribute('data-position', 'off');
+    await expect(arm, 'and its arm is drawn at rest').toHaveAttribute('data-position', 'off');
+
+    // The contact is nothing to click: it is drawn in the box the part names, 6 by 6 mm
+    // around the symbol's origin, and at rest the arm leans to the left in it.
+    const armIn = async (): Promise<{ box: number; left: number; right: number }> => {
+      const sym = await symbolOf(page, 'L1');
+      const want = await onScreen(page, [sym.x - iu(3), sym.y - iu(3), sym.x + iu(3), sym.y + iu(3)]);
+      const got = await rectOf(relay1);
+      const line = await arm.locator('line').evaluate((el) => {
+        const r = el.getBoundingClientRect();
+        return { x: r.x, w: r.width };
+      });
+      const mid = want.x + want.w / 2;
+      return {
+        box: Math.max(Math.abs(got.x - want.x), Math.abs(got.y - want.y), Math.abs(got.w - want.w), Math.abs(got.h - want.h)),
+        left: mid - line.x,
+        right: line.x + line.w - mid,
+      };
+    };
+    // 1.5 mm to one side of the middle, the other end on the middle; the stroke adds a little
+    const reach = (await onScreen(page, [0, 0, iu(1.5), 0])).w;
+    await expect.poll(async () => (await armIn()).box, { message: "the relay's widget is at the place its part names", timeout: 15000 }).toBeLessThanOrEqual(1.5);
+    const rest = await armIn();
+    expect(Math.abs(rest.left - reach), 'at rest the arm reaches 1.5 mm to the left').toBeLessThanOrEqual(3);
+    expect(rest.right, 'and not to the right').toBeLessThanOrEqual(3);
+    expect(await relay1.evaluate((el) => getComputedStyle(el).pointerEvents), 'a click on it is the editor\'s').toBe('none');
+
+    // --- the key feeds the coil of L1 ---------------------------------------
+    const key = widget(page, 'press', 'K1');
+    const k = await rectOf(key);
+    await page.mouse.move(k.x + k.w / 2, k.y + k.h / 2);
+    await page.mouse.down();
+    await expect(key).toHaveAttribute('data-held', 'true');
+    await expect(relay1, 'the coil has its current: pulled in').toHaveAttribute('data-position', 'on', { timeout: 15000 });
+    await expect(arm).toHaveAttribute('data-position', 'on');
+    const pulled = await armIn();
+    expect(Math.abs(pulled.right - reach), 'pulled in, the arm reaches 1.5 mm to the right').toBeLessThanOrEqual(3);
+    expect(pulled.left, 'and not to the left').toBeLessThanOrEqual(3);
+    await expect(relay2, 'each relay goes by its own coil').toHaveAttribute('data-position', 'off');
+    await page.mouse.up();
+    await expect(key).toHaveAttribute('data-held', 'false');
+    await expect(relay1, 'without current it falls back').toHaveAttribute('data-position', 'off', { timeout: 15000 });
+
+    // --- the switch feeds the coil of L2, which lies on its side -------------
+    const toggle = widget(page, 'toggle', 'S1');
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('data-on', 'true');
+    await expect(relay2, 'pulled in, and it stays').toHaveAttribute('data-position', 'on', { timeout: 15000 });
+    await expect(relay1).toHaveAttribute('data-position', 'off');
+    await toggle.click();
+    await expect(relay2, 'the next click lets it fall back').toHaveAttribute('data-position', 'off', { timeout: 15000 });
+
+    await clickRow(page, 'idle');
+    await expect(layer(page)).toHaveCount(0);
+  });
+
+  test('a sensor set by hand: its slider says the value it is set to', async ({ page }) => {
+    test.setTimeout(300000);
+    await turnFeatureOn(page);
+    await serveLibrary(page, SENSOR_PARTS);
+    await bootSchematic(page);
+
+    await clickRow(page, 'running');
+    await expect(page.getByTestId('live-sim-error')).toHaveCount(0);
+    await expect(layer(page)).toHaveAttribute('data-widgets', '6', { timeout: 30000 });
+    const slider = widget(page, 'slider', 'RV1');
+    const number = widget(page, 'meter', 'M1').locator('span').last();
+
+    // It starts at the part's own start, 25 degrees, which is not the middle of its range.
+    await expect(slider, 'the slider says degrees').toHaveAttribute('data-text', '25 °C');
+    await expect(slider).toContainText('RV1 25 °C');
+    await expect(slider).toHaveAttribute('data-percent', '39');
+    await expect(number, '1 k at 25 degrees: half of 5 V').toHaveText('2.50 V', { timeout: 15000 });
+
+    const thumb = slider.getByRole('slider');
+    await expect(thumb, 'the knob is named after what it sets').toHaveAttribute('aria-label', 'RV1: temperature');
+    await thumb.focus();
+    await page.keyboard.press('End');
+    await expect(slider).toHaveAttribute('data-text', '125 °C');
+    await expect(number, '2 k at 125 degrees: a third of 5 V').toHaveText('1.67 V', { timeout: 15000 });
+    await page.keyboard.press('Home');
+    await expect(slider).toHaveAttribute('data-text', '-40 °C');
+    await expect(number, '350 ohm at -40 degrees').toHaveText('3.70 V', { timeout: 15000 });
+
+    await clickRow(page, 'idle');
+    await expect(layer(page)).toHaveCount(0);
+  });
+
+  test('a part that turns and sounds: a mark goes round, rings spread, a number counts the turns', async ({ page }) => {
+    test.setTimeout(300000);
+    await turnFeatureOn(page);
+    await serveLibrary(page, MOVER_PARTS);
+    await bootSchematic(page);
+
+    await clickRow(page, 'running');
+    await expect(page.getByTestId('live-sim-error')).toHaveCount(0);
+    // the key, the switch, the dial and the meter, and three widgets on each of the two movers
+    await expect(layer(page)).toHaveAttribute('data-widgets', '10', { timeout: 30000 });
+    const spin1 = widget(page, 'spin', 'L1');
+    const spin2 = widget(page, 'spin', 'L2');
+    const sound1 = widget(page, 'sound', 'L1');
+    const sound2 = widget(page, 'sound', 'L2');
+    const turns1 = widget(page, 'meter', 'L1').locator('span').last();
+    const turns2 = widget(page, 'meter', 'L2').locator('span').last();
+    const mark1 = spin1.locator('g');
+    const played = page.getByTestId('live-sound-out');
+
+    // At rest: the mark is there, pale and still, and nothing sounds.
+    await expect(spin1, 'it stands while the key is open').toHaveAttribute('data-turning', 'no');
+    await expect(sound1, 'and is silent').toHaveAttribute('data-rings', '0');
+    await expect(sound1, 'the part has a tone of its own').toHaveAttribute('data-tone', '2000');
+    await expect(played, 'two parts of this circuit can be heard').toHaveAttribute('data-tones', '2');
+    await expect(played, 'none is played').toHaveAttribute('data-heard', '');
+    await expect(sound1.locator('span')).toHaveCount(0);
+    await expect(turns1, 'a count has no prefix and no decimals').toHaveText('0 rpm', { timeout: 15000 });
+    expect(await spin1.evaluate((el) => getComputedStyle(el).pointerEvents), 'a click on it is the editor\'s').toBe('none');
+
+    // The mark is drawn in the box the part names: 6 by 6 mm around the symbol's origin,
+    // also for L2, which lies on its side.
+    for (const [ref, spin] of [['L1', spin1], ['L2', spin2]] as const) {
+      await expect.poll(async () => {
+        const sym = await symbolOf(page, ref);
+        const want = await onScreen(page, [sym.x - iu(3), sym.y - iu(3), sym.x + iu(3), sym.y + iu(3)]);
+        const got = await rectOf(spin);
+        return Math.max(Math.abs(got.x - want.x), Math.abs(got.y - want.y), Math.abs(got.w - want.w), Math.abs(got.h - want.h));
+      }, { message: `the mark of ${ref} is at the place its part names`, timeout: 15000 }).toBeLessThanOrEqual(1.5);
+    }
+
+    // --- the key feeds L1 ----------------------------------------------------
+    const key = widget(page, 'press', 'K1');
+    const k = await rectOf(key);
+    await page.mouse.move(k.x + k.w / 2, k.y + k.h / 2);
+    await page.mouse.down();
+    await expect(key).toHaveAttribute('data-held', 'true');
+    await expect(spin1, 'with current it turns').toHaveAttribute('data-turning', 'forward', { timeout: 15000 });
+    await expect(turns1, 'at its full speed').toHaveText('1200 rpm', { timeout: 15000 });
+    await expect(sound1, 'and sounds at its full loudness').toHaveAttribute('data-rings', '3');
+    await expect(sound1.locator('span')).toHaveCount(3);
+    await expect(played, 'its tone is played, and only its').toHaveAttribute('data-heard', 'L1');
+    // the mark goes round: it is somewhere else at the next look
+    const before = await mark1.getAttribute('transform');
+    await expect.poll(() => mark1.getAttribute('transform'), { message: 'the mark moves on while the part turns', timeout: 15000 }).not.toBe(before);
+    await expect(spin2, 'each part goes by its own current').toHaveAttribute('data-turning', 'no');
+    await expect(sound2).toHaveAttribute('data-rings', '0');
+    await page.mouse.up();
+    await expect(key).toHaveAttribute('data-held', 'false');
+    await expect(spin1, 'without current it stops').toHaveAttribute('data-turning', 'no', { timeout: 15000 });
+    await expect(sound1).toHaveAttribute('data-rings', '0');
+    await expect(played, 'and is silent').toHaveAttribute('data-heard', '');
+    await expect(turns1).toHaveText('0 rpm', { timeout: 15000 });
+
+    // --- the switch feeds L2 -------------------------------------------------
+    const toggle = widget(page, 'toggle', 'S1');
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('data-on', 'true');
+    await expect(spin2, 'it turns, and goes on turning').toHaveAttribute('data-turning', 'forward', { timeout: 15000 });
+    await expect(turns2).toHaveText('1200 rpm', { timeout: 15000 });
+    await expect(sound2).toHaveAttribute('data-rings', '3');
+    await expect(spin1).toHaveAttribute('data-turning', 'no');
+    await toggle.click();
+    await expect(spin2, 'the next click stops it').toHaveAttribute('data-turning', 'no', { timeout: 15000 });
+    await expect(sound2).toHaveAttribute('data-rings', '0');
+
+    await clickRow(page, 'idle');
+    await expect(layer(page)).toHaveCount(0);
+  });
+
+  test('a part with a tone of its own is heard: the sound has its pitch, and the Session menu mutes it', async ({ page, browserName }) => {
+    test.skip(browserName !== 'chromium', 'reads the sound itself from a tap on the audio; checked in Chromium, which plays into it without a sound card');
+    test.setTimeout(300000);
+    // Whatever the page sends to the speakers also goes into an analyser the test can read.
+    await page.addInitScript(() => {
+      const taps: AnalyserNode[] = [];
+      (window as unknown as { __soundTaps: AnalyserNode[] }).__soundTaps = taps;
+      const connect = AudioNode.prototype.connect as (this: AudioNode, to: AudioNode | AudioParam, ...rest: number[]) => AudioNode | void;
+      AudioNode.prototype.connect = function (this: AudioNode, to: AudioNode | AudioParam, ...rest: number[]) {
+        if (to instanceof AudioDestinationNode) {
+          const tap = (this.context as AudioContext).createAnalyser();
+          tap.fftSize = 8192;
+          tap.smoothingTimeConstant = 0;
+          taps.push(tap);
+          connect.call(this, tap);
+        }
+        return connect.call(this, to, ...rest);
+      } as typeof AudioNode.prototype.connect;
+    });
+    await turnFeatureOn(page);
+    await serveLibrary(page, MOVER_PARTS);
+    await bootSchematic(page);
+    await clickRow(page, 'running');
+
+    /** What goes to the speakers right now: how loud (0 is silence) and the pitch of its strongest tone, in Hz. */
+    const sound = (): Promise<{ loud: number; hz: number }> =>
+      page.evaluate(() => {
+        const tap = (window as unknown as { __soundTaps: AnalyserNode[] }).__soundTaps.at(-1);
+        if (!tap) return { loud: 0, hz: 0 };
+        const wave = new Float32Array(tap.fftSize);
+        tap.getFloatTimeDomainData(wave);
+        const loud = Math.sqrt(wave.reduce((sum, v) => sum + v * v, 0) / wave.length);
+        const bins = new Float32Array(tap.frequencyBinCount);
+        tap.getFloatFrequencyData(bins);
+        let top = 0;
+        for (let i = 1; i < bins.length; i++) if (bins[i]! > bins[top]!) top = i;
+        return { loud, hz: (top * tap.context.sampleRate) / tap.fftSize };
+      });
+    const loud = async (): Promise<number> => (await sound()).loud;
+    const played = page.getByTestId('live-sound-out');
+    const rings = widget(page, 'sound', 'L1');
+    const key = widget(page, 'press', 'K1');
+    const row = page.getByTestId('live-sim-sound');
+    const hold = async (): Promise<void> => {
+      const k = await rectOf(key);
+      await page.mouse.move(k.x + k.w / 2, k.y + k.h / 2);
+      await page.mouse.down();
+      await expect(key).toHaveAttribute('data-held', 'true');
+      await expect(rings, 'the part sounds at its full loudness').toHaveAttribute('data-rings', '3', { timeout: 15000 });
+    };
+    const letGo = async (): Promise<void> => {
+      await page.mouse.up();
+      await expect(key).toHaveAttribute('data-held', 'false');
+      await expect(rings).toHaveAttribute('data-rings', '0', { timeout: 15000 });
+    };
+
+    await expect(played).toHaveAttribute('data-tones', '2', { timeout: 30000 });
+    await expect(played).toHaveAttribute('data-muted', 'false');
+    expect(await loud(), 'nothing sounds: silence').toBe(0);
+
+    // --- the key feeds L1: its tone is heard, at its pitch --------------------
+    await hold();
+    await expect(played).toHaveAttribute('data-heard', 'L1');
+    await expect(played, "the browser's audio runs").toHaveAttribute('data-state', 'running');
+    await expect.poll(loud, { message: 'there is sound', timeout: 15000 }).toBeGreaterThan(0.05);
+    await expect.poll(async () => Math.abs((await sound()).hz - 2000), { message: 'at the pitch the part says, 2000 Hz', timeout: 15000 }).toBeLessThan(15);
+    expect(await loud(), 'a beep, far from as loud as the speakers go').toBeLessThan(0.3);
+    await letGo();
+    await expect(played).toHaveAttribute('data-heard', '');
+    await expect.poll(loud, { message: 'let go: silence again', timeout: 15000 }).toBeLessThan(0.002);
+
+    // --- the Session menu mutes it --------------------------------------------
+    await openOverlayMenu(page);
+    await expect(row, 'the menu has the row while such a circuit runs').toHaveText('Mute simulation sound');
+    await row.click();
+    await expect(row).toHaveAttribute('data-muted', 'true');
+    await expect(row).toHaveText('Unmute simulation sound');
+    await closeOverlayMenu(page);
+    await expect(played).toHaveAttribute('data-muted', 'true');
+    await hold(); // the part sounds in the circuit, and its rings show
+    await expect(played, 'muted: nothing is played').toHaveAttribute('data-heard', '');
+    expect(await loud(), 'and nothing reaches the speakers').toBeLessThan(0.002);
+    await letGo();
+    await openOverlayMenu(page);
+    await row.click();
+    await expect(row).toHaveAttribute('data-muted', 'false');
+    await closeOverlayMenu(page);
+    await hold();
+    await expect(played).toHaveAttribute('data-heard', 'L1');
+    await expect.poll(loud, { message: 'heard again', timeout: 15000 }).toBeGreaterThan(0.05);
+    await letGo();
+    await expect.poll(loud, { message: 'and silent when it stops', timeout: 15000 }).toBeLessThan(0.002);
+
+    // --- Stop ends it ----------------------------------------------------------
+    await clickRow(page, 'idle');
+    await expect(played).toHaveCount(0);
+    await openOverlayMenu(page);
+    await expect(row, 'nothing runs: the menu has no sound row').toHaveCount(0);
+    await closeOverlayMenu(page);
+    await expect(page.getByTestId('live-sim-error')).toHaveCount(0);
+  });
+
+  test('a tag is dragged off what it covers: it stays there through a zoom and the next run, a double-click puts it back', async ({ page }) => {
+    test.setTimeout(300000);
+    await turnFeatureOn(page);
+    await serveLibrary(page);
+    await bootSchematic(page);
+    await clickRow(page, 'running');
+    const meter = widget(page, 'meter', 'M1');
+    const slider = widget(page, 'slider', 'RV1');
+    const words = slider.getByTestId('live-tag-handle');
+    const number = meter.locator('span').last();
+    const line = (ref: string) => page.locator(`[data-testid="live-tag-line"][data-ref="${ref}"]`);
+    const scale = () => page.evaluate(() => JSON.parse((window as unknown as { Module: { kicadCollabGetViewport(): string } }).Module.kicadCollabGetViewport()).scale as number);
+    const pxPerMm = async (): Promise<number> => (await onScreen(page, [0, 0, MM, 0])).w;
+    const remembered = () => page.evaluate(() => Object.keys(localStorage).filter((k) => k.startsWith('pcbjam:live-tags:')).map((k) => Object.keys(JSON.parse(localStorage.getItem(k)!) as object).length));
+    /** How far a tag hangs from its own place, 2 mm under its symbol: to the right and down, in mm of the sheet. */
+    const shiftOf = async (tag: Locator, ref: string): Promise<[number, number]> => {
+      const sym = await symbolOf(page, ref);
+      const cx = (sym.bbox[0]! + sym.bbox[2]!) / 2;
+      const own = await onScreen(page, [cx, sym.bbox[3]! + 2 * MM, cx + MM, 0]); // its width: the px of 1 mm
+      const got = await rectOf(tag);
+      return [(got.x + got.w / 2 - own.x) / own.w, (got.y - own.y) / own.w];
+    };
+    const farFrom = async (tag: Locator, ref: string, want: [number, number]): Promise<number> => {
+      const [dx, dy] = await shiftOf(tag, ref);
+      return Math.max(Math.abs(dx - want[0]), Math.abs(dy - want[1]));
+    };
+    /** How many times its full size the tag is drawn at. */
+    const drawnAt = (tag: Locator): Promise<number> => tag.evaluate((el) => el.getBoundingClientRect().height / (el as HTMLElement).offsetHeight);
+    /** The size that goes with a zoom: full from 5 to 8 px a mm, smaller with the sheet below, larger with it above. */
+    const sizeFor = (px: number): number => (px < 5 ? Math.max(0.7, px / 5) : Math.min(8, Math.max(1, px / 8)));
+    const wheelIn = async (message: string): Promise<void> => {
+      const was = await scale();
+      await page.mouse.wheel(0, -120);
+      await expect.poll(scale, { message, timeout: 15000 }).toBeGreaterThan(was * 1.1);
+    };
+    const wheelOut = async (message: string): Promise<void> => {
+      const was = await scale();
+      await page.mouse.wheel(0, 120);
+      await expect.poll(scale, { message, timeout: 15000 }).toBeLessThan(was * 0.95);
+    };
+
+    await expect(meter).toHaveCount(1, { timeout: 30000 });
+    await expect(number).toHaveText('769 mV', { timeout: 15000 });
+    await expect(meter, 'the tag is at its own place').toHaveAttribute('data-moved', 'false');
+    await expect(slider).toHaveAttribute('data-moved', 'false');
+    await expect(line('M1'), 'and has no line').toHaveCount(0);
+    expect(await remembered(), 'nothing is remembered yet').toEqual([]);
+    const symbol = await symbolOf(page, 'M1');
+
+    // --- the meter's number: dragged anywhere on it ---------------------------
+    const m0 = await rectOf(meter);
+    const px0 = await pxPerMm();
+    await page.mouse.move(m0.x + m0.w / 2, m0.y + m0.h / 2);
+    await page.mouse.down();
+    await page.mouse.move(m0.x + m0.w / 2 + 90, m0.y + m0.h / 2 + 60, { steps: 6 });
+    await page.mouse.up();
+    await expect(meter).toHaveAttribute('data-moved', 'true');
+    await expect
+      .poll(async () => {
+        const now = await rectOf(meter);
+        return [Math.round(now.x - m0.x), Math.round(now.y - m0.y)];
+      }, { message: 'the tag went with the mouse', timeout: 15000 })
+      .toEqual([90, 60]);
+    const put: [number, number] = [90 / px0, 60 / px0];
+    expect(await farFrom(meter, 'M1', put), 'that far from its own place on the sheet, in mm').toBeLessThan(0.3);
+    await expect(line('M1'), 'a line leads to where it belongs').toHaveCount(1);
+    await expect(number, 'it still shows its number').toHaveText('769 mV');
+    expect(await remembered(), 'the browser remembers one tag of this project').toEqual([1]);
+    const after = await symbolOf(page, 'M1');
+    expect([after.x, after.y], 'the editor did not hear the drag: the symbol is where it was').toEqual([symbol.x, symbol.y]);
+
+    // --- the wheel over a tag is the editor's; the tag keeps its place on the sheet
+    const m1 = await rectOf(meter);
+    await page.mouse.move(m1.x + m1.w / 2, m1.y + m1.h / 2);
+    await wheelIn('the wheel over the tag zooms the schematic in');
+    await expect.poll(() => farFrom(meter, 'M1', put), { message: 'zoomed in: as far from its symbol on the sheet as before', timeout: 15000 }).toBeLessThan(0.3);
+    expect(await farFrom(slider, 'RV1', [0, 0]), 'a tag that was not moved is under its symbol').toBeLessThan(0.3);
+    const near = await pxPerMm();
+    expect(Math.abs((await drawnAt(meter)) - sizeFor(near)), `at ${near.toFixed(1)} px a mm the tag has the size that goes with it`).toBeLessThan(0.03);
+
+    // --- zoomed in close, the tags grow with the sheet ------------------------
+    for (const message of ['closer', 'and closer', 'and closer still']) await wheelIn(message);
+    const close = await pxPerMm();
+    expect(close, 'close enough for the tags to grow').toBeGreaterThan(10);
+    await expect.poll(async () => Math.abs((await drawnAt(meter)) - sizeFor(close)), { message: 'the tag grew with the sheet', timeout: 15000 }).toBeLessThan(0.05);
+    expect(await drawnAt(meter), 'it is larger than its full size').toBeGreaterThan(1.2);
+    await expect.poll(() => farFrom(meter, 'M1', put), { message: 'and is still as far from its symbol on the sheet', timeout: 15000 }).toBeLessThan(0.3);
+
+    // --- zoomed out, the tags are drawn smaller -------------------------------
+    for (const message of ['out again', 'and out', 'and out', 'and out once more']) await wheelOut(message);
+    const far = await pxPerMm();
+    expect(far, 'far enough for the tags to shrink').toBeLessThan(4.5);
+    await expect.poll(async () => Math.abs((await drawnAt(meter)) - sizeFor(far)), { message: 'the tag is drawn smaller', timeout: 15000 }).toBeLessThan(0.03);
+    expect(await drawnAt(slider), 'and so is the slider').toBeLessThan(0.95);
+    await expect.poll(() => farFrom(meter, 'M1', put), { message: 'zoomed out: still as far from its symbol on the sheet', timeout: 15000 }).toBeLessThan(0.5);
+
+    // --- the slider: moved by its words, and its knob still works -------------
+    const w0 = await rectOf(words);
+    const s0 = await rectOf(slider);
+    await page.mouse.move(w0.x + w0.w / 2, w0.y + w0.h / 2);
+    await page.mouse.down();
+    await page.mouse.move(w0.x + w0.w / 2 - 70, w0.y + w0.h / 2 + 50, { steps: 6 });
+    await page.mouse.up();
+    await expect(slider).toHaveAttribute('data-moved', 'true');
+    await expect
+      .poll(async () => {
+        const now = await rectOf(slider);
+        return [Math.round(now.x - s0.x), Math.round(now.y - s0.y)];
+      }, { message: 'the slider went with the mouse', timeout: 15000 })
+      .toEqual([-70, 50]);
+    await expect(slider, 'the drag did not turn the dial').toHaveAttribute('data-percent', '50');
+    await slider.getByRole('slider').focus();
+    await page.keyboard.press('End');
+    await expect(slider).toHaveAttribute('data-percent', '100');
+    await expect(number, 'the moved slider sets its part').toHaveText('2.50 V', { timeout: 15000 });
+    expect(await remembered()).toEqual([2]);
+    await expect(layer(page), 'no dialog opened, nothing else happened in the editor').toHaveCount(1);
+
+    // --- the next run finds the tags where they were put ----------------------
+    await clickRow(page, 'idle');
+    await expect(layer(page)).toHaveCount(0);
+    await clickRow(page, 'running');
+    await expect(meter).toHaveAttribute('data-moved', 'true', { timeout: 30000 });
+    await expect(slider).toHaveAttribute('data-moved', 'true');
+    await expect.poll(() => farFrom(meter, 'M1', put), { message: 'the meter is where it was put', timeout: 15000 }).toBeLessThan(0.5);
+    await expect(line('M1')).toHaveCount(1);
+    await expect(line('RV1')).toHaveCount(1);
+
+    // --- a double-click puts a tag back ---------------------------------------
+    await meter.dblclick();
+    await expect(meter).toHaveAttribute('data-moved', 'false');
+    await expect(line('M1')).toHaveCount(0);
+    await expect.poll(() => farFrom(meter, 'M1', [0, 0]), { message: 'the meter is under its symbol again', timeout: 15000 }).toBeLessThan(0.5);
+    expect(await remembered()).toEqual([1]);
+    await words.dblclick();
+    await expect(slider).toHaveAttribute('data-moved', 'false');
+    await expect.poll(() => farFrom(slider, 'RV1', [0, 0]), { message: 'and the slider under its', timeout: 15000 }).toBeLessThan(0.5);
+    expect(await remembered(), 'every tag is back: nothing is remembered').toEqual([]);
+    await expect(layer(page), 'the double-clicks were the tags\': no dialog of the editor').toHaveCount(1);
+    await expect(page.getByTestId('live-sim-error')).toHaveCount(0);
   });
 
   test('the widgets stay on their symbols; pan, zoom and dialogs are the editor\'s', async ({ page }) => {
