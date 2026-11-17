@@ -1,6 +1,5 @@
 import * as React from "react";
-import { panelLayout, snapPanelMove, snapTargets } from "@/overlay/panel-layout";
-import type { SnapTarget } from "@/overlay/panel-snap";
+import { registerPanel, startPanelDrag, type PanelDrag } from "@/overlay/panel-layout";
 
 /**
  * Shared draggable-overlay behavior (comments-ux 0001 B), extracted from the
@@ -17,9 +16,10 @@ import type { SnapTarget } from "@/overlay/panel-snap";
  * applies. Live window resizes re-clamp mid-session, so the handle can never
  * be stranded outside the viewport.
  *
- * Panels snap (overlay-system 0007): to the window's edges, the other panels (roots marked
- * `data-snap-panel`) and the editor's drawing area and toolbars, unless Alt is held. A locked
- * layout doesn't start a drag at all, so a click on the handle stays a click.
+ * Panels snap (overlay-system 0007): to the window's edges, the other panels and the
+ * editor's drawing area, toolbars and panes, unless Alt is held; panels stacked under this one
+ * move with it. A locked layout or a pinned panel doesn't start a drag at all, so a click on the
+ * handle stays a click. The caller puts `data-snap-panel={snapId}` on the panel's root.
  */
 
 type Pos = { x: number; y: number };
@@ -75,8 +75,10 @@ export function useDraggablePanel(opts: {
   handleWidth: number;
   handleHeight: number;
   margin?: number;
+  /** False: Arrange leaves it where it is (a button, not a panel). */
+  arrange?: false;
 }) {
-  const { storageKey, handleWidth, handleHeight, margin = 4 } = opts;
+  const { storageKey, handleWidth, handleHeight, margin = 4, arrange } = opts;
 
   const clamp = React.useCallback(
     (p: Pos): Pos => {
@@ -122,6 +124,24 @@ export function useDraggablePanel(opts: {
     [storageKey, handleWidth, handleHeight, margin],
   );
 
+  // Where the store last moved it (a stack, an anchor, Arrange): what its commit saves.
+  const latest = React.useRef<Pos | null>(pos);
+  React.useEffect(
+    () =>
+      registerPanel({
+        id: storageKey,
+        arrange,
+        moveTo: (x, y) => {
+          latest.current = clamp({ x, y });
+          setPos(latest.current);
+        },
+        commit: () => {
+          if (latest.current) persist(latest.current);
+        },
+      }),
+    [storageKey, arrange, clamp, persist],
+  );
+
   // A live resize must not strand the handle outside the shrunken viewport.
   React.useEffect(() => {
     const onResize = () => setPos((p) => (p ? clamp(p) : p));
@@ -137,14 +157,14 @@ export function useDraggablePanel(opts: {
     width: number;
     height: number;
     moved: boolean;
-    targets: SnapTarget[] | null;
-    self: Element | null;
+    session: PanelDrag;
   } | null>(null);
 
   /** `handleRect` = the dragged element's current rect (measured by caller —
    *  the handle may not be the element being repositioned). */
   const onPointerDown = (e: React.PointerEvent, handleRect: { x: number; y: number; width?: number; height?: number }) => {
-    if (panelLayout.get().locked) return;
+    const session = startPanelDrag(storageKey);
+    if (!session) return;
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
     dragRef.current = {
       startX: e.clientX,
@@ -154,8 +174,7 @@ export function useDraggablePanel(opts: {
       width: handleRect.width ?? handleWidth,
       height: handleRect.height ?? handleHeight,
       moved: false,
-      targets: null,
-      self: (e.currentTarget as Element).closest("[data-snap-panel]"),
+      session,
     };
   };
 
@@ -170,11 +189,10 @@ export function useDraggablePanel(opts: {
       d.moved = true;
       crossed = true;
     }
-    // What it may snap to, read once the drag starts (the layout doesn't move meanwhile).
-    d.targets ??= snapTargets(d.self);
     const next = { x: d.baseX + (e.clientX - d.startX), y: d.baseY + (e.clientY - d.startY), w: d.width, h: d.height };
-    const snapped = snapPanelMove(next, d.targets, e.altKey);
-    setPos(clamp({ x: snapped.x, y: snapped.y }));
+    const snapped = d.session.move(next, e.altKey);
+    latest.current = clamp({ x: snapped.x, y: snapped.y });
+    setPos(latest.current);
     return crossed;
   };
 
@@ -183,10 +201,10 @@ export function useDraggablePanel(opts: {
     const d = dragRef.current;
     dragRef.current = null;
     if (!d) return false;
-    panelLayout.clearGuides();
     if (d.moved) setPos((p) => (p ? (persist(p), p) : p));
+    d.session.end(d.moved);
     return d.moved;
   };
 
-  return { pos, onPointerDown, onPointerMove, onPointerUp };
+  return { pos, onPointerDown, onPointerMove, onPointerUp, snapId: storageKey };
 }

@@ -12,7 +12,7 @@ import {
   Moon,
   PanelsTopLeft,
   RefreshCw,
-  Sun, MessageSquare, Eye, ArrowRightLeft, Smartphone, Type, Magnet, Lock } from "lucide-react";
+  Sun, MessageSquare, Eye, ArrowRightLeft, Smartphone, Type, Magnet, Lock, LayoutGrid } from "lucide-react";
 import type { Tool } from "@pcbjam/shared";
 import { setTheme } from "@/lib/theme";
 import type { SourceDescriptor } from "@/lib/project-source-shared";
@@ -620,7 +620,8 @@ function ReportProblemRow() {
 
 /**
  * The floating panels' layout (overlay-system 0007): snapping to edges, other panels and the
- * editor's toolbars (Alt while dragging drops anywhere), and a lock against stray drags.
+ * editor's toolbars and panes (Alt while dragging drops anywhere), Arrange, and a lock against
+ * stray drags.
  */
 function PanelLayoutToggles() {
   const { snap, locked } = usePanelLayout();
@@ -632,6 +633,12 @@ function PanelLayoutToggles() {
           <Magnet size={14} className={icon} />
           <span>Snap panels</span>
         </Toggle>
+      </Tip>
+      <Tip content="Line the panels up in columns along the drawing area's right edge; they stay there when the layout changes. Pinned panels stay put.">
+        <Button data-testid="panels-arrange" variant="plain" size="row" className={overlayRowClass} disabled={locked} onClick={panelLayout.arrange}>
+          <LayoutGrid size={14} className={icon} />
+          <span>Arrange panels</span>
+        </Button>
       </Tip>
       <Tip content="Locked panels don't move or resize. Their buttons still work.">
         <Toggle data-testid="panels-lock-toggle" variant="ghost" size="row" pressed={locked} onPressedChange={panelLayout.setLocked} className={overlayRowClass}>

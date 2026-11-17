@@ -126,6 +126,7 @@ export function OverlayMenu({
     storageKey: POS_KEY,
     handleWidth: FAB_SIZE,
     handleHeight: FAB_SIZE,
+    arrange: false,
   });
   const pos = drag.pos;
 
@@ -173,7 +174,7 @@ export function OverlayMenu({
   const onTopHalf = pos ? pos.y < window.innerHeight / 2 : true;
 
   return (
-    <div ref={rootRef} data-snap-panel="" className="absolute z-50" style={style}>
+    <div ref={rootRef} data-snap-panel={drag.snapId} className="absolute z-50" style={style}>
       <Tip content="Session menu - drag to move">
         <Button
           type="button"

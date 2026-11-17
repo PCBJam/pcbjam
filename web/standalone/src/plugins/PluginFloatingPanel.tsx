@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { ChevronDown, ChevronRight, RotateCcw, X } from 'lucide-react';
 import { usePluginPanelLayout } from './usePluginPanelLayout';
+import { PanelPin } from '@/overlay/PanelPin';
 import { Button, Tip } from "@pcbjam/ui";
 import { overlayIconClass } from "@/components/OverlayMenu";
 
@@ -27,7 +28,7 @@ export function PluginFloatingPanel({ title, storageKey, preferredSize, forceExp
   React.useEffect(() => { root.current?.focus(); }, []);
   const iconButton = 'p-1 ' + overlayIconClass;
   // data-overlay-obstacle: guide cards are placed around the panel, not over it.
-  return <div ref={root} role="region" aria-label={title + ' plugin'} tabIndex={-1} data-testid="plugin-panel" data-overlay-obstacle="" data-snap-panel=""
+  return <div ref={root} role="region" aria-label={title + ' plugin'} tabIndex={-1} data-testid="plugin-panel" data-overlay-obstacle="" data-snap-panel={layout.snapId}
     className="absolute z-40 flex flex-col overflow-hidden rounded-xl bg-white/95 text-neutral-900 shadow-2xl outline-none ring-1 ring-inset ring-black/10 backdrop-blur-sm dark:bg-neutral-950/90 dark:text-white dark:ring-white/15"
     style={{
       left: layout.bounds.x, top: layout.bounds.y,
@@ -56,6 +57,7 @@ export function PluginFloatingPanel({ title, storageKey, preferredSize, forceExp
           <span className="min-w-0 flex-1 truncate">{title}</span>
         </Tip>
         <span className="flex gap-0.5" onPointerDown={event => event.stopPropagation()}>
+          <PanelPin id={layout.snapId} className="order-none" />
           <Tip content="Restart plugin">
             <Button type="button" variant="plain" size="icon-xs" className={iconButton} aria-label="Restart plugin" onClick={onRestart}><RotateCcw size={14} /></Button>
           </Tip>

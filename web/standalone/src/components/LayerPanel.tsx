@@ -1,4 +1,5 @@
 import * as React from "react";
+import { PanelPin } from "@/overlay/PanelPin";
 import { ChevronDown, ChevronRight, Eye, EyeOff, X } from "lucide-react";
 import { useDraggablePanel } from "@/components/useDraggablePanel";
 import { Button, Tip, Toggle } from "@pcbjam/ui";
@@ -159,7 +160,7 @@ export function LayerPanel({
 
   return (
     <div
-      ref={rootRef} data-snap-panel=""
+      ref={rootRef} data-snap-panel={drag.snapId}
       data-testid="layers-panel"
       className="absolute z-40 flex w-64 flex-col overflow-hidden rounded-xl bg-white/95 text-neutral-900 shadow-2xl ring-1 ring-inset ring-black/10 backdrop-blur-sm dark:bg-neutral-950/90 dark:text-white dark:ring-white/15"
       style={style}
@@ -175,6 +176,7 @@ export function LayerPanel({
           onPointerMove={(e) => void drag.onPointerMove(e)}
           onPointerUp={() => void drag.onPointerUp()}
         >
+          <PanelPin id={drag.snapId} />
           <Tip content={collapsed ? "Expand" : "Collapse to header"}>
             <Button
               data-testid="layers-panel-collapse"

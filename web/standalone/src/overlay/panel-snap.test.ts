@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { nameToolbar, snapMove, snapResize, SNAP_GAP, SNAP_MARGIN, type SnapTarget } from "./panel-snap";
+import { anchoredAt, arrangeColumns, nameToolbar, snapMove, snapResize, SNAP_GAP, SNAP_MARGIN, WINDOW, type SnapTarget } from "./panel-snap";
 
 const view = { w: 1200, h: 800 };
 const sheets: SnapTarget = { rect: { x: 900, y: 100, w: 256, h: 200 }, name: "Sheets", kind: "panel" };
@@ -68,5 +68,37 @@ describe("nameToolbar", () => {
     expect(nameToolbar({ x: 0, y: 60, w: 36, h: 700 }, area)).toBe("the left toolbar");
     expect(nameToolbar({ x: 1150, y: 60, w: 36, h: 700 }, area)).toBe("the right toolbar");
     expect(nameToolbar({ x: 0, y: 20, w: 1200, h: 36 }, area)).toBe("the top toolbar");
+  });
+});
+
+describe("anchors", () => {
+  it("records the editor part or window edge a panel snapped to, not another panel", () => {
+    const bar = { ...leftBar, key: "bar:the left toolbar:0" };
+    const s = snapMove({ x: 36 + SNAP_GAP + 3, y: 800 - SNAP_MARGIN - 150 - 4, w: 200, h: 150 }, [bar, sheets], view);
+    expect(s.anchors.x).toEqual({ key: "bar:the left toolbar:0", ref: "end", offset: SNAP_GAP, edge: "start" });
+    expect(s.anchors.y).toEqual({ key: WINDOW, ref: "end", offset: -SNAP_MARGIN, edge: "end" });
+    expect(snapMove({ x: 905, y: 400, w: 256, h: 100 }, [sheets], view).anchors).toEqual({});
+  });
+
+  it("puts an anchored panel back against its toolbar when the toolbar moves, and leaves it when the toolbar is gone", () => {
+    const anchor = { key: "bar:the left toolbar:0", ref: "end" as const, offset: SNAP_GAP, edge: "start" as const };
+    const wider = [{ ...leftBar, key: "bar:the left toolbar:0", rect: { ...leftBar.rect, w: 60 } }];
+    expect(anchoredAt(anchor, "x", 200, wider, view)).toBe(60 + SNAP_GAP);
+    expect(anchoredAt(anchor, "x", 200, [], view)).toBeNull();
+    // Against the window's right edge: its right edge stays 8 px in as the window narrows.
+    const right = { key: WINDOW, ref: "end" as const, offset: -SNAP_MARGIN, edge: "end" as const };
+    expect(anchoredAt(right, "x", 300, [], { w: 1000, h: 800 })).toBe(1000 - SNAP_MARGIN - 300);
+  });
+});
+
+describe("arrangeColumns", () => {
+  it("stacks panels down the region's right edge and starts a new column when one would overflow", () => {
+    const region = { x: 40, y: 60, w: 1100, h: 500 };
+    const at = arrangeColumns([{ w: 256, h: 200 }, { w: 200, h: 150 }, { w: 300, h: 200 }], region);
+    const right = 40 + 1100 - SNAP_GAP;
+    expect(at[0]).toEqual({ x: right - 256, y: 60 + SNAP_GAP });
+    expect(at[1]).toEqual({ x: right - 200, y: 60 + SNAP_GAP + 200 + SNAP_GAP });
+    // 68 + 200 + 8 + 150 + 8 + 200 > 552: the third goes left of the first column.
+    expect(at[2]).toEqual({ x: right - 256 - SNAP_GAP - 300, y: 60 + SNAP_GAP });
   });
 });
