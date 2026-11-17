@@ -302,7 +302,7 @@ describe("the parts of the open schematic", () => {
       ".tran 1m 100000 0 1m",
       ".end",
     ]);
-    expect(run.power).toEqual({ byName: [{ net: "+5V", volts: 5 }], noVolts: [], assumed: [] });
+    expect(run.power).toEqual({ byName: [{ net: "+5V", volts: 5 }], noVolts: [], assumed: [], noPower: [], unfed: [] });
     // K1 is only a suggestion: it is left out, and so is its placeholder line.
     expect(run.notSimulated).toEqual(["K1"]);
     expect(run.placed.map((p) => [p.ref, p.partId, p.name])).toEqual([["D1", "led", "XD1"], ["SW1", "push-button", "XSW1"]]);

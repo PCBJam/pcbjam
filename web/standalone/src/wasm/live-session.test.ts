@@ -28,7 +28,7 @@ const prepared = (over: Partial<PreparedRun> = {}): PreparedRun => ({
   codeParts: [],
   placed: [],
   notSimulated: [],
-  power: { byName: [], noVolts: [], assumed: [] },
+  power: { byName: [], noVolts: [], assumed: [], noPower: [], unfed: [] },
   notes: [],
   errors: [],
   plan: [],
@@ -465,7 +465,7 @@ describe("where the power of a run comes from", () => {
   afterEach(() => {
     vi.useRealTimers();
   });
-  const none = { byName: [], noVolts: [], assumed: [] };
+  const none = { byName: [], noVolts: [], assumed: [], noPower: [], unfed: [] };
 
   it("is said once the circuit runs, in a notice of its own", async () => {
     const power = { ...none, byName: [{ net: "+5V", volts: 5 }] };
@@ -510,6 +510,24 @@ describe("where the power of a run comes from", () => {
       .toBe("Not powered, their names do not say a voltage: VCC, VDD. A battery or a voltage source on a wire powers it.");
   });
 
+  it("names the chips that have nothing on a supply pin, with the pins", () => {
+    expect(powerNote({ ...none, noPower: [{ ref: "U1", pins: ["4", "8"] }] })).toBe("U1 has no power: nothing is connected to its supply pins 4 and 8.");
+    expect(powerNote({ ...none, noPower: [{ ref: "U2", pins: ["8"] }] })).toBe("U2 has no power: nothing is connected to its supply pin 8.");
+    expect(powerNote({ ...none, noPower: [{ ref: "U1", pins: ["4", "8"] }, { ref: "U2", pins: ["8"] }] }))
+      .toBe("No power, nothing is connected to their supply pins: U1 (4, 8), U2 (8).");
+  });
+
+  it("names the regulators that no source reaches, with the input pin", () => {
+    expect(powerNote({ ...none, unfed: [{ ref: "U1", pins: ["3"] }] })).toBe("U1 gives no power: no source reaches its input (pin 3).");
+    expect(powerNote({ ...none, unfed: [{ ref: "U1", pins: ["3"] }, { ref: "U2", pins: ["1"] }] }))
+      .toBe("Give no power, no source reaches their inputs: U1 (3), U2 (1).");
+    // a real board: its power comes in through a connector, and the regulator's output wire says its voltage
+    expect(powerNote({ ...none, byName: [{ net: "+3V3", volts: 3.3 }], noVolts: ["VBUS"], unfed: [{ ref: "U1", pins: ["3"] }] })).toBe(
+      "+3V3 is powered with 3.3 V, by its name. VBUS is not powered: its name does not say a voltage. A battery or a voltage source on the wire powers it. "
+      + "U1 gives no power: no source reaches its input (pin 3).",
+    );
+  });
+
   it("names the batteries that run with a voltage their value does not say", () => {
     const bt2 = { ref: "BT2", label: "Voltage", value: "1.5", unit: "V" };
     expect(powerNote({ ...none, assumed: [bt2] })).toBe("BT2 runs with 1.5 V: its value does not say the voltage.");
@@ -518,9 +536,9 @@ describe("where the power of a run comes from", () => {
   });
 
   it("is one notice for all of it", () => {
-    expect(powerNote({ byName: [{ net: "+5V", volts: 5 }], noVolts: ["VCC"], assumed: [{ ref: "BT1", label: "Voltage", value: "9", unit: "V" }] })).toBe(
+    expect(powerNote({ byName: [{ net: "+5V", volts: 5 }], noVolts: ["VCC"], assumed: [{ ref: "BT1", label: "Voltage", value: "9", unit: "V" }], noPower: [{ ref: "U1", pins: ["8"] }], unfed: [] })).toBe(
       "+5V is powered with 5 V, by its name. VCC is not powered: its name does not say a voltage. A battery or a voltage source on the wire powers it. "
-      + "BT1 runs with 9 V: its value does not say the voltage.",
+      + "U1 has no power: nothing is connected to its supply pin 8. BT1 runs with 9 V: its value does not say the voltage.",
     );
   });
 });

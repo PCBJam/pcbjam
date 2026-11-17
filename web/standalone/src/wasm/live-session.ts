@@ -132,18 +132,29 @@ export function leftOutNote(refs: readonly string[]): string | null {
   return `Not simulated, nothing has a model for them: ${firstFew(refs)}. The rest of the circuit runs.`;
 }
 
+/** "pin 8" or "pins 4 and 8". */
+const pinsOf = (pins: readonly string[]): string =>
+  pins.length === 1 ? `pin ${pins[0]}` : `pins ${pins.slice(0, -1).join(", ")} and ${pins[pins.length - 1]}`;
+
 /**
  * The notice about where a run's power comes from, when the schematic does not draw all of
- * it: the supply wires powered by their names, the supply wires that stay without power, and
- * the batteries whose voltage is the part's own. Null when there is nothing to say.
+ * it: the supply wires powered by their names, the supply wires that stay without power, the
+ * regulators that no source reaches, the chips with nothing on a supply pin, and the
+ * batteries whose voltage is the part's own. Null when there is nothing to say.
  */
 export function powerNote(power: Power): string | null {
   const out: string[] = [];
-  const { byName, noVolts, assumed } = power;
+  const { byName, noVolts, assumed, noPower, unfed } = power;
   if (byName.length === 1) out.push(`${byName[0]?.net} is powered with ${byName[0]?.volts} V, by its name.`);
   else if (byName.length) out.push(`Powered by their names: ${firstFew(byName.map((s) => `${s.net} with ${s.volts} V`))}.`);
   if (noVolts.length === 1) out.push(`${noVolts[0]} is not powered: its name does not say a voltage. A battery or a voltage source on the wire powers it.`);
   else if (noVolts.length) out.push(`Not powered, their names do not say a voltage: ${firstFew(noVolts)}. A battery or a voltage source on a wire powers it.`);
+  // a regulator with nothing to regulate: the wire on its output keeps the power of its name, if it states one
+  if (unfed.length === 1) out.push(`${unfed[0]?.ref} gives no power: no source reaches its input (${pinsOf(unfed[0]?.pins ?? [])}).`);
+  else if (unfed.length) out.push(`Give no power, no source reaches their inputs: ${firstFew(unfed.map((c) => `${c.ref} (${c.pins.join(", ")})`))}.`);
+  // a chip with a supply pin left open (or the unit with its supply pins not placed) does nothing
+  if (noPower.length === 1) out.push(`${noPower[0]?.ref} has no power: nothing is connected to its supply ${pinsOf(noPower[0]?.pins ?? [])}.`);
+  else if (noPower.length) out.push(`No power, nothing is connected to their supply pins: ${firstFew(noPower.map((c) => `${c.ref} (${c.pins.join(", ")})`))}.`);
   const runs = assumed.map((a) => `${a.ref} runs with ${a.value}${a.unit ? ` ${a.unit}` : ""}`);
   if (assumed.length === 1) out.push(`${runs[0]}: its value does not say the ${(assumed[0]?.label ?? "").toLowerCase()}.`);
   else if (assumed.length) out.push(`${firstFew(runs)}: their values do not say it.`);

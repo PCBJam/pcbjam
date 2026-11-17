@@ -36,7 +36,27 @@ import { openOverlayMenu } from './overlay-menu';
  * the level 5 V gives it, and a notice says which wire was powered and which
  * was not (VCC: its name states no voltage).
  *
- * The same schematic runs once more with another part on its lamp symbol: one
+ * A third schematic, chips.kicad_sch, has a chip with three units, the way
+ * KiCad draws a dual op-amp: two amplifiers and a unit with the supply pins.
+ * It is placed twice, each time with one amplifier that feeds a lamp. U1 has
+ * its supply unit too. Its second amplifier is not placed, so the editor
+ * reads no pins for it: the part says a symbol may lack them, and they are
+ * left open. The part's line for the symbol says a setting (the output stays
+ * 2 V under the supply), and the lamp shows the 3 V that gives. U2 has no
+ * supply unit: its lamp stays dark and the notice names the chip and its two
+ * supply pins. The part asks for Gear's method, so this run is computed
+ * with it.
+ *
+ * A fourth schematic, regulators.kicad_sch, has a regulator placed twice,
+ * each with a lamp on the wire at its output. The part says it passes on the
+ * power it takes in at its input. U1's input is on the wire +5V, which is
+ * powered by its name: U1 is the source of the wire at its output, and the
+ * lamp shows the 2 V the part gives, not the 3.3 V of that wire's name
+ * (+3V3). U2's input is on VCC, a name that states no voltage. No source
+ * reaches U2: the notice names it with its input pin, and the wire at its
+ * output (+6V) keeps the power of its name.
+ *
+ * The second schematic runs once more with another part on its lamp symbol: one
  * with seven currents, shown as a 7-segment digit and as one light that mixes
  * two of them. Three of the currents flow, so the digit shows a 7 and the
  * light is yellow (red and green). The part's line for the symbol says where
@@ -193,6 +213,48 @@ const SENSOR_PARTS: TestPart[] = [
     }),
 ];
 
+// A chip with two amplifiers behind one pair of supply pins. An amplifier puts its plus input
+// on its output, at most HIGH volts under the supply, and nothing without the supply. Any of
+// its pins may be missing (a unit that is not placed). The line for the symbol says HIGH is 2.
+const CHIP_PINS = ['INP1', 'INN1', 'OUT1', 'INP2', 'INN2', 'OUT2', 'VP', 'VN'];
+const CHIP_PARTS: TestPart[] = [
+  ...PARTS,
+  part('e2e-amp2', 'Test:AMP2', 'E2E_AMP2', [
+    `.subckt E2E_AMP2 ${CHIP_PINS.join(' ')} HIGH=0`,
+    ...CHIP_PINS.map((pin) => `R${pin} ${pin} 0 1G`),
+    'Bpw pw 0 V = V(VP, VN) > 2 ? 1 : 0',
+    'B1 g1 0 V = V(pw) * min(V(INP1), V(VP) - {HIGH})', 'Ro1 g1 OUT1 10',
+    'B2 g2 0 V = V(pw) * min(V(INP2), V(VP) - {HIGH})', 'Ro2 g2 OUT2 10',
+    '.ends E2E_AMP2', '',
+  ].join('\n'), {
+    fits: [{ symbol: 'Test:AMP2', pins: { INP1: '3', INN1: '2', OUT1: '1', INP2: '5', INN2: '6', OUT2: '7', VP: '8', VN: '4' }, set: { high: '2' } }],
+    pins: CHIP_PINS,
+    mayLack: CHIP_PINS,
+    powered: ['VP', 'VN'],
+    settings: [{ name: 'high', label: 'Under the supply', unit: 'V', default: '0', accept: '^[0-9]+$' }],
+    analog: { file: 'model.lib', subckt: 'E2E_AMP2', params: { HIGH: '$high' }, method: 'gear' },
+  }),
+];
+
+// A regulator: 2 V at its output while its input has more, and nothing flows back into it.
+// It is a source for the wire at its output only when a source reaches its input.
+const REG_PINS = ['IN', 'OUT', 'COM'];
+const REG_PARTS: TestPart[] = [
+  ...PARTS,
+  part('e2e-reg', 'Test:REG', 'E2E_REG', [
+    `.subckt E2E_REG ${REG_PINS.join(' ')}`,
+    ...REG_PINS.map((pin) => `R${pin} ${pin} 0 1G`),
+    'Bt t COM V = min(2, V(IN, COM))',
+    'Bp t OUT I = max(0, V(t, OUT))',
+    '.ends E2E_REG', '',
+  ].join('\n'), {
+    fits: [{ symbol: 'Test:REG', pins: { IN: '1', COM: '2', OUT: '3' } }],
+    pins: REG_PINS,
+    supplies: ['OUT'],
+    suppliesFrom: ['IN'],
+  }),
+];
+
 // The lamp symbols as parts that turn and sound. 500 ohm: 10 mA from 5 V, which is the full
 // speed and the full loudness; the part follows its current within 20 ms. Its speed leaves
 // it as a current (1 A is the full speed), and so do its turns a minute (1200 at the most).
@@ -226,6 +288,7 @@ function snapshotFiles(parts: TestPart[]): Record<string, string> {
     files[`${SNAPSHOT}/parts/${id}/model.lib`] = model;
     index.parts.push({
       id, version: 1, title: manifest.title, description: '', fits: manifest.fits, pins: manifest.pins, code: false,
+      ...(manifest.mayLack ? { mayLack: manifest.mayLack } : {}),
       files: [fileEntry('part.json', manifestText), fileEntry('model.lib', model)],
     });
   }
@@ -491,6 +554,61 @@ test.describe('live simulation: the widgets on the sheet', () => {
     await expect(layer(page)).toHaveAttribute('data-widgets', '1', { timeout: 30000 });
     await expect.poll(() => level(lamp), { message: 'L1 is lit by the 5 V of its wire', timeout: 30000 }).toBeGreaterThan(0.74);
     expect(await level(lamp)).toBeLessThan(0.78);
+
+    await clickRow(page, 'idle');
+    await expect(layer(page)).toHaveCount(0);
+  });
+
+  test('a chip with several units: a unit that is not placed is left open, a chip without its supply is named', async ({ page }) => {
+    test.setTimeout(300000);
+    await turnFeatureOn(page);
+    await serveLibrary(page, CHIP_PARTS);
+    await bootSchematic(page, 'chips');
+
+    await clickRow(page, 'running');
+    await expect(page.getByTestId('live-sim-error')).toHaveCount(0);
+    const notice = page.getByTestId('live-sim-power');
+    await expect(notice, 'the chip without its supply unit is named, with its supply pins').toContainText('U2 has no power: nothing is connected to its supply pins 4 and 8.');
+    await expect(notice, 'the chip that has its supply is not').not.toContainText('U1');
+
+    // U1 puts its 5 V input on its output, 2 V under the supply as its line says: 3 V over
+    // 10 + 330 + 330 ohm is 4.5 mA of the 10 mA that is full level. (With the part's own 0 V
+    // it would be 7.5 mA.) Its other amplifier is not placed and stops nothing.
+    await expect(layer(page)).toHaveAttribute('data-widgets', '2', { timeout: 30000 });
+    const lit = widget(page, 'glow', 'L1');
+    await expect.poll(() => level(lit), { message: 'L1 is lit by the 3 V of U1', timeout: 30000 }).toBeGreaterThan(0.43);
+    expect(await level(lit)).toBeLessThan(0.47);
+    expect(await level(widget(page, 'glow', 'L2')), 'U2 has no power: its lamp is dark').toBeLessThan(0.01);
+
+    await clickRow(page, 'idle');
+    await expect(layer(page)).toHaveCount(0);
+  });
+
+  test('a regulator is the source of its output wire when a source reaches it; one that none reaches is named', async ({ page }) => {
+    test.setTimeout(300000);
+    await turnFeatureOn(page);
+    await serveLibrary(page, REG_PARTS);
+    await bootSchematic(page, 'regulators');
+
+    await clickRow(page, 'running');
+    await expect(page.getByTestId('live-sim-error')).toHaveCount(0);
+    const notice = page.getByTestId('live-sim-power');
+    await expect(notice, 'the regulator that no source reaches is named, with its input pin').toContainText('U2 gives no power: no source reaches its input (pin 1).');
+    await expect(notice, 'the wire at its output keeps the power of its name').toContainText('Powered by their names: +5V with 5 V, +6V with 6 V.');
+    await expect(notice, 'the wire at the output of U1 has its power from U1').not.toContainText('+3V3');
+    await expect(notice, 'the regulator that a source reaches is not named').not.toContainText('U1');
+    await expect(notice, 'the supply wire that got nothing is').toContainText('VCC is not powered: its name does not say a voltage.');
+
+    // U1 gives 2 V: over 330 + 330 ohm that is 3 mA of the 10 mA that is full level. The
+    // 3.3 V of the wire's name would be 5 mA. U2 gives nothing, and the 6 V of its wire's
+    // name are 9.1 mA.
+    await expect(layer(page)).toHaveAttribute('data-widgets', '2', { timeout: 30000 });
+    const fed = widget(page, 'glow', 'L1');
+    await expect.poll(() => level(fed), { message: 'L1 is lit by the 2 V of U1', timeout: 30000 }).toBeGreaterThan(0.28);
+    expect(await level(fed)).toBeLessThan(0.32);
+    const named = widget(page, 'glow', 'L2');
+    await expect.poll(() => level(named), { message: 'L2 is lit by the 6 V of its wire', timeout: 30000 }).toBeGreaterThan(0.89);
+    expect(await level(named)).toBeLessThan(0.93);
 
     await clickRow(page, 'idle');
     await expect(layer(page)).toHaveCount(0);
