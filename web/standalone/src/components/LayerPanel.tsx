@@ -159,7 +159,7 @@ export function LayerPanel({
 
   return (
     <div
-      ref={rootRef}
+      ref={rootRef} data-snap-panel=""
       data-testid="layers-panel"
       className="absolute z-40 flex w-64 flex-col overflow-hidden rounded-xl bg-white/95 text-neutral-900 shadow-2xl ring-1 ring-inset ring-black/10 backdrop-blur-sm dark:bg-neutral-950/90 dark:text-white dark:ring-white/15"
       style={style}

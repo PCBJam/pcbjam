@@ -1,4 +1,6 @@
 import * as React from 'react';
+import { panelLayout, snapPanelMove, snapPanelResize, snapTargets } from '@/overlay/panel-layout';
+import type { SnapTarget } from '@/overlay/panel-snap';
 
 type Size = { width: number; height: number };
 type Bounds = Size & { x: number; y: number };
@@ -30,6 +32,8 @@ export function usePluginPanelLayout(storageKey: string, preferredSize: Size | u
   const gesture = React.useRef<{
     kind: Gesture; pointerId: number; startX: number; startY: number;
     base: Bounds; size: Size; moved: boolean;
+    /** What it may snap to (overlay-system 0007), read once the gesture starts moving. */
+    targets: SnapTarget[] | null; self: Element | null;
   } | null>(null);
   const preferred = validSize(preferredSize) ? preferredSize : DEFAULT_SIZE;
   const requested = settings ?? preferred;
@@ -51,6 +55,7 @@ export function usePluginPanelLayout(storageKey: string, preferredSize: Size | u
     catch { /* Keep the current layout when browser storage is unavailable. */ }
   };
   const finish = () => {
+    panelLayout.clearGuides();
     if (gesture.current?.moved) persist();
     gesture.current = null;
     setInteracting(false);
@@ -83,11 +88,13 @@ export function usePluginPanelLayout(storageKey: string, preferredSize: Size | u
   };
   const onPointerDown = (event: React.PointerEvent<HTMLElement>, kind: Gesture) => {
     if (event.button !== 0 || !event.isPrimary) return;
+    // A locked layout (the session menu) neither moves nor resizes panels.
+    if (panelLayout.get().locked) return;
     event.preventDefault();
     if (kind !== 'drag') event.currentTarget.focus();
     event.currentTarget.setPointerCapture(event.pointerId);
     gesture.current = { kind, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY,
-      base: bounds, size: requested, moved: false };
+      base: bounds, size: requested, moved: false, targets: null, self: event.currentTarget.closest('[data-snap-panel]') };
     setInteracting(true);
   };
   const onPointerMove = (event: React.PointerEvent<HTMLElement>) => {
@@ -96,8 +103,20 @@ export function usePluginPanelLayout(storageKey: string, preferredSize: Size | u
     const dx = event.clientX - current.startX, dy = event.clientY - current.startY;
     if (!current.moved && Math.hypot(dx, dy) < 4) return;
     current.moved = true;
-    if (current.kind === 'drag') update({ ...current.base, x: current.base.x + dx, y: current.base.y + dy }, current.size);
-    else resize(current.base, current.kind, dx, dy);
+    current.targets ??= snapTargets(current.self);
+    const { base } = current;
+    if (current.kind === 'drag') {
+      const s = snapPanelMove({ x: base.x + dx, y: base.y + dy, w: base.width, h: base.height }, current.targets, event.altKey);
+      update({ ...base, x: s.x, y: s.y }, current.size);
+      return;
+    }
+    // The moving edges snap; resize() then clamps as before.
+    const side = current.kind;
+    const raw = side === 'right'
+      ? { x: base.x, y: base.y, w: base.width + dx, h: base.height + dy }
+      : { x: base.x + dx, y: base.y, w: base.width - dx, h: base.height + dy };
+    const s = snapPanelResize(raw, side, current.targets, event.altKey);
+    resize(base, side, side === 'right' ? s.w - base.width : base.width - s.w, s.h - base.height);
   };
   const onResizeKeyDown = (event: React.KeyboardEvent, side: 'left' | 'right') => {
     if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;

@@ -169,6 +169,7 @@ import { markDeliberateNavigation } from "@/components/wasm-tool/quit-hook";
 import { setActiveEditor } from "@/wasm/active-editor";
 import { publishViewport } from "@/wasm/viewport-store";
 import { OverlayHost } from "@/overlay/OverlayHost";
+import { SnapGuides } from "@/overlay/SnapGuides";
 import { setTourDoc } from "@/overlay/tours/checkpoints";
 import { savePartAndPlace } from "@/libs/save-part";
 import { installPartCopyBridge } from "@/libs/part-copy";
@@ -2432,6 +2433,7 @@ export function WasmTool({
 
       {/* Guided-tour overlay (overlay-system 0002): coachmarks over the editor. */}
       {ready && !fatal && <OverlayHost tool={tool} />}
+      {ready && !fatal && <SnapGuides />}
 
       {/* libs 0031: Save reached parts of a read-only library. */}
       <PartCopySaveDialog />

@@ -12,7 +12,7 @@ import {
   Moon,
   PanelsTopLeft,
   RefreshCw,
-  Sun, MessageSquare, Eye, ArrowRightLeft, Smartphone, Type } from "lucide-react";
+  Sun, MessageSquare, Eye, ArrowRightLeft, Smartphone, Type, Magnet, Lock } from "lucide-react";
 import type { Tool } from "@pcbjam/shared";
 import { setTheme } from "@/lib/theme";
 import type { SourceDescriptor } from "@/lib/project-source-shared";
@@ -23,6 +23,7 @@ import { SourceChip } from "@/components/SourceChip";
 import { OverlayMenu, OverlayMenuSection, overlayKbdClass, overlayPressedClass, overlayRowClass, useCloseOverlayMenu } from "@/components/OverlayMenu";
 import { openReportProblem } from "@/lib/diagnostics/report-problem-events";
 import { CHROME_HOTKEY_LABEL } from "./ui-helpers";
+import { panelLayout, usePanelLayout } from "@/overlay/panel-layout";
 import type { StaleLibEntry } from "./useLibNotices";
 import type { LocalFontsMenuState } from "./useLocalFonts";
 import type { LibFontsMenuState } from "./useLibFonts";
@@ -499,6 +500,7 @@ export function SessionMenu({
             </Toggle>
           </Tip>
         )}
+        <PanelLayoutToggles />
         {/* Installed fonts (fonts 0001): the browser asks for the permission once, on this
             click; after that KiCad's font lists include the computer's fonts. */}
         {localFonts && (
@@ -613,5 +615,30 @@ function ReportProblemRow() {
         <span>Report a problem</span>
       </Button>
     </Tip>
+  );
+}
+
+/**
+ * The floating panels' layout (overlay-system 0007): snapping to edges, other panels and the
+ * editor's toolbars (Alt while dragging drops anywhere), and a lock against stray drags.
+ */
+function PanelLayoutToggles() {
+  const { snap, locked } = usePanelLayout();
+  const icon = "shrink-0 text-neutral-400 dark:text-white/50";
+  return (
+    <>
+      <Tip content="Panels snap to the window, each other and the editor's toolbars. Hold Alt while dragging to drop one anywhere.">
+        <Toggle data-testid="panels-snap-toggle" variant="ghost" size="row" pressed={snap} onPressedChange={panelLayout.setSnap} className={overlayRowClass}>
+          <Magnet size={14} className={icon} />
+          <span>Snap panels</span>
+        </Toggle>
+      </Tip>
+      <Tip content="Locked panels don't move or resize. Their buttons still work.">
+        <Toggle data-testid="panels-lock-toggle" variant="ghost" size="row" pressed={locked} onPressedChange={panelLayout.setLocked} className={overlayRowClass}>
+          <Lock size={14} className={icon} />
+          <span>Lock panels</span>
+        </Toggle>
+      </Tip>
+    </>
   );
 }

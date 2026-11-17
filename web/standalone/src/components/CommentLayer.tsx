@@ -734,7 +734,7 @@ function CommentsPanel({
 
   return (
     <div
-      ref={rootRef}
+      ref={rootRef} data-snap-panel=""
       data-testid="comments-panel"
       className="absolute z-40 flex w-72 flex-col overflow-hidden rounded-xl bg-white/95 text-neutral-900 shadow-2xl ring-1 ring-inset ring-black/10 dark:bg-neutral-950/90 dark:text-white dark:ring-white/15 backdrop-blur-sm"
       style={style}
