@@ -62,12 +62,12 @@ const R_DEF = `(symbol "Device:R" (pin_numbers hide) (pin_names (offset 0)) (exc
 \t\t\t\t(pin passive line (at 0 -3.81 90) (length 1.27) (name "~" (effects (font (size 1.27 1.27)))) (number "2" (effects (font (size 1.27 1.27)))))
 \t\t\t)
 \t\t)`;
-const r1 = (value: string) => `(symbol (lib_id "Device:R") (at 127 95.25 0) (unit 1) (exclude_from_sim no) (in_bom yes) (on_board yes) (dnp no)
+const r1 = (value: string, more = "") => `(symbol (lib_id "Device:R") (at 127 95.25 0) (unit 1) (exclude_from_sim no) (in_bom yes) (on_board yes) (dnp no)
 \t\t(uuid "${R1}")
 \t\t(property "Reference" "R1" (at 129.54 94.615 0) (effects (font (size 1.27 1.27)) (justify left)))
 \t\t(property "Value" "${value}" (at 129.54 96.52 0) (effects (font (size 1.27 1.27)) (justify left)))
 \t\t(property "Footprint" "" (at 125.222 95.25 90) (effects (font (size 1.27 1.27)) hide))
-\t\t(property "Datasheet" "~" (at 127 95.25 0) (effects (font (size 1.27 1.27)) hide))
+\t\t(property "Datasheet" "~" (at 127 95.25 0) (effects (font (size 1.27 1.27)) hide))${more}
 \t\t(pin "1" (uuid "cccccccc-0000-0000-0000-000000000001"))
 \t\t(pin "2" (uuid "cccccccc-0000-0000-0000-000000000002"))
 \t\t(instances (project "pluginedit" (path "/aaaaaaaa-1111-1111-1111-111111111111" (reference "R1") (unit 1))))
@@ -86,6 +86,15 @@ const SAMPLE_SCH = `(kicad_sch
 \t(sheet_instances (path "/" (page "1")))
 )
 `;
+// R1 with a wire on each of its pins: no pin of it is dangling.
+const WIRED_SCH = SAMPLE_SCH.replace(
+  "\t(sheet_instances",
+  `\t(wire (pts (xy 127 91.44) (xy 127 85)) (stroke (width 0) (type default)) (uuid "77777777-0000-0000-0000-0000000000b1"))
+\t(wire (pts (xy 127 99.06) (xy 127 105)) (stroke (width 0) (type default)) (uuid "77777777-0000-0000-0000-0000000000b2"))
+\t(sheet_instances`,
+);
+/** One more field on R1, not drawn. */
+const note = (text: string) => `\n\t\t(property "Note" "${text}" (at 127 95.25 0) (effects (font (size 1.27 1.27)) hide))`;
 // A symbol from a library the sheet doesn't have yet: its definition travels in libSymbols.
 const C_DEF = `(symbol "PlugLib:C" (pin_numbers hide) (pin_names (offset 0.254)) (exclude_from_sim no) (in_bom yes) (on_board yes)
 \t(property "Reference" "C" (at 0.635 2.54 0) (effects (font (size 1.27 1.27)) (justify left)))
@@ -117,6 +126,8 @@ type Mod = {
   kicadCollabPresenceStart(): void;
   kicadCollabSetRemote(j: string): void;
   kicadCollabSnapshotItems(): string;
+  kicadCollabApplyItems(j: string): unknown;
+  kicadSimSymbols(): string;
   kicadCollabTestUndo(): boolean;
   kicadCollabTestUndoDepth(): number;
   kicadPluginEditItems(json: string): string;
@@ -210,6 +221,17 @@ async function blob(page: Page, id: string): Promise<string | null> {
   // Blobs arrive enveloped ((kicad_pcb …) on the board); every id here is unique to one item.
   const hit = snap.added.find((e) => e.id === id || (e.sexpr ?? "").includes(`(uuid "${id}")`));
   return hit?.sexpr ?? null;
+}
+
+/** The net of each pin of a symbol, as the netlist reads it. A pin the connection graph does not know is not listed. */
+function nets(page: Page, ref: string): Promise<Record<string, string | null>> {
+  return page.evaluate((ref) => {
+    const out = JSON.parse((window as unknown as Win).Module.kicadSimSymbols()) as {
+      symbols: { ref: string; pins: Record<string, { node?: string }> }[];
+    };
+    const pins = out.symbols.find((s) => s.ref === ref)?.pins ?? {};
+    return Object.fromEntries(Object.entries(pins).map(([number, pin]) => [number, pin.node ?? null]));
+  }, ref);
 }
 
 /** Every id the items wire broadcast, added, changed or removed. */
@@ -336,6 +358,37 @@ test.describe("Plugin edits (plugins 0023)", () => {
     expect(await blob(page, R1)).toContain('"10k"');
     expect(await blob(page, C_NEW)).toBeNull();
     expect(await blob(page, WIRE1)).toContain("(wire");
+  });
+
+  // A symbol changed in place gets new pins. KiCad recalculates connections only when a pin
+  // moved or was dangling, so a change of a field on a fully wired symbol left the new pins
+  // out of the connection graph: the netlist saw a symbol with no pins. The same after
+  // KiCad's undo, which puts the earlier image back, pins included.
+  test("eeschema: a fully wired symbol keeps the nets of its pins when it is changed in place", async ({ page, testLogger }) => {
+    void testLogger;
+    await bootAndOpen(page, "/kicad/eeschema.html", "/home/kicad/documents/pluginnets.kicad_sch", WIRED_SCH, /pluginnets/i);
+    const before = await nets(page, "R1");
+    expect(Object.keys(before)).toEqual(["1", "2"]);
+    expect(before["1"]).toBeTruthy();
+    expect(before["2"]).toBeTruthy();
+    expect(before["1"]).not.toBe(before["2"]);
+
+    // by a plugin edit: a new field, nothing moves
+    expect(await edit(page, { label: "note", upsert: [{ sexpr: r1("10k", note("one")) }] })).toMatchObject({ status: "applied", changed: [R1] });
+    expect(await blob(page, R1)).toContain('"one"');
+    expect(await nets(page, "R1")).toEqual(before);
+
+    // by undoing it: the nets are back once the change settled
+    expect(await undo(page)).toBe(true);
+    await expect.poll(() => blob(page, R1), { timeout: 10000 }).not.toContain('"one"');
+    await expect.poll(() => nets(page, "R1"), { timeout: 10000 }).toEqual(before);
+
+    // by a collaborator's change of the same kind
+    await page.evaluate((changed) => {
+      (window as unknown as Win).Module.kicadCollabApplyItems(JSON.stringify({ added: [], changed: [{ sexpr: changed }], removed: [] }));
+    }, r1("10k", note("two")));
+    await expect.poll(() => blob(page, R1), { timeout: 10000 }).toContain('"two"');
+    expect(await nets(page, "R1")).toEqual(before);
   });
 
   test("eeschema: a symbol's pins keep only their own ids, and a held pin holds its symbol", async ({ page, testLogger }) => {

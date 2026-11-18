@@ -27,8 +27,11 @@
  * from the base class opens its two protected functions to us, so no KiCad
  * file changes and none of KiCad's rules is copied here.
  *
- * Included by eeschema_embind.cpp only. A pure read: the connection graph is
- * current after every commit (local or collab).
+ * Included by eeschema_embind.cpp only. A pure read. KiCad recalculates
+ * connections before it writes a netlist; a read from the page cannot (a
+ * recalculation may suspend). It relies on eeschema_embind.cpp keeping the
+ * connection graph current after every change, a symbol's swapped pins
+ * included ("A symbol's pins and the connection graph" there).
  */
 
 #pragma once

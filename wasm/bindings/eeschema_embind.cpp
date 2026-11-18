@@ -681,6 +681,87 @@ static SCH_ITEM* resolveOnShown( SCH_EDIT_FRAME* aFrame, const KIID& aId )
     return item && owningScreen( item ) == shown ? item : nullptr;
 }
 
+// ── A symbol's pins and the connection graph ─────────────────────────────────
+// A symbol whose data is swapped with an image (SwapItemData) gets the image's pins, and a
+// pin is in the connection graph only after a recalculation. KiCad asks for one when it
+// sees a connectivity change: a pin that moved or was dangling
+// (SCH_SYMBOL::HasConnectivityChanges). A change that is none of these, such as a new field
+// on a symbol whose pins are all wired, leaves the swapped-in pins without a net. KiCad
+// itself lives with that: it recalculates before it writes a netlist or runs ERC. The page's
+// reads (kicadSimSymbols, kicadSimNetlist, the nets list) cannot, because a recalculation
+// may suspend and they are plain calls. So the graph is brought up to date where the swap
+// happens, on the editor's loop:
+//   - our own swaps (a collaborator's change, a plugin edit) call reconnectReplacedSymbols
+//     after their commit's Push;
+//   - KiCad's undo and redo swap too (SCH_EDIT_FRAME::PutDataInPreviousState): the change
+//     listener notes the symbols and scheduleReconnect checks them once the change settled.
+
+// Recalculates connections when one of the symbols has a pin the graph does not know.
+void reconnectReplacedSymbols( SCH_EDIT_FRAME* aFrame, const std::vector<SCH_SYMBOL*>& aReplaced )
+{
+    const SCH_SHEET_PATH& sheet = aFrame->GetCurrentSheet();
+
+    for( SCH_SYMBOL* symbol : aReplaced )
+    {
+        for( SCH_PIN* pin : symbol->GetPins( &sheet ) )
+        {
+            if( !pin->Connection( &sheet ) )
+            {
+                // also tests the dangling ends: a new pin starts out as dangling
+                aFrame->RecalculateConnections( nullptr, NO_CLEANUP );
+                return;
+            }
+        }
+    }
+}
+
+std::set<KIID> g_reconnect;                 // symbols changed locally since the last check
+bool           g_reconnectScheduled = false;
+
+// Notes the symbols among locally changed items and checks them after the change settled,
+// on the apply coroutine like every other deferred body here. Symbols are kept by uuid: one
+// can be gone again by the time the check runs.
+void scheduleReconnect( const std::vector<SCH_ITEM*>& aItems )
+{
+    for( SCH_ITEM* item : aItems )
+    {
+        if( item && item->Type() == SCH_SYMBOL_T )
+            g_reconnect.insert( item->m_Uuid );
+    }
+
+    SCH_EDIT_FRAME* fr = schFrame();
+
+    if( g_reconnect.empty() || g_reconnectScheduled || !fr )
+        return;
+
+    g_reconnectScheduled = true;
+
+    pcbjam_collab::runOnCoroutine( fr, []()
+    {
+        g_reconnectScheduled = false;
+
+        std::set<KIID> ids;
+        ids.swap( g_reconnect );
+
+        SCH_EDIT_FRAME* frame = schFrame();
+
+        if( !frame || pcbjam_open::busy() )
+            return;
+
+        std::vector<SCH_SYMBOL*> symbols;
+
+        for( const KIID& id : ids )
+        {
+            SCH_ITEM* item = resolveOnShown( frame, id );
+
+            if( item && item->Type() == SCH_SYMBOL_T )
+                symbols.push_back( static_cast<SCH_SYMBOL*>( item ) );
+        }
+
+        reconnectReplacedSymbols( frame, symbols );
+    } );
+}
+
 // TARGETED rebaseline (bug 05): refresh baseline entries ONLY for the uuids a remote
 // apply touched. A global rebaseline() would fold a concurrently-committed local edit
 // (its flush is queued BEHIND the apply on the same pending-event list) into the
@@ -1290,6 +1371,8 @@ private:
         for( SCH_ITEM* item : aItems )
             noteDirty( item );
 
+        // Before the flush: the page reads the nets once the flush told it of the change.
+        scheduleReconnect( aItems );
         scheduleFlush();
         schedulePresenceSelCheck();
     }
@@ -1862,6 +1945,9 @@ void doApplyItems( SCH_EDIT_FRAME* aFrame, const json& aPayload )
     // (replacement uuid, group its predecessor belonged to) — SYNC-04.
     std::vector<std::pair<std::string, KIID>> rejoin;
 
+    // Symbols replaced in place: their new pins may need the connection graph redone.
+    std::vector<SCH_SYMBOL*> replacedSymbols;
+
     for( const json& rid : aWire.value( "removed", json::array() ) )
     {
         KIID id( wxString::FromUTF8( rid.get<std::string>().c_str() ) );
@@ -1971,6 +2057,7 @@ void doApplyItems( SCH_EDIT_FRAME* aFrame, const json& aPayload )
                 if( existing->Type() == SCH_SYMBOL_T )
                 {
                     static_cast<SCH_SYMBOL*>( existing )->UpdatePins();
+                    replacedSymbols.push_back( static_cast<SCH_SYMBOL*>( existing ) );
 
                     CONNECTION_GRAPH* graph = sch.ConnectionGraph();
                     auto*             old   = static_cast<SCH_SYMBOL*>( item );
@@ -2014,6 +2101,8 @@ void doApplyItems( SCH_EDIT_FRAME* aFrame, const json& aPayload )
     // SKIP_UNDO: remote applies never land on the local undo stack (see doApply).
     if( staged )
         commit.Push( wxT( "Collaborative edit (items)" ), SKIP_UNDO );
+
+    reconnectReplacedSymbols( aFrame, replacedSymbols );
 
     for( SCH_ITEM* item : removedItems )
         delete item;
@@ -2253,8 +2342,9 @@ json doPluginEdit( SCH_EDIT_FRAME* aFrame, const json& aReq )
         return missing.empty() ? error( "HELD", held ) : error( "MISSING", missing );
     }
 
-    SCH_COMMIT             commit( aFrame );
-    std::vector<SCH_ITEM*> oldImages;     // swap leftovers holding the OLD data, freed after Push
+    SCH_COMMIT               commit( aFrame );
+    std::vector<SCH_ITEM*>   oldImages;   // swap leftovers holding the OLD data, freed after Push
+    std::vector<SCH_SYMBOL*> replacedSymbols;   // their new pins may need the graph redone
     json                   added = json::array(), changed = json::array(), removed = json::array();
     KIGFX::VIEW*           view = aFrame->GetCanvas()->GetView();
 
@@ -2280,6 +2370,7 @@ json doPluginEdit( SCH_EDIT_FRAME* aFrame, const json& aReq )
             if( u.existing->Type() == SCH_SYMBOL_T )
             {
                 static_cast<SCH_SYMBOL*>( u.existing )->UpdatePins();
+                replacedSymbols.push_back( static_cast<SCH_SYMBOL*>( u.existing ) );
 
                 CONNECTION_GRAPH* graph = sch.ConnectionGraph();
                 auto*             old = static_cast<SCH_SYMBOL*>( u.parsed );
@@ -2302,6 +2393,8 @@ json doPluginEdit( SCH_EDIT_FRAME* aFrame, const json& aReq )
     }
 
     commit.Push( wxString::FromUTF8( aReq.value( "label", std::string( "Plugin edit" ) ).c_str() ) );
+
+    reconnectReplacedSymbols( aFrame, replacedSymbols );
 
     for( SCH_ITEM* old : oldImages )
         delete old;
@@ -2829,9 +2922,12 @@ std::string schSheetNets()
 
 
 // Live simulation: every symbol of the whole hierarchy with its fields and its
-// pins' SPICE node names (sim_symbols.h). A pure read.
+// pins' SPICE node names (sim_symbols.h). A pure read. It needs the change listener: the
+// listener keeps a symbol's pins in the connection graph across undo and redo
+// (scheduleReconnect).
 std::string schSimSymbols()
 {
+    ensureBridge();
     return pcbjam_sim::symbols( schFrame() );
 }
 
@@ -2840,6 +2936,7 @@ std::string schSimSymbols()
 // with the symbol it belongs to (sim_netlist.h). A read.
 std::string schSimNetlist()
 {
+    ensureBridge();     // see schSimSymbols
     return pcbjam_sim::netlist( schFrame() );
 }
 
