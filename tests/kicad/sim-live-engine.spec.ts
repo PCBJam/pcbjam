@@ -25,6 +25,24 @@ const WORKER_SRC = fs.readFileSync(
 const PART_BASE64 = fs.readFileSync(
     path.join(REPO, 'tests', 'fixtures', 'sim-live', 'test-part.wasm')).toString('base64');
 
+// A packaged part's adapter, as the page would put it in front of the worker script (the
+// app's own is web/standalone/src/wasm/esp-emu-adapter.js, for a chip emulator). This one
+// does the least: its output is its input 0, it says what it was given, and it counts how
+// often a part of its kind was made and let go.
+const TEST_ADAPTER = `(globalThis.__pjAdapters = globalThis.__pjAdapters || {})["test-adapter"] = function (env) {
+  const g = globalThis;
+  g.__made = (g.__made || 0) + 1;
+  env.log("made " + g.__made + ", let go " + (g.__letGo || 0) + ", file: " + new TextDecoder().decode(env.blobs["hello.txt"]) + ", word: " + env.config.word);
+  let want = 0, sent = -1;
+  return {
+    pj_setup() { return 2 | (1 << 8); },
+    pj_step(target) { if (want !== sent) { sent = want; env.out(target, 0, want, 0); } return target; },
+    pj_input(time, bit, state) { if (bit === 0 && (state === 0 || state === 1)) want = state; },
+    pj_unload() { g.__letGo = (g.__letGo || 0) + 1; },
+  };
+};
+`;
+
 const BUTTON1 = 'v.xsw1.vctl';
 const BUTTON2 = 'v.xsw2.vctl';
 const LED1 = 'v.xd1.vs#branch';
@@ -76,15 +94,28 @@ interface Frame {
 /** Open a harness page (for its cross-origin-isolated context) and put the hosts' maker into it. */
 async function open(page: Page): Promise<void> {
     await page.goto('/kicad/eeschema.html', { waitUntil: 'domcontentloaded' });
-    await page.evaluate(({ workerSrc, partBase64 }) => {
+    await page.evaluate(({ workerSrc, partBase64, adapter }) => {
         const glue = new URL('ngspice_service.js', window.location.href).href;
         const w = window as any;
         w.__livePart = Uint8Array.from(atob(partBase64), (c) => c.charCodeAt(0));
+        // A packaged part: "PJPK" | u32 header length | header JSON | the files.
+        w.__livePackage = (adapterName: string, word: string): Uint8Array => {
+            const file = new TextEncoder().encode('hello');
+            const head = new TextEncoder().encode(JSON.stringify(
+                { adapter: adapterName, config: { word }, blobs: { 'hello.txt': [0, file.length] } }));
+            const out = new Uint8Array(8 + head.length + file.length);
+            out.set([80, 74, 80, 75]);
+            new DataView(out.buffer).setUint32(4, head.length, true);
+            out.set(head, 8);
+            out.set(file, 8 + head.length);
+            return out;
+        };
         w.__live = [];
-        // One live session: the production worker script in front of the service's glue.
+        // One live session: the production worker script in front of the service's glue,
+        // with the adapters of packaged parts before it, where the app puts its own.
         w.__liveBoot = () => {
             const url = URL.createObjectURL(new Blob(
-                [`self.NGSPICE_GLUE_URL = ${JSON.stringify(glue)};\n`, workerSrc], { type: 'text/javascript' }));
+                [`self.NGSPICE_GLUE_URL = ${JSON.stringify(glue)};\n`, adapter, workerSrc], { type: 'text/javascript' }));
             const worker = new Worker(url);
             const host: any = { worker, log: [], fatal: null, errors: [], names: [], nextId: 1, pending: new Map() };
             host.ready = new Promise<void>((resolve, reject) => {
@@ -107,7 +138,18 @@ async function open(page: Page): Promise<void> {
             w.__live.push(host);
             return host.ready.then(() => w.__live.length - 1);
         };
-    }, { workerSrc: WORKER_SRC, partBase64: PART_BASE64 });
+    }, { workerSrc: WORKER_SRC, partBase64: PART_BASE64, adapter: TEST_ADAPTER });
+}
+
+/** Start the test circuit with a packaged part in the place of the WebAssembly one. */
+async function startPackaged(page: Page, host: number, adapterName: string, word: string): Promise<any> {
+    return page.evaluate(({ host, deck, adapterName, word }) => {
+        const w = window as any;
+        return w.__live[host].call('start', {
+            deck, files: [], inputs: {}, speed: 1,
+            parts: [{ name: 'test-part', bytes: w.__livePackage(adapterName, word) }],
+        });
+    }, { host, deck: deck(), adapterName, word });
 }
 
 /** Boot one live worker; the number names it in the calls below. */
@@ -265,6 +307,116 @@ test.describe('live simulation engine', () => {
         await call(page, host, 'input', { name: BUTTON1, value: 0 });
         await frameWhen(page, host, 'LED 2 goes dark again', (f) => f.latest[LED2]! < 1e-6);
 
+        expect(await call(page, host, 'stop')).toEqual({ ok: true });
+        expect((await hostState(page, host)).fatal).toBeNull();
+    });
+
+    test('a packaged part is run by an adapter of the page, with its files, and is let go with its circuit', async ({ page }) => {
+        await open(page);
+        const host = await boot(page);
+        const partLines = async () => (await hostState(page, host)).log.filter((l) => l[0] === 'part').map((l) => l[1]);
+        expect(await startPackaged(page, host, 'test-adapter', 'one')).toEqual({ ok: true });
+
+        // The adapter got the package's file and its settings.
+        await expect.poll(partLines, { message: 'the adapter says what it was given', timeout: 10000, intervals: [50] })
+            .toEqual(['test-part: made 1, let go 0, file: hello, word: one']);
+
+        // It is the circuit's part like a WebAssembly one: its output follows button 1.
+        const dark = await frameWhen(page, host, 'the run reaches 0.2 s', (f) => f.t >= 0.2);
+        expect(dark.latest[LED2]!).toBeLessThan(1e-6);
+        await call(page, host, 'input', { name: BUTTON1, value: 1 });
+        const lit = await frameWhen(page, host, 'LED 2 is on with the button held', (f) => f.latest[LED2]! > LIT);
+        expect(lit.latest[LED2]!).toBeCloseTo(9.11e-3, 4);
+        await call(page, host, 'input', { name: BUTTON1, value: 0 });
+        await frameWhen(page, host, 'LED 2 is dark again', (f) => f.latest[LED2]! < 1e-6);
+
+        // A new start makes the part anew; the one of the circuit that is gone was let go first.
+        expect(await startPackaged(page, host, 'test-adapter', 'two')).toEqual({ ok: true });
+        await expect.poll(partLines, { message: 'the second part', timeout: 10000, intervals: [50] })
+            .toEqual(['test-part: made 1, let go 0, file: hello, word: one', 'test-part: made 2, let go 1, file: hello, word: two']);
+
+        // A package for an adapter this page does not have is refused, in words.
+        expect(await startPackaged(page, host, 'no-such-adapter', 'x')).toEqual(
+            { error: "code part 'test-part' could not be started (its own lines say why)" });
+        await expect.poll(async () => (await partLines()).at(-1), { message: 'why', timeout: 10000, intervals: [50] })
+            .toBe('test-part: load failed: Error: this page has nothing that runs a part of the kind no-such-adapter');
+        expect((await frame(page, host)).running).toBe(false);
+
+        // The WebAssembly part still runs in the same session.
+        expect(await start(page, host)).toEqual({ ok: true });
+        await frameWhen(page, host, 'the part switched LED 2 on', (f) => f.latest[LED2]! > LIT);
+        expect(await call(page, host, 'stop')).toEqual({ ok: true });
+        expect((await hostState(page, host)).fatal).toBeNull();
+    });
+
+    test('two placed chips of one part each run code of their own, under their own names', async ({ page }) => {
+        await open(page);
+        const host = await boot(page);
+        const partLines = async () => (await hostState(page, host)).log.filter((l) => l[0] === 'part').map((l) => l[1]);
+        // As the netlist step writes two chips of one part: the model once per chip, each
+        // asking for its code under the part's name and the chip's number.
+        const chip = (n: number): string => `.subckt PJ_CHIP_${n} A B Y IRR=1
+aadc [A B] [a_d b_d] adc1
+adut [a_d b_d] [y_d] null dut
+adac [y_d] [Y] dac1
+.model adc1 adc_bridge(in_low=1.5 in_high=3.5)
+.model dac1 dac_bridge(out_low=0 out_high=5)
+.model dut d_cosim(simulation="test-chip_${n}" irreversible={IRR})
+.ends PJ_CHIP_${n}`;
+        const two = `* two chips of one part
+.subckt PJ_BUTTON 1 2
+Vctl ctl 0 dc 0 external
+R1 1 2 r = '100meg * exp(-20.7 * V(ctl))'
+.ends
+.subckt PJ_LED A K
+Vs A a1 dc 0
+D1 a1 K PJLED
+.model PJLED D(IS=1e-18 N=2 RS=10)
+.ends
+${chip(1)}
+${chip(2)}
+V1 vcc 0 dc 5
+XSW1 vcc b1 PJ_BUTTON
+R1 b1 0 10k
+XSW2 vcc b2 PJ_BUTTON
+R2 b2 0 10k
+XU1 b1 0 y1 PJ_CHIP_1 IRR=1
+XU2 b2 0 y2 PJ_CHIP_2 IRR=2
+R3 y1 n1 330
+XD1 n1 0 PJ_LED
+R4 y2 n2 330
+XD2 n2 0 PJ_LED
+.tran 1m 100000 0 1m
+.end`.split('\n');
+        const started = await page.evaluate(({ host, deck, inputs }) => {
+            const w = window as any;
+            return w.__live[host].call('start', {
+                deck, files: [], inputs, speed: 1,
+                parts: [
+                    { name: 'test-chip_1', bytes: w.__livePackage('test-adapter', 'one') },
+                    { name: 'test-chip_2', bytes: w.__livePackage('test-adapter', 'two') },
+                ],
+            });
+        }, { host, deck: two, inputs: { [BUTTON1]: 0, [BUTTON2]: 0 } });
+        expect(started).toEqual({ ok: true });
+
+        // Each chip was made from its own package: the word in it is its own.
+        await expect.poll(async () => (await partLines()).map((l) => l.replace(/made \d+, let go \d+, /, '')).sort(),
+            { message: 'each chip says what it was given', timeout: 10000, intervals: [50] })
+            .toEqual(['test-chip_1: file: hello, word: one', 'test-chip_2: file: hello, word: two']);
+
+        // And each is its own part of the circuit: LED 1 follows button 1, LED 2 button 2.
+        const dark = await frameWhen(page, host, 'the run reaches 0.2 s', (f) => f.t >= 0.2);
+        expect(dark.latest[LED1]!).toBeLessThan(1e-6);
+        expect(dark.latest[LED2]!).toBeLessThan(1e-6);
+        await call(page, host, 'input', { name: BUTTON1, value: 1 });
+        const first = await frameWhen(page, host, 'LED 1 is on with button 1 held', (f) => f.latest[LED1]! > LIT);
+        expect(first.latest[LED2]!, 'LED 2 stays dark').toBeLessThan(1e-6);
+        await call(page, host, 'input', { name: BUTTON1, value: 0 });
+        await call(page, host, 'input', { name: BUTTON2, value: 1 });
+        const second = await frameWhen(page, host, 'LED 2 is on with button 2 held',
+            (f) => f.latest[LED2]! > LIT && f.latest[LED1]! < 1e-6);
+        expect(second.latest[LED2]!).toBeCloseTo(9.11e-3, 4);
         expect(await call(page, host, 'stop')).toEqual({ ok: true });
         expect((await hostState(page, host)).fatal).toBeNull();
     });

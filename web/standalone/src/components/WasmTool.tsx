@@ -109,6 +109,8 @@ import { LibFilesPanel } from "@/components/LibFilesPanel";
 import { LibFontsPanel } from "@/components/LibFontsPanel";
 import { hasImportBridge, type ImportModule } from "@/wasm/import-item";
 import { hasSimSymbols, type SimSymbolsModule } from "@/wasm/sim-parts";
+import { giveFirmware, type ChipFirmware } from "@/wasm/chip-firmware";
+import { applyEdit, editError, editModule, validateEdit } from "@/plugins/edits";
 import { createLiveSession, hasToolbarButton, type LiveSession, type LiveSessionState } from "@/wasm/live-session";
 import { tonesFor } from "@/wasm/live-sound";
 import { hasSimPlaces } from "@/wasm/live-overlay";
@@ -131,6 +133,7 @@ import { useTabCensus } from "@/recovery/useTabCensus";
 import { isFirefox, type EditorTabInfo } from "@/recovery/tab-census";
 import { MemoryExhaustedDialog } from "@/recovery/MemoryExhaustedDialog";
 import type { SourceDescriptor } from "@/lib/project-source-shared";
+import { fetchFileBytes } from "@/lib/api";
 import { SourceChip } from "@/components/SourceChip";
 import { isMobileMode } from "@/lib/mobile-mode";
 import {
@@ -315,7 +318,9 @@ export function WasmTool({
   /**
    * Persist a Gerber or drill file KiCad's Plot / Generate Drill Files wrote
    * into the project's folder (0007 P1); the newest one wins. Omit and those
-   * outputs stay in this tab's MEMFS.
+   * outputs stay in this tab's MEMFS. A chip's firmware that is picked in the
+   * Simulation parts list is stored through it too (live simulation): a new
+   * build replaces the one before it.
    */
   saveOutput?: SaveBytes;
   /**
@@ -2240,11 +2245,25 @@ export function WasmTool({
   // the editor stops what runs and takes the button away.
   const [liveSession, setLiveSession] = React.useState<LiveSession | null>(null);
   const [liveState, setLiveState] = React.useState<LiveSessionState>("idle");
+  // A chip that runs firmware takes its image from the project (wasm/chip-parts.ts).
+  const readProjectFile = React.useCallback(
+    async (path: string): Promise<Uint8Array | null> => {
+      try {
+        return await fetchFileBytes(slug, path, undefined, { adoptAsBase: false });
+      } catch (e) {
+        // "the project has no such file" is an answer; anything else is a failure
+        if (/\(404\)|file not found/.test(String(e))) return null;
+        throw e;
+      }
+    },
+    [slug],
+  );
   React.useEffect(() => {
     if (!simPartsMod || !simParts || !simPartsMod.kicadSimNetlist || !hasToolbarButton(simPartsMod)) return;
     const session = createLiveSession({
       mod: simPartsMod,
       reader: simParts,
+      readFile: readProjectFile,
       onError: (text) => toast.error(text, { duration: 15_000, testId: "live-sim-error" }),
       onNote: (text, about) =>
         about === "power"
@@ -2259,8 +2278,40 @@ export function WasmTool({
       setLiveSession(null);
       setLiveState("idle");
     };
-  }, [simPartsMod, simParts, append]);
+  }, [simPartsMod, simParts, append, readProjectFile]);
   const liveLayerLog = React.useCallback((msg: string) => append(`[live-sim] ${msg}`), [append]);
+  // A chip's firmware on its line of the Simulation parts list (wasm/chip-firmware.ts):
+  // which file it runs, whether the project has it, and "Choose file...". The picked file
+  // is stored like a plot's output (the newest wins), and its name is written onto the
+  // chip's symbol as one edit of the shown sheet. A session that cannot write only reads.
+  const [storedFirmware, setStoredFirmware] = React.useState<ReadonlySet<string>>(() => new Set());
+  const simPartsFirmware = React.useMemo(
+    () => ({
+      // the project's files as this page loaded them, and what it stored since
+      inProject: (name: string) => storedFirmware.has(name) || files.some((f) => f.path === name),
+      choose:
+        readOnly || !saveOutput
+          ? undefined
+          : async (chip: ChipFirmware, file: File) => {
+              const name = await giveFirmware({
+                chip,
+                file,
+                doc: panelDoc,
+                save: (relPath, bytes) => saveOutput(relPath, bytes),
+                edit: (request) => {
+                  const mod = editModule();
+                  if (!mod) throw editError("NO_EDITOR");
+                  validateEdit(request, "eeschema");
+                  return applyEdit(mod, request, new AbortController().signal);
+                },
+              });
+              setStoredFirmware((names) => new Set(names).add(name));
+              append(`[live-sim] ${chip.ref}: firmware ${name} stored in the project`);
+              return name;
+            },
+    }),
+    [storedFirmware, files, readOnly, saveOutput, panelDoc, append],
+  );
   // What is heard of it (wasm/live-sound.ts): the menu has the mute switch while a
   // circuit runs that has a part with a tone of its own.
   const [liveSoundIsMuted, setLiveSoundMuted] = useLiveSoundMuted();
@@ -2517,7 +2568,7 @@ export function WasmTool({
 
       {/* Live simulation, first piece: what the part library has for each symbol. */}
       {ready && simPartsOpen && simPartsMod && simParts && (
-        <SimPartsPanel mod={simPartsMod} reader={simParts} doc={panelDoc} onClose={() => setSimPartsOpen(false)} />
+        <SimPartsPanel mod={simPartsMod} reader={simParts} doc={panelDoc} firmware={simPartsFirmware} onClose={() => setSimPartsOpen(false)} />
       )}
 
       {/* Team fonts (fonts 0002): the session menu's "Team fonts" row opens it. */}

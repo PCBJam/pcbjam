@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { openOverlayMenu } from './overlay-menu';
 import { shotPath } from '../e2e/utils/element-tracker';
@@ -17,7 +18,14 @@ import { shotPath } from '../e2e/utils/element-tracker';
  *   - for the symbols without a library part it says what KiCad's own
  *     netlist (kicadSimNetlist) has: the capacitors run with KiCad's model,
  *     the connectors are not simulated;
- *   - a library that cannot be reached is said in the panel, in words.
+ *   - a library that cannot be reached is said in the panel, in words;
+ *   - a chip that runs firmware has a second line with the file it runs and
+ *     "Choose file...". A picked file is sent to the project and its name is
+ *     written onto the chip's symbol as one undoable edit; a file that is no
+ *     firmware image is refused in words and nothing is sent. The schematic
+ *     is tests/fixtures/demo/live-sim/firmware.kicad_sch (a source and R1),
+ *     and the library calls R1's symbol a chip. The test answers the save, so
+ *     nothing is written into the fixture folder.
  *
  * The library is a published snapshot of static files. The e2e build points
  * VITE_SIM_LIBRARY_URL at /e2e-sim-library on the app's own origin
@@ -54,6 +62,34 @@ const INDEX = {
 const json = (route: Route, body: unknown) =>
   route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
 
+// A chip, the way a published snapshot describes one: the index names its
+// emulator, and its own description has the setting that names the firmware.
+const CHIP = {
+  schema: 1, id: 'e2e-chip', version: 1, title: 'Test chip',
+  settings: [{ name: 'firmware', label: 'Firmware file', default: 'firmware.bin', accept: '^[A-Za-z0-9_.+-]+\\.bin$' }],
+  // which chip it is: an image built for another one is not taken
+  digital: { kind: 'emulator', emulator: 'e2e-emu', chip: 'esp32c3', orderParam: 'IRR', pads: {} },
+};
+const CHIP_TEXT = JSON.stringify(CHIP);
+const CHIP_INDEX = {
+  schema: 1,
+  version: SNAPSHOT,
+  parts: [
+    {
+      id: 'e2e-chip', version: 1, title: 'Test chip', description: '',
+      fits: [{ symbol: 'Device:R' }], pins: ['1', '2'], code: true, emulator: 'e2e-emu',
+      files: [{ name: 'part.json', bytes: Buffer.byteLength(CHIP_TEXT), sha256: createHash('sha256').update(CHIP_TEXT).digest('hex') }],
+    },
+  ],
+  emulators: [],
+};
+// The first bytes of a real ESP32-C3 image, and a file of words with a firmware's name.
+const IMAGE = Buffer.concat([Buffer.from('e903022f10bf3c40ee0000000500000000ffff0000000001', 'hex'), Buffer.alloc(40, 0xff)]);
+const WORDS = Buffer.from('just words, long enough to fill the header of an image');
+// The same image as built for an ESP32-S3: the number of the chip is in bytes 12 and 13.
+const OTHER_CHIP = Buffer.from(IMAGE);
+OTHER_CHIP[12] = 0x09;
+
 /** The session payload of a backend that turned live simulation on. */
 async function turnFeatureOn(page: Page): Promise<void> {
   await page.route('**/api/me', (route) => {
@@ -78,8 +114,42 @@ async function serveLibrary(page: Page, files: Record<string, unknown>): Promise
   return asked;
 }
 
-async function bootSchematic(page: Page): Promise<void> {
-  await page.goto(`/${SCOPE}/projects/demo/demo.kicad_sch`);
+/** Answers the project's save of one file (the test's own answer: the fixture folder stays as it is). Returns what was sent. */
+async function takeSave(page: Page, name: string): Promise<Buffer[]> {
+  const sent: Buffer[] = [];
+  await page.route(`**/projects/demo/files/${name}*`, (route) => {
+    const request = route.request();
+    const cors = {
+      'access-control-allow-origin': request.headers()['origin'] ?? '*',
+      'access-control-allow-credentials': 'true',
+      'access-control-allow-methods': 'PUT, OPTIONS',
+      'access-control-allow-headers': request.headers()['access-control-request-headers'] ?? '*',
+      'access-control-expose-headers': 'x-pcbjam-file-revision',
+    };
+    if (request.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
+    if (request.method() !== 'PUT') return route.fulfill({ status: 404, headers: cors, body: 'not found' });
+    sent.push(request.postDataBuffer() ?? Buffer.alloc(0));
+    return route.fulfill({
+      status: 200,
+      headers: { ...cors, 'x-pcbjam-file-revision': String(sent.length) },
+      contentType: 'application/json',
+      body: JSON.stringify({ path: name, revision: sent.length }),
+    });
+  });
+  return sent;
+}
+
+/** What the editor reports as a symbol's settings field: null when the symbol has none. */
+function settingsField(page: Page, ref: string): Promise<string | null> {
+  return page.evaluate((ref) => {
+    const mod = (window as unknown as { Module: { kicadSimSymbols(): string } }).Module;
+    const symbols = (JSON.parse(mod.kicadSimSymbols()) as { symbols: { ref: string; fields: Record<string, string> }[] }).symbols;
+    return symbols.find((s) => s.ref === ref)?.fields['PCBJam.SimSettings'] ?? null;
+  }, ref);
+}
+
+async function bootSchematic(page: Page, file = 'demo.kicad_sch'): Promise<void> {
+  await page.goto(`/${SCOPE}/projects/demo/${file}`);
   await expect(page.locator('#canvas')).toBeVisible({ timeout: 180000 });
   await expect
     .poll(() => page.title(), { timeout: 120000, intervals: [1000] })
@@ -166,6 +236,83 @@ test.describe('simulation parts panel', () => {
     await expect(rows).toHaveCount(expected.length);
     await page.getByTestId('sim-parts-panel-close').click();
     await expect(panel).toHaveCount(0);
+  });
+
+  test('a chip has its firmware on its line: a picked file is sent and named on the symbol', async ({ page }) => {
+    test.setTimeout(300000);
+    await turnFeatureOn(page);
+    const asked = await serveLibrary(page, {
+      'current.json': { schema: 1, version: SNAPSHOT },
+      [`${SNAPSHOT}/index.json`]: CHIP_INDEX,
+      [`${SNAPSHOT}/parts/e2e-chip/part.json`]: CHIP,
+    });
+    const sent = await takeSave(page, 'blink.bin');
+    await bootSchematic(page, 'live-sim/firmware.kicad_sch');
+
+    const panel = await openPanel(page);
+    await expect(panel).toHaveAttribute('data-status', 'ready', { timeout: 30000 });
+    await expect(page.locator('[data-testid="sim-part-row"][data-ref="R1"]')).toHaveAttribute('data-state', 'live');
+
+    // The chip's line: the file its part asks for, which the project does not have.
+    const line = page.getByTestId('sim-part-firmware');
+    await expect(line).toHaveCount(1);
+    await expect(line).toHaveAttribute('data-ref', 'R1');
+    await expect(line).toHaveAttribute('data-name', 'firmware.bin');
+    await expect(line).toHaveAttribute('data-stored', 'no');
+    await expect(line).toHaveText(/Firmware.*firmware\.bin.*not in the project.*Choose file/);
+    expect(await settingsField(page, 'R1')).toBeNull();
+    // the part's description was asked for, once
+    expect(asked.filter((path) => path.endsWith('/part.json'))).toEqual([`${SNAPSHOT}/parts/e2e-chip/part.json`]);
+
+    // A file of words with a firmware's name: said on the line, nothing sent, the symbol as it was.
+    const choose = page.getByTestId('sim-part-firmware-choose');
+    let [chooser] = await Promise.all([page.waitForEvent('filechooser'), choose.click()]);
+    await chooser.setFiles({ name: 'words.bin', mimeType: 'application/octet-stream', buffer: WORDS });
+    await expect(page.getByTestId('sim-part-firmware-error')).toHaveText(/"words\.bin" is not taken: it does not start like an ESP32 firmware image/);
+    expect(sent).toHaveLength(0);
+    expect(await settingsField(page, 'R1')).toBeNull();
+
+    // An image built for another chip than the part is: the same.
+    [chooser] = await Promise.all([page.waitForEvent('filechooser'), choose.click()]);
+    await chooser.setFiles({ name: 'other.bin', mimeType: 'application/octet-stream', buffer: OTHER_CHIP });
+    await expect(page.getByTestId('sim-part-firmware-error')).toHaveText('"other.bin" is not taken: it was built for the ESP32-S3, and this chip is an ESP32-C3');
+    expect(sent).toHaveLength(0);
+    expect(await settingsField(page, 'R1')).toBeNull();
+
+    // A firmware image: sent to the project under its own name, and the symbol names it.
+    [chooser] = await Promise.all([page.waitForEvent('filechooser'), choose.click()]);
+    await chooser.setFiles({ name: 'blink.bin', mimeType: 'application/octet-stream', buffer: IMAGE });
+    await expect(line).toHaveAttribute('data-name', 'blink.bin', { timeout: 30000 });
+    await expect(line).toHaveAttribute('data-stored', 'yes');
+    await expect(line).toHaveAttribute('data-busy', 'no');
+    await expect(page.getByTestId('sim-part-firmware-error')).toHaveCount(0);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.equals(IMAGE)).toBe(true);
+    expect(await settingsField(page, 'R1')).toBe('firmware=blink.bin');
+    // The changed symbol is still wired: the part still fits it.
+    await expect(page.locator('[data-testid="sim-part-row"][data-ref="R1"]')).toHaveAttribute('data-state', 'live');
+    await page.screenshot({ path: shotPath(page, 'web-sim-parts-firmware.png'), scale: 'css' });
+
+    // A new build under the same name: sent again, and the schematic is left alone.
+    const depth = () =>
+      page.evaluate(() => (window as unknown as { Module: { kicadCollabTestUndoDepth(): number } }).Module.kicadCollabTestUndoDepth());
+    const steps = await depth();
+    [chooser] = await Promise.all([page.waitForEvent('filechooser'), choose.click()]);
+    await chooser.setFiles({ name: 'blink.bin', mimeType: 'application/octet-stream', buffer: IMAGE });
+    await expect.poll(() => sent.length, { message: 'the new build was not sent' }).toBe(2);
+    await expect(line).toHaveAttribute('data-busy', 'no');
+    expect(await depth()).toBe(steps);
+
+    // The change of the symbol is one step of the schematic's history: undo takes it back,
+    // and the list follows.
+    expect(await page.evaluate(() => (window as unknown as { Module: { kicadCollabTestUndo(): boolean } }).Module.kicadCollabTestUndo())).toBe(true);
+    await expect.poll(() => settingsField(page, 'R1'), { message: 'undo did not take the setting back' }).toBeNull();
+    await expect(line).toHaveAttribute('data-name', 'firmware.bin', { timeout: 30000 });
+    // and the chip is still wired after the undo
+    await page.getByTestId('sim-parts-panel-refresh').click();
+    await expect(page.getByTestId('sim-parts-panel-refresh')).toBeEnabled();
+    await expect(page.locator('[data-testid="sim-part-row"][data-ref="R1"]')).toHaveAttribute('data-state', 'live');
+    await expect(line).toHaveAttribute('data-name', 'firmware.bin');
   });
 
   test('says so when the library cannot be reached, and recovers', async ({ page }) => {

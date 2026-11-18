@@ -186,6 +186,8 @@ export type SimPartState =
 export interface SimPartRow {
   /** Unique per placed symbol: a sheet used twice gives two rows. */
   key: string;
+  /** The symbol's uuid: the same for the rows of a sheet that is used twice. */
+  uuid: string;
   ref: string;
   value: string;
   /** The sheet instance in words ("/", "/Key 1/"). */
@@ -213,7 +215,7 @@ export function simPartRows(parts: SimParts): SimPartRow[] {
   const title = (id: string): string => parts.library.part(id)?.title ?? id;
   const rows: SimPartRow[] = parts.matches.map((m, i) => {
     const sym = parts.symbols[i];
-    const base = { key: `${sym?.sheetPath ?? m.sheet}${m.uuid}`, ref: m.ref, value: m.value, sheet: m.sheet };
+    const base = { key: `${sym?.sheetPath ?? m.sheet}${m.uuid}`, uuid: m.uuid, ref: m.ref, value: m.value, sheet: m.sheet };
     switch (m.status) {
       case "matched":
         return m.rule === 1
@@ -243,7 +245,7 @@ export function simPartRows(parts: SimParts): SimPartRow[] {
   });
   for (const sym of parts.excluded) {
     rows.push({
-      key: `${sym.sheetPath}${sym.uuid}`, ref: sym.ref, value: sym.value, sheet: sym.sheet,
+      key: `${sym.sheetPath}${sym.uuid}`, uuid: sym.uuid, ref: sym.ref, value: sym.value, sheet: sym.sheet,
       state: "excluded", part: "", label: "excluded", note: "Excluded from simulation in KiCad.",
     });
   }

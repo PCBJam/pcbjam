@@ -68,12 +68,16 @@ importScripts(GLUE);
 // --- console lines ----------------------------------------------------------
 // Batched: a chatty circuit prints thousands of lines a second. One batch every
 // LOG_FLUSH_MS, at most LOG_BATCH_LINES of LOG_LINE_CHARS each; what does not
-// fit is counted, not kept.
+// fit is counted, not kept. ngspice's own lines and the lines of the parts
+// with code each have that many: ngspice prints a table of every node when a
+// run starts (hundreds of lines for a microcontroller), and what a chip says
+// at that moment (its firmware's first lines) must not be lost behind it.
 const EVT_CHAR = 0, EVT_STAT = 1, EVT_BG = 2, EVT_EXIT = 3, EVT_PART = 4;
 const LOG_FLUSH_MS = 50;
 const LOG_BATCH_LINES = 200;
 const LOG_LINE_CHARS = 2000;
 let pendingLog = [];
+let pendingSpice = 0;
 let droppedLog = 0;
 let flushTimer = 0;
 
@@ -82,16 +86,19 @@ function flushLog() {
   if (!pendingLog.length && !droppedLog) return;
   const log = pendingLog, dropped = droppedLog;
   pendingLog = [];
+  pendingSpice = 0;
   droppedLog = 0;
   try { postMessage({ log, dropped }); } catch { /* the host is gone */ }
 }
 
 function pushLog(kind, text) {
-  if (pendingLog.length >= LOG_BATCH_LINES) {
+  const spice = kind === "spice";
+  if ((spice ? pendingSpice : pendingLog.length - pendingSpice) >= LOG_BATCH_LINES) {
     droppedLog++;
   } else {
     const line = String(text);
     pendingLog.push([kind, line.length > LOG_LINE_CHARS ? line.slice(0, LOG_LINE_CHARS) + " ..." : line]);
+    if (spice) pendingSpice++;
   }
   if (!flushTimer) flushTimer = setTimeout(flushLog, LOG_FLUSH_MS);
 }

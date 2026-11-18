@@ -4,6 +4,7 @@ import type * as Y from "yjs";
 import { useDraggablePanel } from "@/components/useDraggablePanel";
 import { Button, Tip } from "@pcbjam/ui";
 import { overlayIconClass } from "@/components/OverlayMenu";
+import { chipFirmwares, type ChipFirmware } from "@/wasm/chip-firmware";
 import {
   simPartRows,
   type SimPartRow,
@@ -17,7 +18,12 @@ import {
  * per symbol of the open schematic, every sheet, saying what runs it in a
  * simulation: a library part, a suggestion, KiCad's own model, or nothing.
  * Below the rows: what KiCad's netlist export complained about, if anything.
- * Read-only: nothing here changes the schematic.
+ *
+ * A chip that runs firmware (a microcontroller of the library) has a second
+ * line: the file of the project it runs, and "Choose file..." to give it one
+ * from the user's computer (wasm/chip-firmware.ts stores the file in the
+ * project and writes its name onto the chip's symbol). That is the one thing
+ * here that changes the schematic; everything else only reads it.
  *
  * The rows come from wasm/sim-parts.ts (the editor's `kicadSimSymbols` and
  * `kicadSimNetlist` reads matched against the published library). The list is read when the panel
@@ -39,7 +45,22 @@ const REFRESH_QUIET_MS = 400;
 type View =
   | { status: "loading" }
   | { status: "error"; message: string }
-  | { status: "ready"; version: string; rows: SimPartRow[]; problems: string[] };
+  | { status: "ready"; version: string; rows: SimPartRow[]; problems: string[]; chips: Map<string, ChipFirmware> };
+
+/** What the list needs to show and to change a chip's firmware. */
+export interface SimPartsFirmware {
+  /** Whether the project has a file of this name, as far as the page knows. */
+  inProject: (name: string) => boolean;
+  /**
+   * Stores the picked file in the project and names it on the chip; rejects
+   * with a sentence for the user. Left out in a session that cannot write:
+   * the line then only says which file the chip runs.
+   */
+  choose?: (chip: ChipFirmware, file: File) => Promise<string>;
+}
+
+/** The chip a file is being stored for, or the sentence its last try ended with. */
+type Giving = { uuid: string; busy: true } | { uuid: string; busy: false; error: string };
 
 const STATE_CLASS: Record<SimPartState, string> = {
   live: "text-emerald-600 dark:text-emerald-300",
@@ -57,12 +78,15 @@ export function SimPartsPanel({
   mod,
   reader,
   doc,
+  firmware,
   onClose,
 }: {
   mod: SimSymbolsModule;
   reader: SimPartsReader;
   /** The bound collab doc; its changes refresh the list. Null (?collab=0) ⇒ the refresh button only. */
   doc: Y.Doc | null;
+  /** The chips' firmware lines. Left out, the list says nothing about firmware. */
+  firmware?: SimPartsFirmware;
   onClose: () => void;
 }) {
   const rootRef = React.useRef<HTMLDivElement | null>(null);
@@ -92,13 +116,17 @@ export function SimPartsPanel({
   // Only the newest read may answer: a slow first read must not overwrite a later one.
   const latest = React.useRef(0);
 
+  const withFirmware = !!firmware;
   const refresh = React.useCallback(() => {
     const turn = ++latest.current;
     setBusy(true);
     reader.read(mod).then(
-      (parts) => {
+      async (parts) => {
+        // Which file each chip runs. A library that cannot say leaves the lines out: the rows are still right.
+        const none = new Map<string, ChipFirmware>();
+        const chips = withFirmware ? await chipFirmwares(parts).catch(() => none) : none;
         if (turn !== latest.current) return;
-        setView({ status: "ready", version: parts.library.version, rows: simPartRows(parts), problems: parts.problems });
+        setView({ status: "ready", version: parts.library.version, rows: simPartRows(parts), problems: parts.problems, chips });
         setBusy(false);
       },
       (err: unknown) => {
@@ -107,7 +135,24 @@ export function SimPartsPanel({
         setBusy(false);
       },
     );
-  }, [mod, reader]);
+  }, [mod, reader, withFirmware]);
+
+  // A chip's firmware: one hidden file chooser for the whole list, opened for one chip.
+  const fileInput = React.useRef<HTMLInputElement | null>(null);
+  const pickingFor = React.useRef<ChipFirmware | null>(null);
+  const [giving, setGiving] = React.useState<Giving | null>(null);
+  const choose = firmware?.choose;
+  const give = (chip: ChipFirmware, file: File) => {
+    if (!choose) return;
+    setGiving({ uuid: chip.uuid, busy: true });
+    choose(chip, file).then(
+      () => {
+        setGiving(null);
+        refresh();
+      },
+      (err: unknown) => setGiving({ uuid: chip.uuid, busy: false, error: err instanceof Error ? err.message : String(err) }),
+    );
+  };
 
   React.useEffect(() => {
     refresh();
@@ -137,6 +182,7 @@ export function SimPartsPanel({
     : { left: 12, top: 56 };
 
   const rows = view.status === "ready" ? view.rows : [];
+  const chips = view.status === "ready" ? view.chips : null;
   const live = rows.filter((r) => r.state === "live").length;
 
   return (
@@ -222,21 +268,84 @@ export function SimPartsPanel({
               This schematic has no symbols yet.
             </p>
           )}
-          {rows.map((r) => (
-            <Tip content={r.sheet === "/" ? r.note : `${r.note} Sheet ${r.sheet}`} key={r.key}>
-              <div
-                data-testid="sim-part-row"
-                data-ref={r.ref}
-                data-state={r.state}
-                className="flex items-baseline gap-2 border-t border-black/5 px-3 py-1 text-xs dark:border-white/5"
-              >
-                <span className="w-12 shrink-0 truncate font-semibold">{r.ref}</span>
-                <span className="w-24 shrink-0 truncate text-neutral-500 dark:text-white/60">{r.value}</span>
-                <span data-testid="sim-part-row-part" className="min-w-0 flex-1 truncate">{r.part}</span>
-                <span className={`shrink-0 text-[11px] ${STATE_CLASS[r.state]}`}>{r.label}</span>
-              </div>
-            </Tip>
-          ))}
+          {rows.map((r) => {
+            const chip = firmware && r.state === "live" ? chips?.get(r.uuid) : undefined;
+            const stored = chip ? firmware!.inProject(chip.name) : false;
+            const mine = chip && giving?.uuid === chip.uuid ? giving : null;
+            return (
+              <React.Fragment key={r.key}>
+                <Tip content={r.sheet === "/" ? r.note : `${r.note} Sheet ${r.sheet}`}>
+                  <div
+                    data-testid="sim-part-row"
+                    data-ref={r.ref}
+                    data-state={r.state}
+                    className="flex items-baseline gap-2 border-t border-black/5 px-3 py-1 text-xs dark:border-white/5"
+                  >
+                    <span className="w-12 shrink-0 truncate font-semibold">{r.ref}</span>
+                    <span className="w-24 shrink-0 truncate text-neutral-500 dark:text-white/60">{r.value}</span>
+                    <span data-testid="sim-part-row-part" className="min-w-0 flex-1 truncate">{r.part}</span>
+                    <span className={`shrink-0 text-[11px] ${STATE_CLASS[r.state]}`}>{r.label}</span>
+                  </div>
+                </Tip>
+                {chip && (
+                  <div
+                    data-testid="sim-part-firmware"
+                    data-ref={r.ref}
+                    data-name={chip.name}
+                    data-stored={stored ? "yes" : "no"}
+                    data-busy={mine?.busy ? "yes" : "no"}
+                    className="flex items-center gap-2 pb-1 pl-[4.25rem] pr-3 text-[11px]"
+                  >
+                    <span className="shrink-0 text-neutral-500 dark:text-white/60">Firmware</span>
+                    <Tip content={stored ? `${r.ref} runs the project's file ${chip.name}.` : `${r.ref} asks for ${chip.name}. The project has no such file yet.`}>
+                      <span className="min-w-0 flex-1 truncate">
+                        <span className="font-mono">{chip.name}</span>
+                        {!stored && <span className="text-amber-600 dark:text-amber-300"> - not in the project</span>}
+                      </span>
+                    </Tip>
+                    {choose && (
+                      <Button
+                        data-testid="sim-part-firmware-choose"
+                        variant="outline"
+                        size="xs"
+                        className="h-6 shrink-0 px-2 text-[11px]"
+                        disabled={giving?.busy === true}
+                        onClick={() => {
+                          pickingFor.current = chip;
+                          fileInput.current?.click();
+                        }}
+                      >
+                        {mine?.busy ? "Storing..." : "Choose file..."}
+                      </Button>
+                    )}
+                  </div>
+                )}
+                {mine && !mine.busy && (
+                  <p
+                    data-testid="sim-part-firmware-error"
+                    className="pb-1 pl-[4.25rem] pr-3 text-[11px] text-red-600 dark:text-red-300"
+                  >
+                    {mine.error}
+                  </p>
+                )}
+              </React.Fragment>
+            );
+          })}
+          {choose && (
+            <input
+              ref={fileInput}
+              data-testid="sim-part-firmware-input"
+              type="file"
+              accept=".bin"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                const chip = pickingFor.current;
+                e.target.value = ""; // the same file can be chosen again (a new build)
+                if (file && chip) give(chip, file);
+              }}
+            />
+          )}
           {view.status === "ready" &&
             view.problems.map((text, i) => (
               <p

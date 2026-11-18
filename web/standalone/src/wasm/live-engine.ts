@@ -1,6 +1,9 @@
 // The worker-side wrapper as text (vite ?raw): one source, also read off disk
 // by the e2e harness (tests/kicad/sim-live-engine.spec.ts).
 import liveWorkerSource from "./ngspice-live-worker.js?raw";
+// The adapter that runs a chip's firmware in Espressif's emulator, as text: it has to be
+// in the simulation thread, and the Worker's script is that thread's script too.
+import espEmuAdapterSource from "./esp-emu-adapter.js?raw";
 import type { Deck } from "@pcbjam/shared/sim-library";
 import { resolveWasmBase } from "./wasm-assets";
 
@@ -41,19 +44,21 @@ export interface LiveCircuit {
 }
 
 /**
- * The netlist step's result as the engine takes it. Throws when the circuit
- * cannot run: the step found errors, or a part needs an emulator, which this
- * engine does not run yet.
+ * The netlist step's result as the engine takes it. `chips` are the packages
+ * of the parts that run an emulator (chip-parts.ts makes them: they need the
+ * emulator's files and the firmware). Throws when the circuit cannot run: the
+ * step found errors, or a part's code is not there.
  */
 export function circuitOf(
   deck: Pick<Deck, "deck" | "files" | "inputs" | "codeParts" | "errors">,
+  chips: LiveCircuit["parts"] = [],
 ): LiveCircuit {
   if (deck.errors.length) throw new Error(deck.errors.join("; "));
   const parts: LiveCircuit["parts"] = [];
   for (const part of deck.codeParts) {
-    if (part.kind !== "part-wasm" || !part.logic)
-      throw new Error(`${part.partId}: a part that runs an emulator cannot be simulated yet`);
-    parts.push({ name: part.partId, bytes: part.logic });
+    const bytes = part.kind === "part-wasm" ? part.logic : chips.find((c) => c.name === part.name)?.bytes;
+    if (!bytes) throw new Error(`${part.ref ?? part.partId}: the part's code is not loaded`);
+    parts.push({ name: part.name, bytes });
   }
   return {
     deck: deck.deck,
@@ -146,9 +151,12 @@ export const LIVE_BOOT_TIMEOUT_MS = 2 * 60_000;
 export const LIVE_RESPONSE_TIMEOUT_MS = 15_000;
 export const LIVE_START_TIMEOUT_MS = 60_000;
 
-/** Worker blob parts: prelude with the glue URL + the worker source. */
+/**
+ * Worker blob parts: prelude with the glue URL, the adapters of the packaged
+ * parts (they must be there before the engine's glue runs), the worker source.
+ */
 export function liveWorkerBlobParts(glueHref: string): string[] {
-  return [`self.NGSPICE_GLUE_URL = ${JSON.stringify(glueHref)};\n`, liveWorkerSource];
+  return [`self.NGSPICE_GLUE_URL = ${JSON.stringify(glueHref)};\n`, `${espEmuAdapterSource}\n`, liveWorkerSource];
 }
 
 interface WorkerResult {

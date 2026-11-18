@@ -4,9 +4,10 @@ import type { PreparedRun } from "@pcbjam/shared/sim-library";
 // The engine's module pulls the worker script in as text and asks where the
 // wasm lives; neither is needed here (the session gets a made-up engine).
 vi.mock("./ngspice-live-worker.js?raw", () => ({ default: "" }));
+vi.mock("./esp-emu-adapter.js?raw", () => ({ default: "" }));
 vi.mock("./wasm-assets", () => ({ resolveWasmBase: async () => "http://wasm.test" }));
 
-import type { LiveEngine, LiveEngineOptions, LiveFrame } from "./live-engine";
+import type { LiveCircuit, LiveEngine, LiveEngineOptions, LiveFrame } from "./live-engine";
 import {
   createLiveSession,
   leftOutNote,
@@ -540,5 +541,92 @@ describe("where the power of a run comes from", () => {
       "+5V is powered with 5 V, by its name. VCC is not powered: its name does not say a voltage. A battery or a voltage source on the wire powers it. "
       + "U1 has no power: nothing is connected to its supply pin 8. BT1 runs with 9 V: its value does not say the voltage.",
     );
+  });
+});
+
+describe("live session: a chip that runs firmware", () => {
+  const LOADER = "export class WasmEmulator {}\nfunction initSync() {}\nexport { initSync };\n";
+  const chip = (): PreparedRun => prepared({
+    codeParts: [{ partId: "esp32-c3-wroom-02", kind: "emulator", name: "esp32-c3-wroom-02_1", ref: "U1", logic: null }],
+    placed: [{
+      ref: "U1", uuid: "u1", sheet: "/", partId: "esp32-c3-wroom-02", version: 1, rule: 3, name: "XU1", nodes: [], connected: ["IO4"], number: 1,
+      settings: { firmware: { value: "firmware.bin", from: "default" } },
+    }] as unknown as PreparedRun["placed"],
+    parts: new Map([["esp32-c3-wroom-02", {
+      id: "esp32-c3-wroom-02", analog: "", logic: null,
+      manifest: { digital: { kind: "emulator", emulator: "esp-emu", chip: "esp32c3", orderParam: "IRR", pads: { IO4: 4 } } },
+    }]]) as unknown as PreparedRun["parts"],
+  });
+  const library = async () => ({
+    emulator: () => ({ id: "esp-emu", version: "1", program: "esp_emu_bg.wasm", loader: "esp_emu.js" }),
+    emulatorFile: async (_id: string, name: string) => new TextEncoder().encode(name === "esp_emu.js" ? LOADER : "wasm"),
+  });
+
+  function start(readFile?: (path: string) => Promise<Uint8Array | null>) {
+    const mod: SimSymbolsModule & ToolbarButtonModule = { kicadSimSymbols: () => "{}", kicadSimNetlist: () => "{}", kicadSchToolbarButton: () => true };
+    const engine = { start: vi.fn(async (_circuit: LiveCircuit) => {}), stop: vi.fn(async () => {}), frame: vi.fn(async () => frame()), dispose: vi.fn() };
+    const errors: string[] = [];
+    const session = createLiveSession({
+      mod,
+      reader: { prepare: async () => chip(), library } as unknown as SimPartsReader,
+      readFile,
+      onError: (text) => errors.push(text),
+      createEngine: () => engine as unknown as LiveEngine,
+    });
+    return { mod, engine, errors, session };
+  }
+
+  it("hands the engine the chip's package: the emulator from the library, the firmware from the project", async () => {
+    const readFile = vi.fn(async () => new Uint8Array([0xe9, 7]));
+    const { mod, engine, errors, session } = start(readFile);
+    mod.onHostToolbarButton!(LIVE_BUTTON_ID);
+    await vi.waitFor(() => expect(session.state).toBe("running"));
+    expect(errors).toEqual([]);
+    expect(readFile).toHaveBeenCalledWith("firmware.bin");
+    const parts = engine.start.mock.calls[0]![0].parts;
+    expect(parts.map((p) => p.name)).toEqual(["esp32-c3-wroom-02_1"]);
+    expect(new TextDecoder().decode(parts[0]!.bytes.subarray(0, 4))).toBe("PJPK");
+    session.dispose();
+  });
+
+  it("names the chip, not its code, in what the user reads", async () => {
+    const mod: SimSymbolsModule & ToolbarButtonModule = { kicadSimSymbols: () => "{}", kicadSimNetlist: () => "{}", kicadSchToolbarButton: () => true };
+    let onLog: (lines: [string, string][]) => void = () => {};
+    const engine = {
+      start: vi.fn(async (_circuit: LiveCircuit) => {
+        onLog([["part", "esp32-c3-wroom-02_1: > hello"], ["part", "counter: tick"]]);
+        throw new Error("code part 'esp32-c3-wroom-02_1' could not be started (its own lines say why)");
+      }),
+      stop: vi.fn(async () => {}), frame: vi.fn(async () => frame()), dispose: vi.fn(),
+    };
+    const errors: string[] = [];
+    const logged: string[] = [];
+    const session = createLiveSession({
+      mod,
+      reader: { prepare: async () => chip(), library } as unknown as SimPartsReader,
+      readFile: async () => new Uint8Array([0xe9, 7]),
+      onError: (text) => errors.push(text),
+      log: (text) => logged.push(text),
+      createEngine: (opts) => {
+        onLog = opts.onLog as typeof onLog;
+        return engine as unknown as LiveEngine;
+      },
+    });
+    mod.onHostToolbarButton!(LIVE_BUTTON_ID);
+    await vi.waitFor(() => expect(errors).toHaveLength(1));
+    expect(errors[0]).toBe("Live simulation did not start: code part 'U1' could not be started (its own lines say why)");
+    expect(logged).toContain("U1: > hello");
+    expect(logged).toContain("counter: tick");
+    session.dispose();
+  });
+
+  it("does not start, and says why, when the project has no firmware file", async () => {
+    const { mod, engine, errors, session } = start(async () => null);
+    mod.onHostToolbarButton!(LIVE_BUTTON_ID);
+    await vi.waitFor(() => expect(errors).toHaveLength(1));
+    expect(errors[0]).toBe('Live simulation did not start: U1 needs its firmware: the project has no file "firmware.bin"');
+    expect(engine.start).not.toHaveBeenCalled();
+    expect(session.state).toBe("idle");
+    session.dispose();
   });
 });

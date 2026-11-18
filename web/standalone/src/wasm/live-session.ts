@@ -1,4 +1,5 @@
 import type { Power, PreparedRun } from "@pcbjam/shared/sim-library";
+import { chipParts } from "./chip-parts";
 import {
   circuitOf,
   createLiveEngine,
@@ -74,6 +75,12 @@ export interface LiveSessionOptions {
   mod: SimSymbolsModule & ToolbarButtonModule;
   /** The page's reader of the simulation library. */
   reader: SimPartsReader;
+  /**
+   * One file of the project by its path, or null when the project has none of that name.
+   * A chip that runs firmware reads its image through this. Without it such a chip does
+   * not run.
+   */
+  readFile?: (path: string) => Promise<Uint8Array | null>;
   /** One sentence for the user: why it did not start, or why it stopped. */
   onError: (text: string) => void;
   /**
@@ -164,6 +171,8 @@ export function powerNote(power: Power): string | null {
 const WATCH_MS = 250;
 const FRAME_MS = 33;
 const KEPT_LOG_LINES = 40;
+/** How many lines of the parts with code one batch of the engine's log puts into the app's log. */
+const PART_LINES_PER_BATCH = 20;
 
 const words = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
@@ -185,12 +194,21 @@ export function createLiveSession(options: LiveSessionOptions): LiveSession {
   let watching = false;
   // ngspice's last lines: when a run ends by itself, the reason is in there.
   let recent: string[] = [];
+  // A chip that runs firmware has code under a name of its own ("esp32-c3-wroom-02_1"). What
+  // the user reads names the chip ("U1"). The longest name first: "_1" starts "_10".
+  let chipNames: [name: string, ref: string][] = [];
+  const byRef = (text: string): string => chipNames.reduce((t, [name, ref]) => t.split(name).join(ref), text);
 
   const engine = (options.createEngine ?? createLiveEngine)({
     log,
     onLog: (lines: LiveLogLine[]) => {
-      for (const [kind, text] of lines) if (kind === "spice" || kind === "problem") recent.push(text);
+      for (const [kind, text] of lines) if (kind === "spice" || kind === "problem") recent.push(byRef(text));
       if (recent.length > KEPT_LOG_LINES) recent = recent.slice(-KEPT_LOG_LINES);
+      // What a part with code says (a chip: what its firmware prints, "> ..."), into the
+      // app's own log. A firmware can print without end, so one batch gives a few lines.
+      const said = lines.flatMap(([kind, text]) => (kind === "part" ? [text] : []));
+      for (const text of said.slice(0, PART_LINES_PER_BATCH)) log(byRef(text));
+      if (said.length > PART_LINES_PER_BATCH) log(`... and ${said.length - PART_LINES_PER_BATCH} more lines from the parts`);
     },
     onCrash: (reason) => {
       // While it starts or stops, the call that waits is told the same thing.
@@ -238,7 +256,7 @@ export function createLiveSession(options: LiveSessionOptions): LiveSession {
     run = null;
     lastFrame = null;
     set("idle");
-    onError(text);
+    onError(byRef(text));
   }
 
   async function watch(mine: number): Promise<void> {
@@ -279,7 +297,15 @@ export function createLiveSession(options: LiveSessionOptions): LiveSession {
     try {
       const prepared = await reader.prepare(mod);
       if (mine !== epoch) return;
-      await engine.start(circuitOf(prepared));
+      chipNames = prepared.codeParts
+        .flatMap((c): [string, string][] => (c.ref && c.name !== c.ref ? [[c.name, c.ref]] : []))
+        .sort((a, b) => b[0].length - a[0].length);
+      // the chips that run firmware: the emulator from the library, the image from the project
+      const chips = prepared.codeParts.some((p) => p.kind === "emulator")
+        ? await chipParts(prepared, { library: await reader.library(), readFile: options.readFile })
+        : [];
+      if (mine !== epoch) return;
+      await engine.start(circuitOf(prepared, chips));
       if (mine !== epoch) return;
       run = prepared;
       set("running");
@@ -291,7 +317,7 @@ export function createLiveSession(options: LiveSessionOptions): LiveSession {
     } catch (e) {
       if (mine !== epoch) return;
       set("idle");
-      onError(`Live simulation did not start: ${words(e)}`);
+      onError(`Live simulation did not start: ${byRef(words(e))}`);
     }
   }
 

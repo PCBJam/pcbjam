@@ -25,7 +25,9 @@
  *              to a registry of WebAssembly modules. Each part is
  *              instantiated in the simulation thread, in its own memory, and
  *              reached through three flat functions. No ngspice source
- *              changes.
+ *              changes. A part that is a package of files (a chip emulator
+ *              with the user's firmware) is run by an adapter of the page's
+ *              own JavaScript instead: see pj_part_load.
  *
  * RPC surface (embind, called by web/standalone/src/wasm/ngspice-live-worker.js):
  *   liveInit()                 -> int   ngSpice_Init with the live callbacks
@@ -570,16 +572,62 @@ PART_FETCH fetchPart( const std::string& aName, std::vector<uint8_t>& aBytes, in
 // What a part may import: pj.out (report an output change), pj.log (a line of text), and
 // the few WASI calls a C library makes for stdout. Anything else of "pj" is a part made for
 // a newer engine: it is refused with its name, not run with a stand-in.
+//
+// A packaged part. A part whose program is somebody else's (a chip emulator that runs the
+// user's firmware) is not one WebAssembly module: it comes as a package of files, run by a
+// piece of the page's own JavaScript, its adapter. The page puts its adapters into this
+// thread's globalThis.__pjAdapters before the module's glue is loaded (ngspice-live-worker.js
+// is the script of this thread too). The package:
+//   "PJPK" | u32 header length | header JSON | the files, one after the other
+//   header: { adapter: <name>, config: {...}, blobs: { <name>: [offset, length] } }
+// The adapter is called once with { blobs, config, out( time, bit, state, strength ),
+// log( text ) } and answers with the same three calls a module has, and pj_unload.
+// pj_unload gives up what the part holds; it is called when the part's circuit is gone,
+// so it may not use out() or log() any more.
 // clang-format off
 EM_JS( int, pj_part_load, ( const unsigned char* aBytes, int aLen, int aKey, int aInst ), {
     try {
         const bytes = new Uint8Array( aLen );
         bytes.set( HEAPU8.subarray( aBytes, aBytes + aLen ) );
         const parts = ( globalThis.__pjParts = globalThis.__pjParts || new Map() );
+        const say = ( s ) => { const p = stringToNewUTF8( s ); _pj_host_log( aInst, p ); };
+        // what stood under this key before (new code for a running part) gives up what it holds
+        const retire = () => {
+            const old = parts.get( aKey );
+            if( old && typeof old.pj_unload === 'function' ) {
+                try { old.pj_unload(); } catch( e ) { say( 'unload failed: ' + e ); }
+            }
+        };
+
+        if( aLen > 8 && bytes[0] === 80 && bytes[1] === 74 && bytes[2] === 80 && bytes[3] === 75 ) {
+            const headLen = new DataView( bytes.buffer ).getUint32( 4, true );
+            const head = JSON.parse( new TextDecoder().decode( bytes.subarray( 8, 8 + headLen ) ) );
+            const make = globalThis.__pjAdapters ? globalThis.__pjAdapters[head.adapter] : undefined;
+            if( typeof make !== 'function' )
+                throw new Error( 'this page has nothing that runs a part of the kind ' + head.adapter );
+            const blobs = {};
+            for( const name of Object.keys( head.blobs || {} ) ) {
+                const at = 8 + headLen + head.blobs[name][0];
+                blobs[name] = bytes.subarray( at, at + head.blobs[name][1] );
+            }
+            const part = make( {
+                blobs: blobs,
+                config: head.config || {},
+                out: ( t, bit, state, strength ) => _pj_host_out( aInst, t, bit, state, strength ),
+                log: ( s ) => say( String( s ) )
+            } );
+            for( const name of [ 'pj_setup', 'pj_step', 'pj_input' ] ) {
+                if( !part || typeof part[name] !== 'function' )
+                    throw new Error( 'the part has no ' + name );
+            }
+            retire();
+            parts.set( aKey, part );
+            return 0;
+        }
+
         const mod = new WebAssembly.Module( bytes );
         let exp = null;
         const text = ( ptr, len ) => new TextDecoder().decode( new Uint8Array( exp.memory.buffer, ptr, len ).slice() );
-        const say = ( s ) => { const p = stringToNewUTF8( s ); _pj_host_log( aInst, p ); };
         const imports = {};
 
         for( const imp of WebAssembly.Module.imports( mod ) ) {
@@ -639,6 +687,7 @@ EM_JS( int, pj_part_load, ( const unsigned char* aBytes, int aLen, int aKey, int
         }
         if( exp._initialize )
             exp._initialize();
+        retire();
         parts.set( aKey, exp );
         return 0;
     } catch( e ) {
@@ -656,8 +705,14 @@ EM_JS( void, pj_part_input, ( int aKey, double aTime, int aBit, int aState, int 
     globalThis.__pjParts.get( aKey ).pj_input( aTime, aBit, aState, aStrength );
 } );
 EM_JS( void, pj_part_unload, ( int aKey ), {
-    if( globalThis.__pjParts )
-        globalThis.__pjParts.delete( aKey );
+    if( !globalThis.__pjParts )
+        return;
+    // a packaged part holds more than its own memory (an emulator): let it go
+    const part = globalThis.__pjParts.get( aKey );
+    if( part && typeof part.pj_unload === 'function' ) {
+        try { part.pj_unload(); } catch( e ) {}
+    }
+    globalThis.__pjParts.delete( aKey );
 } );
 // clang-format on
 

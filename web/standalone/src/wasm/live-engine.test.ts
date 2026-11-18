@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./ngspice-live-worker.js?raw", () => ({ default: "// fake live worker" }));
+vi.mock("./esp-emu-adapter.js?raw", () => ({ default: "// fake adapter" }));
 vi.mock("./wasm-assets", () => ({
   resolveWasmBase: vi.fn(async () => "/wasm"),
 }));
@@ -104,9 +105,10 @@ describe("live engine", () => {
     expect(engine.state).toBe("idle");
   });
 
-  it("the worker is the live wrapper in front of the service's glue", () => {
+  it("the worker is the live wrapper in front of the service's glue, with the chip adapter before it", () => {
     expect(liveWorkerBlobParts("https://cdn.test/wasm/ngspice_service.js")).toEqual([
       'self.NGSPICE_GLUE_URL = "https://cdn.test/wasm/ngspice_service.js";\n',
+      "// fake adapter\n",
       "// fake live worker",
     ]);
   });
@@ -474,11 +476,11 @@ describe("circuitOf", () => {
         input: { name: "position", type: "range" as const, source: "Vpos", min: 0, max: 1, default: 0.5 },
       },
     ],
-    codeParts: [{ partId: "demo-counter", kind: "part-wasm" as const, logic }],
+    codeParts: [{ partId: "demo-counter", kind: "part-wasm" as const, name: "demo-counter", logic }],
     errors: [] as string[],
   };
 
-  it("names the inputs by the simulator's names and the code by the part's id", () => {
+  it("names the inputs by the simulator's names and the code by the name its model asks for", () => {
     expect(circuitOf(deck)).toEqual({
       deck: ["* x", ".end"],
       files: [{ path: "/sim-library/push-button/model.lib", text: "x" }],
@@ -492,9 +494,15 @@ describe("circuitOf", () => {
       .toThrow('U1: the library part "x" is not loaded; second');
   });
 
-  it("says so when a part needs an emulator", () => {
-    expect(() =>
-      circuitOf({ ...deck, codeParts: [{ partId: "esp32-c3-wroom-02", kind: "emulator" as const, logic: null }] }),
-    ).toThrow("esp32-c3-wroom-02: a part that runs an emulator cannot be simulated yet");
+  it("takes the code of a part that runs an emulator from the packages it is given", () => {
+    const code = (n: number, ref: string) => ({ partId: "esp32-c3-wroom-02", kind: "emulator" as const, name: `esp32-c3-wroom-02_${n}`, ref, logic: null });
+    const chip = { ...deck, codeParts: [code(1, "U1"), code(2, "U2")] };
+    const one = new Uint8Array([80, 74, 80, 75, 1]);
+    const two = new Uint8Array([80, 74, 80, 75, 2]);
+    // every placed chip has a package of its own, under its own name
+    expect(circuitOf(chip, [{ name: "esp32-c3-wroom-02_2", bytes: two }, { name: "esp32-c3-wroom-02_1", bytes: one }]).parts)
+      .toEqual([{ name: "esp32-c3-wroom-02_1", bytes: one }, { name: "esp32-c3-wroom-02_2", bytes: two }]);
+    expect(() => circuitOf(chip)).toThrow("U1: the part's code is not loaded");
+    expect(() => circuitOf(chip, [{ name: "esp32-c3-wroom-02_1", bytes: one }])).toThrow("U2: the part's code is not loaded");
   });
 });
