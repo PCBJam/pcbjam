@@ -1,5 +1,6 @@
 import * as React from "react";
 import { glCanvasRect } from "@/wasm/canvas-coords";
+import { panelDock } from "./panel-dock";
 import {
   anchoredAt,
   arrangeColumns,
@@ -15,16 +16,15 @@ import {
 } from "./panel-snap";
 
 /**
- * The floating panels' shared layout (overlay-system 0007): whether panels snap, whether the
- * layout is locked, which panels are pinned, the editor parts each panel is anchored to, and
- * the guide lines of the drag in progress. Both drag hooks (useDraggablePanel,
+ * The floating panels' shared layout (overlay-system 0007): whether panels snap, which panels
+ * are pinned, the editor parts each panel is anchored to, and the guide lines of the drag in
+ * progress. Both drag hooks (useDraggablePanel,
  * usePluginPanelLayout) register their panel here and drag through {@link startPanelDrag}.
  *
  * A panel takes part by carrying `data-snap-panel="<its id>"` on its root.
  */
 
 const SNAP_KEY = "pcbjam:panels-snap";
-const LOCK_KEY = "pcbjam:panels-locked";
 const PINS_KEY = "pcbjam:panels-pinned";
 const ANCHORS_KEY = "pcbjam:panel-anchors";
 
@@ -48,14 +48,12 @@ type Anchors = { x?: Anchor; y?: Anchor };
 
 interface LayoutState {
   snap: boolean;
-  locked: boolean;
   pinned: ReadonlySet<string>;
   guides: Guide[];
 }
 
 let state: LayoutState = {
   snap: read(SNAP_KEY, true),
-  locked: read(LOCK_KEY, false),
   pinned: new Set(read<string[]>(PINS_KEY, [])),
   guides: [],
 };
@@ -115,22 +113,42 @@ export const panelLayout = {
     write(SNAP_KEY, snap);
     set({ snap });
   },
-  setLocked(locked: boolean) {
-    write(LOCK_KEY, locked);
-    set({ locked, guides: [] });
-  },
   togglePin(id: string) {
     const pinned = new Set(state.pinned);
     if (!pinned.delete(id)) pinned.add(id);
-    write(PINS_KEY, [...pinned]);
-    set({ pinned });
+    setPinned(pinned);
   },
+  /** The floating panels on screen that a pin or Arrange applies to (not the session menu's button). */
+  panels: () => [...handles.values()].filter((h) => h.arrange !== false && floating(h.id) && rectOf(h.id)).map((h) => h.id),
+  /**
+   * Pin every panel on screen, or unpin them all when they all are. In place of a lock: a
+   * pinned panel shows its pin, and the pin undoes it, where a forgotten lock left panels
+   * that wouldn't move and nothing on them that said why.
+   */
+  pinAll(pin: boolean) {
+    const pinned = new Set(state.pinned);
+    for (const id of panelLayout.panels()) {
+      if (pin) pinned.add(id);
+      else pinned.delete(id);
+    }
+    setPinned(pinned);
+  },
+  /** Whether Arrange would move any panel (it moves none when they are already lined up). */
+  arrangeMoves: () => arrangePlan().some((p) => Math.abs(p.at.x - p.r.x) > 0.5 || Math.abs(p.at.y - p.r.y) > 0.5),
   clearGuides() {
     if (state.guides.length) set({ guides: [] });
   },
   /** Tile the unpinned panels into columns from the drawing area's right edge (or the window's). */
   arrange,
 };
+
+/** Not docked to a side (overlay-system 0008): a docked panel is placed by its side, not here. */
+const floating = (id: string) => !panelDock.sideOf(id);
+
+function setPinned(pinned: Set<string>) {
+  write(PINS_KEY, [...pinned]);
+  set({ pinned });
+}
 
 // --- what a panel snaps to ------------------------------------------------------------------
 
@@ -207,7 +225,7 @@ function stackUnder(id: string, seen = new Set([id])): string[] {
   if (!top) return [];
   const out: string[] = [];
   for (const other of handles.keys()) {
-    if (seen.has(other) || state.pinned.has(other)) continue;
+    if (seen.has(other) || state.pinned.has(other) || !floating(other)) continue;
     const r = rectOf(other);
     if (!r) continue;
     if (Math.abs(r.y - (top.y + top.h + SNAP_GAP)) <= 2 && r.x < top.x + top.w && top.x < r.x + r.w) {
@@ -233,11 +251,11 @@ export interface PanelDrag {
 let dragging = 0;
 
 /**
- * Start a drag of panel `id`; null when the layout is locked or the panel is pinned (then a
+ * Start a drag of panel `id`; null when the panel is pinned or docked (then a
  * press on the handle stays a click). The targets and the stack are read when it starts moving.
  */
 export function startPanelDrag(id: string): PanelDrag | null {
-  if (state.locked || state.pinned.has(id)) return null;
+  if (state.pinned.has(id) || !floating(id)) return null;
   let targets: SnapTarget[] | null = null;
   let stack: Array<{ id: string; x: number; y: number }> = [];
   let start: Rect | null = null;
@@ -336,7 +354,7 @@ export function followLayout() {
   const next = new Map<string, { x: number; y: number }>();
   const at = (id: string) => next.get(id) ?? rectOf(id);
   for (const [id, a] of Object.entries(anchors)) {
-    const r = handles.has(id) ? rectOf(id) : null;
+    const r = handles.has(id) && floating(id) ? rectOf(id) : null;
     if (!r) continue;
     // Where this pass already put it (as another panel's stack), on the axis it isn't anchored on.
     const cur = at(id)!;
@@ -375,10 +393,10 @@ function below(id: string, x: number, y: number, r: Rect): number {
 
 // --- arrange -----------------------------------------------------------------------------------
 
-function arrange() {
-  if (state.locked) return;
+/** Where Arrange puts each unpinned panel, with where it is now. */
+function arrangePlan() {
   const list = [...handles.keys()]
-    .filter((id) => !state.pinned.has(id) && handles.get(id)?.arrange !== false)
+    .filter((id) => !state.pinned.has(id) && floating(id) && handles.get(id)?.arrange !== false)
     .flatMap((id) => {
       const r = rectOf(id);
       return r ? [{ id, r }] : [];
@@ -388,19 +406,40 @@ function arrange() {
   const region = gl && gl.width > 0 ? { x: gl.x, y: gl.y, w: gl.width, h: gl.height } : { x: 0, y: 0, w: window.innerWidth, h: window.innerHeight };
   const key = gl && gl.width > 0 ? "area:canvas" : "window";
   const at = arrangeColumns(list.map((p) => p.r), region);
-  list.forEach((p, i) => {
+  return list.map((p, i) => ({ ...p, at: at[i]!, key }));
+}
+
+/** How long the panels glide to where Arrange put them, so the move is seen. */
+const ARRANGE_GLIDE_MS = 220;
+
+function arrange() {
+  const plan = arrangePlan();
+  plan.forEach((p, i) => {
     const h = handles.get(p.id)!;
-    h.moveTo(at[i]!.x, at[i]!.y);
+    glide(p.id);
+    h.moveTo(p.at.x, p.at.y);
     h.commit();
     // The first column holds to the region's right edge, each column's top panel to its top;
     // the panels under them follow as their stacks.
-    const firstColumn = Math.abs(at[i]!.x + p.r.w - (at[0]!.x + list[0]!.r.w)) < 0.5;
-    const top = i === 0 || at[i]!.y < at[i - 1]!.y;
+    const firstColumn = Math.abs(p.at.x + p.r.w - (plan[0]!.at.x + plan[0]!.r.w)) < 0.5;
+    const top = i === 0 || p.at.y < plan[i - 1]!.at.y;
     setAnchors(p.id, {
-      ...(firstColumn ? { x: { key, ref: "end" as const, offset: -SNAP_GAP, edge: "end" as const } } : {}),
-      ...(top ? { y: { key, ref: "start" as const, offset: SNAP_GAP, edge: "start" as const } } : {}),
+      ...(firstColumn ? { x: { key: p.key, ref: "end" as const, offset: -SNAP_GAP, edge: "end" as const } } : {}),
+      ...(top ? { y: { key: p.key, ref: "start" as const, offset: SNAP_GAP, edge: "start" as const } } : {}),
     });
   });
-  // Once the moves have rendered: clear of the session menu's button, as following does.
-  requestAnimationFrame(() => requestAnimationFrame(followLayout));
+  // Once the panels have landed (following reads their rects): clear of the session menu's
+  // button, as following does.
+  setTimeout(followLayout, ARRANGE_GLIDE_MS + 30);
+}
+
+/** Let a panel's next move animate (its left/top), then drop the transition so drags stay direct. */
+function glide(id: string) {
+  const el = elementOf(id) as HTMLElement | null;
+  if (!el) return;
+  const was = el.style.transition;
+  el.style.transition = `left ${ARRANGE_GLIDE_MS}ms ease-out, top ${ARRANGE_GLIDE_MS}ms ease-out`;
+  setTimeout(() => {
+    el.style.transition = was;
+  }, ARRANGE_GLIDE_MS + 300);
 }

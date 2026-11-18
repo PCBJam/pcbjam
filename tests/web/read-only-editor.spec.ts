@@ -361,6 +361,7 @@ test('viewer panels: layer selector + selection inspector (viewer-panels)', asyn
 
   // ── layer panel ────────────────────────────────────────────────────────────
   await openOverlayMenu(viewer);
+  await viewer.getByTestId('overlay-menu-sub-view').click();
   await viewer.getByTestId('layers-panel-toggle').click();
   await expect(viewer.getByTestId('layers-panel')).toBeVisible();
   // Close the overlay menu (z-50) — it overlaps the panel's default anchor
@@ -448,6 +449,7 @@ test('viewer panels: layer selector + selection inspector (viewer-panels)', asyn
   }
 
   await openOverlayMenu(viewer);
+  await viewer.getByTestId('overlay-menu-sub-view').click();
   await viewer.getByTestId('inspector-panel-toggle').click();
   await expect(viewer.getByTestId('inspector-panel')).toBeVisible();
   // Close the covering overlay menu WITHOUT Escape — the allowlisted

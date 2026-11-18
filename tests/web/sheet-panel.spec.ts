@@ -95,9 +95,11 @@ test.describe('sheet panel', () => {
 
     // Menu row toggles it off/on; close button removes it.
     await openOverlayMenu(page);
+    await page.getByTestId('overlay-menu-sub-view').click();
     await page.getByTestId('sheet-panel-toggle').click();
     await expect(panel).toHaveCount(0);
     await openOverlayMenu(page);
+    await page.getByTestId('overlay-menu-sub-view').click();
     await page.getByTestId('sheet-panel-toggle').click();
     await expect(panel).toBeVisible();
     // The open menu (z-50) sits over the panel's right-anchored header —
@@ -114,6 +116,7 @@ test.describe('sheet panel', () => {
     await expect(page.getByTestId('inspector-panel')).toBeVisible({ timeout: 30000 });
     await expect(page.getByTestId('sheet-panel')).toHaveCount(0);
     await openOverlayMenu(page);
+    await page.getByTestId('overlay-menu-sub-view').click();
     await expect(page.getByTestId('inspector-panel-toggle')).toBeVisible();
     await expect(page.getByTestId('sheet-panel-toggle')).toHaveCount(0);
     const state = await tree(page);

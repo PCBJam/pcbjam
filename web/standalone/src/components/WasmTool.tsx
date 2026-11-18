@@ -170,6 +170,7 @@ import { setActiveEditor } from "@/wasm/active-editor";
 import { publishViewport } from "@/wasm/viewport-store";
 import { OverlayHost } from "@/overlay/OverlayHost";
 import { SnapGuides } from "@/overlay/SnapGuides";
+import { DockSides, useDockedRoom } from "@/overlay/DockSides";
 import { setTourDoc } from "@/overlay/tours/checkpoints";
 import { savePartAndPlace } from "@/libs/save-part";
 import { installPartCopyBridge } from "@/libs/part-copy";
@@ -352,6 +353,8 @@ export function WasmTool({
   onUseMobileLayout?: () => void;
 }) {
   const containerRef = React.useRef<HTMLDivElement>(null);
+  // Room the docked panels take at the window's sides; the editor gets the rest.
+  const docked = useDockedRoom();
   // Reader opt-in (comments-ux 0003 decision 6): plain read-only sessions
   // show comments only when asked, remembered per browser.
   const [readerComments, setReaderComments] = React.useState<boolean>(() => {
@@ -800,6 +803,24 @@ export function WasmTool({
       window.removeEventListener("keydown", onKeyDown, true);
       window.removeEventListener("pointerdown", onPointerDown, true);
     };
+  }, []);
+
+  // The same preventDefault keeps a press on the editor from taking focus off an
+  // overlay: after typing in the AI chat (an iframe) or a panel's filter, Esc, E and
+  // Ctrl+Z went on to that input. A press inside wx's own windows hands focus back to
+  // the page, where wx's window-level key listener reads it. wx's DOM controls (dialog
+  // fields, in those same windows) keep theirs.
+  React.useEffect(() => {
+    const inWx = (n: Node | null) =>
+      !!n && !!(document.getElementById("main-window")?.contains(n) || document.getElementById("window-container")?.contains(n));
+    const onPointerDown = (e: PointerEvent) => {
+      const focused = document.activeElement;
+      if (!(e.target instanceof Node) || !inWx(e.target)) return;
+      if (!focused || focused === document.body || inWx(focused)) return;
+      (focused as HTMLElement).blur?.();
+    };
+    window.addEventListener("pointerdown", onPointerDown, true);
+    return () => window.removeEventListener("pointerdown", onPointerDown, true);
   }, []);
 
   const append = React.useCallback((msg: string) => {
@@ -2244,14 +2265,21 @@ export function WasmTool({
   }, [setChromeFn, effectiveChromeHidden, append]);
 
   return (
-    <div className="relative h-screen w-screen overflow-hidden bg-[#1a1a2e]" style={{ "--plugin-sidebar-offset": ready && pluginPocEnabled && pluginView?.kind === 'manager' ? "min(360px, 90vw)" : "0px" } as React.CSSProperties}>
+    <div className="relative h-screen w-screen overflow-hidden bg-[#1a1a2e]" style={{
+      // What covers the window's right edge: the plugin manager's sidebar, and the panels docked right.
+      "--plugin-sidebar-offset": `calc(${ready && pluginPocEnabled && pluginView?.kind === 'manager' ? "min(360px, 90vw)" : "0px"} + ${docked.right}px)`,
+    } as React.CSSProperties}>
       {/*
         wx.js addresses the DOM by id: #main-window is its top-level (id=0)
         window — it owns #canvas (created in boot's preRun) — and #window-container
         parents every child window. Both ids must exist before the runtime boots,
         mirroring the harness HTML (tests/apps/kicad/<tool>.html).
       */}
-      <div ref={containerRef} id="main-window" className="absolute inset-0 h-full w-full" />
+      {/* The editor's box: the window minus the docked panels' sides (overlay-system 0008).
+          wx sizes its main window to it (wx.js's __wxViewportSize reads this mark). */}
+      <div data-wx-viewport="" className="absolute inset-y-0" style={{ left: docked.left, right: docked.right }}>
+        <div ref={containerRef} id="main-window" className="absolute inset-0 h-full w-full" />
+      </div>
       <div id="window-container" />
 
       {/* Everything that can throw into React's commit lives INSIDE the
@@ -2434,6 +2462,7 @@ export function WasmTool({
       {/* Guided-tour overlay (overlay-system 0002): coachmarks over the editor. */}
       {ready && !fatal && <OverlayHost tool={tool} />}
       {ready && !fatal && <SnapGuides />}
+      {ready && !fatal && <DockSides />}
 
       {/* libs 0031: Save reached parts of a read-only library. */}
       <PartCopySaveDialog />

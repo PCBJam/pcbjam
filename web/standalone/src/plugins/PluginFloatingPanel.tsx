@@ -2,6 +2,7 @@ import * as React from 'react';
 import { ChevronDown, ChevronRight, RotateCcw, X } from 'lucide-react';
 import { usePluginPanelLayout } from './usePluginPanelLayout';
 import { PanelPin } from '@/overlay/PanelPin';
+import { PanelDock } from '@/overlay/PanelDock';
 import { Button, Tip } from "@pcbjam/ui";
 import { overlayIconClass } from "@/components/OverlayMenu";
 
@@ -22,41 +23,47 @@ export function PluginFloatingPanel({ title, storageKey, preferredSize, forceExp
   const root = React.useRef<HTMLDivElement>(null);
   const [collapsed, setCollapsed] = React.useState(false);
   const layout = usePluginPanelLayout(storageKey, preferredSize, collapsed);
+  // Docked, it has its side's whole height: no collapse, and its side resizes it.
+  const docked = layout.docked;
+  const folded = collapsed && !docked;
   const resizeHint = React.useId();
   React.useEffect(() => { if (forceExpanded) setCollapsed(false); }, [forceExpanded]);
   React.useEffect(() => { if (collapseSignal > 0 && !forceExpanded) setCollapsed(true); }, [collapseSignal]);
   React.useEffect(() => { root.current?.focus(); }, []);
   const iconButton = 'p-1 ' + overlayIconClass;
   // data-overlay-obstacle: guide cards are placed around the panel, not over it.
-  return <div ref={root} role="region" aria-label={title + ' plugin'} tabIndex={-1} data-testid="plugin-panel" data-overlay-obstacle="" data-snap-panel={layout.snapId}
+  return <div ref={root} role="region" aria-label={title + ' plugin'} tabIndex={-1} data-testid="plugin-panel" data-overlay-obstacle="" data-snap-panel={layout.snapId} data-dock-title={title}
     className="absolute z-40 flex flex-col overflow-hidden rounded-xl bg-white/95 text-neutral-900 shadow-2xl outline-none ring-1 ring-inset ring-black/10 backdrop-blur-sm dark:bg-neutral-950/90 dark:text-white dark:ring-white/15"
     style={{
-      left: layout.bounds.x, top: layout.bounds.y,
-      width: layout.bounds.width, height: layout.bounds.height,
+      ...(docked ?? {
+        left: layout.bounds.x, top: layout.bounds.y,
+        width: layout.bounds.width, height: layout.bounds.height,
+      }),
       // Inline, not the `hidden` attribute: Tailwind's `flex` would override it. The iframe
       // stays mounted, so the plugin keeps running.
-      display: hidden ? 'none' : undefined,
+      ...(hidden ? { display: 'none' } : {}),
     }}>
-    <Tip content={title + ' - drag to move'}>
+    <Tip content={docked ? title : title + ' - drag to move'}>
       <div data-testid="plugin-panel-header"
-        className="flex h-10 shrink-0 cursor-grab select-none items-center gap-2 px-3 text-xs font-semibold active:cursor-grabbing"
+        className={'flex h-10 shrink-0 select-none items-center gap-2 px-3 text-xs font-semibold' + (docked ? '' : ' cursor-grab active:cursor-grabbing')}
         style={{ touchAction: 'none' }}
         onPointerDown={event => layout.onPointerDown(event, 'drag')}
         onPointerMove={layout.onPointerMove}
         onPointerUp={layout.finish}
         onPointerCancel={layout.finish}
         onLostPointerCapture={layout.finish}>
-        <Tip content={collapsed ? 'Expand' : 'Collapse to header'}>
+        {!docked && <Tip content={collapsed ? 'Expand' : 'Collapse to header'}>
           <Button type="button" variant="plain" size="icon-xs" className={iconButton} aria-expanded={!collapsed}
             aria-label={collapsed ? 'Expand plugin' : 'Collapse plugin'}
             disabled={forceExpanded} onPointerDown={event => event.stopPropagation()} onClick={() => setCollapsed(value => !value)}>
             {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
           </Button>
-        </Tip>
+        </Tip>}
         <Tip content={title}>
           <span className="min-w-0 flex-1 truncate">{title}</span>
         </Tip>
         <span className="flex gap-0.5" onPointerDown={event => event.stopPropagation()}>
+          <PanelDock id={layout.snapId} className="order-none" />
           <PanelPin id={layout.snapId} className="order-none" />
           <Tip content="Restart plugin">
             <Button type="button" variant="plain" size="icon-xs" className={iconButton} aria-label="Restart plugin" onClick={onRestart}><RotateCcw size={14} /></Button>
@@ -67,8 +74,8 @@ export function PluginFloatingPanel({ title, storageKey, preferredSize, forceExp
         </span>
       </div>
     </Tip>
-    <div className={collapsed ? 'hidden' : 'flex min-h-0 flex-1 flex-col'} style={{ pointerEvents: layout.interacting ? 'none' : undefined }}>{children}</div>
-    {!collapsed && <>
+    <div className={folded ? 'hidden' : 'flex min-h-0 flex-1 flex-col'} style={{ pointerEvents: layout.interacting ? 'none' : undefined }}>{children}</div>
+    {!folded && !docked && <>
       <span id={resizeHint} className="sr-only">Drag to resize, or use the arrow keys. Hold Shift for larger steps.</span>
       {(['left', 'right'] as const).map(side => <Tip content="Drag to resize; arrow keys when focused" key={side}><Button type="button"
         aria-label={`Resize plugin from bottom ${side}`} aria-describedby={resizeHint}

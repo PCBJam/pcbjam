@@ -1,5 +1,5 @@
 import * as React from "react";
-import { AlertTriangle, Users } from "lucide-react";
+import { AlertTriangle, ChevronLeft, ChevronRight, Users, type LucideIcon } from "lucide-react";
 import { useDraggablePanel } from "@/components/useDraggablePanel";
 import { Badge, Button, Tip } from "@pcbjam/ui";
 import { cn } from "@/lib/utils";
@@ -23,6 +23,8 @@ import { cn } from "@/lib/utils";
  * below are the fix and the contract:
  *
  *   OverlayMenuSection — a labelled group, separated from its neighbours.
+ *   OverlayMenuSub     — a row that opens a child menu: beside the panel, or
+ *                        over it when there is no room beside (a phone).
  *   overlayRowClass    — the shared row shape for anything interactive
  *                        (a toggle row is @pcbjam/ui's Toggle, variant="ghost"
  *                        size="row", plus overlayPressedClass if it shows a
@@ -98,6 +100,92 @@ const FAB_SIZE = 36;
 const CloseOverlayMenu = React.createContext<() => void>(() => {});
 export const useCloseOverlayMenu = () => React.useContext(CloseOverlayMenu);
 
+/** The panel's width and the room a child menu needs beside it; narrower windows open it over the panel. */
+const PANEL_W = 288;
+const SUB_W = 256;
+
+interface SubMenuState {
+  open: string | null;
+  setOpen(id: string | null): void;
+  /** Where a child menu opens: beside the panel (toward the screen's center), or over it. */
+  place: "left" | "right" | "over";
+  /** The panel opens downward from the button: a child menu lines up with its row's top. */
+  down: boolean;
+}
+const SubMenu = React.createContext<SubMenuState>({ open: null, setOpen: () => {}, place: "right", down: true });
+
+/**
+ * A row that opens a child menu (`children`): a click, or a mouse resting on it. One is open at
+ * a time; another row of the panel or the menu closing closes it. Over the panel (no room
+ * beside) it has a Back row.
+ */
+export function OverlayMenuSub({
+  id,
+  label,
+  icon: Icon,
+  children,
+}: {
+  id: string;
+  label: string;
+  icon: LucideIcon;
+  children: React.ReactNode;
+}) {
+  const sub = React.useContext(SubMenu);
+  const open = sub.open === id;
+  const over = sub.place === "over";
+  return (
+    // Over the panel, the child menu is placed against the panel (the nearest positioned box).
+    <div data-overlay-sub={id} className={over ? undefined : "relative"}>
+      <Button
+        type="button"
+        variant="plain"
+        size="row"
+        data-testid={`overlay-menu-sub-${id}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        className={cn(overlayRowClass, open && "bg-black/5 dark:bg-white/10")}
+        // Opens, never toggles: a mouse resting on the row already opened it, and the click
+        // that follows would close it again.
+        onClick={() => sub.setOpen(id)}
+        onPointerEnter={(e) => {
+          if (e.pointerType === "mouse" && !over) sub.setOpen(id);
+        }}
+      >
+        <Icon size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
+        <span className="flex-1">{label}</span>
+        <ChevronRight size={14} aria-hidden="true" className="shrink-0 text-neutral-400 dark:text-white/40" />
+      </Button>
+      {open && (
+        <div
+          role="menu"
+          aria-label={label}
+          data-testid={`overlay-menu-sub-${id}-panel`}
+          className={cn(
+            "absolute z-10 flex flex-col gap-1 overflow-y-auto rounded-xl p-2",
+            over
+              ? "inset-0 bg-white dark:bg-neutral-950"
+              : cn(
+                  "max-h-[70vh] bg-white/95 shadow-2xl ring-1 ring-inset ring-black/10 backdrop-blur-sm dark:bg-neutral-950/90 dark:ring-white/15",
+                  // The row sits 8 px inside the panel: 16 px clears the panel's edge by 8.
+                  sub.place === "right" ? "left-[calc(100%+16px)]" : "right-[calc(100%+16px)]",
+                  sub.down ? "-top-2" : "-bottom-2",
+                ),
+          )}
+          style={over ? undefined : { width: SUB_W }}
+        >
+          {over && (
+            <Button type="button" variant="plain" size="row" className={overlayRowClass} onClick={() => sub.setOpen(null)}>
+              <ChevronLeft size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
+              <span className="font-semibold">{label}</span>
+            </Button>
+          )}
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function OverlayMenu({
   badge,
   unread = 0,
@@ -119,6 +207,10 @@ export function OverlayMenu({
   children: React.ReactNode;
 }) {
   const [open, setOpen] = React.useState(false);
+  const [sub, setSub] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    if (!open) setSub(null);
+  }, [open]);
   const rootRef = React.useRef<HTMLDivElement | null>(null);
   // Drag/clamp/persist behavior shared with the comments panel (0001 B) —
   // including the always-onscreen restore guarantee.
@@ -172,6 +264,13 @@ export function OverlayMenu({
   // The panel opens toward the screen's center from wherever the FAB sits.
   const onLeftHalf = pos ? pos.x < window.innerWidth / 2 : false;
   const onTopHalf = pos ? pos.y < window.innerHeight / 2 : true;
+  const fits = window.innerWidth >= PANEL_W + SUB_W + 48;
+  const subMenu: SubMenuState = {
+    open: sub,
+    setOpen: setSub,
+    place: !fits ? "over" : onLeftHalf ? "right" : "left",
+    down: onTopHalf,
+  };
 
   return (
     <div ref={rootRef} data-snap-panel={drag.snapId} className="absolute z-50" style={style}>
@@ -227,6 +326,12 @@ export function OverlayMenu({
       {open && (
         <div
           data-testid="overlay-menu-panel"
+          // A mouse on another row of the panel closes an open child menu (as in a menu bar).
+          onPointerOver={(e) => {
+            if (!sub || e.pointerType !== "mouse") return;
+            const t = e.target as Element;
+            if (t.closest("button, a, [role=button]") && !t.closest("[data-overlay-sub]")) setSub(null);
+          }}
           className={`absolute flex w-72 flex-col gap-2 rounded-xl bg-white/95 p-2 shadow-2xl ring-1 ring-inset ring-black/10 backdrop-blur-sm dark:bg-neutral-950/90 dark:ring-white/15 ${
             onLeftHalf ? "left-0" : "right-0"
           } ${onTopHalf ? "top-11" : "bottom-11"}`}
@@ -241,7 +346,9 @@ export function OverlayMenu({
               </span>
             )}
           </div>
-          <CloseOverlayMenu.Provider value={() => setOpen(false)}>{children}</CloseOverlayMenu.Provider>
+          <CloseOverlayMenu.Provider value={() => setOpen(false)}>
+            <SubMenu.Provider value={subMenu}>{children}</SubMenu.Provider>
+          </CloseOverlayMenu.Provider>
         </div>
       )}
     </div>

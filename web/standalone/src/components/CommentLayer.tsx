@@ -1,5 +1,6 @@
 import * as React from "react";
 import { PanelPin } from "@/overlay/PanelPin";
+import { PanelDock } from "@/overlay/PanelDock";
 import { createPortal } from "react-dom";
 import { overlayFieldClass, overlayIconClass, overlayKbdClass, overlayPressedClass, overlayRowClass } from "@/components/OverlayMenu";
 import {
@@ -735,10 +736,10 @@ function CommentsPanel({
 
   return (
     <div
-      ref={rootRef} data-snap-panel={drag.snapId}
+      ref={rootRef} data-snap-panel={drag.snapId} data-dock-title="Comments"
       data-testid="comments-panel"
       className="absolute z-40 flex w-72 flex-col overflow-hidden rounded-xl bg-white/95 text-neutral-900 shadow-2xl ring-1 ring-inset ring-black/10 dark:bg-neutral-950/90 dark:text-white dark:ring-white/15 backdrop-blur-sm"
-      style={style}
+      style={drag.docked ?? style}
     >
       {/* Header = drag handle. Interactive children stop pointerdown so they
           don't start a drag. */}
@@ -751,6 +752,7 @@ function CommentsPanel({
           onPointerMove={(e) => void drag.onPointerMove(e)}
           onPointerUp={() => void drag.onPointerUp()}
         >
+          <PanelDock id={drag.snapId} />
           <PanelPin id={drag.snapId} />
           <Tip content={collapsed ? "Expand" : "Collapse to header"}>
             <Button

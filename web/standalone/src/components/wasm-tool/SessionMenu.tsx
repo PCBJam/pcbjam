@@ -12,7 +12,7 @@ import {
   Moon,
   PanelsTopLeft,
   RefreshCw,
-  Sun, MessageSquare, Eye, ArrowRightLeft, Smartphone, Type, Magnet, Lock, LayoutGrid } from "lucide-react";
+  Sun, MessageSquare, Eye, ArrowRightLeft, Smartphone, Type, Magnet, LayoutGrid, Check, Pin, PinOff } from "lucide-react";
 import type { Tool } from "@pcbjam/shared";
 import { setTheme } from "@/lib/theme";
 import type { SourceDescriptor } from "@/lib/project-source-shared";
@@ -20,7 +20,7 @@ import type { PresencePeer } from "@/wasm/collab/presence";
 import type { FollowTarget } from "@/wasm/collab/follow-user";
 import { PresenceRoster } from "@/components/PresenceRoster";
 import { SourceChip } from "@/components/SourceChip";
-import { OverlayMenu, OverlayMenuSection, overlayKbdClass, overlayPressedClass, overlayRowClass, useCloseOverlayMenu } from "@/components/OverlayMenu";
+import { OverlayMenu, OverlayMenuSection, OverlayMenuSub, overlayKbdClass, overlayPressedClass, overlayRowClass, useCloseOverlayMenu } from "@/components/OverlayMenu";
 import { openReportProblem } from "@/lib/diagnostics/report-problem-events";
 import { CHROME_HOTKEY_LABEL } from "./ui-helpers";
 import { panelLayout, usePanelLayout } from "@/overlay/panel-layout";
@@ -256,6 +256,12 @@ export function SessionMenu({
   fontsOpen?: boolean;
   setFontsOpen?: (v: boolean) => void;
 }) {
+  // The child menus show only with something in them.
+  const hasViewRows =
+    !!onToggleReviewerSelections ||
+    (effectiveChromeHidden && (hasLayers || hasSheets || tool === "pcbnew" || tool === "eeschema")) ||
+    (tool === "pcbnew" && !!onShow3D);
+  const hasFontRows = (hasImport && !readOnly) || !!localFonts || (!!libFonts && (libFonts.count > 0 || !readOnly));
   return (
     <OverlayMenu
       badge={peers.length}
@@ -385,100 +391,147 @@ export function SessionMenu({
       )}
 
       {/* No Tutorials here: the Tutorials page starts them, and the remembered panel reopens one. */}
-      {plugins && !plugins.tutorialsOnly && <PluginMenu {...plugins} />}
-
-      <OverlayMenuSection label="View">
-        {onToggleReviewerSelections && (
-          <Tip content="Show or hide reviewers' selection outlines (their cursors stay)">
-            <Toggle
-              data-testid="reviewer-selections-toggle"
-              variant="ghost"
-              size="row"
-              pressed={reviewerSelections !== false}
-              onPressedChange={onToggleReviewerSelections}
-              className={cn(overlayRowClass, overlayPressedClass)}
-            >
-              <Eye size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
-              <span>{reviewerSelections !== false ? "Hide reviewer selections" : "Show reviewer selections"}</span>
-            </Toggle>
-          </Tip>
+      <OverlayMenuSection>
+        {plugins && !plugins.tutorialsOnly && <PluginMenu {...plugins} />}
+        {hasViewRows && (
+          <OverlayMenuSub id="view" label="View" icon={Eye}>
+            {onToggleReviewerSelections && (
+              <Tip content="Show or hide reviewers' selection outlines (their cursors stay)">
+                <Toggle
+                  data-testid="reviewer-selections-toggle"
+                  variant="ghost"
+                  size="row"
+                  pressed={reviewerSelections !== false}
+                  onPressedChange={onToggleReviewerSelections}
+                  className={cn(overlayRowClass, overlayPressedClass)}
+                >
+                  <Eye size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
+                  <span>{reviewerSelections !== false ? "Hide reviewer selections" : "Show reviewer selections"}</span>
+                </Toggle>
+              </Tip>
+            )}
+            {/* Viewer panels (viewer-panels): canvas-only stand-ins for the
+                chrome-hidden wx panes — available to viewers and to editors
+                in hide-UI mode alike. */}
+            {effectiveChromeHidden && hasLayers && (
+              <Tip content="Board layers - visibility and active layer">
+                <Toggle
+                  data-testid="layers-panel-toggle"
+                  variant="ghost"
+                  size="row"
+                  pressed={layersOpen}
+                  onPressedChange={setLayersOpen}
+                  className={overlayRowClass}
+                >
+                  <Layers size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
+                  <span>{layersOpen ? "Hide layers" : "Layers"}</span>
+                </Toggle>
+              </Tip>
+            )}
+            {effectiveChromeHidden && hasSheets && (
+              <Tip content="Schematic sheets - navigate the hierarchy">
+                <Toggle
+                  data-testid="sheet-panel-toggle"
+                  variant="ghost"
+                  size="row"
+                  pressed={sheetsOpen}
+                  onPressedChange={setSheetsOpen}
+                  className={overlayRowClass}
+                >
+                  <ListTree size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
+                  <span>{sheetsOpen ? "Hide sheets" : "Sheets"}</span>
+                </Toggle>
+              </Tip>
+            )}
+            {effectiveChromeHidden && (tool === "pcbnew" || tool === "eeschema") && (
+              <Tip content="Properties of the selected items">
+                <Toggle
+                  data-testid="inspector-panel-toggle"
+                  variant="ghost"
+                  size="row"
+                  pressed={inspectorOpen}
+                  onPressedChange={setInspectorOpen}
+                  className={overlayRowClass}
+                >
+                  <Crosshair size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
+                  <span>{inspectorOpen ? "Hide inspector" : "Inspector"}</span>
+                </Toggle>
+              </Tip>
+            )}
+            {tool === "pcbnew" && onShow3D && (
+              <Tip content="Open the 3D viewer">
+                <Button
+                  data-testid="show-3d-viewer"
+                  variant="plain"
+                  size="row"
+                  className={overlayRowClass}
+                  onClick={onShow3D}
+                >
+                  <Box size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
+                  <span>3D viewer</span>
+                </Button>
+              </Tip>
+            )}
+          </OverlayMenuSub>
         )}
-        {/* Viewer panels (viewer-panels): canvas-only stand-ins for the
-            chrome-hidden wx panes — available to viewers and to editors
-            in hide-UI mode alike. */}
-        {effectiveChromeHidden && hasLayers && (
-          <Tip content="Board layers - visibility and active layer">
-            <Toggle
-              data-testid="layers-panel-toggle"
-              variant="ghost"
-              size="row"
-              pressed={layersOpen}
-              onPressedChange={setLayersOpen}
-              className={overlayRowClass}
-            >
-              <Layers size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
-              <span>{layersOpen ? "Hide layers" : "Layers"}</span>
-            </Toggle>
-          </Tip>
-        )}
-        {effectiveChromeHidden && hasSheets && (
-          <Tip content="Schematic sheets - navigate the hierarchy">
-            <Toggle
-              data-testid="sheet-panel-toggle"
-              variant="ghost"
-              size="row"
-              pressed={sheetsOpen}
-              onPressedChange={setSheetsOpen}
-              className={overlayRowClass}
-            >
-              <ListTree size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
-              <span>{sheetsOpen ? "Hide sheets" : "Sheets"}</span>
-            </Toggle>
-          </Tip>
-        )}
-        {effectiveChromeHidden && (tool === "pcbnew" || tool === "eeschema") && (
-          <Tip content="Properties of the selected items">
-            <Toggle
-              data-testid="inspector-panel-toggle"
-              variant="ghost"
-              size="row"
-              pressed={inspectorOpen}
-              onPressedChange={setInspectorOpen}
-              className={overlayRowClass}
-            >
-              <Crosshair size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
-              <span>{inspectorOpen ? "Hide inspector" : "Inspector"}</span>
-            </Toggle>
-          </Tip>
-        )}
-        {hasImport && !readOnly && (
-          <Tip content="POC: add a symbol / footprint from a local file to the canvas">
-            <Toggle
-              data-testid="import-panel-toggle"
-              variant="ghost"
-              size="row"
-              pressed={importOpen}
-              onPressedChange={setImportOpen}
-              className={overlayRowClass}
-            >
-              <FilePlus size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
-              <span>{importOpen ? "Hide import" : "Import from file"}</span>
-            </Toggle>
-          </Tip>
-        )}
-        {tool === "pcbnew" && onShow3D && (
-          <Tip content="Open the 3D viewer">
-            <Button
-              data-testid="show-3d-viewer"
-              variant="plain"
-              size="row"
-              className={overlayRowClass}
-              onClick={onShow3D}
-            >
-              <Box size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
-              <span>3D viewer</span>
-            </Button>
-          </Tip>
+        <OverlayMenuSub id="panels" label="Panels" icon={LayoutGrid}>
+          <PanelLayoutToggles />
+        </OverlayMenuSub>
+        {hasFontRows && (
+          <OverlayMenuSub id="fonts" label="Fonts & import" icon={Type}>
+            {/* Installed fonts (fonts 0001): the browser asks for the permission once, on this
+                click; after that KiCad's font lists include the computer's fonts. */}
+            {localFonts && (
+              <Tip
+                content={
+                  localFonts.state === "granted"
+                    ? "KiCad's font lists include this computer's fonts. Click to read them again after installing a font."
+                    : localFonts.state === "denied"
+                      ? "Allow fonts for this site in the browser's site settings, then reload."
+                      : "Show this computer's fonts in KiCad's font lists. The browser asks once."
+                }
+              >
+                <Button
+                  data-testid="local-fonts"
+                  variant="plain"
+                  size="row"
+                  className={overlayRowClass}
+                  disabled={localFonts.state === "denied"}
+                  onClick={localFonts.request}
+                >
+                  <Type size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
+                  <span>
+                    {localFonts.state === "granted"
+                      ? `Installed fonts (${localFonts.count})`
+                      : localFonts.state === "denied"
+                        ? "Installed fonts blocked"
+                        : "Use installed fonts"}
+                  </span>
+                </Button>
+              </Tip>
+            )}
+            {/* Team library fonts (fonts 0002): listed in KiCad's font lists, fetched when a
+                document uses one. The row opens the team fonts panel (LibFontsPanel), where
+                members upload more; viewers see it only when public libraries give fonts. */}
+            {libFonts && (libFonts.count > 0 || !readOnly) && (
+              <LibFontsRow count={libFonts.count} readOnly={readOnly} open={fontsOpen ?? false} setOpen={setFontsOpen} />
+            )}
+            {hasImport && !readOnly && (
+              <Tip content="POC: add a symbol / footprint from a local file to the canvas">
+                <Toggle
+                  data-testid="import-panel-toggle"
+                  variant="ghost"
+                  size="row"
+                  pressed={importOpen}
+                  onPressedChange={setImportOpen}
+                  className={overlayRowClass}
+                >
+                  <FilePlus size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
+                  <span>{importOpen ? "Hide import" : "Import from file"}</span>
+                </Toggle>
+              </Tip>
+            )}
+          </OverlayMenuSub>
         )}
         {canToggleChrome && !readOnly && (
           <Tip content={`${chromeHidden ? "Show" : "Hide"} UI (${CHROME_HOTKEY_LABEL})`}>
@@ -499,44 +552,6 @@ export function SessionMenu({
               <Kbd className={cn("ml-auto", overlayKbdClass)}>{CHROME_HOTKEY_LABEL}</Kbd>
             </Toggle>
           </Tip>
-        )}
-        <PanelLayoutToggles />
-        {/* Installed fonts (fonts 0001): the browser asks for the permission once, on this
-            click; after that KiCad's font lists include the computer's fonts. */}
-        {localFonts && (
-          <Tip
-            content={
-              localFonts.state === "granted"
-                ? "KiCad's font lists include this computer's fonts. Click to read them again after installing a font."
-                : localFonts.state === "denied"
-                  ? "Allow fonts for this site in the browser's site settings, then reload."
-                  : "Show this computer's fonts in KiCad's font lists. The browser asks once."
-            }
-          >
-            <Button
-              data-testid="local-fonts"
-              variant="plain"
-              size="row"
-              className={overlayRowClass}
-              disabled={localFonts.state === "denied"}
-              onClick={localFonts.request}
-            >
-              <Type size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
-              <span>
-                {localFonts.state === "granted"
-                  ? `Installed fonts (${localFonts.count})`
-                  : localFonts.state === "denied"
-                    ? "Installed fonts blocked"
-                    : "Use installed fonts"}
-              </span>
-            </Button>
-          </Tip>
-        )}
-        {/* Team library fonts (fonts 0002): listed in KiCad's font lists, fetched when a
-            document uses one. The row opens the team fonts panel (LibFontsPanel), where
-            members upload more; viewers see it only when public libraries give fonts. */}
-        {libFonts && (libFonts.count > 0 || !readOnly) && (
-          <LibFontsRow count={libFonts.count} readOnly={readOnly} open={fontsOpen ?? false} setOpen={setFontsOpen} />
         )}
         {/* Light/dark toggle (comments-ux 0002): flips the shell theme;
             the F4 effect in WasmTool re-themes the GAL canvas through the
@@ -624,27 +639,62 @@ function ReportProblemRow() {
  * stray drags.
  */
 function PanelLayoutToggles() {
-  const { snap, locked } = usePanelLayout();
+  const { snap, pinned } = usePanelLayout();
+  const closeMenu = useCloseOverlayMenu();
   const icon = "shrink-0 text-neutral-400 dark:text-white/50";
+  // Read when the child menu renders (it opens fresh each time): what's on screen now.
+  const panels = panelLayout.panels();
+  const allPinned = panels.length > 0 && panels.every((id) => pinned.has(id));
+  const free = panels.filter((id) => !pinned.has(id));
+  const arranged = free.length > 0 && !panelLayout.arrangeMoves();
   return (
     <>
       <Tip content="Panels snap to the window, each other and the editor's toolbars. Hold Alt while dragging to drop one anywhere.">
         <Toggle data-testid="panels-snap-toggle" variant="ghost" size="row" pressed={snap} onPressedChange={panelLayout.setSnap} className={overlayRowClass}>
           <Magnet size={14} className={icon} />
-          <span>Snap panels</span>
+          <span className="flex-1">Snap panels</span>
+          <span className="text-[10px] text-neutral-400 dark:text-white/40">{snap ? "On" : "Off"}</span>
         </Toggle>
       </Tip>
-      <Tip content="Line the panels up in columns along the drawing area's right edge; they stay there when the layout changes. Pinned panels stay put.">
-        <Button data-testid="panels-arrange" variant="plain" size="row" className={overlayRowClass} disabled={locked} onClick={panelLayout.arrange}>
-          <LayoutGrid size={14} className={icon} />
-          <span>Arrange panels</span>
+      <Tip
+        content={
+          panels.length === 0
+            ? "No panels are open"
+            : free.length === 0
+              ? "Every open panel is pinned; unpin one to arrange it"
+              : arranged
+                ? "The panels are already lined up along the drawing area's right edge"
+                : "Line the panels up in columns along the drawing area's right edge; they stay there when the layout changes. Pinned panels stay put."
+        }
+      >
+        <Button
+          data-testid="panels-arrange"
+          variant="plain"
+          size="row"
+          className={overlayRowClass}
+          disabled={arranged || free.length === 0}
+          // The menu closes so the panels can be seen gliding into place.
+          onClick={() => {
+            closeMenu();
+            panelLayout.arrange();
+          }}
+        >
+          {arranged ? <Check size={14} className={icon} /> : <LayoutGrid size={14} className={icon} />}
+          <span>{arranged ? "Panels arranged" : "Arrange panels"}</span>
         </Button>
       </Tip>
-      <Tip content="Locked panels don't move or resize. Their buttons still work.">
-        <Toggle data-testid="panels-lock-toggle" variant="ghost" size="row" pressed={locked} onPressedChange={panelLayout.setLocked} className={overlayRowClass}>
-          <Lock size={14} className={icon} />
-          <span>Lock panels</span>
-        </Toggle>
+      <Tip content={allPinned ? "Let every panel move and resize again" : "Keep every open panel where it is; each panel's pin undoes it for that one"}>
+        <Button
+          data-testid="panels-pin-all"
+          variant="plain"
+          size="row"
+          className={overlayRowClass}
+          disabled={panels.length === 0}
+          onClick={() => panelLayout.pinAll(!allPinned)}
+        >
+          {allPinned ? <PinOff size={14} className={icon} /> : <Pin size={14} className={icon} />}
+          <span>{allPinned ? "Unpin all panels" : "Pin all panels"}</span>
+        </Button>
       </Tip>
     </>
   );

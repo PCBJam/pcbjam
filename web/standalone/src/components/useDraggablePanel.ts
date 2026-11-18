@@ -1,5 +1,6 @@
 import * as React from "react";
 import { registerPanel, startPanelDrag, type PanelDrag } from "@/overlay/panel-layout";
+import { useDockedStyle } from "@/overlay/panel-dock";
 
 /**
  * Shared draggable-overlay behavior (comments-ux 0001 B), extracted from the
@@ -18,8 +19,11 @@ import { registerPanel, startPanelDrag, type PanelDrag } from "@/overlay/panel-l
  *
  * Panels snap (overlay-system 0007): to the window's edges, the other panels and the
  * editor's drawing area, toolbars and panes, unless Alt is held; panels stacked under this one
- * move with it. A locked layout or a pinned panel doesn't start a drag at all, so a click on the
+ * move with it. A pinned panel doesn't start a drag at all, so a click on the
  * handle stays a click. The caller puts `data-snap-panel={snapId}` on the panel's root.
+ *
+ * Docked to a side (overlay-system 0008), the panel takes `docked` as its style instead of its
+ * floating position, and doesn't drag.
  */
 
 type Pos = { x: number; y: number };
@@ -206,5 +210,7 @@ export function useDraggablePanel(opts: {
     return d.moved;
   };
 
-  return { pos, onPointerDown, onPointerMove, onPointerUp, snapId: storageKey };
+  const docked = useDockedStyle(storageKey);
+
+  return { pos, docked, onPointerDown, onPointerMove, onPointerUp, snapId: storageKey };
 }

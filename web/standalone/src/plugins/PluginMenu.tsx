@@ -1,10 +1,13 @@
 import * as React from 'react';
-import { ExternalLink, Plus, Puzzle } from 'lucide-react';
+import { ExternalLink, Plus, Puzzle, Sparkles } from 'lucide-react';
 import { APP_URL } from '@/lib/config';
-import { OverlayMenuSection, overlayRowClass, useCloseOverlayMenu } from '@/components/OverlayMenu';
-import { BUILTIN, hostedPlugins, pluginKey, type PluginCatalog, type PluginView } from './plugin-catalog';
+import { OverlayMenuSub, overlayRowClass, useCloseOverlayMenu } from '@/components/OverlayMenu';
+import { BUILTIN, hostedPlugins, pluginKey, type Descriptor, type PluginCatalog, type PluginView } from './plugin-catalog';
 import { Button, Tip, Toggle } from "@pcbjam/ui";
 import { cn } from "@/lib/utils";
+
+/** The AI chat's plugin id: its row sits in the session menu itself, with its own icon. */
+const AI_CHAT = 'ai-chat';
 
 export interface PluginMenuProps {
   tool: string;
@@ -18,26 +21,32 @@ export function PluginMenu({ tool, catalog, view, onViewChange }: PluginMenuProp
   React.useEffect(() => { void catalog.refresh(); }, [catalog.refresh]);
   const open = (next: PluginView) => { onViewChange(next); closeMenu(); };
   const selected = view?.kind === 'plugin' ? view.id : '';
-  return <OverlayMenuSection label="Plugins">
-    <div data-testid="overlay-menu-plugins" className="flex flex-col gap-1">
+  const listed = catalog.plugins.filter(plugin => plugin.source !== 'tutorial');
+  // The AI chat has a row of its own, above the Plugins child menu with the rest.
+  const ai = listed.find(plugin => plugin.manifest.id === AI_CHAT);
+  const others = listed.filter(plugin => plugin !== ai);
+  const row = (plugin: Descriptor, Icon: typeof Puzzle) => {
+    const compatible = plugin.manifest.surfaces.includes('editor:' + tool);
+    return <Tip content={compatible ? plugin.manifest.name : plugin.manifest.name + ' · Available in another editor'} key={pluginKey(plugin)}><Toggle variant="ghost" size="row" disabled={!compatible || plugin.enabled===false}
+      className={cn(overlayRowClass, 'disabled:cursor-not-allowed disabled:opacity-40')}
+      pressed={selected === pluginKey(plugin)}
+      onClick={() => open({ kind: 'plugin', id: pluginKey(plugin) })}>
+      <Icon size={14} className={cn('shrink-0', Icon === Sparkles ? 'text-violet-500 dark:text-violet-300' : 'text-neutral-400 dark:text-white/50')} />
+      <span className="min-w-0 flex-1 truncate">{plugin.manifest.name}</span>
+      {hostedPlugins && plugin.source === 'upload' && <span className="text-[10px] text-neutral-400 dark:text-white/40">Private</span>}
+    </Toggle></Tip>;
+  };
+  return <div data-testid="overlay-menu-plugins" className="flex flex-col gap-1">
+    {ai && row(ai, Sparkles)}
+    <OverlayMenuSub id="plugins" label="Plugins" icon={Puzzle}>
       <div className="max-h-48 overflow-y-auto">
         {!hostedPlugins && tool === 'pcbnew' && <Toggle variant="ghost" size="row" className={overlayRowClass} pressed={selected === BUILTIN}
           onClick={() => open({ kind: 'plugin', id: BUILTIN })}>
           <Puzzle size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
           <span className="min-w-0 flex-1 truncate">Board Inspector</span><span className="text-[10px] text-neutral-400 dark:text-white/40">Bundled</span>
         </Toggle>}
-        {catalog.plugins.filter(plugin => plugin.source !== 'tutorial').map(plugin => {
-          const compatible = plugin.manifest.surfaces.includes('editor:' + tool);
-          return <Tip content={compatible ? plugin.manifest.name : plugin.manifest.name + ' · Available in another editor'} key={pluginKey(plugin)}><Toggle variant="ghost" size="row" disabled={!compatible || plugin.enabled===false}
-            className={cn(overlayRowClass, 'disabled:cursor-not-allowed disabled:opacity-40')}
-            pressed={selected === pluginKey(plugin)}
-            onClick={() => open({ kind: 'plugin', id: pluginKey(plugin) })}>
-            <Puzzle size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
-            <span className="min-w-0 flex-1 truncate">{plugin.manifest.name}</span>
-            {hostedPlugins && plugin.source === 'upload' && <span className="text-[10px] text-neutral-400 dark:text-white/40">Private</span>}
-          </Toggle></Tip>;
-        })}
-        {!catalog.plugins.some(plugin => plugin.source !== 'tutorial') && (hostedPlugins || tool !== 'pcbnew') && <p className="px-2 py-1 text-xs text-neutral-500 dark:text-white/50">{catalog.loaded ? 'No plugins installed yet' : 'Loading plugins…'}</p>}
+        {others.map(plugin => row(plugin, Puzzle))}
+        {!others.length && (hostedPlugins || tool !== 'pcbnew') && <p className="px-2 py-1 text-xs text-neutral-500 dark:text-white/50">{catalog.loaded ? (ai ? 'No other plugins installed yet' : 'No plugins installed yet') : 'Loading plugins…'}</p>}
         {catalog.error && <p role="status" className="px-2 py-1 text-xs text-amber-700 dark:text-amber-200">Plugin list unavailable</p>}
       </div>
       {/* Everyone installs from the marketplace in the web app; the menu then
@@ -50,6 +59,6 @@ export function PluginMenu({ tool, catalog, view, onViewChange }: PluginMenuProp
       {catalog.developer && <Button type="button" variant="plain" size="row" className={overlayRowClass} onClick={() => open({ kind: 'manager' })}>
         <Plus size={14} className="shrink-0 text-neutral-400 dark:text-white/50" /><span>Add plugin…</span>
       </Button>}
-    </div>
-  </OverlayMenuSection>;
+    </OverlayMenuSub>
+  </div>;
 }

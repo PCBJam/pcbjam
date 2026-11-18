@@ -1,5 +1,6 @@
 import * as React from 'react';
 import { registerPanel, startPanelDrag, type PanelDrag } from '@/overlay/panel-layout';
+import { useDockedStyle } from '@/overlay/panel-dock';
 
 type Size = { width: number; height: number };
 type Bounds = Size & { x: number; y: number };
@@ -87,7 +88,7 @@ export function usePluginPanelLayout(storageKey: string, preferredSize: Size | u
   };
   const onPointerDown = (event: React.PointerEvent<HTMLElement>, kind: Gesture) => {
     if (event.button !== 0 || !event.isPrimary) return;
-    // A locked layout (the session menu) or a pinned panel neither moves nor resizes.
+    // A pinned panel neither moves nor resizes.
     const session = startPanelDrag(storageKey);
     if (!session) return;
     event.preventDefault();
@@ -135,5 +136,7 @@ export function usePluginPanelLayout(storageKey: string, preferredSize: Size | u
     moveTo: (x, y) => live.current.update({ ...live.current.bounds, x, y }, live.current.requested),
     commit: () => live.current.persist(),
   }), [storageKey]);
-  return { bounds, interacting, onPointerDown, onPointerMove, finish, onResizeKeyDown, snapId: storageKey };
+  // Docked to a side (overlay-system 0008): its side's box instead of `bounds`; it keeps them.
+  const docked = useDockedStyle(storageKey);
+  return { bounds, docked, interacting, onPointerDown, onPointerMove, finish, onResizeKeyDown, snapId: storageKey };
 }

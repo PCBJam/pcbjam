@@ -1,5 +1,6 @@
 import * as React from "react";
 import { PanelPin } from "@/overlay/PanelPin";
+import { PanelDock } from "@/overlay/PanelDock";
 import { ChevronDown, ChevronRight, FilePlus, X } from "lucide-react";
 import type { Tool } from "@pcbjam/shared";
 import { useDraggablePanel } from "@/components/useDraggablePanel";
@@ -202,10 +203,10 @@ export function ImportItemPanel({
         />
       )}
     <div
-      ref={rootRef} data-snap-panel={drag.snapId}
+      ref={rootRef} data-snap-panel={drag.snapId} data-dock-title="Import"
       data-testid="import-panel"
       className="absolute z-40 flex w-72 flex-col overflow-hidden rounded-xl bg-white/95 text-neutral-900 shadow-2xl ring-1 ring-inset ring-black/10 backdrop-blur-sm dark:bg-neutral-950/90 dark:text-white dark:ring-white/15"
-      style={style}
+      style={drag.docked ?? style}
     >
       <Tip content="Import from file - drag to move">
         <div
@@ -216,6 +217,7 @@ export function ImportItemPanel({
           onPointerMove={(e) => void drag.onPointerMove(e)}
           onPointerUp={() => void drag.onPointerUp()}
         >
+          <PanelDock id={drag.snapId} />
           <PanelPin id={drag.snapId} />
           <Tip content={collapsed ? "Expand" : "Collapse to header"}>
             <Button
