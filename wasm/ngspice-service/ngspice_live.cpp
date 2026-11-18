@@ -28,6 +28,14 @@
  *              changes. A part that is a package of files (a chip emulator
  *              with the user's firmware) is run by an adapter of the page's
  *              own JavaScript instead: see pj_part_load.
+ *   voltages   a code part has digital ports only. A part that measures (a
+ *              microcontroller's analog input) gets its voltages through a
+ *              small code model of our own, the "voltage tap" (codemodel/,
+ *              pj_vtap): it hands the engine the voltages on its inputs
+ *              after every accepted time step, and the part asks the engine.
+ *              The model is compiled into this module and reaches ngspice
+ *              as the code-model library "pjcm", again through the four
+ *              redirected libc calls. No ngspice source changes.
  *
  * RPC surface (embind, called by web/standalone/src/wasm/ngspice-live-worker.js):
  *   liveInit()                 -> int   ngSpice_Init with the live callbacks
@@ -479,6 +487,9 @@ struct PartInst
     int                    nameGen = 0; // s_partNameGen[name] of the loaded bytes
     std::vector<Digital_t> inputs;      // last input values, replayed after a reload
     int                    key = 0;     // this instance's name in the JavaScript part table
+    int                    number = 0;  // the placed part's own number (its model's first
+                                        // sim_args entry); its voltage tap carries the same. 0 = none
+    double                 stepTarget = 0; // the accepted time the part is being advanced to
 };
 
 // The handles this file gave to d_cosim. Any other handle belongs to the C library.
@@ -581,7 +592,9 @@ PART_FETCH fetchPart( const std::string& aName, std::vector<uint8_t>& aBytes, in
 //   "PJPK" | u32 header length | header JSON | the files, one after the other
 //   header: { adapter: <name>, config: {...}, blobs: { <name>: [offset, length] } }
 // The adapter is called once with { blobs, config, out( time, bit, state, strength ),
-// log( text ) } and answers with the same three calls a module has, and pj_unload.
+// log( text ), volt( input, time ), sampleAt( time ) } and answers with the same three calls
+// a module has, and pj_unload. volt and sampleAt are for a part with a voltage tap, see
+// "voltages for code parts" below.
 // pj_unload gives up what the part holds; it is called when the part's circuit is gone,
 // so it may not use out() or log() any more.
 // clang-format off
@@ -614,7 +627,9 @@ EM_JS( int, pj_part_load, ( const unsigned char* aBytes, int aLen, int aKey, int
                 blobs: blobs,
                 config: head.config || {},
                 out: ( t, bit, state, strength ) => _pj_host_out( aInst, t, bit, state, strength ),
-                log: ( s ) => say( String( s ) )
+                log: ( s ) => say( String( s ) ),
+                volt: ( input, t ) => _pj_host_volt( aInst, input, t ),
+                sampleAt: ( t ) => _pj_host_sample_at( aInst, t ) !== 0
             } );
             for( const name of [ 'pj_setup', 'pj_step', 'pj_input' ] ) {
                 if( !part || typeof part[name] !== 'function' )
@@ -745,6 +760,119 @@ EMSCRIPTEN_KEEPALIVE void pj_host_log( int aInst, char* aText )
     emitEvt( EVT_PART, line.c_str(), 0, 0 );
 }
 
+// --- voltages for code parts ---------------------------------------------------------------
+//
+// A code part cannot see a voltage: d_cosim, which runs it, has digital ports only. The
+// pj_vtap code model (codemodel/pjcm/pj_vtap) sits on the voltages a part wants to see and
+// calls pj_tap_put() after every time step ngspice has accepted, BEFORE the parts are
+// advanced over that step. The last two steps are kept here; a part asks for "my input k at
+// time t" (pj_host_volt) and gets the straight line between them.
+//
+// The results callback (cbSendData) cannot do this job: ngspice calls it AFTER the parts
+// were advanced, so what it holds is one step old at that moment.
+struct Tap
+{
+    double              t0 = 0, t1 = 0; // the last two accepted times
+    std::vector<double> v0, v1;         // the voltages at those times
+    bool                any = false;
+    double              want = 0;       // the part will measure at this time, 0 = no wish
+};
+
+static std::mutex         s_tapMutex;
+static std::map<int, Tap> s_taps; // by the part's number
+
+// From the pj_vtap code model. aAccepted = 0: the starting values (time 0, the solver may
+// pass several times); 1: the step to aTime was accepted.
+void pj_tap_put( int aId, double aTime, int aCount, const double* aValues, int aAccepted )
+{
+    std::lock_guard<std::mutex> lock( s_tapMutex );
+    Tap&                        tap = s_taps[aId];
+
+    if( !aAccepted || !tap.any || aTime <= tap.t0 )
+    {
+        tap.want = 0; // a new run: a wish left from the last one means nothing
+        tap.t0 = tap.t1 = aTime;
+        tap.v0.assign( aValues, aValues + aCount );
+        tap.v1 = tap.v0;
+        tap.any = true;
+        return;
+    }
+
+    if( aTime > tap.t1 )
+    {
+        tap.t0 = tap.t1;
+        tap.v0.swap( tap.v1 );
+    }
+
+    tap.t1 = aTime;
+    tap.v1.assign( aValues, aValues + aCount );
+}
+
+// From the pj_vtap code model, while a step is being solved: the time its part wants a
+// time point at, or 0. Times closer than 0.1 us to the last accepted point are not worth
+// one (and ngspice refuses them).
+double pj_tap_want( int aId )
+{
+    std::lock_guard<std::mutex> lock( s_tapMutex );
+    auto                        it = s_taps.find( aId );
+
+    if( it == s_taps.end() || !it->second.any )
+        return 0.0;
+
+    return it->second.want > it->second.t1 + 1e-7 ? it->second.want : 0.0;
+}
+
+// A part asks for the voltage on input aInput of its tap at simulated time aTime: the
+// straight line between the last two accepted steps. NaN when the part has no tap or no
+// such input.
+EMSCRIPTEN_KEEPALIVE double pj_host_volt( int aInst, int aInput, double aTime )
+{
+    PartInst* inst = (PartInst*) aInst;
+
+    if( !inst || inst->number <= 0 )
+        return NAN;
+
+    std::lock_guard<std::mutex> lock( s_tapMutex );
+    auto                        it = s_taps.find( inst->number );
+
+    if( it == s_taps.end() || !it->second.any || aInput < 0 || (size_t) aInput >= it->second.v1.size() )
+        return NAN;
+
+    const Tap& tap = it->second;
+
+    if( aTime >= tap.t1 || tap.t1 <= tap.t0 )
+        return tap.v1[aInput];
+
+    if( aTime <= tap.t0 )
+        return tap.v0[aInput];
+
+    const double f = ( aTime - tap.t0 ) / ( tap.t1 - tap.t0 );
+    return tap.v0[aInput] + f * ( tap.v1[aInput] - tap.v0[aInput] );
+}
+
+// A part says "I will measure at aTime": the solver is asked to put a time point exactly
+// there (the tap passes the wish on while the next steps are solved, pj_tap_want), so the
+// voltage the part then gets is a solved value and not one read off the straight line
+// between two points that may be far apart. Costs the solver one time point. Returns 1 when
+// the wish was taken, 0 when the part has no tap or aTime is not in the future (the part
+// then gets the straight line, as without this call).
+EMSCRIPTEN_KEEPALIVE int pj_host_sample_at( int aInst, double aTime )
+{
+    PartInst* inst = (PartInst*) aInst;
+
+    if( !inst || inst->number <= 0 || !( aTime > inst->stepTarget + 1e-12 ) )
+        return 0;
+
+    std::lock_guard<std::mutex> lock( s_tapMutex );
+    auto                        it = s_taps.find( inst->number );
+
+    if( it == s_taps.end() )
+        return 0;
+
+    it->second.want = aTime;
+    return 1;
+}
+
 // New bytes were registered under this part's name while the simulation runs: swap the
 // module in place. The circuit keeps its state, the part starts from reset and is told the
 // current input levels.
@@ -802,6 +930,7 @@ static void pjStep( struct co_info* aInfo )
 {
     PartInst* inst = (PartInst*) aInfo->handle;
     pjReloadIfChanged( inst );
+    inst->stepTarget = aInfo->vtime;
     aInfo->vtime = pj_part_step( inst->key, aInfo->vtime );
 }
 
@@ -827,6 +956,18 @@ static void pjCosimSetup( struct co_info* aInfo )
     if( !inst )
         return;
 
+    // The placed part's own number: a model whose part has a voltage tap writes
+    // sim_args=["{<its order parameter>}"], and ngspice puts the number in. The tap of the
+    // same subcircuit carries the same number as its id.
+    if( aInfo->sim_argc > 0 && aInfo->sim_argv && aInfo->sim_argv[0] )
+    {
+        char*        end = nullptr;
+        const double value = strtod( aInfo->sim_argv[0], &end );
+
+        if( end != aInfo->sim_argv[0] && value >= 1 )
+            inst->number = (int) value;
+    }
+
     const int counts = pj_part_setup( inst->key );
 
     inst->info = aInfo;
@@ -840,7 +981,16 @@ static void pjCosimSetup( struct co_info* aInfo )
     aInfo->cleanup = pjCleanup;
 }
 
-// --- the four libc calls d_cosim makes, redirected by
+// Our own code-model library (codemodel/pj_tables.c). ngspice's loader gets these through
+// the dlopen and dlsym below, as if "pjcm.cm" were a shared library.
+void* pjcm_CMdevNum( void );
+void* pjcm_CMdevs( void );
+void* pjcm_CMudnNum( void );
+void* pjcm_CMudns( void );
+void* pjcm_CMgetCoreItfPtr( void );
+static int s_cmHandle = 0;
+
+// --- the four libc calls d_cosim and ngspice's code-model loader make, redirected by
 // --- -Wl,--wrap=dlopen,--wrap=dlsym,--wrap=dlclose,--wrap=dlerror.
 // --- In a Worker that is not a live session they are the C library's own.
 
@@ -859,6 +1009,10 @@ void* __wrap_dlopen( const char* aPath, int aFlags )
 
     if( dot != std::string::npos )
         name = name.substr( 0, dot );
+
+    // ngspice's code-model loader asking for our own code-model library (liveInit)
+    if( name == "pjcm" )
+        return (void*) &s_cmHandle;
 
     std::vector<uint8_t> bytes;
     int                  nameGen = 0;
@@ -921,6 +1075,27 @@ static bool isPartHandle( void* aHandle )
 
 void* __wrap_dlsym( void* aHandle, const char* aSymbol )
 {
+    if( aHandle == (void*) &s_cmHandle )
+    {
+        if( aSymbol && strcmp( aSymbol, "CMdevNum" ) == 0 )
+            return (void*) pjcm_CMdevNum;
+
+        if( aSymbol && strcmp( aSymbol, "CMdevs" ) == 0 )
+            return (void*) pjcm_CMdevs;
+
+        if( aSymbol && strcmp( aSymbol, "CMudnNum" ) == 0 )
+            return (void*) pjcm_CMudnNum;
+
+        if( aSymbol && strcmp( aSymbol, "CMudns" ) == 0 )
+            return (void*) pjcm_CMudns;
+
+        if( aSymbol && strcmp( aSymbol, "CMgetCoreItfPtr" ) == 0 )
+            return (void*) pjcm_CMgetCoreItfPtr;
+
+        setDlError( "the pcbjam code models have no symbol '%s'", aSymbol ? aSymbol : "" );
+        return nullptr;
+    }
+
     if( !isPartHandle( aHandle ) )
         return __real_dlsym( aHandle, aSymbol );
 
@@ -933,6 +1108,9 @@ void* __wrap_dlsym( void* aHandle, const char* aSymbol )
 
 int __wrap_dlclose( void* aHandle )
 {
+    if( aHandle == (void*) &s_cmHandle )
+        return 0;
+
     PartInst* inst = (PartInst*) aHandle;
     {
         std::lock_guard<std::mutex> lock( s_handleMutex );
@@ -982,6 +1160,9 @@ int liveInit()
         static int ident = 1;
         ngSpice_Init_Sync( cbGetVsrc, cbGetIsrc, cbSync, &ident, nullptr );
         s_inited.store( true );
+        // our own code models (the voltage tap). There is no such file: __wrap_dlopen
+        // answers, which it does only once s_inited is set
+        ngSpice_Command( (char*) "codemodel pjcm.cm" );
     }
 
     return ret;
@@ -1012,6 +1193,12 @@ int liveCirc( val aLines, val aFiles )
 
     if( s_run.load() != RUN_NONE )
         return -1;
+
+    {
+        // the taps of the last circuit mean nothing to this one
+        std::lock_guard<std::mutex> lock( s_tapMutex );
+        s_taps.clear();
+    }
 
     const unsigned nFiles = aFiles["length"].as<unsigned>();
 

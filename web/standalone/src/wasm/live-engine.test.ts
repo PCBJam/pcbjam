@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./ngspice-live-worker.js?raw", () => ({ default: "// fake live worker" }));
 vi.mock("./esp-emu-adapter.js?raw", () => ({ default: "// fake adapter" }));
+vi.mock("./avr8js-adapter.js?raw", () => ({ default: "// fake AVR adapter" }));
 vi.mock("./wasm-assets", () => ({
   resolveWasmBase: vi.fn(async () => "/wasm"),
 }));
@@ -105,10 +106,11 @@ describe("live engine", () => {
     expect(engine.state).toBe("idle");
   });
 
-  it("the worker is the live wrapper in front of the service's glue, with the chip adapter before it", () => {
+  it("the worker is the live wrapper in front of the service's glue, with the chip adapters before it", () => {
     expect(liveWorkerBlobParts("https://cdn.test/wasm/ngspice_service.js")).toEqual([
       'self.NGSPICE_GLUE_URL = "https://cdn.test/wasm/ngspice_service.js";\n',
       "// fake adapter\n",
+      "// fake AVR adapter\n",
       "// fake live worker",
     ]);
   });

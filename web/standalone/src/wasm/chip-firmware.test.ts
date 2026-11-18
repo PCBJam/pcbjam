@@ -3,12 +3,14 @@ import * as Y from "yjs";
 import { docToY, fileToDoc, parseSexpr } from "@pcbjam/shared";
 import { settingAllows, type Match, type PartManifest, type SimLibrary } from "@pcbjam/shared/sim-library";
 import type { EditRequest } from "@/plugins/edits";
-import { chipFirmwares, firmwareName, firmwareProblem, giveFirmware, symbolText, withFirmware, type GiveFirmware } from "./chip-firmware";
+import { chipFirmwares, firmwareExtension, firmwareName, firmwareProblem, giveFirmware, symbolText, withFirmware, type GiveFirmware } from "./chip-firmware";
 import type { SaveOutcome } from "./save-flow";
 
 // The header of a real ESP32-C3 image, and a file of words with a firmware's name.
 const IMAGE = Uint8Array.from("e903022f10bf3c40ee0000000500000000ffff0000000001".match(/../g)!.map((h) => parseInt(h, 16)));
 const WORDS = new TextEncoder().encode("just words, long enough to fill a header");
+// The start of an Arduino sketch built for an Uno, as Intel HEX text, and its end record.
+const SKETCH = new TextEncoder().encode(":100000000C945C000C946E000C946E000C946E00CA\r\n:100010000C946E000C946E000C946E000C946E00A8\r\n:00000001FF\r\n");
 
 const FIRMWARE = { name: "firmware", label: "Firmware file", default: "firmware.bin", accept: "^[A-Za-z0-9_.+-]+\\.bin$" };
 
@@ -63,6 +65,49 @@ describe("firmwareName", () => {
 
   it("is null for a file that is not named like a firmware image", () => {
     for (const picked of ["notes.txt", "firmware", ".bin", "", "firmware.bin.zip"]) expect(firmwareName(picked), picked).toBeNull();
+  });
+});
+
+describe("a firmware that is a program as Intel HEX text (an Arduino board's)", () => {
+  it("is the kind of a chip whose file's name ends in .hex", () => {
+    expect(firmwareExtension({ name: "firmware.hex" })).toBe(".hex");
+    expect(firmwareExtension({ name: "Blink.ino.HEX" })).toBe(".hex");
+    expect(firmwareExtension({ name: "firmware.bin" })).toBe(".bin");
+  });
+
+  it("keeps its ending, and is no firmware under the other one", () => {
+    expect(firmwareName("Blink.ino.hex", ".hex")).toBe("Blink.ino.hex");
+    expect(firmwareName("My Sketch.ino.with_bootloader.HEX", ".hex")).toBe("My-Sketch.ino.with_bootloade.hex");
+    expect(firmwareName("---.hex", ".hex")).toBe("firmware.hex");
+    expect(firmwareName("blink.bin", ".hex")).toBeNull();
+    expect(firmwareName("Blink.ino.hex", ".bin")).toBeNull();
+    expect(firmwareName("Blink.ino.hex")).toBeNull();
+    for (const picked of ["Blink.ino.hex", "My Sketch.ino.with_bootloader.HEX", `${"x".repeat(80)}.hex`]) {
+      const name = firmwareName(picked, ".hex")!;
+      expect(settingAllows({ ...FIRMWARE, default: "firmware.hex", accept: "^[A-Za-z0-9_.+-]+\\.hex$" }, name), `${picked} -> ${name}`).toBe(true);
+    }
+  });
+
+  it("is read whole: a file that is none says why", () => {
+    expect(firmwareProblem(SKETCH.length, SKETCH, "atmega328p", ".hex")).toBeNull();
+    expect(firmwareProblem(SKETCH.length, SKETCH, undefined, ".hex")).toBeNull();
+    expect(firmwareProblem(WORDS.length, WORDS, "atmega328p", ".hex"))
+      .toBe("it is not an Intel HEX file (.hex). The file the Arduino IDE writes is needed: Sketch > Export Compiled Binary");
+    expect(firmwareProblem(IMAGE.length, IMAGE, "atmega328p", ".hex")).toMatch(/^it is not an Intel HEX file/);
+    const damaged = new TextEncoder().encode(new TextDecoder().decode(SKETCH).replace("CA", "CB"));
+    expect(firmwareProblem(damaged.length, damaged, "atmega328p", ".hex")).toBe("a line of the HEX file is damaged (its checksum is wrong)");
+    const cut = SKETCH.subarray(0, 45);
+    expect(firmwareProblem(cut.length, cut, "atmega328p", ".hex")).toBe("the HEX file is empty or cut off");
+    expect(firmwareProblem(16 * 1024 * 1024 + 1, SKETCH, "atmega328p", ".hex")).toMatch(/larger than 16 MB/);
+  });
+
+  it("says when the program was built for a larger board", () => {
+    // one byte at 32 kB: more than an ATmega328P holds
+    const large = new TextEncoder().encode(":020000040000FA\n:01800000007F\n:00000001FF\n");
+    expect(firmwareProblem(large.length, large, "atmega328p", ".hex"))
+      .toBe("it holds 33 kB of program and the board's chip has room for 32 kB: it was built for another board");
+    // a chip this page has no number for is left to its adapter
+    expect(firmwareProblem(large.length, large, "atmega2560", ".hex")).toBeNull();
   });
 });
 
@@ -181,7 +226,8 @@ describe("giveFirmware", () => {
 
   it("stores nothing when the file is no firmware image", async () => {
     for (const [picked, said] of [
-      [file("notes.txt"), `"notes.txt" is not a firmware image: its name has to end in .bin`],
+      [file("notes.txt"), `"notes.txt" is not a firmware file for U1: its name has to end in .bin`],
+      [file("Blink.ino.hex", SKETCH), `"Blink.ino.hex" is not a firmware file for U1: its name has to end in .bin`],
       [file("words.bin", WORDS), /^"words\.bin" is not taken: it does not start like an ESP32 firmware image/],
       [{ ...file("huge.bin"), size: 16 * 1024 * 1024 + 1 }, /^"huge\.bin" is not taken: it is larger than 16 MB/],
     ] as const) {
@@ -189,6 +235,29 @@ describe("giveFirmware", () => {
       await expect(giveFirmware(options)).rejects.toThrow(said);
       expect(save).not.toHaveBeenCalled();
       expect(edit).not.toHaveBeenCalled();
+    }
+  });
+
+  it("gives an Arduino board its sketch: a .hex, kept under its own name", async () => {
+    const uno = { uuid: U1, ref: "A1", name: "firmware.hex", chip: "atmega328p" };
+    const { save, edit, options } = setup({ chip: uno, file: file("Blink.ino.hex", SKETCH) });
+    expect(await giveFirmware(options)).toBe("Blink.ino.hex");
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(save.mock.calls[0]?.[0]).toBe("Blink.ino.hex");
+    expect([...save.mock.calls[0]![1]]).toEqual([...SKETCH]);
+    const request = edit.mock.calls[0]![0];
+    expect(request.label).toBe("Firmware of A1");
+    expect(field(request.upsert[0]!.sexpr, "PCBJam.SimSettings")).toBe("firmware=Blink.ino.hex");
+
+    // an ESP32's image is not a sketch, and words under a sketch's name are none either
+    for (const [picked, said] of [
+      [file("blink.bin"), `"blink.bin" is not a firmware file for A1: its name has to end in .hex`],
+      [file("words.hex", WORDS), /^"words\.hex" is not taken: it is not an Intel HEX file \(\.hex\)\. The file the Arduino IDE writes is needed/],
+    ] as const) {
+      const again = setup({ chip: uno, file: picked });
+      await expect(giveFirmware(again.options)).rejects.toThrow(said);
+      expect(again.save).not.toHaveBeenCalled();
+      expect(again.edit).not.toHaveBeenCalled();
     }
   });
 

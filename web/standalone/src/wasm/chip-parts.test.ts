@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { IndexEmulator, PartManifest, PlacedPart, PreparedRun } from "@pcbjam/shared/sim-library";
-import { chipParts, FIRMWARE_SETTING, loaderScript, packPart, type ChipPartsOptions } from "./chip-parts";
+import { chipParts, FIRMWARE_SETTING, libraryScript, loaderScript, packPart, type ChipPartsOptions } from "./chip-parts";
 
 const utf8 = (text: string): Uint8Array => new TextEncoder().encode(text);
 
@@ -59,8 +59,27 @@ const run = (chips: PlacedPart[], manifest: PartManifest = CHIP): Pick<PreparedR
   parts: new Map([[manifest.id, { id: manifest.id, manifest, analog: "", logic: null }]]),
 });
 
-function library(emulators: IndexEmulator[] = [EMULATOR]) {
-  const emulatorFile = vi.fn(async (_id: string, name: string) => (name === "esp_emu.js" ? utf8(LOADER) : new Uint8Array([0, 97, 115, 109])));
+// avr8js as the library packs it: one script that defines one name. It has no program.
+const AVR8JS = "// avr8js, packed for a test\nvar avr8js = (function () { return { CPU: function () {} }; })();\n";
+const AVR: IndexEmulator = {
+  id: "avr8js", version: "0.21.1", title: "avr8js", licence: "MIT", origin: "https://example.test/avr8js", loader: "avr8js.js", files: [],
+};
+
+// An Arduino board: the part is the board, its chip's pads are on the headers.
+const UNO: PartManifest = {
+  schema: 1, id: "arduino-uno-r3", version: 1, title: "Arduino Uno R3",
+  fits: [{ symbol: "MCU_Module:Arduino_UNO_R3" }],
+  pins: ["RESET", "P5V", "VSS", "VSS2", "D2", "D13", "A4", "SDA"],
+  supplies: ["P5V"], powered: ["VSS"], joined: [["VSS", "VSS2"], ["A4", "SDA"]],
+  analog: { file: "model.lib", subckt: "PJ_ARDUINO_UNO_R3" },
+  settings: [{ name: FIRMWARE_SETTING, default: "firmware.hex", accept: "^[A-Za-z0-9_.+-]+\\.hex$" }],
+  digital: { kind: "emulator", emulator: "avr8js", chip: "atmega328p", clock: 16000000, orderParam: "IRR", pads: { D2: 26, D13: 13, A4: 20 }, enable: "RESET", taps: ["A4", "AVCC"] },
+};
+// two bytes at address 0 and two at address 4
+const HEX = ":020000000C945E\r\n:020004005C009E\r\n:00000001FF\r\n";
+
+function library(emulators: IndexEmulator[] = [EMULATOR, AVR]) {
+  const emulatorFile = vi.fn(async (_id: string, name: string) => (name === "esp_emu.js" ? utf8(LOADER) : name === "avr8js.js" ? utf8(AVR8JS) : new Uint8Array([0, 97, 115, 109])));
   return { emulator: (id: string) => emulators.find((e) => e.id === id), emulatorFile } satisfies ChipPartsOptions["library"];
 }
 
@@ -94,7 +113,60 @@ describe("loaderScript", () => {
   });
 });
 
+describe("libraryScript", () => {
+  it("leaves the one name an emulator's script defines in one place, and nothing else", () => {
+    const script = libraryScript(AVR8JS, "avr8js@0.21.1", "avr8js");
+    const scope: { __pjGlue?: Record<string, { CPU: unknown }>; avr8js?: unknown } = {};
+    new Function("globalThis", script)(scope);
+    expect(typeof scope.__pjGlue?.["avr8js@0.21.1"]?.CPU).toBe("function");
+    expect(scope.avr8js).toBeUndefined();
+  });
+
+  it("refuses a script that does not define the name", () => {
+    expect(() => libraryScript("var other = 1;\n", "k", "avr8js")).toThrow("the emulator's script does not define avr8js");
+  });
+});
+
 describe("chipParts", () => {
+  it("packs an Arduino board: the sketch as the program's bytes, no emulator program, the chip's clock", async () => {
+    const lib = library();
+    const readFile = vi.fn(async () => utf8(HEX));
+    const scriptUrl = vi.fn((_text: string) => "blob:avr-1");
+    // the sketch's wires: D13, and the pad A4 by its second pin (SDA); D2 has nothing on it
+    const board: PlacedPart = { ...placed("A1", ["P5V", "VSS", "VSS2", "D13", "A4", "SDA"], "firmware.hex"), partId: UNO.id };
+    const parts = await chipParts(run([board], UNO), { library: lib, readFile, scriptUrl });
+    expect(parts.map((p) => p.name)).toEqual(["arduino-uno-r3_1"]);
+    expect(readFile).toHaveBeenCalledWith("firmware.hex");
+    const got = unpack(parts[0]!.bytes);
+    expect(got.adapter).toBe("avr8js");
+    expect(got.config).toEqual({
+      chip: "atmega328p", cores: 1, clock: 16000000, pads: [26, 13, 20], enable: true,
+      // what the sketch can measure, in the order of the model's voltage tap
+      taps: ["A4", "AVCC"],
+      wired: [13, 20], emulatorKey: "avr8js@0.21.1", glueUrl: "blob:avr-1",
+    });
+    // the program as it sits in the chip's memory, not the text of the file
+    expect([...got.blobs["firmware.bin"]!]).toEqual([0x0c, 0x94, 0xff, 0xff, 0x5c, 0x00]);
+    expect(Object.keys(got.blobs)).toEqual(["firmware.bin"]);
+    expect(lib.emulatorFile.mock.calls.map((c) => c[1])).toEqual(["avr8js.js"]);
+    expect(scriptUrl.mock.calls[0]?.[0]).toContain('["avr8js@0.21.1"] = avr8js;');
+  });
+
+  it("says why a sketch's file cannot run", async () => {
+    const board: PlacedPart = { ...placed("A1", [], "firmware.hex"), partId: UNO.id };
+    const opts = { library: library(), scriptUrl: () => "blob:x" };
+    await expect(chipParts(run([board], UNO), { ...opts, readFile: async () => utf8("just words") }))
+      .rejects.toThrow('A1: the firmware file "firmware.hex" cannot run: it is not an Intel HEX file (.hex)');
+    await expect(chipParts(run([board], UNO), { ...opts, readFile: async () => utf8(HEX.replace("5E", "5F")) }))
+      .rejects.toThrow('A1: the firmware file "firmware.hex" cannot run: a line of the HEX file is damaged (its checksum is wrong)');
+    await expect(chipParts(run([board], UNO), { ...opts, readFile: async () => null }))
+      .rejects.toThrow('A1 needs its firmware: the project has no file "firmware.hex"');
+    // an emulator that should have a program and does not say which file it is
+    const { program: _none, ...bare } = EMULATOR;
+    await expect(chipParts(run([placed("U1", [])]), { ...opts, library: library([bare]), readFile: async () => new Uint8Array(1) }))
+      .rejects.toThrow('the emulator "esp-emu" of the library has no program');
+  });
+
   it("packs the emulator, the firmware of the project and what the adapter must know", async () => {
     const lib = library();
     const readFile = vi.fn(async () => new Uint8Array([0xe9, 1, 2]));

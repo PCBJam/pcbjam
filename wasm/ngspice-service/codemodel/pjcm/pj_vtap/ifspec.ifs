@@ -1,0 +1,40 @@
+/* pj_vtap: the "voltage tap" of the pcbjam live engine (design: docs/features/simulation/).
+
+   A code part (a chip whose behaviour is a program, run through d_cosim) cannot see a
+   voltage: d_cosim has digital ports only. This model is the part's eyes. It has analog
+   inputs and no outputs; after every time step ngspice has accepted it hands the voltages
+   on its inputs to the engine (ngspice_live.cpp), which keeps the last two steps and
+   answers the part's question "what was the voltage on my input k at time t" by drawing a
+   straight line between them.
+
+   id      the number of the code part these voltages belong to (the part's own call-order
+           number, the same one its d_cosim model gets as "irreversible")
+*/
+
+NAME_TABLE:
+
+C_Function_Name:       cm_pj_vtap
+Spice_Model_Name:      pj_vtap
+Description:           "hands voltages to the pcbjam live engine after each accepted step"
+
+PORT_TABLE:
+
+Port_Name:             in
+Description:           "the voltages to hand over"
+Direction:             in
+Default_Type:          v
+Allowed_Types:         [v,vd,i,id,vnam]
+Vector:                yes
+Vector_Bounds:         [1 -]
+Null_Allowed:          no
+
+PARAMETER_TABLE:
+
+Parameter_Name:     id
+Description:        "number of the code part these voltages belong to"
+Data_Type:          int
+Default_Value:      0
+Limits:             [0 -]
+Vector:             no
+Vector_Bounds:      -
+Null_Allowed:       yes

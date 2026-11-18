@@ -3,6 +3,7 @@
 import liveWorkerSource from "./ngspice-live-worker.js?raw";
 // The adapter that runs a chip's firmware in Espressif's emulator, as text: it has to be
 // in the simulation thread, and the Worker's script is that thread's script too.
+import avr8jsAdapterSource from "./avr8js-adapter.js?raw";
 import espEmuAdapterSource from "./esp-emu-adapter.js?raw";
 import type { Deck } from "@pcbjam/shared/sim-library";
 import { resolveWasmBase } from "./wasm-assets";
@@ -156,7 +157,7 @@ export const LIVE_START_TIMEOUT_MS = 60_000;
  * parts (they must be there before the engine's glue runs), the worker source.
  */
 export function liveWorkerBlobParts(glueHref: string): string[] {
-  return [`self.NGSPICE_GLUE_URL = ${JSON.stringify(glueHref)};\n`, `${espEmuAdapterSource}\n`, liveWorkerSource];
+  return [`self.NGSPICE_GLUE_URL = ${JSON.stringify(glueHref)};\n`, `${espEmuAdapterSource}\n`, `${avr8jsAdapterSource}\n`, liveWorkerSource];
 }
 
 interface WorkerResult {

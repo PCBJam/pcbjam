@@ -34,8 +34,8 @@ if [ $CLEAN -eq 1 ]; then
     rm -rf "${NGSPICE_SERVICE_BUILD}"
 fi
 
-# The ngspice dep (sharedspice static lib + code-model archives + spinit) is
-# stamped, so this is a no-op when already built.
+# The ngspice dep (sharedspice static lib + code-model archives + spinit + the
+# code model kit) is stamped, so this is a no-op when already built.
 "${SCRIPT_DIR}/../deps/build-ngspice.sh"
 
 log_info "Building ngspice_service..."
@@ -47,7 +47,6 @@ emcmake cmake "${WASM_COMPAT}/ngspice-service" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_RUNTIME_OUTPUT_DIRECTORY="${NGSPICE_SERVICE_BUILD}/ngspice_service" \
     -DNGSPICE_SYSROOT="${SYSROOT}" \
-    -DNGSPICE_SOURCE_DIR="${DEPS_ROOT}/ngspice-${NGSPICE_VERSION}" \
     -DNGSPICE_EH_FLAGS="${DEPS_EH_FLAGS}"
 
 emmake make -j${JOBS}

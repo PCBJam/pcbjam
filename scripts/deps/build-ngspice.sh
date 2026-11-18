@@ -1,5 +1,5 @@
 #!/bin/bash
-w# Build ngspice for WebAssembly: sharedspice STATIC library + statically
+# Build ngspice for WebAssembly: sharedspice STATIC library + statically
 # registered XSPICE code models. Consumed by the ngspice_service worker that
 # backs KiCad eeschema's simulator.
 #
@@ -25,6 +25,11 @@ w# Build ngspice for WebAssembly: sharedspice STATIC library + statically
 #  - XSPICE + CIDER enabled: parity with native KiCad's bundled ngspice.
 #  - cmpp (XSPICE preprocessor) runs on the build host; ngspice's configure
 #    handles that itself when cross_compiling=yes (src/xspice/cmpp/build/).
+#  - A "code model kit" goes into the sysroot (lib/ngspice/cm-kit): cmpp and
+#    ngspice's headers, which "make install" leaves out. ngspice_service builds
+#    code models of its own with it (wasm/ngspice-service/codemodel) and takes
+#    the co-simulation header from it, so that module builds from the sysroot
+#    alone: CI restores the sysroot and the stamps, not the build folders.
 
 set -e
 
@@ -37,6 +42,30 @@ NGSPICE_DIR="${DEPS_ROOT}/ngspice-${NGSPICE_VERSION}"
 NGSPICE_BUILD="${BUILD_ROOT}/deps/ngspice"
 NGSPICE_STAMP="${BUILD_ROOT}/stamps/ngspice.stamp"
 NGCM_SRC_DIR="${SCRIPT_DIR}/ngspice-wasm"
+NGSPICE_CM_KIT="${SYSROOT}/lib/ngspice/cm-kit"
+
+# The code model kit, from the extracted source and the build folder. The
+# headers are off the sysroot's include path on purpose (only sharedspice.h is
+# ngspice's public interface). The folders mirror ngspice's src/: cktdefs.h
+# includes "../maths/dense/dense.h", which resolves against include/.
+install_cm_kit() {
+    rm -rf "${NGSPICE_CM_KIT}"
+    mkdir -p "${NGSPICE_CM_KIT}/include/ngspice" "${NGSPICE_CM_KIT}/maths/dense"
+    cp "${NGSPICE_DIR}"/src/include/ngspice/*.h "${NGSPICE_CM_KIT}/include/ngspice/"
+    cp "${NGSPICE_BUILD}/src/include/ngspice/config.h" "${NGSPICE_CM_KIT}/include/ngspice/"
+    cp "${NGSPICE_DIR}/src/maths/dense/dense.h" "${NGSPICE_CM_KIT}/maths/dense/"
+    cp "${NGSPICE_BUILD}/src/xspice/cmpp/build/cmpp" "${NGSPICE_CM_KIT}/cmpp"
+    chmod +x "${NGSPICE_CM_KIT}/cmpp"
+}
+
+# Is the whole kit in the sysroot?
+cm_kit_ok() {
+    [ -x "${NGSPICE_CM_KIT}/cmpp" ] \
+        && [ -f "${NGSPICE_CM_KIT}/include/ngspice/cm.h" ] \
+        && [ -f "${NGSPICE_CM_KIT}/include/ngspice/config.h" ] \
+        && [ -f "${NGSPICE_CM_KIT}/include/ngspice/cosim.h" ] \
+        && [ -f "${NGSPICE_CM_KIT}/maths/dense/dense.h" ]
+}
 
 # Parse arguments
 CLEAN=0
@@ -56,8 +85,22 @@ fi
 
 # Check if already built
 if check_stamp "${NGSPICE_STAMP}"; then
-    log_info "ngspice already built, skipping..."
-    exit 0
+    if cm_kit_ok; then
+        log_info "ngspice already built, skipping..."
+        exit 0
+    fi
+    # Built before the kit existed: take it from the build folder if that is
+    # still here, else build again.
+    if [ -x "${NGSPICE_BUILD}/src/xspice/cmpp/build/cmpp" ] \
+            && [ -f "${NGSPICE_BUILD}/src/include/ngspice/config.h" ] \
+            && [ -f "${NGSPICE_DIR}/src/include/ngspice/cosim.h" ] \
+            && [ -f "${NGSPICE_DIR}/src/maths/dense/dense.h" ]; then
+        install_cm_kit
+        log_info "ngspice already built; its code model kit is now in the sysroot"
+        exit 0
+    fi
+    log_info "ngspice is built, but its code model kit is missing and the build folder is gone: building again"
+    rm -f "${NGSPICE_STAMP}"
 fi
 
 # Download if needed
@@ -327,6 +370,12 @@ emar rcs "${SYSROOT}/lib/ngspice/ngcm_common.a" \
     src/xspice/icm/tline_common.o \
     src/xspice/icm/dstring.o \
     "${NGSPICE_BUILD}/ngcm_cmutil.o"
+
+install_cm_kit
+if ! cm_kit_ok; then
+    log_error "ngspice install incomplete: the code model kit (${NGSPICE_CM_KIT})"
+    exit 1
+fi
 
 # Sanity: everything the ngspice_service link needs must exist.
 for f in \

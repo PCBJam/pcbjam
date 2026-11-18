@@ -1,11 +1,13 @@
 // Giving a chip its firmware from the page (live simulation).
 //
-// A chip of the simulation library runs a firmware image that is a file of the project.
-// The chip's setting "firmware" names the file; chip-parts.ts reads it when Play is
-// clicked. This file is the other direction: on the chip's line in the Simulation parts
-// list the user picks a file from their computer. It is stored in the project under its
-// own name, and that name is written onto the chip's symbol, in the field the settings
-// live in, as one edit of the schematic: it can be undone and collaborators get it.
+// A chip of the simulation library runs a firmware that is a file of the project: an
+// ESP32 its flash image (.bin), an Arduino board with an AVR chip its sketch as the
+// Arduino IDE exports it (.hex). The chip's setting "firmware" names the file;
+// chip-parts.ts reads it when Play is clicked. This file is the other direction: on the
+// chip's line in the Simulation parts list the user picks a file from their computer. It
+// is stored in the project under its own name, and that name is written onto the chip's
+// symbol, in the field the settings live in, as one edit of the schematic: it can be
+// undone and collaborators get it.
 //
 // The symbol is changed through the editor's own edit path (plugins/edits.ts), which
 // takes the whole item as text. The text comes from the shared document of the shown
@@ -16,6 +18,7 @@ import {
   FIRMWARE_SNIFF_BYTES,
   MAX_FIRMWARE_UPLOAD_BYTES,
   firmwareChipId,
+  firmwareKind,
   isFirmwareUploadPath,
   kicadItemsMap,
   looksLikeFirmware,
@@ -30,6 +33,7 @@ import {
 import { FIELD_SETTINGS, formatSettings, parseSettings, resolveSettings, type PartManifest } from "@pcbjam/shared/sim-library";
 import type { EditRequest } from "@/plugins/edits";
 import { FIRMWARE_SETTING } from "./chip-parts";
+import { programProblem, readIntelHex } from "./intel-hex";
 import type { SaveOutcome } from "./save-flow";
 import type { SimParts } from "./sim-parts";
 
@@ -64,30 +68,50 @@ export async function chipFirmwares(parts: Pick<SimParts, "library" | "matches" 
 // A setting's value is a plain token of at most this many characters (sim-library settings).
 const NAME_MAX = 32;
 
+/** How a firmware file's name ends: an ESP32's flash image, or an AVR chip's program as Intel HEX text. */
+export type FirmwareExtension = ".bin" | ".hex";
+
+/**
+ * The ending of the file a chip runs. The chip's own file name says it: a part only takes
+ * a name of its kind (the `accept` rule of its setting).
+ */
+export function firmwareExtension(chip: Pick<ChipFirmware, "name">): FirmwareExtension {
+  return firmwareKind(chip.name) === "hex" ? ".hex" : ".bin";
+}
+
 /**
  * The name a picked file is kept under in the project: its own name, made a plain token
- * (letters, digits, "_", ".", "+", "-"), cut to what a setting can hold, ending in ".bin".
- * Null when the file is not named like a firmware image.
+ * (letters, digits, "_", ".", "+", "-"), cut to what a setting can hold, ending the way
+ * the chip's firmware does. Null when the file is not named like such a firmware.
  */
-export function firmwareName(picked: string): string | null {
+export function firmwareName(picked: string, ext: FirmwareExtension = ".bin"): string | null {
   const base = picked.split(/[\\/]/).pop() ?? "";
-  if (!isFirmwareUploadPath(base)) return null;
+  if (!isFirmwareUploadPath(base) || !base.toLowerCase().endsWith(ext)) return null;
   const stem = base
     .slice(0, base.lastIndexOf("."))
     .replace(/[^A-Za-z0-9_.+-]+/g, "-")
     .replace(/^[-.]+/, "")
-    .slice(0, NAME_MAX - ".bin".length)
+    .slice(0, NAME_MAX - ext.length)
     .replace(/[-.]+$/, "");
-  return `${stem || "firmware"}.bin`;
+  return `${stem || "firmware"}${ext}`;
 }
 
 /**
- * Why a file is not a firmware image a project takes, in words, or null. The server asks
- * the same. With `chip` (what the part is, as its emulator names it) an image built for
- * another chip is not one either: it would be stored, and then not start.
+ * Why a file is not a firmware a project takes, in words, or null. The server asks the
+ * same of its first bytes. With `chip` (what the part is, as its emulator names it) a
+ * firmware built for another chip is not one either: it would be stored, and then not start.
+ * An image is judged by its header; a program (`.hex`) is read whole, so `head` is the file.
  */
-export function firmwareProblem(size: number, head: Uint8Array, chip?: string): string | null {
+export function firmwareProblem(size: number, head: Uint8Array, chip?: string, ext: FirmwareExtension = ".bin"): string | null {
   if (size > MAX_FIRMWARE_UPLOAD_BYTES) return `it is larger than ${MAX_FIRMWARE_UPLOAD_BYTES / (1024 * 1024)} MB, the most a firmware image can be`;
+  if (ext === ".hex") {
+    try {
+      return programProblem(readIntelHex(new TextDecoder().decode(head)), chip);
+    } catch (e) {
+      const why = words(e);
+      return /not an Intel HEX file/.test(why) ? `${why}. The file the Arduino IDE writes is needed: Sketch > Export Compiled Binary` : why;
+    }
+  }
   const header = head.subarray(0, FIRMWARE_SNIFF_BYTES);
   if (!looksLikeFirmware(header))
     return "it does not start like an ESP32 firmware image. The merged image is needed: the one file that is written to the chip at address 0";
@@ -100,6 +124,10 @@ export function firmwareProblem(size: number, head: Uint8Array, chip?: string): 
     return `it was built for ${other}, and this chip is an ${wanted.title}`;
   }
   return null;
+}
+
+function words(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
 }
 
 const isQuoted = (atom: string): boolean => atom.length >= 2 && atom.startsWith('"') && atom.endsWith('"');
@@ -177,8 +205,6 @@ export interface GiveFirmware {
   edit: (request: EditRequest) => Promise<unknown>;
 }
 
-const words = (e: unknown): string => (e instanceof Error ? e.message : String(e));
-
 /**
  * Stores the picked file in the project and names it on the chip. Resolves with the name
  * the file is kept under. Rejects with a sentence for the user; nothing is stored when
@@ -188,11 +214,12 @@ const words = (e: unknown): string => (e instanceof Error ? e.message : String(e
  * replaces the stored one and leaves the schematic alone.
  */
 export async function giveFirmware({ chip, file, doc, save, edit }: GiveFirmware): Promise<string> {
-  const name = firmwareName(file.name);
-  if (!name) throw new Error(`"${file.name}" is not a firmware image: its name has to end in .bin`);
+  const ext = firmwareExtension(chip);
+  const name = firmwareName(file.name, ext);
+  if (!name) throw new Error(`"${file.name}" is not a firmware file for ${chip.ref}: its name has to end in ${ext}`);
   if (file.size > MAX_FIRMWARE_UPLOAD_BYTES) throw new Error(`"${file.name}" is not taken: ${firmwareProblem(file.size, new Uint8Array())}`);
   const bytes = new Uint8Array(await file.arrayBuffer());
-  const problem = firmwareProblem(bytes.length, bytes, chip.chip);
+  const problem = firmwareProblem(bytes.length, bytes, chip.chip, ext);
   if (problem) throw new Error(`"${file.name}" is not taken: ${problem}`);
 
   const rename = name !== chip.name;

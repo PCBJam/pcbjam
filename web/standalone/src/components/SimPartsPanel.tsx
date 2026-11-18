@@ -4,7 +4,7 @@ import type * as Y from "yjs";
 import { useDraggablePanel } from "@/components/useDraggablePanel";
 import { Button, Tip } from "@pcbjam/ui";
 import { overlayIconClass } from "@/components/OverlayMenu";
-import { chipFirmwares, type ChipFirmware } from "@/wasm/chip-firmware";
+import { chipFirmwares, firmwareExtension, type ChipFirmware } from "@/wasm/chip-firmware";
 import {
   simPartRows,
   type SimPartRow,
@@ -312,6 +312,8 @@ export function SimPartsPanel({
                         disabled={giving?.busy === true}
                         onClick={() => {
                           pickingFor.current = chip;
+                          // the chooser shows the files of this chip's kind: .bin for an ESP32, .hex for an Arduino
+                          if (fileInput.current) fileInput.current.accept = firmwareExtension(chip);
                           fileInput.current?.click();
                         }}
                       >
@@ -336,7 +338,6 @@ export function SimPartsPanel({
               ref={fileInput}
               data-testid="sim-part-firmware-input"
               type="file"
-              accept=".bin"
               className="hidden"
               onChange={(e) => {
                 const file = e.target.files?.[0];

@@ -43,6 +43,33 @@ const TEST_ADAPTER = `(globalThis.__pjAdapters = globalThis.__pjAdapters || {})[
 };
 `;
 
+// A packaged part that measures. Every 0.1 s of simulated time it says what the engine
+// gives it for the two inputs of its voltage tap, for an input the tap does not have, and
+// whether a wish for a time point in the past is taken. With the word "wish" it also asks,
+// at every step, for a time point at the next whole millisecond.
+const TAP_ADAPTER = `(globalThis.__pjAdapters = globalThis.__pjAdapters || {})["tap-adapter"] = function (env) {
+  const wishes = env.config.word === "wish";
+  let next = 0.1, took = null;
+  return {
+    pj_setup() { return 1 | (1 << 8); },
+    pj_step(target) {
+      if (wishes) {
+        const got = env.sampleAt(Math.floor(target * 1000 + 1.5) / 1000);
+        if (took === null) { took = got; env.log("the first wish: " + got); }
+      }
+      while (next <= target) {
+        env.log("t=" + next.toFixed(1) + " mid=" + env.volt(0, next).toFixed(2) + " sw=" + env.volt(1, next).toFixed(2)
+          + " other=" + env.volt(2, next) + " past=" + env.sampleAt(next - 1));
+        next += 0.1;
+      }
+      return target;
+    },
+    pj_input() {},
+    pj_unload() {},
+  };
+};
+`;
+
 const BUTTON1 = 'v.xsw1.vctl';
 const BUTTON2 = 'v.xsw2.vctl';
 const LED1 = 'v.xd1.vs#branch';
@@ -75,6 +102,32 @@ XD2 n2 0 PJ_LED
 .model dac1 dac_bridge(out_low=0 out_high=5)
 .model dut d_cosim(simulation="${partName}")
 .tran 1m 100000 0 1m
+.end`.split('\n');
+
+// A circuit for a part that measures: a divider (2 V) and a button's node (0 V, 5 V while
+// held) on the two inputs of a voltage tap. The tap and the part's code carry the same
+// number; "args" is what the part's model says about that. Nothing moves in this circuit, so
+// the solver takes the longest step it may (10 ms) unless somebody asks for a time point.
+const tapDeck = (args = ' sim_args=["7"]'): string[] => `* voltage tap test
+.subckt PJ_BUTTON 1 2
+Vctl ctl 0 dc 0 external
+R1 1 2 r = '100meg * exp(-20.7 * V(ctl))'
+.ends
+V1 vcc 0 dc 5
+Ra vcc mid 30k
+Rb mid 0 20k
+XSW1 vcc sw PJ_BUTTON
+R1 sw 0 10k
+aadc [sw] [sw_d] adc1
+adut [sw_d] [o_d] null dut
+adac [o_d] [o_a] dac1
+R3 o_a 0 10k
+atap [%vd(mid,0) %vd(sw,0)] tap1
+.model adc1 adc_bridge(in_low=1.5 in_high=3.5)
+.model dac1 dac_bridge(out_low=0 out_high=5)
+.model tap1 pj_vtap(id=7)
+.model dut d_cosim(simulation="test-part"${args})
+.tran 10m 100000 0 10m
 .end`.split('\n');
 
 interface Frame {
@@ -138,18 +191,18 @@ async function open(page: Page): Promise<void> {
             w.__live.push(host);
             return host.ready.then(() => w.__live.length - 1);
         };
-    }, { workerSrc: WORKER_SRC, partBase64: PART_BASE64, adapter: TEST_ADAPTER });
+    }, { workerSrc: WORKER_SRC, partBase64: PART_BASE64, adapter: TEST_ADAPTER + TAP_ADAPTER });
 }
 
-/** Start the test circuit with a packaged part in the place of the WebAssembly one. */
-async function startPackaged(page: Page, host: number, adapterName: string, word: string): Promise<any> {
+/** Start the test circuit (or `lines`) with a packaged part in the place of the WebAssembly one. */
+async function startPackaged(page: Page, host: number, adapterName: string, word: string, lines = deck()): Promise<any> {
     return page.evaluate(({ host, deck, adapterName, word }) => {
         const w = window as any;
         return w.__live[host].call('start', {
             deck, files: [], inputs: {}, speed: 1,
             parts: [{ name: 'test-part', bytes: w.__livePackage(adapterName, word) }],
         });
-    }, { host, deck: deck(), adapterName, word });
+    }, { host, deck: lines, adapterName, word });
 }
 
 /** Boot one live worker; the number names it in the calls below. */
@@ -345,6 +398,44 @@ test.describe('live simulation engine', () => {
         // The WebAssembly part still runs in the same session.
         expect(await start(page, host)).toEqual({ ok: true });
         await frameWhen(page, host, 'the part switched LED 2 on', (f) => f.latest[LED2]! > LIT);
+        expect(await call(page, host, 'stop')).toEqual({ ok: true });
+        expect((await hostState(page, host)).fatal).toBeNull();
+    });
+
+    test('a part reads the voltages of its voltage tap, and gets a time point where it asks for one', async ({ page }) => {
+        await open(page);
+        const host = await boot(page);
+        const partLines = async () => (await hostState(page, host)).log.filter((l) => l[0] === 'part').map((l) => l[1]);
+        const said = async (line: string) => (await partLines()).includes(`test-part: ${line}`);
+
+        // The part gets what the circuit has on its tap's two inputs; an input the tap does
+        // not have is "not a number", and a time point in the past is not to be had.
+        expect(await startPackaged(page, host, 'tap-adapter', 'plain', tapDeck())).toEqual({ ok: true });
+        await expect.poll(() => said('t=0.1 mid=2.00 sw=0.00 other=NaN past=false'),
+            { message: 'the divider and the released button', timeout: 15000, intervals: [50] }).toBe(true);
+        await call(page, host, 'input', { name: BUTTON1, value: 1 });
+        const held = await frameWhen(page, host, 'the button is held for 0.2 s', (f) => f.t >= 0.5);
+        await expect.poll(async () => (await partLines()).at(-1),
+            { message: 'the held button', timeout: 15000, intervals: [50] }).toMatch(/^test-part: t=\d\.\d mid=2\.00 sw=5\.00 other=NaN past=false$/);
+        expect(held.problem ?? '').toBe('');
+
+        // Nobody asked for a time point: the quiet circuit is solved every 10 ms.
+        const plain = await frameWhen(page, host, 'the plain run reaches 1 s', (f) => f.t >= 1);
+        const plainRate = plain.points / plain.t;
+
+        // The same part asking for a time point at every millisecond: it is given them.
+        expect(await startPackaged(page, host, 'tap-adapter', 'wish', tapDeck())).toEqual({ ok: true });
+        await expect.poll(() => said('the first wish: true'), { message: 'a wish is taken', timeout: 15000, intervals: [50] }).toBe(true);
+        const wished = await frameWhen(page, host, 'the run with wishes reaches 1 s', (f) => f.t >= 1);
+        expect(wished.points / wished.t).toBeGreaterThan(800);
+        expect(wished.points / wished.t).toBeGreaterThan(3 * plainRate);
+
+        // A part whose model does not say its number has no tap: no voltage, no time point.
+        expect(await startPackaged(page, host, 'tap-adapter', 'wish', tapDeck(''))).toEqual({ ok: true });
+        await expect.poll(() => said('t=0.1 mid=NaN sw=NaN other=NaN past=false'),
+            { message: 'a part without a number', timeout: 15000, intervals: [50] }).toBe(true);
+        expect(await said('the first wish: false')).toBe(true);
+
         expect(await call(page, host, 'stop')).toEqual({ ok: true });
         expect((await hostState(page, host)).fatal).toBeNull();
     });
