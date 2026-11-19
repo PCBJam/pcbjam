@@ -378,6 +378,21 @@ const rectOf = async (locator: Locator): Promise<Box> => {
   return { x: b.x, y: b.y, w: b.width, h: b.height };
 };
 
+/**
+ * Where the two ends of a drawn line are on the screen, from the line's own coordinates.
+ * Not from its box: Firefox counts the stroke and its round ends into the box of a line,
+ * Chromium does not.
+ */
+const lineEnds = (line: Locator): Promise<{ x1: number; y1: number; x2: number; y2: number }> =>
+  line.evaluate((el) => {
+    const l = el as unknown as SVGLineElement;
+    const m = l.getScreenCTM()!;
+    const at = (x: number, y: number) => ({ x: m.a * x + m.c * y + m.e, y: m.b * x + m.d * y + m.f });
+    const a = at(l.x1.baseVal.value, l.y1.baseVal.value);
+    const b = at(l.x2.baseVal.value, l.y2.baseVal.value);
+    return { x1: a.x, y1: a.y, x2: b.x, y2: b.y };
+  });
+
 const symbolOf = async (page: Page, ref: string): Promise<Place> => {
   const found = (await places(page)).find((s) => s.ref === ref);
   expect(found, `the editor lists ${ref}`).toBeTruthy();
@@ -492,10 +507,8 @@ test.describe('live simulation: the widgets on the sheet', () => {
       .poll(async () => {
         const sym = await symbolOf(page, 'S1');
         const want = await onScreen(page, [sym.x, sym.y - 1.5 * MM, sym.x, sym.y + 1.5 * MM]);
-        const got = await contact.locator('line').evaluate((el) => {
-          const r = el.getBoundingClientRect();
-          return { x: r.x + r.width / 2, y: r.y, h: r.height };
-        });
+        const ends = await lineEnds(contact.locator('line'));
+        const got = { x: (ends.x1 + ends.x2) / 2, y: Math.min(ends.y1, ends.y2), h: Math.abs(ends.y2 - ends.y1) };
         return Math.max(Math.abs(got.x - want.x), Math.abs(got.y - want.y), Math.abs(got.h - want.h));
       }, { message: 'closed, the contact is drawn on the middle line of S1, 3 mm long', timeout: 15000 })
       .toBeLessThanOrEqual(1.5);
@@ -677,10 +690,8 @@ test.describe('live simulation: the widgets on the sheet', () => {
       const sym = await symbolOf(page, 'L1');
       const want = await onScreen(page, [sym.x - iu(3), sym.y - iu(3), sym.x + iu(3), sym.y + iu(3)]);
       const got = await rectOf(relay1);
-      const line = await arm.locator('line').evaluate((el) => {
-        const r = el.getBoundingClientRect();
-        return { x: r.x, w: r.width };
-      });
+      const ends = await lineEnds(arm.locator('line'));
+      const line = { x: Math.min(ends.x1, ends.x2), w: Math.abs(ends.x2 - ends.x1) };
       const mid = want.x + want.w / 2;
       return {
         box: Math.max(Math.abs(got.x - want.x), Math.abs(got.y - want.y), Math.abs(got.w - want.w), Math.abs(got.h - want.h)),
@@ -688,7 +699,7 @@ test.describe('live simulation: the widgets on the sheet', () => {
         right: line.x + line.w - mid,
       };
     };
-    // 1.5 mm to one side of the middle, the other end on the middle; the stroke adds a little
+    // 1.5 mm to one side of the middle, the other end on the middle
     const reach = (await onScreen(page, [0, 0, iu(1.5), 0])).w;
     await expect.poll(async () => (await armIn()).box, { message: "the relay's widget is at the place its part names", timeout: 15000 }).toBeLessThanOrEqual(1.5);
     const rest = await armIn();
