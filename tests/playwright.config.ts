@@ -296,12 +296,10 @@ export default defineConfig({
   ],
 
   webServer: {
-    // `serve` keeps a file open for every download that is cut off half way (a page that
-    // closes while a big .wasm is still arriving). A run of every project cuts off more
-    // downloads than the 1024 open files a Linux shell allows by default: the server then
-    // dies with EMFILE and every later test fails with "connection refused". So the server
-    // starts with a higher limit, and says on stderr which one it got.
-    command: `ulimit -n 65536 2>/dev/null || ulimit -n 10240 2>/dev/null || true; echo "serve: open files limit $(ulimit -n)" >&2; exec npx serve ${appsDir} -p ${port} -c ../serve.json`,
+    // Our own small server, not `npx serve`: `serve` leaves a file open for every "not
+    // modified" answer and every download that is cut off, until the server dies with
+    // "too many open files" late in a run of every project (see tools/static-server.mjs).
+    command: `node tools/static-server.mjs ${appsDir} ${port} serve.json`,
     port: port,
     reuseExistingServer: !process.env.CI,
   },
