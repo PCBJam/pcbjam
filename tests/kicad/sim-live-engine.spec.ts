@@ -653,10 +653,16 @@ XD2 n2 0 PJ_LED
         expect(Math.abs(before.latest[LED1]!)).toBeLessThan(1e-6);
 
         // No stop in between: the worker halts the old run, drops its circuit and loads the next.
+        const startedAt = await page.evaluate(() => performance.now());
         expect(await start(page, host, { inputs: { [BUTTON1]: 1 } })).toEqual({ ok: true });
         const after = await frameWhen(page, host, 'the second run has its first values',
             (f) => f.running && f.points > 0 && f.latest[LED1] !== undefined);
-        expect(after.t, 'simulated time began again').toBeLessThan(before.t);
+        // A run is held to the clock: one that began after `startedAt` is no further than
+        // the time since then. The first run, had it gone on, would be half a second further.
+        // (Not "less than before.t": on a busy machine the first frame of the new run can
+        // come back more than half a second after its start.)
+        const sinceStart = (after.wall - startedAt) / 1000;
+        expect(after.t, 'simulated time began again').toBeLessThanOrEqual(sinceStart * 1.05 + 0.05);
         expect(after.latest[LED1]!, 'the button is held from the first moment').toBeGreaterThan(LIT);
 
         // Start and stop in quick succession, several times over: a run is always halted,
