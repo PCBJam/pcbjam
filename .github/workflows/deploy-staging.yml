@@ -146,7 +146,7 @@ jobs:
           node scripts/deploy/build-editor.mjs --tag "$STAGING_TAG" \
             --cdn "$CDN_ORIGIN" --api-base "$API_ORIGIN" \
             --app-base "$APP_ORIGIN" --brand-base "$APP_ORIGIN/brand" --errors-env staging \
-            --models-source registry
+            --models-source registry --sim-library "$CDN_ORIGIN/sim-library"
           # Worker Static Assets uses not_found_handling=single-page-application,
           # which duplicates the Pages SPA line in _redirects: drop that line,
           # keep the /plugin-guide → docs redirects.
