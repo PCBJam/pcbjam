@@ -15,7 +15,7 @@ import {
   Play,
   RefreshCw,
   Square,
-  Sun, MessageSquare, Eye, ArrowRightLeft, Smartphone, Type, Magnet, LayoutGrid, Check, Pin, PinOff, Volume2, VolumeX } from "lucide-react";
+  Sun, MessageSquare, Eye, ArrowRightLeft, Smartphone, Type, Magnet, LayoutGrid, Check, Pin, PinOff, Volume2, VolumeX, SquareTerminal } from "lucide-react";
 import type { Tool } from "@pcbjam/shared";
 import { setTheme } from "@/lib/theme";
 import type { SourceDescriptor } from "@/lib/project-source-shared";
@@ -257,6 +257,8 @@ export function SessionMenu({
     onClick: () => void;
     /** Set while a circuit runs that has a part that is heard: muted or not, and the way to change it. */
     sound?: { muted: boolean; onMuted: (muted: boolean) => void } | null;
+    /** The serial console of the circuit's chips: shown or not, and the way to change it. */
+    console?: { open: boolean; onOpen: (open: boolean) => void } | null;
   } | null;
   /** The loaded bundle exports kicadSetChrome. */
   canToggleChrome: boolean;
@@ -504,6 +506,21 @@ export function SessionMenu({
           <OverlayMenuSub id="simulation" label="Simulation" icon={Activity}>
             {liveSim && <LiveSimRow state={liveSim.state} onClick={liveSim.onClick} />}
             {liveSim?.sound && <LiveSoundRow muted={liveSim.sound.muted} onMuted={liveSim.sound.onMuted} />}
+            {liveSim?.console && (
+              <Tip content="Live simulation - what the program of a chip prints, and a line to type to it">
+                <Toggle
+                  data-testid="sim-console-panel-toggle"
+                  variant="ghost"
+                  size="row"
+                  pressed={liveSim.console.open}
+                  onPressedChange={liveSim.console.onOpen}
+                  className={overlayRowClass}
+                >
+                  <SquareTerminal size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
+                  <span>{liveSim.console.open ? "Hide serial console" : "Serial console"}</span>
+                </Toggle>
+              </Tip>
+            )}
             {hasSimParts && (
               <Tip content="Live simulation - what the part library has for each symbol">
                 <Toggle

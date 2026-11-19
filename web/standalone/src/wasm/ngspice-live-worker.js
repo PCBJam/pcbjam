@@ -24,15 +24,21 @@
  *     speed  { speed }
  *     input  { name, value }     a value the user set; becomes a 1 ms ramp
  *     part   { name, bytes }     new code for a part, also while it runs
+ *     serial { name, bytes }     text typed to a part's chip: bytes for its
+ *                                serial input. An error when the circuit has
+ *                                no part of that name
  *     frame                      one snapshot of all values
  *   worker -> host  { id, res }  res.error is set when the command failed
  *     frame: { t, points, load, achieved, lagging, running, latest, avg,
  *              names?, problem? }  names only when the list of vectors
  *              changed; problem: a code part could not be loaded, in words.
  *              The run is halted then (ngspice would go on without the part)
- *   worker -> host  { log: [[kind, text]], dropped }  console lines, batched.
+ *   worker -> host  { log: [[kind, text]], dropped, serial? }  console lines, batched.
  *     kind: "spice" (ngspice's console), "part" (a code part's own text),
  *           "problem" (the engine about a part), "run" (the run began / ended)
+ *     serial: [[part, text, dropped]]  what the chips of the parts sent on their
+ *           serial lines since the last batch, as they sent it (a line need not
+ *           be whole); dropped: characters that did not fit
  *   worker -> host  { fatal }    the engine cannot go on; start a new Worker
  *   boot: one-shot { ready: true } | { bootError }.
  */
@@ -72,23 +78,48 @@ importScripts(GLUE);
 // with code each have that many: ngspice prints a table of every node when a
 // run starts (hundreds of lines for a microcontroller), and what a chip says
 // at that moment (its firmware's first lines) must not be lost behind it.
-const EVT_CHAR = 0, EVT_STAT = 1, EVT_BG = 2, EVT_EXIT = 3, EVT_PART = 4;
+//
+// What a chip sends on its serial line goes the same way, as text and not as
+// lines: at most SERIAL_BATCH_CHARS per part and batch. An emulated chip is not
+// held to its baud rate, so firmware that prints in a loop can send far more
+// than anybody reads; what does not fit is counted.
+const EVT_CHAR = 0, EVT_STAT = 1, EVT_BG = 2, EVT_EXIT = 3, EVT_PART = 4, EVT_SERIAL = 5;
 const LOG_FLUSH_MS = 50;
 const LOG_BATCH_LINES = 200;
 const LOG_LINE_CHARS = 2000;
+const SERIAL_BATCH_CHARS = 16384;
 let pendingLog = [];
 let pendingSpice = 0;
 let droppedLog = 0;
+let pendingSerial = new Map();     // part -> { text, dropped }
 let flushTimer = 0;
 
 function flushLog() {
   flushTimer = 0;
-  if (!pendingLog.length && !droppedLog) return;
-  const log = pendingLog, dropped = droppedLog;
+  if (!pendingLog.length && !droppedLog && !pendingSerial.size) return;
+  const message = { log: pendingLog, dropped: droppedLog };
+  if (pendingSerial.size) message.serial = [...pendingSerial].map(([part, s]) => [part, s.text, s.dropped]);
   pendingLog = [];
   pendingSpice = 0;
   droppedLog = 0;
-  try { postMessage({ log, dropped }); } catch { /* the host is gone */ }
+  pendingSerial = new Map();
+  try { postMessage(message); } catch { /* the host is gone */ }
+}
+
+// "<the part's name>\n<the text>", as the engine sends it.
+function pushSerial(event) {
+  const cut = event.indexOf("\n");
+  if (cut <= 0) return;
+  const part = event.slice(0, cut), text = event.slice(cut + 1);
+  let s = pendingSerial.get(part);
+  if (!s) pendingSerial.set(part, (s = { text: "", dropped: 0 }));
+  const room = SERIAL_BATCH_CHARS - s.text.length;
+  if (text.length <= room) s.text += text;
+  else {
+    s.text += text.slice(0, Math.max(0, room));
+    s.dropped += text.length - Math.max(0, room);
+  }
+  if (!flushTimer) flushTimer = setTimeout(flushLog, LOG_FLUSH_MS);
 }
 
 function pushLog(kind, text) {
@@ -121,6 +152,8 @@ function onEmit(kind, text, a) {
     pushLog("spice", line);
   } else if (kind === EVT_PART) {
     if (text) pushLog(a === 2 ? "problem" : "part", text);
+  } else if (kind === EVT_SERIAL) {
+    if (text) pushSerial(text);
   } else if (kind === EVT_BG) {
     if (!a) runBegan = true;
     else if (runBegan) runEnded = true;
@@ -261,6 +294,10 @@ self.onmessage = async (e) => {
         break;
       case "part":
         mod.liveRegisterPart(String(m.name), m.bytes);
+        break;
+      case "serial":
+        if (typeof mod.liveSerialIn !== "function") res = { error: "this simulator build takes no typed text" };
+        else if (!mod.liveSerialIn(String(m.name), m.bytes)) res = { error: "the circuit has no part " + m.name };
         break;
       case "frame": {
         const s = mod.liveSnapshot();

@@ -70,6 +70,41 @@ const TAP_ADAPTER = `(globalThis.__pjAdapters = globalThis.__pjAdapters || {})["
 };
 `;
 
+// A packaged part with a serial line. It says "ready" and a prompt without a line end. A
+// typed line "on" or "off" switches its output; "zero" is answered with a text that has a
+// zero byte in it, "flood" with more than one batch holds; every other line comes back.
+// With the word "deaf" it has no ear for typed text at all.
+const SERIAL_ADAPTER = `(globalThis.__pjAdapters = globalThis.__pjAdapters || {})["serial-adapter"] = function (env) {
+  let want = 0, sent = -1, said = false, line = "";
+  const utf8 = new TextDecoder();
+  const part = {
+    pj_setup() { return 2 | (1 << 8); },
+    pj_step(target) {
+      if (!said) { said = true; env.serial("ready\\r\\n> "); }
+      if (want !== sent) { sent = want; env.out(target, 0, want, 0); }
+      return target;
+    },
+    pj_input() {},
+    pj_unload() {},
+  };
+  if (env.config.word !== "deaf") part.pj_serial = (bytes) => {
+    line += utf8.decode(bytes, { stream: true });
+    for (;;) {
+      const cut = line.indexOf("\\n");
+      if (cut < 0) break;
+      const got = line.slice(0, cut);
+      line = line.slice(cut + 1);
+      if (got === "on") want = 1;
+      else if (got === "off") want = 0;
+      if (got === "zero") env.serial("a" + String.fromCharCode(0) + "b\\r\\n> ");
+      else if (got === "flood") env.serial("x".repeat(40000));
+      else env.serial("got: " + got + "\\r\\n> ");
+    }
+  };
+  return part;
+};
+`;
+
 const BUTTON1 = 'v.xsw1.vctl';
 const BUTTON2 = 'v.xsw2.vctl';
 const LED1 = 'v.xd1.vs#branch';
@@ -170,14 +205,14 @@ async function open(page: Page): Promise<void> {
             const url = URL.createObjectURL(new Blob(
                 [`self.NGSPICE_GLUE_URL = ${JSON.stringify(glue)};\n`, adapter, workerSrc], { type: 'text/javascript' }));
             const worker = new Worker(url);
-            const host: any = { worker, log: [], fatal: null, errors: [], names: [], nextId: 1, pending: new Map() };
+            const host: any = { worker, log: [], serial: [], fatal: null, errors: [], names: [], nextId: 1, pending: new Map() };
             host.ready = new Promise<void>((resolve, reject) => {
                 worker.onmessage = (e: MessageEvent) => {
                     const m = e.data ?? {};
                     if (m.ready) return resolve();
                     if (m.bootError !== undefined) return reject(new Error(String(m.bootError)));
                     if (m.fatal !== undefined) { host.fatal = String(m.fatal); return; }
-                    if (m.log) { host.log.push(...m.log); return; }
+                    if (m.log) { host.log.push(...m.log); if (m.serial) host.serial.push(...m.serial); return; }
                     const done = host.pending.get(m.id);
                     if (done) { host.pending.delete(m.id); done(m.res); }
                 };
@@ -191,7 +226,7 @@ async function open(page: Page): Promise<void> {
             w.__live.push(host);
             return host.ready.then(() => w.__live.length - 1);
         };
-    }, { workerSrc: WORKER_SRC, partBase64: PART_BASE64, adapter: TEST_ADAPTER + TAP_ADAPTER });
+    }, { workerSrc: WORKER_SRC, partBase64: PART_BASE64, adapter: TEST_ADAPTER + TAP_ADAPTER + SERIAL_ADAPTER });
 }
 
 /** Start the test circuit (or `lines`) with a packaged part in the place of the WebAssembly one. */
@@ -438,6 +473,104 @@ test.describe('live simulation engine', () => {
 
         expect(await call(page, host, 'stop')).toEqual({ ok: true });
         expect((await hostState(page, host)).fatal).toBeNull();
+    });
+
+    test('what a part sends on its serial line reaches the page as it was sent, and typed text reaches the part', async ({ page }) => {
+        await open(page);
+        const host = await boot(page);
+        const partLines = async () => (await hostState(page, host)).log.filter((l) => l[0] === 'part').map((l) => l[1]);
+        /** What the page got from the part's serial line since `from` batches, and how much was left out. */
+        const serial = (from = 0) => page.evaluate(({ host, from }) => {
+            const all = (window as any).__live[host].serial.slice(from) as [string, string, number][];
+            return {
+                batches: (window as any).__live[host].serial.length as number,
+                parts: [...new Set(all.map((c) => c[0]))],
+                text: all.map((c) => c[1]).join(''),
+                dropped: all.reduce((n, c) => n + c[2], 0),
+                longest: Math.max(0, ...all.map((c) => c[1].length)),
+            };
+        }, { host, from });
+        /** Typed text for a part, as the bytes the page sends. */
+        const type = (name: string, text: string) => page.evaluate(({ host, name, text }) =>
+            (window as any).__live[host].call('serial', { name, bytes: new TextEncoder().encode(text) }), { host, name, text });
+
+        // The text arrives as the part sent it: a prompt has no line end.
+        expect(await startPackaged(page, host, 'serial-adapter', 'talk')).toEqual({ ok: true });
+        await expect.poll(async () => (await serial()).text, { message: 'the first words', timeout: 15000, intervals: [50] })
+            .toBe('ready\r\n> ');
+        expect((await serial()).parts).toEqual(['test-part']);
+        // it is not one of the part's own lines as well
+        expect(await partLines()).toEqual([]);
+
+        // A typed line reaches the part at its next step: it answers, and switches its output.
+        const dark = await frameWhen(page, host, 'the run reaches 0.2 s', (f) => f.t >= 0.2);
+        expect(dark.latest[LED2]!).toBeLessThan(1e-6);
+        expect(await type('test-part', 'on\n')).toEqual({ ok: true });
+        await frameWhen(page, host, 'LED 2 is on by the typed line', (f) => f.latest[LED2]! > LIT);
+        await expect.poll(async () => (await serial()).text, { message: 'the answer', timeout: 15000, intervals: [50] })
+            .toBe('ready\r\n> got: on\r\n> ');
+
+        // Bytes, not characters: a letter of two bytes, and two lines in one go. A zero byte in
+        // what the part sends is left out.
+        expect(await type('test-part', 'h\u00e9\nzero\n')).toEqual({ ok: true });
+        await expect.poll(async () => (await serial()).text, { message: 'the next answers', timeout: 15000, intervals: [50] })
+            .toBe('ready\r\n> got: on\r\n> got: h\u00e9\r\n> ab\r\n> ');
+
+        // Text for a part the circuit does not have is refused, in words.
+        expect(await type('no-such-part', 'x\n')).toEqual({ error: 'the circuit has no part no-such-part' });
+
+        // A part that sends more than a batch holds: the page gets a batch's worth, and how much was left out.
+        const before = (await serial()).batches;
+        expect(await type('test-part', 'flood\n')).toEqual({ ok: true });
+        await expect.poll(async () => (await serial(before)).dropped, { message: 'the flood', timeout: 15000, intervals: [50] })
+            .toBeGreaterThan(0);
+        const flood = await serial(before);
+        expect(flood.text.length + flood.dropped).toBe(40000);
+        expect(flood.longest).toBeLessThanOrEqual(16384);
+
+        // What is typed while the run is paused waits for the part; more than may wait is dropped, and said.
+        expect(await call(page, host, 'pause', { paused: true })).toEqual({ ok: true });
+        const paused = (await serial()).batches;
+        expect(await type('test-part', 'off\n')).toEqual({ ok: true });
+        expect(await type('test-part', 'y'.repeat(5000))).toEqual({ ok: true });
+        await expect.poll(partLines, { message: 'too much waits', timeout: 15000, intervals: [50] })
+            .toEqual(['test-part: typed text was dropped: too much is waiting for the chip']);
+        expect((await frame(page, host)).latest[LED2]!).toBeGreaterThan(LIT);
+        expect((await serial(paused)).text).toBe('');
+        // It goes on: the part gets what waited.
+        expect(await call(page, host, 'pause', { paused: false })).toEqual({ ok: true });
+        await frameWhen(page, host, 'LED 2 is dark by the line that waited', (f) => f.latest[LED2]! < 1e-6);
+        await expect.poll(async () => (await serial(paused)).text, { message: 'the answer to the line that waited', timeout: 15000, intervals: [50] })
+            .toBe('got: off\r\n> ');
+
+        // What is typed when nothing runs is for nobody: the chip of the next circuit does not get it.
+        expect(await call(page, host, 'stop')).toEqual({ ok: true });
+        const stopped = (await serial()).batches;
+        expect(await type('test-part', 'on\n')).toEqual({ ok: true });
+        expect(await startPackaged(page, host, 'serial-adapter', 'talk')).toEqual({ ok: true });
+        const fresh = await frameWhen(page, host, 'the new run reaches 0.3 s', (f) => f.t >= 0.3);
+        expect(fresh.latest[LED2]!).toBeLessThan(1e-6);
+        await expect.poll(async () => (await serial(stopped)).text, { message: 'the new part says ready', timeout: 15000, intervals: [50] })
+            .toBe('ready\r\n> ');
+        expect(await type('test-part', 'on\n')).toEqual({ ok: true });
+        await expect.poll(async () => (await serial(stopped)).text, { message: 'only the new line is answered', timeout: 15000, intervals: [50] })
+            .toBe('ready\r\n> got: on\r\n> ');
+
+        // A part without an ear for typed text: the engine says so, once.
+        expect(await startPackaged(page, host, 'serial-adapter', 'deaf')).toEqual({ ok: true });
+        const linesBefore = (await partLines()).length;
+        expect(await type('test-part', 'on\n')).toEqual({ ok: true });
+        await expect.poll(async () => (await partLines()).slice(linesBefore), { message: 'the deaf part', timeout: 15000, intervals: [50] })
+            .toEqual(['test-part: this part takes no typed text']);
+        const at = (await frame(page, host)).t;
+        expect(await type('test-part', 'off\n')).toEqual({ ok: true });
+        await frameWhen(page, host, 'the run goes on', (f) => f.t >= at + 0.2);
+        expect((await partLines()).slice(linesBefore)).toEqual(['test-part: this part takes no typed text']);
+
+        expect(await call(page, host, 'stop')).toEqual({ ok: true });
+        // Nothing runs: the last circuit's part is still known by its name, and the text waits for nobody.
+        expect((await hostState(page, host)).fatal).toBeNull();
+        expect((await hostState(page, host)).errors).toEqual([]);
     });
 
     test('two placed chips of one part each run code of their own, under their own names', async ({ page }) => {

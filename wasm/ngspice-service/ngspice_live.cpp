@@ -66,6 +66,9 @@
  *                                  not be loaded ("" = none). ngspice goes on
  *                                  without the part; the caller stops the run
  *   liveRegisterPart(name, bytes)       the WebAssembly module of a code part
+ *   liveSerialIn(name, bytes)  -> bool  text typed to a code part's chip, as
+ *                                       the bytes for its serial input. False:
+ *                                       the circuit has no part of that name
  *   livePartAt(name)           -> number    for tests: where its bytes are
  *
  * Threads: a function here runs either on the module's main thread (the
@@ -141,6 +144,7 @@ enum EvtKind
     EVT_BG = 2,
     EVT_EXIT = 3,
     EVT_PART = 4, // text from a code part or about one. a: 0 = info, 1 = new code loaded, 2 = a problem
+    EVT_SERIAL = 5, // what a code part's chip sent on its serial line: "<the part's name>\n<the text>"
 };
 
 // Safe from any thread. The string is strdup'd and freed by the proxied JS.
@@ -490,6 +494,7 @@ struct PartInst
     int                    number = 0;  // the placed part's own number (its model's first
                                         // sim_args entry); its voltage tap carries the same. 0 = none
     double                 stepTarget = 0; // the accepted time the part is being advanced to
+    bool                   saidNoSerial = false; // said once: this part takes no typed text
 };
 
 // The handles this file gave to d_cosim. Any other handle belongs to the C library.
@@ -592,11 +597,14 @@ PART_FETCH fetchPart( const std::string& aName, std::vector<uint8_t>& aBytes, in
 //   "PJPK" | u32 header length | header JSON | the files, one after the other
 //   header: { adapter: <name>, config: {...}, blobs: { <name>: [offset, length] } }
 // The adapter is called once with { blobs, config, out( time, bit, state, strength ),
-// log( text ), volt( input, time ), sampleAt( time ) } and answers with the same three calls
-// a module has, and pj_unload. volt and sampleAt are for a part with a voltage tap, see
-// "voltages for code parts" below.
+// log( text ), serial( text ), volt( input, time ), sampleAt( time ) } and answers with the
+// same three calls a module has, and pj_unload. volt and sampleAt are for a part with a
+// voltage tap, see "voltages for code parts" below.
+// serial( text ) is what the part's chip sends on its serial line, as it sends it (a line
+// need not be whole). log( text ) is the part's own word about itself. A part whose chip
+// can be typed to also answers pj_serial( bytes ): see "a chip's serial line" below.
 // pj_unload gives up what the part holds; it is called when the part's circuit is gone,
-// so it may not use out() or log() any more.
+// so it may not use out(), log() or serial() any more.
 // clang-format off
 EM_JS( int, pj_part_load, ( const unsigned char* aBytes, int aLen, int aKey, int aInst ), {
     try {
@@ -628,6 +636,11 @@ EM_JS( int, pj_part_load, ( const unsigned char* aBytes, int aLen, int aKey, int
                 config: head.config || {},
                 out: ( t, bit, state, strength ) => _pj_host_out( aInst, t, bit, state, strength ),
                 log: ( s ) => say( String( s ) ),
+                serial: ( s ) => {
+                    // a C string ends at a zero byte: one inside the text is left out
+                    const text = String( s ).split( String.fromCharCode( 0 ) ).join( String() );
+                    if( text.length ) _pj_host_serial( aInst, stringToNewUTF8( text ) );
+                },
                 volt: ( input, t ) => _pj_host_volt( aInst, input, t ),
                 sampleAt: ( t ) => _pj_host_sample_at( aInst, t ) !== 0
             } );
@@ -719,6 +732,16 @@ EM_JS( double, pj_part_step, ( int aKey, double aTarget ), {
 EM_JS( void, pj_part_input, ( int aKey, double aTime, int aBit, int aState, int aStrength ), {
     globalThis.__pjParts.get( aKey ).pj_input( aTime, aBit, aState, aStrength );
 } );
+// Typed text for a part's chip. 0: the part takes none.
+EM_JS( int, pj_part_serial, ( int aKey, const unsigned char* aBytes, int aLen ), {
+    const part = globalThis.__pjParts.get( aKey );
+    if( !part || typeof part.pj_serial !== 'function' )
+        return 0;
+    const bytes = new Uint8Array( aLen );
+    bytes.set( HEAPU8.subarray( aBytes, aBytes + aLen ) );
+    part.pj_serial( bytes );
+    return 1;
+} );
 EM_JS( void, pj_part_unload, ( int aKey ), {
     if( !globalThis.__pjParts )
         return;
@@ -758,6 +781,15 @@ EMSCRIPTEN_KEEPALIVE void pj_host_log( int aInst, char* aText )
     std::string line = ( inst ? inst->name : std::string( "part" ) ) + ": " + ( aText ? aText : "" );
     free( aText );
     emitEvt( EVT_PART, line.c_str(), 0, 0 );
+}
+
+// What a part's chip sent on its serial line. Takes ownership of aText.
+EMSCRIPTEN_KEEPALIVE void pj_host_serial( int aInst, char* aText )
+{
+    PartInst*   inst = (PartInst*) aInst;
+    std::string text = ( inst ? inst->name : std::string( "part" ) ) + "\n" + ( aText ? aText : "" );
+    free( aText );
+    emitEvt( EVT_SERIAL, text.c_str(), 0, 0 );
 }
 
 // --- voltages for code parts ---------------------------------------------------------------
@@ -926,10 +958,54 @@ static void pjReloadIfChanged( PartInst* aInst )
     emitEvt( EVT_PART, msg, 1, 0 );
 }
 
+// --- a chip's serial line ------------------------------------------------------------------
+//
+// Out: a part hands over what its chip sends (pj_host_serial above), and the page shows it.
+// In: the page hands over what the user typed, for one part by its name (liveSerialIn). That
+// call is on the Worker's thread; the part lives in the simulation thread. So the bytes wait
+// here, and the part gets them at its next step, through its pj_serial.
+
+static const size_t SERIAL_IN_MAX = 4096; // bytes that may wait for one part
+
+static std::mutex                         s_serialMutex;
+static std::map<std::string, std::string> s_serialIn; // by the part's name
+static std::atomic<int>                   s_serialWaiting{ 0 };
+
+static void pjSerialIn( PartInst* aInst )
+{
+    std::string bytes;
+
+    {
+        std::lock_guard<std::mutex> lock( s_serialMutex );
+        auto                        it = s_serialIn.find( aInst->name );
+
+        if( it == s_serialIn.end() )
+            return;
+
+        bytes.swap( it->second );
+        s_serialIn.erase( it );
+        s_serialWaiting = (int) s_serialIn.size();
+    }
+
+    if( bytes.empty() )
+        return;
+
+    if( !pj_part_serial( aInst->key, (const unsigned char*) bytes.data(), (int) bytes.size() )
+        && !aInst->saidNoSerial )
+    {
+        aInst->saidNoSerial = true;
+        emitEvt( EVT_PART, ( aInst->name + ": this part takes no typed text" ).c_str(), 0, 0 );
+    }
+}
+
 static void pjStep( struct co_info* aInfo )
 {
     PartInst* inst = (PartInst*) aInfo->handle;
     pjReloadIfChanged( inst );
+
+    if( s_serialWaiting.load( std::memory_order_relaxed ) > 0 )
+        pjSerialIn( inst );
+
     inst->stepTarget = aInfo->vtime;
     aInfo->vtime = pj_part_step( inst->key, aInfo->vtime );
 }
@@ -1200,6 +1276,13 @@ int liveCirc( val aLines, val aFiles )
         s_taps.clear();
     }
 
+    {
+        // and what was typed to its chips is not for the chips of this one
+        std::lock_guard<std::mutex> lock( s_serialMutex );
+        s_serialIn.clear();
+        s_serialWaiting = 0;
+    }
+
     const unsigned nFiles = aFiles["length"].as<unsigned>();
 
     for( unsigned i = 0; i < nFiles; i++ )
@@ -1288,6 +1371,39 @@ void liveRegisterPart( std::string aName, val aBytes )
     s_partBytes[aName] = std::move( bytes );
     s_partNameGen[aName]++;
     s_partGen++;
+}
+
+// Text the user typed to a part's chip, as bytes for its serial input. The part gets them
+// at its next step. False: the circuit has no part of that name. Bytes beyond what may wait
+// (a run that is paused, a part that takes none) are dropped, and the part's log says so.
+bool liveSerialIn( std::string aName, val aBytes )
+{
+    std::vector<uint8_t> bytes = convertJSArrayToNumberVector<uint8_t>( aBytes );
+
+    {
+        std::lock_guard<std::mutex> lock( s_partMutex );
+
+        if( s_partBytes.find( aName ) == s_partBytes.end() )
+            return false;
+    }
+
+    bool dropped = false;
+
+    {
+        std::lock_guard<std::mutex> lock( s_serialMutex );
+        std::string&                waiting = s_serialIn[aName];
+        const size_t                room = waiting.size() < SERIAL_IN_MAX ? SERIAL_IN_MAX - waiting.size() : 0;
+        const size_t                take = bytes.size() < room ? bytes.size() : room;
+
+        waiting.append( (const char*) bytes.data(), take );
+        dropped = take < bytes.size();
+        s_serialWaiting = (int) s_serialIn.size();
+    }
+
+    if( dropped )
+        emitEvt( EVT_PART, ( aName + ": typed text was dropped: too much is waiting for the chip" ).c_str(), 0, 0 );
+
+    return true;
 }
 
 // For tests: where the engine holds a registered part's bytes. -1: no such part.
@@ -1480,5 +1596,6 @@ EMSCRIPTEN_BINDINGS( ngspice_live )
     function( "liveNames", &liveNames );
     function( "liveSnapshot", &liveSnapshot );
     function( "liveRegisterPart", &liveRegisterPart );
+    function( "liveSerialIn", &liveSerialIn );
     function( "livePartAt", &livePartAt );
 }

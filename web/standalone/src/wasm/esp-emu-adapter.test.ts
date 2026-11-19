@@ -11,6 +11,10 @@
 // GPIO10 every 250 ms, and holds GPIO8 high while GPIO9 (a button to ground with the
 // chip's pull-up) is low. Here the test plays ngspice: it says what the pads read and
 // asks the chip to advance.
+//
+// The test of the serial line needs a second image (PCBJAM_ESP_TALK_FIRMWARE): it prints
+// "talk: ready. Type on, off or blink." and the prompt "> " without a line end, reads a
+// line from UART0, and answers it: "on" switches GPIO8 high and says "the LED is on".
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,17 +24,22 @@ import { loaderScript } from "./chip-parts";
 
 const EMU = process.env.PCBJAM_ESP_EMU ?? "";
 const FIRMWARE = process.env.PCBJAM_ESP_FIRMWARE ?? "";
+const TALK = process.env.PCBJAM_ESP_TALK_FIRMWARE ?? "";
 const here = EMU && FIRMWARE && existsSync(join(EMU, "esp_emu.js")) && existsSync(join(EMU, "esp_emu_bg.wasm")) && existsSync(FIRMWARE);
+
+const talkHere = here && TALK && existsSync(TALK);
 
 interface Part {
   pj_setup(): number;
   pj_step(target: number): number;
   pj_input(time: number, bit: number, state: number, strength: number): void;
+  pj_serial(bytes: Uint8Array): void;
   pj_unload(): void;
 }
 type Adapter = (env: {
   blobs: Record<string, Uint8Array>; config: Record<string, unknown>;
   out: (time: number, bit: number, state: number, strength: number) => void; log: (text: string) => void;
+  serial?: (text: string) => void;
 }) => Part;
 
 const PADS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 18, 19, 20, 21];
@@ -118,6 +127,71 @@ describe.skipIf(!here)("the ESP32 adapter with the real emulator", () => {
     run(now + 0.4);
     expect(lines.filter((l) => /^> .*ready/.test(l)).length).toBe(ready + 1);
     expect(last(N + BEAT)).toBe(1);
+
+    part.pj_unload();
+  }, 120_000);
+
+  it.skipIf(!talkHere)("hands on what the firmware sends as it sends it, and gives the firmware what is typed", () => {
+    vm.runInThisContext(loaderScript(readFileSync(join(EMU, "esp_emu.js"), "utf8"), KEY));
+    vm.runInThisContext(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "esp-emu-adapter.js"), "utf8"));
+    const make = (globalThis as unknown as { __pjAdapters: Record<string, Adapter> }).__pjAdapters["esp-emu"]!;
+
+    const events: { t: number; bit: number; state: number }[] = [];
+    const lines: string[] = [];
+    const chunks: string[] = [];
+    const part = make({
+      blobs: { "emulator.wasm": readFileSync(join(EMU, "esp_emu_bg.wasm")), "firmware.bin": readFileSync(TALK) },
+      config: {
+        chip: "esp32c3", cores: 1, pads: PADS, enable: true, wired: [8, 10], emulatorKey: KEY,
+        iomux: { base: 0x60009004, count: 22, pullUpBit: 8, pullDownBit: 7 },
+      },
+      out: (t, bit, state) => events.push({ t, bit, state }),
+      log: (text) => lines.push(text),
+      serial: (text) => chunks.push(text),
+    });
+    let now = 0;
+    const run = (until: number): void => {
+      while (now < until) {
+        const target = Math.min(until, now + 1e-4);
+        for (;;) {
+          now = part.pj_step(target);
+          if (now >= target) break;
+        }
+      }
+    };
+    const sent = (): string => chunks.join("");
+    const type = (text: string): void => part.pj_serial(new TextEncoder().encode(text));
+
+    part.pj_input(0, N, 1, 0);
+    // typed before the chip has power: nothing hears it, and nothing breaks
+    type("off\n");
+    run(0.7);
+    // the prompt has no line end: it is there all the same, after whatever the chip's start-up printed
+    expect(sent().endsWith("talk: ready. Type on, off or blink.\r\n> ")).toBe(true);
+    // and the text is not in the part's own words as well
+    expect(lines.some((l) => l.startsWith("> "))).toBe(false);
+
+    const typedAt = now;
+    type("on\n");
+    run(typedAt + 0.05);
+    expect(sent().endsWith("> the LED is on\r\n> ")).toBe(true);
+    const on = events.find((e) => e.bit === LED && e.state === 1 && e.t >= typedAt);
+    expect(on).toBeDefined();
+    expect(on!.t - typedAt).toBeLessThan(0.01);
+
+    const long = "the quick brown fox jumps over the lazy dog";
+    type(`${long}\n`);
+    run(now + 0.05);
+    expect(sent().endsWith(`you typed "${long}" (${long.length} characters). I know: on, off, blink, count\r\n> `)).toBe(true);
+
+    // a chip held in reset hears nothing; after it the firmware starts over
+    part.pj_input(now, N, 0, 0);
+    type("blink\n");
+    run(now + 0.01);
+    part.pj_input(now, N, 1, 0);
+    run(now + 0.5);
+    expect(sent().endsWith("talk: ready. Type on, off or blink.\r\n> ")).toBe(true);
+    expect(sent()).not.toContain("the LED blinks");
 
     part.pj_unload();
   }, 120_000);

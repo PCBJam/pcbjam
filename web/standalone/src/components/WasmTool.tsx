@@ -120,6 +120,7 @@ import { useTutorialFromUrl } from "@/plugins/tutorials";
 import { SelectionInspector } from "@/components/SelectionInspector";
 import { hasSheetsBridge, SheetPanel, type SheetsModule } from "@/components/SheetPanel";
 import { SimPartsPanel } from "@/components/SimPartsPanel";
+import { SimConsolePanel } from "@/components/SimConsolePanel";
 import { bindLocalSelectionFeed } from "@/wasm/collab/local-selection";
 import {
   type SheetCollabManager,
@@ -230,6 +231,8 @@ function fenceGuarded(sink: SaveBytes | undefined): SaveBytes | undefined {
  */
 const READER_COMMENTS_KEY = "pcbjam-reader-comments";
 const REVIEWER_SELECTIONS_KEY = "pcbjam-reviewer-selections";
+/** "1": the user closed the serial console of live simulation; it does not open by itself. */
+const SIM_CONSOLE_CLOSED_KEY = "pcbjam:sim-console-closed";
 
 export function WasmTool({
   tool,
@@ -2319,6 +2322,37 @@ export function WasmTool({
     () => (liveSession?.run && liveState === "running" ? tonesFor(liveSession.run).length : 0),
     [liveSession, liveState],
   );
+  // The serial console of the run's chips. It opens by itself when a chip prints for the
+  // first time in a run, unless the user closed it: then it stays away until they ask for it
+  // in the Session menu. That wish is kept over a reload.
+  const [simConsoleOpen, setSimConsoleOpenState] = React.useState<boolean>(false);
+  const simConsoleClosedByUser = React.useRef<boolean>(false);
+  React.useEffect(() => {
+    try {
+      simConsoleClosedByUser.current = localStorage.getItem(SIM_CONSOLE_CLOSED_KEY) === "1";
+    } catch {
+      /* private mode: it opens by itself each time */
+    }
+  }, []);
+  const setSimConsoleOpen = React.useCallback((open: boolean) => {
+    setSimConsoleOpenState(open);
+    simConsoleClosedByUser.current = !open;
+    try {
+      localStorage.setItem(SIM_CONSOLE_CLOSED_KEY, open ? "0" : "1");
+    } catch {
+      /* private mode */
+    }
+  }, []);
+  React.useEffect(() => {
+    if (!liveSession) return;
+    let seen = liveSession.console.printed;
+    return liveSession.console.onChange(() => {
+      const printed = liveSession.console.printed;
+      if (printed && !seen && !simConsoleClosedByUser.current) setSimConsoleOpenState(true);
+      seen = printed;
+    });
+  }, [liveSession]);
+
   const liveSimMenu = React.useMemo(
     () =>
       liveSession
@@ -2326,9 +2360,10 @@ export function WasmTool({
             state: liveState,
             onClick: () => void liveSession.click(),
             sound: liveSoundParts > 0 ? { muted: liveSoundIsMuted, onMuted: setLiveSoundMuted } : null,
+            console: { open: simConsoleOpen, onOpen: setSimConsoleOpen },
           }
         : null,
-    [liveSession, liveState, liveSoundParts, liveSoundIsMuted, setLiveSoundMuted],
+    [liveSession, liveState, liveSoundParts, liveSoundIsMuted, setLiveSoundMuted, simConsoleOpen, setSimConsoleOpen],
   );
 
   // Sheet bridge (sheet-panel), eeschema sessions only. Re-evaluated on every
@@ -2567,6 +2602,9 @@ export function WasmTool({
       )}
 
       {/* Live simulation, first piece: what the part library has for each symbol. */}
+      {ready && simConsoleOpen && liveSession && (
+        <SimConsolePanel console={liveSession.console} onClose={() => setSimConsoleOpen(false)} />
+      )}
       {ready && simPartsOpen && simPartsMod && simParts && (
         <SimPartsPanel mod={simPartsMod} reader={simParts} doc={panelDoc} firmware={simPartsFirmware} onClose={() => setSimPartsOpen(false)} />
       )}

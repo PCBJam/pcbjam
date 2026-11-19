@@ -447,6 +447,54 @@ describe("live engine", () => {
     expect(onLog).toHaveBeenCalledExactlyOnceWith(lines, 3);
   });
 
+  it("what the chips sent on their serial lines is handed on, after the lines of the same batch", async () => {
+    const order: string[] = [];
+    const onLog = vi.fn(() => void order.push("log"));
+    const onSerial = vi.fn(() => void order.push("serial"));
+    const engine = engineWith({ onLog, onSerial });
+    const worker = await running(engine);
+    const lines: LiveLogLine[] = [["part", "uno_1: reset went high: the chip starts"]];
+    worker.emitMessage({ log: lines, dropped: 0, serial: [["uno_1", "ready\r\n> ", 0]] });
+    expect(onSerial).toHaveBeenCalledExactlyOnceWith([["uno_1", "ready\r\n> ", 0]]);
+    expect(order).toEqual(["log", "serial"]);
+    // a batch with text only is not a batch of lines
+    worker.emitMessage({ log: [], dropped: 0, serial: [["uno_1", "more", 12]] });
+    expect(onLog).toHaveBeenCalledTimes(1);
+    expect(onSerial).toHaveBeenLastCalledWith([["uno_1", "more", 12]]);
+    // and a listener that throws costs nothing
+    onSerial.mockImplementationOnce(() => {
+      throw new Error("no");
+    });
+    worker.emitMessage({ log: [], dropped: 0, serial: [["uno_1", "x", 0]] });
+    expect(engine.state).toBe("running");
+  });
+
+  it("typed text goes to the running circuit's part, and the worker's no is an error", async () => {
+    const engine = engineWith();
+    await expect(engine.sendSerial("uno_1", new Uint8Array([111, 110, 10]))).rejects.toThrow("nothing runs");
+    const worker = await running(engine);
+
+    const typed = engine.sendSerial("uno_1", new Uint8Array([111, 110, 10]));
+    await commands(worker, 2);
+    expect(sent(worker, 1)).toMatchObject({ cmd: "serial", name: "uno_1", bytes: new Uint8Array([111, 110, 10]) });
+    answer(worker);
+    await typed;
+
+    const refused = engine.sendSerial("gone", new Uint8Array([10]));
+    await commands(worker, 3);
+    answer(worker, { error: "the circuit has no part gone" });
+    await expect(refused).rejects.toThrow("the circuit has no part gone");
+    expect(engine.state).toBe("running");
+    expect(engine.crashes).toBe(0);
+
+    const stopped = engine.stop();
+    await commands(worker, 4);
+    answer(worker);
+    await stopped;
+    await expect(engine.sendSerial("uno_1", new Uint8Array([10]))).rejects.toThrow("nothing runs");
+    expect(worker.postMessage).toHaveBeenCalledTimes(4);
+  });
+
   it("dispose throws the worker away without calling it a crash", async () => {
     const onCrash = vi.fn();
     const engine = engineWith({ onCrash });

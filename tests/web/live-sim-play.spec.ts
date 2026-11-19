@@ -19,7 +19,10 @@ import { openOverlayMenu } from './overlay-menu';
  *   - KiCad puts the button at the far end of its toolbar, which a window of
  *     the usual size does not show. The Session menu's row plays and stops
  *     there, and also with the UI hidden, where there is no toolbar at all;
- *     the toolbars then stay hidden.
+ *     the toolbars then stay hidden;
+ *   - the Session menu also has the row of the serial console (what the
+ *     program of a chip prints, and a line to type to it). In a circuit
+ *     without such a chip the panel says what it is for and takes no text.
  *
  * The schematics are tests/fixtures/demo/live-sim: `run` is a 5 V source and
  * a resistor; `no-model` adds a diode nobody has a model for (KiCad writes a
@@ -254,6 +257,66 @@ test.describe('live simulation: Play and Stop in the Session menu', () => {
     await expectRow(page, 'idle', PLAY, 'stopped');
     await closeOverlayMenu(page);
     expect(await visibleToolbars(page), 'no toolbar came back at Stop').toBe(0);
+    await expect(page.getByTestId('live-sim-error')).toHaveCount(0);
+  });
+});
+
+test.describe('live simulation: the serial console', () => {
+  const row = (page: Page) => page.getByTestId('sim-console-panel-toggle');
+  const panel = (page: Page) => page.getByTestId('sim-console-panel');
+
+  test('without the toggle the Session menu has no row for it', async ({ page }) => {
+    test.setTimeout(300000);
+    await answerSession(page, false);
+    await serveEmptyLibrary(page);
+    await bootSchematic(page, 'live-sim/run.kicad_sch');
+    await expectTool(page, 'Simulator', true, "KiCad's toolbar is up");
+    await openOverlayMenu(page);
+    await expect(row(page)).toHaveCount(0);
+    await expect(panel(page)).toHaveCount(0);
+  });
+
+  test('the row shows and hides the panel; a circuit without a chip that runs firmware has nothing to show', async ({ page }) => {
+    test.setTimeout(300000);
+    await answerSession(page, true);
+    await serveEmptyLibrary(page);
+    await bootSchematic(page, 'live-sim/run.kicad_sch');
+    await expectTool(page, 'Simulator', true, "KiCad's toolbar is up");
+
+    await openOverlayMenu(page);
+    await expect(row(page)).toHaveText('Serial console');
+    await expect(panel(page), 'the panel is not there until it is asked for').toHaveCount(0);
+    await row(page).click();
+    await expect(panel(page)).toBeVisible();
+    await expect(page.getByTestId('sim-console-empty')).toContainText('What the program of a chip prints shows here');
+    await expect(page.getByTestId('sim-console-input')).toBeDisabled();
+    await expect(page.getByTestId('sim-console-input')).toHaveAttribute('placeholder', 'Press Play to type to the chip');
+    await expect(page.getByTestId('sim-console-panel-clear')).toBeDisabled();
+
+    // The circuit runs: it has no chip, so there is still nothing to show and nobody to type to.
+    await openOverlayMenu(page);
+    await expect(row(page)).toHaveText('Hide serial console');
+    await menuRow(page).click();
+    await openOverlayMenu(page);
+    await expect(menuRow(page)).toHaveAttribute('data-live-state', 'running', { timeout: 60000 });
+    await closeOverlayMenu(page);
+    await expect(panel(page)).toHaveAttribute('data-can-send', 'no');
+    await expect(page.getByTestId('sim-console-empty')).toBeVisible();
+    await expect(page.getByTestId('sim-console-input')).toBeDisabled();
+
+    // Collapsed to its header and back, then closed.
+    await page.getByTestId('sim-console-panel-collapse').click();
+    await expect(page.getByTestId('sim-console-text')).toHaveCount(0);
+    await page.getByTestId('sim-console-panel-collapse').click();
+    await expect(page.getByTestId('sim-console-text')).toBeVisible();
+    await page.getByTestId('sim-console-panel-close').click();
+    await expect(panel(page)).toHaveCount(0);
+    await openOverlayMenu(page);
+    await expect(row(page)).toHaveText('Serial console');
+
+    await menuRow(page).click();
+    await openOverlayMenu(page);
+    await expect(menuRow(page)).toHaveAttribute('data-live-state', 'idle', { timeout: 60000 });
     await expect(page.getByTestId('live-sim-error')).toHaveCount(0);
   });
 });

@@ -149,8 +149,13 @@
       queue.splice(i, 0, { t: at, bit, state });
     };
 
-    // What the firmware prints on its serial pins, line by line, marked "> ".
+    // What the firmware prints on its serial pins. An engine that takes the text as it
+    // comes gets it so (env.serial; a line need not be whole). An engine without it gets
+    // whole lines in the part's log, marked "> ".
+    const sends = typeof env.serial === "function";
+    let saidTyped = false;
     function consoleText(text) {
+      if (sends) { env.serial(text); return; }
       consoleLine += text;
       for (;;) {
         const cut = consoleLine.indexOf("\n");
@@ -373,6 +378,14 @@
           if (behind > 0.5) { stat.late++; if (behind > stat.maxLateUs) stat.maxLateUs = behind; }
         } else stat.readBack++;
         send(gpioDrive(ns, pads[bit], state));          // a sleeping chip sees it at its next tick: see the top of the file
+      },
+
+      // The user typed this to the chip: bytes for its serial input (UART0, the pins the
+      // console is on).
+      pj_serial(bytes) {
+        if (dead || !powered || held || !emu) return;   // a chip in reset hears nothing, as on a board
+        if (typeof emu.uart_input === "function") emu.uart_input(bytes);
+        else if (!saidTyped) { saidTyped = true; log("this emulator takes no typed text"); }
       },
 
       pj_unload() { if (emu) { emu.free(); emu = null; } },

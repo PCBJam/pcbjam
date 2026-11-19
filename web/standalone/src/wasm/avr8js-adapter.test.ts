@@ -14,6 +14,11 @@
 //
 // The test of analogRead needs a second sketch (PCBJAM_AVR_ANALOG_FIRMWARE): the same one
 // that also prints "A0 = <analogRead(A0)>, A1 = <analogRead(A1)>" every 200 ms.
+//
+// The test of the serial line needs a third (PCBJAM_AVR_TALK_FIRMWARE): it prints
+// "talk: ready. Type on, off or blink." and the prompt "> " without a line end, reads a
+// line, and answers it: "on" switches D8 high and says "the LED is on", any other line
+// comes back as 'you typed "<line>" (<n> characters). ...'.
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,19 +30,23 @@ import { readIntelHex } from "./intel-hex";
 const AVR8JS = process.env.PCBJAM_AVR8JS ?? "";
 const FIRMWARE = process.env.PCBJAM_AVR_FIRMWARE ?? "";
 const ANALOG = process.env.PCBJAM_AVR_ANALOG_FIRMWARE ?? "";
+const TALK = process.env.PCBJAM_AVR_TALK_FIRMWARE ?? "";
 const here = AVR8JS && FIRMWARE && existsSync(AVR8JS) && existsSync(FIRMWARE);
 const analogHere = here && ANALOG && existsSync(ANALOG);
+const talkHere = here && TALK && existsSync(TALK);
 
 interface Part {
   pj_setup(): number;
   pj_step(target: number): number;
   pj_input(time: number, bit: number, state: number, strength: number): void;
+  pj_serial(bytes: Uint8Array): void;
   pj_unload(): void;
 }
 type Adapter = (env: {
   blobs: Record<string, Uint8Array>; config: Record<string, unknown>;
   out: (time: number, bit: number, state: number, strength: number) => void; log: (text: string) => void;
   volt?: (input: number, time: number) => number; sampleAt?: (time: number) => boolean;
+  serial?: (text: string) => void;
 }) => Part;
 
 // An Uno's pads in the order of its model: D0 to D13 (port D, then port B), A0 to A5 (port C).
@@ -195,6 +204,104 @@ describe.skipIf(!here)("the avr8js adapter with the real avr8js", () => {
     const short = analogRun({ taps: ["A0", "AVCC"] }, { A0: 2.5, AVCC: 5 });
     expect(short.lines).toContain("> P7: A0 = 512, A1 = 0");
     expect(short.lines.filter((l) => /analog input A1, which this board does not have/.test(l)).length).toBe(1);
+  }, 120_000);
+
+  // The sketch that talks, with ngspice played by the test: reset high, steps of 100 us.
+  const talk = (firmware: string, serial = true) => {
+    const events: { t: number; bit: number; state: number }[] = [];
+    const lines: string[] = [];
+    const chunks: string[] = [];
+    const part = load()({
+      blobs: { "firmware.bin": readIntelHex(readFileSync(firmware, "utf8")) },
+      config: { chip: "atmega328p", clock: 16_000_000, pads: PADS, enable: true, wired: [8, 13], emulatorKey: KEY },
+      out: (t, bit, state) => events.push({ t, bit, state }),
+      log: (text) => lines.push(text),
+      ...(serial ? { serial: (text: string) => chunks.push(text) } : {}),
+    });
+    let now = 0;
+    const run = (until: number): void => {
+      while (now < until) {
+        const target = Math.min(until, now + 1e-4);
+        for (;;) {
+          now = part.pj_step(target);
+          if (now >= target) break;
+        }
+      }
+    };
+    const type = (text: string): void => part.pj_serial(new TextEncoder().encode(text));
+    part.pj_input(0, N, 1, 0);
+    return { part, events, lines, chunks, run, type, at: () => now, sent: () => chunks.join("") };
+  };
+
+  it.skipIf(!talkHere)("hands on what the sketch sends as it sends it, and gives the sketch what is typed", () => {
+    const { part, events, lines, run, type, at, sent } = talk(TALK);
+    run(0.1);
+    // the prompt has no line end: it is there all the same
+    expect(sent()).toBe("talk: ready. Type on, off or blink.\r\n> ");
+    // and the text is not in the part's own words as well
+    expect(lines.some((l) => l.startsWith("> "))).toBe(false);
+
+    const typedAt = at();
+    type("on\n");
+    run(typedAt + 0.02);
+    expect(sent()).toBe("talk: ready. Type on, off or blink.\r\n> the LED is on\r\n> ");
+    // three characters at 115200 baud are 260 us; the sketch's loop takes them at once
+    const on = events.find((e) => e.bit === LED && e.state === 1 && e.t >= typedAt);
+    expect(on).toBeDefined();
+    expect(on!.t - typedAt).toBeGreaterThan(0.0002);
+    expect(on!.t - typedAt).toBeLessThan(0.002);
+
+    // a line longer than the chip's one-byte receiver arrives whole, one character time after the other
+    const long = "the quick brown fox jumps over the lazy dog";
+    type(`${long}\n`);
+    run(at() + 0.05);
+    expect(sent().endsWith(`you typed "${long}" (${long.length} characters). I know: on, off, blink, count\r\n> `)).toBe(true);
+
+    // two lines typed in one go are two lines for the sketch
+    type("off\non\n");
+    run(at() + 0.05);
+    expect(sent().endsWith("the LED is off\r\n> the LED is on\r\n> ")).toBe(true);
+    part.pj_unload();
+  }, 120_000);
+
+  it.skipIf(!talkHere)("keeps what is typed before the sketch listens, and a chip in reset hears nothing", () => {
+    const { part, run, type, at, sent, lines } = talk(TALK);
+    // the chip is up, its sketch has not opened the serial line yet
+    run(3e-6);
+    type("on\n");
+    run(0.1);
+    expect(sent()).toBe("talk: ready. Type on, off or blink.\r\n> the LED is on\r\n> ");
+
+    // reset low: what is typed now is lost, as on a board; after the reset the sketch starts over
+    const held = at();
+    part.pj_input(held, N, 0, 0);
+    type("blink\n");
+    run(held + 0.01);
+    part.pj_input(at(), N, 1, 0);
+    run(at() + 0.1);
+    expect(sent().endsWith("> the LED is on\r\n> talk: ready. Type on, off or blink.\r\n> ")).toBe(true);
+    expect(lines.some((l) => /typed text was dropped/.test(l))).toBe(false);
+    part.pj_unload();
+  }, 120_000);
+
+  it.skipIf(!talkHere)("says once when more is typed than may wait", () => {
+    const { part, run, type, lines } = talk(TALK);
+    run(0.05);
+    type("x".repeat(5000));
+    type("y".repeat(5000));
+    expect(lines.filter((l) => l === "typed text was dropped: the sketch does not read its serial input")).toHaveLength(1);
+    part.pj_unload();
+  }, 120_000);
+
+  it.skipIf(!talkHere)("for an engine without the serial line, whole lines go to the part's own words", () => {
+    const { part, run, type, at, lines, chunks } = talk(TALK, false);
+    run(0.1);
+    type("on\n");
+    run(at() + 0.02);
+    expect(chunks).toEqual([]);
+    expect(lines).toContain("> talk: ready. Type on, off or blink.");
+    expect(lines).toContain("> > the LED is on");
+    part.pj_unload();
   }, 120_000);
 
   it("stays silent, in words, about a program that is none for this chip", () => {

@@ -7,7 +7,9 @@ import {
   type LiveEngineOptions,
   type LiveFrame,
   type LiveLogLine,
+  type LiveSerialChunk,
 } from "./live-engine";
+import { createConsoleStore, type ConsoleStore, type LiveConsole } from "./live-console";
 import type { SimPartsReader, SimSymbolsModule } from "./sim-parts";
 
 /**
@@ -108,6 +110,11 @@ export interface LiveSession {
   /** The last look at the running circuit. Null when nothing runs. */
   readonly lastFrame: LiveFrame | null;
   /**
+   * The serial consoles of the chips that run firmware: what each printed in this run (or
+   * the last one), and the way to type to it. See live-console.ts.
+   */
+  readonly console: LiveConsole;
+  /**
    * Hears every look at the running circuit: the values the widgets on the
    * sheet show. While somebody listens, the looks come faster. Returns the
    * way to stop listening.
@@ -173,6 +180,10 @@ const FRAME_MS = 33;
 const KEPT_LOG_LINES = 40;
 /** How many lines of the parts with code one batch of the engine's log puts into the app's log. */
 const PART_LINES_PER_BATCH = 20;
+/** A line a chip printed, as the app's log shows it. */
+const PRINTED_LINE_CHARS = 300;
+/** What a part says for the log and the tests, not for the reader of its chip's console. */
+const NOT_FOR_THE_CONSOLE = /^(@stat |power-up: )/;
 
 const words = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
@@ -199,16 +210,59 @@ export function createLiveSession(options: LiveSessionOptions): LiveSession {
   let chipNames: [name: string, ref: string][] = [];
   const byRef = (text: string): string => chipNames.reduce((t, [name, ref]) => t.split(name).join(ref), text);
 
-  const engine = (options.createEngine ?? createLiveEngine)({
+  // The serial consoles of the run's chips. `store` is filled here; the panel reads it.
+  const store: ConsoleStore = createConsoleStore({
+    send: (name, bytes) => engine.sendSerial(name, bytes),
+    canSend: () => state === "running",
+  });
+  // The longest name first, as in chipNames.
+  let consoleNames: string[] = [];
+  // What each chip printed since its last line end: the app's log gets whole lines.
+  let printing = new Map<string, string>();
+
+  /** A part's line "name: words", when the part is a chip with a console. */
+  const chipLine = (text: string): [name: string, words: string] | null => {
+    const name = consoleNames.find((n) => text.startsWith(`${n}: `));
+    return name ? [name, text.slice(name.length + 2)] : null;
+  };
+
+  const engine: LiveEngine = (options.createEngine ?? createLiveEngine)({
     log,
     onLog: (lines: LiveLogLine[]) => {
       for (const [kind, text] of lines) if (kind === "spice" || kind === "problem") recent.push(byRef(text));
       if (recent.length > KEPT_LOG_LINES) recent = recent.slice(-KEPT_LOG_LINES);
-      // What a part with code says (a chip: what its firmware prints, "> ..."), into the
-      // app's own log. A firmware can print without end, so one batch gives a few lines.
+      // What a part with code says about itself, into the app's own log, and into its
+      // chip's console. One batch gives the log a few lines.
       const said = lines.flatMap(([kind, text]) => (kind === "part" ? [text] : []));
       for (const text of said.slice(0, PART_LINES_PER_BATCH)) log(byRef(text));
       if (said.length > PART_LINES_PER_BATCH) log(`... and ${said.length - PART_LINES_PER_BATCH} more lines from the parts`);
+      for (const [kind, text] of lines) {
+        if (kind !== "part" && kind !== "problem") continue;
+        const line = chipLine(text);
+        if (!line) continue;
+        // a simulator build without the serial line hands a chip's text over as lines, marked "> "
+        if (kind === "part" && line[1].startsWith("> ")) store.out(line[0], `${line[1].slice(2)}\n`);
+        else if (!NOT_FOR_THE_CONSOLE.test(line[1])) store.note(line[0], byRef(line[1]));
+      }
+    },
+    onSerial: (chunks: LiveSerialChunk[]) => {
+      // A firmware can print without end, so one batch gives the app's log a few lines.
+      let logged = 0;
+      let more = 0;
+      for (const [name, text, dropped] of chunks) {
+        store.out(name, text, dropped);
+        const lines = ((printing.get(name) ?? "") + text).split("\n");
+        const rest = lines.pop() ?? "";
+        printing.set(name, rest.length > 2000 ? rest.slice(-PRINTED_LINE_CHARS) : rest);
+        for (const raw of lines) {
+          const line = raw.split("\r").join("");
+          if (!line.trim()) continue;
+          if (logged++ < PART_LINES_PER_BATCH) {
+            log(byRef(`${name}: > ${line.length > PRINTED_LINE_CHARS ? `${line.slice(0, PRINTED_LINE_CHARS)} ...` : line}`));
+          } else more++;
+        }
+      }
+      if (more) log(`... and ${more} more lines from the parts`);
     },
     onCrash: (reason) => {
       // While it starts or stops, the call that waits is told the same thing.
@@ -235,6 +289,7 @@ export function createLiveSession(options: LiveSessionOptions): LiveSession {
     if (state === next) return;
     state = next;
     showButton(next === "running" || next === "stopping" ? LIVE_BUTTON_STOP : LIVE_BUTTON_PLAY);
+    store.touch(); // whether a chip can be typed to
     onState?.(next);
   }
 
@@ -305,6 +360,11 @@ export function createLiveSession(options: LiveSessionOptions): LiveSession {
         ? await chipParts(prepared, { library: await reader.library(), readFile: options.readFile })
         : [];
       if (mine !== epoch) return;
+      // each of them has a console, empty for this run
+      const withConsole = prepared.codeParts.filter((p) => p.kind === "emulator");
+      consoleNames = withConsole.map((p) => p.name).sort((a, b) => b.length - a.length);
+      printing = new Map();
+      store.reset(withConsole.map((p) => ({ name: p.name, ref: p.ref || p.name })));
       await engine.start(circuitOf(prepared, chips));
       if (mine !== epoch) return;
       run = prepared;
@@ -364,6 +424,7 @@ export function createLiveSession(options: LiveSessionOptions): LiveSession {
     get lastFrame() {
       return lastFrame;
     },
+    console: store,
     onFrame(listener) {
       const retime = () => {
         if (state === "running" && watchTimer !== null) startWatch(epoch);

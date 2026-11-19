@@ -45,9 +45,13 @@
  * no noise. A part without taps, or an engine without env.volt, cannot measure: a pin then
  * reads 0 and the console says so once.
  *
- * Serial. Every byte the sketch sends arrives here when it is written; whole lines go to
- * the console. The TX pin itself does not move: avr8js hands over bytes, not bits (the
- * same for SPI and I2C).
+ * Serial. Every byte the sketch sends arrives here when it is written, and goes to the
+ * engine as the chip sent it (env.serial; a line need not be whole), once per step. An
+ * engine without env.serial gets whole lines in the part's log, marked "> ". What the
+ * user types comes in as bytes (pj_serial) and reaches the sketch at the baud rate the
+ * sketch set, one byte after the other; while the sketch has its receiver off (before
+ * Serial.begin) the bytes wait. The TX and RX pins themselves do not move: avr8js hands
+ * over bytes, not bits (the same for SPI and I2C).
  *
  * avr8js itself is not part of this app. The page takes it from the simulation library,
  * checks it against the library's checksum and hands this thread an address to load it
@@ -123,6 +127,14 @@
     let gate = 0;                    // the next group may not go out before this (SPACING after the last one)
     let changed = false;             // a pin change was queued: the instruction loop looks at this
     let consoleLine = "";
+    // The serial line. Out: with an engine that takes the text as it comes, the bytes of a
+    // step, handed over at the step's end. In: what the user typed and the sketch has not
+    // received yet.
+    const sends = typeof env.serial === "function";
+    const utf8 = sends ? new TextDecoder() : null;
+    const TYPED_MAX = 4096;
+    let usart = null, sent = [], saidTyped = false;
+    const typed = [];
     let saidAnalog = false;
     const saidChannel = {};          // the converter's channels the board has no pin for, each said once
     const stat = { real: 0, out: 0, inputs: 0, late: 0, maxLateUs: 0, unwired: 0, restarts: 0, readBack: 0, adc: 0, wished: 0, nextReport: 0 };
@@ -137,8 +149,10 @@
       changed = true;
     };
 
-    // The sketch's serial output: whole lines go to the console.
+    // The sketch's serial output. For an engine without env.serial: whole lines go to the
+    // part's log.
     function consoleByte(b) {
+      if (sends) { sent.push(b); return; }
       if (b !== 10) {
         if (b !== 13) consoleLine += String.fromCharCode(b);
         if (consoleLine.length > 2000) consoleLine = consoleLine.slice(-300);
@@ -147,6 +161,20 @@
       const line = consoleLine;
       consoleLine = "";
       if (line.trim()) log("> " + (line.length > 300 ? line.slice(0, 300) + " ..." : line));
+    }
+    function sendSerial() {
+      if (!sent.length) return;
+      // a character of several bytes can be cut by the end of a step: the decoder keeps its start
+      const text = utf8.decode(Uint8Array.from(sent), { stream: true });
+      sent = [];
+      if (text) env.serial(text);
+    }
+
+    // The next typed byte, when the chip can take one. avr8js takes one byte at a time,
+    // needs a byte's time at the sketch's baud rate for it, and refuses while the sketch
+    // has its receiver off.
+    function feed() {
+      if (cpu && usart && typed.length && usart.writeByte(typed[0])) typed.shift();
     }
 
     // A port tells when anything about its pins changes: a level, a direction, a pull-up,
@@ -187,8 +215,10 @@
       ports = {};
       for (const no of Object.keys(chip.ports)) { ports[no] = new lib.AVRIOPort(cpu, chip.ports[no]); watch(Number(no), ports[no]); }
       for (const t of chip.timers) new lib.AVRTimer(cpu, t);
-      const usart = new lib.AVRUSART(cpu, lib.usart0Config, HZ);
+      usart = new lib.AVRUSART(cpu, lib.usart0Config, HZ);
       usart.onByteTransmit = consoleByte;
+      usart.onRxComplete = feed;
+      typed.length = 0;              // what was typed to the chip before its reset is gone, as on a board
       new lib.AVRSPI(cpu, lib.spiConfig, HZ);
       new lib.AVRTWI(cpu, lib.twiConfig, HZ);
       new lib.AVREEPROM(cpu, eeprom);
@@ -305,6 +335,7 @@
         const started = performance.now();
         const end = Math.ceil(goal * HZ), c = cpu;
         changed = false;
+        if (typed.length && !usart.rxBusy) feed();      // the sketch may have switched its receiver on since
         while (c.cycles < end) {
           step(c);
           c.tick();
@@ -313,6 +344,7 @@
             changed = false;
           }
         }
+        if (sends) sendSerial();
         stat.real += performance.now() - started;
         report(goal);
         const at = flush(goal);
@@ -360,7 +392,19 @@
         ports[pads[bit] >> 3].setPin(pads[bit] & 7, state === ONE);
       },
 
-      pj_unload() { cpu = null; ports = null; },
+      // The user typed this to the chip: bytes for its serial input.
+      pj_serial(bytes) {
+        if (dead || !powered || held || !cpu) return;   // a chip in reset hears nothing, as on a board
+        const room = TYPED_MAX - typed.length;
+        for (let i = 0; i < bytes.length && i < room; i++) typed.push(bytes[i]);
+        if (bytes.length > room && !saidTyped) {
+          saidTyped = true;
+          log("typed text was dropped: the sketch does not read its serial input");
+        }
+        if (!usart.rxBusy) feed();
+      },
+
+      pj_unload() { cpu = null; ports = null; usart = null; },
     };
   }
 

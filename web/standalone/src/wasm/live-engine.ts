@@ -97,6 +97,13 @@ export interface LiveFrame {
 export type LiveLogLine = ["spice" | "part" | "problem" | "run", string];
 
 /**
+ * What the chip of one part sent on its serial line since the last batch, as it sent it: a
+ * line need not be whole. `part` is the name of the part's code. `dropped` characters did
+ * not fit (firmware that prints faster than anybody reads).
+ */
+export type LiveSerialChunk = [part: string, text: string, dropped: number];
+
+/**
  * idle      nothing was started yet
  * starting  a circuit is being loaded
  * running   it runs
@@ -112,6 +119,8 @@ export interface LiveEngineOptions {
   log?: (msg: string) => void;
   /** Console lines of the run, batched; `dropped` lines did not fit. */
   onLog?: (lines: LiveLogLine[], dropped: number) => void;
+  /** What the chips of the run sent on their serial lines, batched. */
+  onSerial?: (chunks: LiveSerialChunk[]) => void;
   /** The Worker is gone. The reason is in words. */
   onCrash?: (reason: string) => void;
   /** Maximum time from the first start until a new Worker says it is ready. */
@@ -140,6 +149,11 @@ export interface LiveEngine {
   setInput(name: string, value: number): Promise<void>;
   /** New code for a part, also while it runs. It is kept for a restart. */
   setPart(name: string, bytes: Uint8Array): Promise<void>;
+  /**
+   * Text typed to the chip of a part, as the bytes for its serial input. Rejects when
+   * nothing runs, or when the circuit has no part of that name.
+   */
+  sendSerial(name: string, bytes: Uint8Array): Promise<void>;
   /** One snapshot, or null when nothing runs. */
   frame(): Promise<LiveFrame | null>;
   /** Throw the Worker away and forget the circuit. */
@@ -271,9 +285,17 @@ export function createLiveEngine(options: LiveEngineOptions = {}): LiveEngine {
     }
     if (Array.isArray(data.log)) {
       try {
-        options.onLog?.(data.log as LiveLogLine[], Number(data.dropped) || 0);
+        // the lines first: what the engine says about a part came before what its chip sent after it
+        if (data.log.length || data.dropped) options.onLog?.(data.log as LiveLogLine[], Number(data.dropped) || 0);
       } catch (error) {
         log(`[live] onLog failed: ${String(error)}`);
+      }
+      if (Array.isArray(data.serial)) {
+        try {
+          options.onSerial?.(data.serial as LiveSerialChunk[]);
+        } catch (error) {
+          log(`[live] onSerial failed: ${String(error)}`);
+        }
       }
       return;
     }
@@ -465,6 +487,12 @@ export function createLiveEngine(options: LiveEngineOptions = {}): LiveEngine {
       parts.set(name, bytes);
       if (state !== "running" && state !== "paused") return;
       await tell("part", { name, bytes });
+    },
+
+    async sendSerial(name: string, bytes: Uint8Array): Promise<void> {
+      const s = slot;
+      if ((state !== "running" && state !== "paused") || !s || s.failed || !s.worker) throw new Error("nothing runs");
+      await send(s, "serial", { name, bytes }, responseTimeoutMs);
     },
 
     frame(): Promise<LiveFrame | null> {

@@ -620,6 +620,116 @@ describe("live session: a chip that runs firmware", () => {
     session.dispose();
   });
 
+  // A session whose engine is made up, with the two ways the engine talks back.
+  function talking() {
+    const mod: SimSymbolsModule & ToolbarButtonModule = { kicadSimSymbols: () => "{}", kicadSimNetlist: () => "{}", kicadSchToolbarButton: () => true };
+    let options!: LiveEngineOptions;
+    const engine = {
+      start: vi.fn(async (_circuit: LiveCircuit) => {}), stop: vi.fn(async () => {}), frame: vi.fn(async () => frame()), dispose: vi.fn(),
+      sendSerial: vi.fn(async (_name: string, _bytes: Uint8Array) => {}),
+    };
+    const logged: string[] = [];
+    const session = createLiveSession({
+      mod,
+      reader: { prepare: async () => chip(), library } as unknown as SimPartsReader,
+      readFile: async () => new Uint8Array([0xe9, 7]),
+      onError: () => {},
+      log: (text) => logged.push(text),
+      createEngine: (opts) => {
+        options = opts;
+        return engine as unknown as LiveEngine;
+      },
+    });
+    const play = async () => {
+      mod.onHostToolbarButton!(LIVE_BUTTON_ID);
+      await vi.waitFor(() => expect(session.state).toBe("running"));
+    };
+    return { engine, logged, session, play, options: () => options };
+  }
+  const CHIP = "esp32-c3-wroom-02_1";
+
+  it("gives the chip a console: what it prints, what the simulator says about it, what is typed to it", async () => {
+    const { engine, logged, session, play, options } = talking();
+    expect(session.console.chips).toEqual([]);
+    expect(session.console.canSend).toBe(false);
+    await play();
+    expect(session.console.chips).toEqual([{ name: CHIP, ref: "U1" }]);
+    expect(session.console.canSend).toBe(true);
+
+    options().onSerial!([[CHIP, "ready\r\n> ", 0]]);
+    options().onLog!([
+      ["part", `${CHIP}: enable went low: the chip is in reset`],
+      ["part", `${CHIP}: @stat {"t":1}`],
+      ["part", `${CHIP}: power-up: pins held low by the circuit: 9; held high: none; the rest float`],
+      ["part", "counter: tick"],
+      ["problem", `code part '${CHIP}' said nothing`],
+    ], 0);
+    await session.console.send(CHIP, "on\n");
+    options().onSerial!([[CHIP, "the LED is on\n", 0]]);
+
+    expect(session.console.entries(CHIP)).toEqual([
+      { kind: "out", text: "ready\n> \n" },
+      { kind: "note", text: "enable went low: the chip is in reset\n" },
+      { kind: "in", text: "on\n" },
+      { kind: "out", text: "the LED is on\n" },
+    ]);
+    expect(engine.sendSerial).toHaveBeenCalledExactlyOnceWith(CHIP, new TextEncoder().encode("on\n"));
+    // the app's log has the chip's whole lines, under the chip's reference, and the part's own words
+    expect(logged).toContain("U1: > ready");
+    expect(logged).toContain("U1: > > the LED is on");
+    expect(logged).toContain('U1: @stat {"t":1}');
+    session.dispose();
+  });
+
+  it("keeps a run's text after Stop, takes no typed text then, and starts the next run empty", async () => {
+    const { engine, session, play, options } = talking();
+    const changes = vi.fn();
+    session.console.onChange(changes);
+    await play();
+    options().onSerial!([[CHIP, "hello\n", 0]]);
+    const before = changes.mock.calls.length;
+    await session.stop();
+    expect(changes.mock.calls.length).toBeGreaterThan(before); // who shows the console hears that it takes no text now
+    expect(session.console.canSend).toBe(false);
+    expect(session.console.entries(CHIP)).toEqual([{ kind: "out", text: "hello\n" }]);
+    await expect(session.console.send(CHIP, "on\n")).rejects.toThrow("Nothing runs: press Play first.");
+    expect(engine.sendSerial).not.toHaveBeenCalled();
+    const run = session.console.run;
+    await play();
+    expect(session.console.run).toBe(run + 1);
+    expect(session.console.entries(CHIP)).toEqual([]);
+    expect(session.console.printed).toBe(false);
+    session.dispose();
+  });
+
+  it("a simulator build without the serial line: the chip's lines still reach its console", async () => {
+    const { session, play, options } = talking();
+    await play();
+    options().onLog!([["part", `${CHIP}: > hello`], ["part", `${CHIP}: > world`]], 0);
+    expect(session.console.entries(CHIP)).toEqual([{ kind: "out", text: "hello\nworld\n" }]);
+    expect(session.console.printed).toBe(true);
+    session.dispose();
+  });
+
+  it("the app's log gets whole lines of what a chip prints, a few per batch", async () => {
+    const { logged, session, play, options } = talking();
+    await play();
+    logged.length = 0;
+    let text = "";
+    for (let n = 1; n <= 30; n++) text += `line ${n}\r\n`;
+    options().onSerial!([[CHIP, `${text}\n   \nhalf a `, 0]]);
+    expect(logged.slice(0, 2)).toEqual(["U1: > line 1", "U1: > line 2"]);
+    expect(logged).toHaveLength(21);
+    expect(logged[20]).toBe("... and 10 more lines from the parts");
+    // the line that was not whole yet comes with its end; an empty line is not a line of the log
+    logged.length = 0;
+    options().onSerial!([[CHIP, `line\n${"x".repeat(400)}\n`, 0]]);
+    expect(logged).toEqual(["U1: > half a line", `U1: > ${"x".repeat(300)} ...`]);
+    // the console has all of it
+    expect(session.console.entries(CHIP)[0]!.text.split("\n")).toHaveLength(35);
+    session.dispose();
+  });
+
   it("does not start, and says why, when the project has no firmware file", async () => {
     const { mod, engine, errors, session } = start(async () => null);
     mod.onHostToolbarButton!(LIVE_BUTTON_ID);
