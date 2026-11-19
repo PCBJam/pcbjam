@@ -296,7 +296,12 @@ export default defineConfig({
   ],
 
   webServer: {
-    command: `npx serve ${appsDir} -p ${port} -c ../serve.json`,
+    // `serve` keeps a file open for every download that is cut off half way (a page that
+    // closes while a big .wasm is still arriving). A run of every project cuts off more
+    // downloads than the 1024 open files a Linux shell allows by default: the server then
+    // dies with EMFILE and every later test fails with "connection refused". So the server
+    // starts with a higher limit, and says on stderr which one it got.
+    command: `ulimit -n 65536 2>/dev/null || ulimit -n 10240 2>/dev/null || true; echo "serve: open files limit $(ulimit -n)" >&2; exec npx serve ${appsDir} -p ${port} -c ../serve.json`,
     port: port,
     reuseExistingServer: !process.env.CI,
   },
