@@ -51,6 +51,9 @@
 
   function espEmuAdapter(env) {
     const blobs = env.blobs, config = env.config, out = env.out, log = env.log;
+    // What the user has to be told: the chip does not run, or not as its firmware expects.
+    // The page shows such a line where the user looks (live-session.ts, "! ").
+    const trouble = (text) => log("! " + text);
     const ZERO = 0, ONE = 1, STRONG = 0;
     const NAME = "pcbjam";
     const pads = config.pads, N = pads.length;
@@ -117,6 +120,10 @@
     let seen = 0;                    // the latest time (s) the emulator's messages have shown
     let progressAt = 0, stalled = false;
     let powered = false, held = false, dead = false;
+    // Restarts that came soon after a start, one after the other: a firmware that does not
+    // get through its start-up. A restart after the chip ran a while is the firmware's own.
+    const QUICK_RESTART_S = 3;
+    let quick = 0;
     let enable = config.enable ? -1 : 1;                // -1: ngspice has not said yet
     // What each pad reads, last word from ngspice: 0, 1, or -1 = ngspice cannot say (the pin
     // is not connected, or sits between the thresholds). A pad ngspice cannot say anything
@@ -188,7 +195,7 @@
           stat.emuMaxLateUs = num(c, 2) / 1000;
         } else if (m[5]) {
           const a = read(m[5][0]);
-          if (!num(a, 5)) log("the emulator refused us: " + (a[6] ? dec.decode(a[6][0]) : "no reason given"));
+          if (!num(a, 5)) trouble("the emulator refused us: " + (a[6] ? dec.decode(a[6][0]) : "no reason given"));
         }
       }
       // which pads the chip drives: its output-enable register
@@ -292,10 +299,10 @@
           // step: ngspice needs its first steps to settle what the pins read (see inLevel).
           if (!(target >= 1e-6)) return target;
           powered = true;
-          try { boot(); } catch (e) { dead = true; emu = null; log("the emulator did not start: " + e); return target; }
+          try { boot(); } catch (e) { dead = true; emu = null; trouble("the emulator did not start: " + e); return target; }
           rebase(target);
           held = enable !== 1;
-          if (held) log("the enable pin is not high: the chip is held in reset");
+          if (held) trouble("the enable pin is not high: the chip is held in reset and its firmware does not run");
         }
         let goal = target - base;
         const first = flush(goal);
@@ -315,8 +322,9 @@
             const at = now();
             emu.restart();
             stat.restarts++;
-            if (stat.restarts <= 3) log("the firmware restarted the chip");
-            else if (stat.restarts === 4) log("the firmware keeps restarting the chip: it does not get through its start-up (further restarts are only counted)");
+            quick = at < QUICK_RESTART_S ? quick + 1 : 0;
+            if (quick === 4) trouble("the firmware keeps restarting the chip: it does not get through its start-up");
+            else if (stat.restarts <= 3) log("the firmware restarted the chip");
             rebase(base + at);                          // its clock starts again from 0 here
             goal = target - base;
             continue;
@@ -327,7 +335,7 @@
           // a clock that stands still: wait a quarter of a second of real time, then give this step up
           const real = performance.now();
           if (now() > t) { progressAt = real; stalled = false; }
-          else if (real - progressAt > 250) { if (!stalled) log("the emulator's clock stands still"); stalled = true; break; }
+          else if (real - progressAt > 250) { if (!stalled) trouble("the emulator's clock stands still: the chip does not go on"); stalled = true; break; }
         }
         pulls();
         stat.real += performance.now() - started;

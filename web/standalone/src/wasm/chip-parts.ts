@@ -21,6 +21,7 @@
 // fetched with the emulator, wrapped so that it leaves what it defines in one place, and
 // loaded in the simulation thread by its address.
 import type { DigitalEmulator, IndexEmulator, PlacedPart, PreparedRun, SimLibrary } from "@pcbjam/shared/sim-library";
+import { imageProblem } from "./esp-image";
 import { programProblem, readIntelHex } from "./intel-hex";
 
 /** The setting of a chip part that names its firmware file in the project. */
@@ -46,8 +47,19 @@ function avrProgram(file: Uint8Array, chip: string): Uint8Array {
   return program;
 }
 
+/**
+ * An ESP32's flash from its file: the merged image as it is. A file the chip would not
+ * start from is refused here too: it can come into the project past the chip's line of
+ * the parts list (an upload on the project's page, an imported zip).
+ */
+function espImage(file: Uint8Array, chip: string): Uint8Array {
+  const problem = imageProblem(file, chip);
+  if (problem) throw new Error(problem);
+  return file;
+}
+
 const KINDS: Record<string, EmulatorKind> = {
-  "esp-emu": { adapter: "esp-emu", script: loaderScript, program: true, firmware: (file) => file },
+  "esp-emu": { adapter: "esp-emu", script: loaderScript, program: true, firmware: espImage },
   avr8js: { adapter: "avr8js", script: (text, key) => libraryScript(text, key, "avr8js"), program: false, firmware: avrProgram },
 };
 
@@ -123,9 +135,12 @@ const defaultScriptUrl = (text: string): string => URL.createObjectURL(new Blob(
 
 type Run = Pick<PreparedRun, "codeParts" | "placed" | "parts">;
 
-/** A sentence for each chip that cannot run, in one error. */
-function cannotRun(problems: string[]): Error {
-  return new Error(problems.join("; "));
+/** Where the user gives a chip its firmware. */
+const WHERE_TO_CHOOSE = "Choose the file on the chip's line in the Simulation parts list (Session menu)";
+
+/** A sentence for each chip that cannot run, in one error; with `choose`, where a firmware file is chosen. */
+function cannotRun(problems: string[], choose: boolean): Error {
+  return new Error(`${problems.join("; ")}${choose ? `. ${WHERE_TO_CHOOSE}` : ""}`);
 }
 
 /**
@@ -151,6 +166,8 @@ export async function chipParts(run: Run, { library, readFile, scriptUrl = defau
 
   const out: { name: string; bytes: Uint8Array }[] = [];
   const problems: string[] = [];
+  // a chip without a file that runs: the sentence ends with where one is chosen
+  let choose = false;
   for (const code of run.codeParts) {
     if (code.kind !== "emulator") continue;
     const digital = run.parts.get(code.partId)?.manifest.digital;
@@ -163,8 +180,9 @@ export async function chipParts(run: Run, { library, readFile, scriptUrl = defau
       continue;
     }
     const name = chip.settings[FIRMWARE_SETTING]?.value ?? "";
-    if (!name) problems.push(`${chip.ref}: the part does not say which file its firmware is`);
+    if (!name) problems.push(`${chip.ref} needs its firmware: no file is chosen for it`);
     else if (!readFile) problems.push(`${chip.ref}: a chip with firmware can only run in a project`);
+    if (!name) choose = true;
     if (!name || !readFile) continue;
     const file = await image(name);
     if (!file) problems.push(`${chip.ref} needs its firmware: the project has no file "${name}"`);
@@ -173,11 +191,12 @@ export async function chipParts(run: Run, { library, readFile, scriptUrl = defau
     if (file?.length) {
       try { firmware = kind.firmware(file, digital.chip); } catch (e) { problems.push(`${chip.ref}: the firmware file "${name}" cannot run: ${e instanceof Error ? e.message : String(e)}`); }
     }
+    if (!firmware) choose = true;
     if (!firmware || problems.length) continue;
 
     out.push({ name: code.name, bytes: packPart(emulatorPackage(emulator, kind, digital, chip, firmware, await program(emulator, kind))) });
   }
-  if (problems.length) throw cannotRun(problems);
+  if (problems.length) throw cannotRun(problems, choose);
   return out;
 }
 

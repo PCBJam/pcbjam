@@ -2269,9 +2269,12 @@ export function WasmTool({
       readFile: readProjectFile,
       onError: (text) => toast.error(text, { duration: 15_000, testId: "live-sim-error" }),
       onNote: (text, about) =>
-        about === "power"
-          ? toast.info(text, { duration: 15_000, testId: "live-sim-power" })
-          : toast.info(text, { duration: 10_000, testId: "live-sim-note" }),
+        about === "chip"
+          ? // a chip that does not run as its firmware expects: its console says the same
+            toast.warning(text, { duration: 20_000, testId: "live-sim-chip" })
+          : about === "power"
+            ? toast.info(text, { duration: 15_000, testId: "live-sim-power" })
+            : toast.info(text, { duration: 10_000, testId: "live-sim-note" }),
       onState: setLiveState,
       log: (msg) => append(`[live-sim] ${msg}`),
     });
@@ -2323,8 +2326,9 @@ export function WasmTool({
     [liveSession, liveState],
   );
   // The serial console of the run's chips. It opens by itself when a chip prints for the
-  // first time in a run, unless the user closed it: then it stays away until they ask for it
-  // in the Session menu. That wish is kept over a reload.
+  // first time in a run, or when the simulator tells of a problem with a chip (it does not
+  // start, its firmware restarts it without end), unless the user closed it: then it stays
+  // away until they ask for it in the Session menu. That wish is kept over a reload.
   const [simConsoleOpen, setSimConsoleOpenState] = React.useState<boolean>(false);
   const simConsoleClosedByUser = React.useRef<boolean>(false);
   React.useEffect(() => {
@@ -2345,11 +2349,13 @@ export function WasmTool({
   }, []);
   React.useEffect(() => {
     if (!liveSession) return;
-    let seen = liveSession.console.printed;
+    // a chip of the run printed, or the simulator told of a problem with one
+    const hasSomething = () => liveSession.console.printed || liveSession.console.troubled;
+    let seen = hasSomething();
     return liveSession.console.onChange(() => {
-      const printed = liveSession.console.printed;
-      if (printed && !seen && !simConsoleClosedByUser.current) setSimConsoleOpenState(true);
-      seen = printed;
+      const now = hasSomething();
+      if (now && !seen && !simConsoleClosedByUser.current) setSimConsoleOpenState(true);
+      seen = now;
     });
   }, [liveSession]);
 

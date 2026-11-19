@@ -41,6 +41,13 @@ import type { SimPartsReader, SimSymbolsModule } from "./sim-parts";
  * When the simulation cannot start, or stops by itself, `onError` gets one
  * sentence for the user and the button is Play again. Nothing is restarted
  * without a click.
+ *
+ * A chip that runs firmware can be in trouble while the circuit runs on: its
+ * firmware restarts it without end, its reset pin is low from the start, the
+ * sketch reads an input the board does not have. The chip's adapter says so
+ * in a line it marks with "! " (esp-emu-adapter.js, avr8js-adapter.js). Such
+ * a line goes to `onNote` once per run, with the chip's name in front, and
+ * into the chip's console as a problem.
  */
 
 /** Bridge surface: a button of the page on the schematic editor's toolbar. */
@@ -87,7 +94,8 @@ export interface LiveSessionOptions {
   onError: (text: string) => void;
   /**
    * A notice for the user about a run that started: what it runs without ("left-out"),
-   * or where its power comes from ("power").
+   * where its power comes from ("power"), or a chip that does not run as its firmware
+   * expects ("chip").
    */
   onNote?: (text: string, about: LiveNoteAbout) => void;
   onState?: (state: LiveSessionState) => void;
@@ -128,7 +136,7 @@ export interface LiveSession {
   dispose(): void;
 }
 
-export type LiveNoteAbout = "left-out" | "power";
+export type LiveNoteAbout = "left-out" | "power" | "chip";
 
 /** How many symbols or wires a note names before it counts the rest. */
 const NAMED_IN_NOTE = 6;
@@ -184,6 +192,12 @@ const PART_LINES_PER_BATCH = 20;
 const PRINTED_LINE_CHARS = 300;
 /** What a part says for the log and the tests, not for the reader of its chip's console. */
 const NOT_FOR_THE_CONSOLE = /^(@stat |power-up: )/;
+/** How a chip's adapter starts a line the user has to be told. */
+const TROUBLE_MARK = "! ";
+/** How many such lines one run gives the user as notices; the rest is in the chip's console. */
+const CHIP_NOTICES_PER_RUN = 4;
+/** How many of a part's last lines are kept, to say why it could not be started. */
+const KEPT_PART_LINES = 3;
 
 const words = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
@@ -226,6 +240,32 @@ export function createLiveSession(options: LiveSessionOptions): LiveSession {
     return name ? [name, text.slice(name.length + 2)] : null;
   };
 
+  // The names of the run's parts with code, the longest first, and what each said last: a
+  // part that could not be started has said why in its own lines.
+  let codeNames: string[] = [];
+  let saidBy = new Map<string, string[]>();
+  const remember = (text: string): void => {
+    const name = codeNames.find((n) => text.startsWith(`${n}: `));
+    if (!name) return;
+    const said = text.slice(name.length + 2);
+    if (NOT_FOR_THE_CONSOLE.test(said) || said.startsWith("> ")) return;
+    const kept = saidBy.get(name) ?? [];
+    kept.push(said.startsWith(TROUBLE_MARK) ? said.slice(TROUBLE_MARK.length) : said);
+    saidBy.set(name, kept.slice(-KEPT_PART_LINES));
+  };
+
+  // The chip troubles this run has told the user of: each once, and not without end.
+  let told = new Set<string>();
+  /** A chip's adapter says the chip does not run, or not as its firmware expects. */
+  const chipTrouble = (name: string, said: string): void => {
+    const text = byRef(said);
+    store.problem(name, text);
+    const key = `${name}\n${said}`;
+    if (told.has(key) || told.size >= CHIP_NOTICES_PER_RUN) return;
+    told.add(key);
+    options.onNote?.(`${byRef(name)}: ${text}`, "chip");
+  };
+
   const engine: LiveEngine = (options.createEngine ?? createLiveEngine)({
     log,
     onLog: (lines: LiveLogLine[]) => {
@@ -238,11 +278,16 @@ export function createLiveSession(options: LiveSessionOptions): LiveSession {
       if (said.length > PART_LINES_PER_BATCH) log(`... and ${said.length - PART_LINES_PER_BATCH} more lines from the parts`);
       for (const [kind, text] of lines) {
         if (kind !== "part" && kind !== "problem") continue;
+        remember(text);
         const line = chipLine(text);
         if (!line) continue;
+        const [name, said] = line;
         // a simulator build without the serial line hands a chip's text over as lines, marked "> "
-        if (kind === "part" && line[1].startsWith("> ")) store.out(line[0], `${line[1].slice(2)}\n`);
-        else if (!NOT_FOR_THE_CONSOLE.test(line[1])) store.note(line[0], byRef(line[1]));
+        if (kind === "part" && said.startsWith("> ")) store.out(name, `${said.slice(2)}\n`);
+        else if (kind === "part" && said.startsWith(TROUBLE_MARK)) chipTrouble(name, said.slice(TROUBLE_MARK.length));
+        // what the engine says of a chip's code that failed: the run ends, and `onError` says so
+        else if (kind === "problem") store.problem(name, byRef(said));
+        else if (!NOT_FOR_THE_CONSOLE.test(said)) store.note(name, byRef(said));
       }
     },
     onSerial: (chunks: LiveSerialChunk[]) => {
@@ -363,6 +408,9 @@ export function createLiveSession(options: LiveSessionOptions): LiveSession {
       // each of them has a console, empty for this run
       const withConsole = prepared.codeParts.filter((p) => p.kind === "emulator");
       consoleNames = withConsole.map((p) => p.name).sort((a, b) => b.length - a.length);
+      codeNames = prepared.codeParts.map((p) => p.name).sort((a, b) => b.length - a.length);
+      saidBy = new Map();
+      told = new Set();
       printing = new Map();
       store.reset(withConsole.map((p) => ({ name: p.name, ref: p.ref || p.name })));
       await engine.start(circuitOf(prepared, chips));
@@ -377,8 +425,19 @@ export function createLiveSession(options: LiveSessionOptions): LiveSession {
     } catch (e) {
       if (mine !== epoch) return;
       set("idle");
-      onError(`Live simulation did not start: ${byRef(words(e))}`);
+      onError(`Live simulation did not start: ${byRef(whyNotStarted(words(e)))}`);
     }
+  }
+
+  /**
+   * The engine's sentence about a start that failed. Of a part whose code could not be
+   * started it only says that the part's own lines say why: here they are put in.
+   */
+  function whyNotStarted(text: string): string {
+    const part = /code part '([^']+)' could not be started/.exec(text)?.[1];
+    if (part === undefined) return text;
+    const said = saidBy.get(part) ?? [];
+    return said.length ? `${part} could not be started: ${said.join("; ")}` : `${part} could not be started`;
   }
 
   async function stop(): Promise<void> {

@@ -125,6 +125,11 @@ describe("firmwareProblem", () => {
     const builtFor = (low: number, high = 0) => Uint8Array.from(IMAGE, (b, i) => (i === 12 ? low : i === 13 ? high : b));
     expect(firmwareProblem(IMAGE.length, IMAGE, "esp32c3")).toBeNull();
     expect(firmwareProblem(IMAGE.length, IMAGE, "esp32s3")).toBe("it was built for the ESP32-C3, and this chip is an ESP32-S3");
+    // the program alone, which a build writes next to the merged image: the same first byte, the same chip
+    const alone = new Uint8Array(40);
+    alone.set(IMAGE);
+    alone.set([0x32, 0x54, 0xcd, 0xab], 32);
+    expect(firmwareProblem(alone.length, alone, "esp32c3")).toMatch(/^it holds the program alone, without the bootloader\. The merged image is needed/);
     expect(firmwareProblem(IMAGE.length, builtFor(0x09), "esp32c3")).toBe("it was built for the ESP32-S3, and this chip is an ESP32-C3");
     expect(firmwareProblem(IMAGE.length, builtFor(0x09), "esp32s3")).toBeNull();
     expect(firmwareProblem(IMAGE.length, builtFor(0x34, 0x12), "esp32c3")).toBe("it was built for another chip (number 0x1234), and this chip is an ESP32-C3");

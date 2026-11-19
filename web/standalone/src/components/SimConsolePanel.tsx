@@ -42,6 +42,7 @@ const KIND_CLASS: Record<ConsoleKind, string> = {
   out: "",
   in: "text-sky-600 dark:text-sky-300",
   note: "italic text-neutral-400 dark:text-white/40",
+  problem: "text-red-600 dark:text-red-400",
 };
 
 /** What the text area shows: a chip's console as it was at one moment. */
@@ -207,6 +208,7 @@ export function SimConsolePanel({ console: serial, onClose }: { console: LiveCon
                   <Button
                     data-testid="sim-console-chip-tab"
                     data-ref={c.ref}
+                    data-problems={serial.problems(c.name)}
                     aria-pressed={c.name === chip?.name}
                     onClick={() => setPicked(c.name)}
                     variant="plain"
@@ -219,6 +221,8 @@ export function SimConsolePanel({ console: serial, onClose }: { console: LiveCon
                     )}
                   >
                     {c.ref}
+                    {/* the simulator told of a problem with this chip: its console says which */}
+                    {serial.problems(c.name) > 0 && <span aria-hidden className="ml-1 inline-block size-1.5 rounded-full bg-red-500" />}
                   </Button>
                 </Tip>
               ))}

@@ -315,8 +315,8 @@ describe.skipIf(!here)("the avr8js adapter with the real avr8js", () => {
       return lines;
     };
     // more program than an ATmega328P holds (32 kB): a sketch for a larger board
-    expect(said({ "firmware.bin": new Uint8Array(0x8001) })).toEqual(["the sketch does not fit this chip (32 kB of program memory): it was built for another board"]);
-    expect(said({})).toEqual(["the chip has no program"]);
-    expect(said({ "firmware.bin": new Uint8Array(4) }, "atmega2560")).toEqual(['this page does not know the chip "atmega2560"']);
+    expect(said({ "firmware.bin": new Uint8Array(0x8001) })).toEqual(["! the sketch does not fit this chip (32 kB of program memory): it was built for another board"]);
+    expect(said({})).toEqual(["! the chip has no program"]);
+    expect(said({ "firmware.bin": new Uint8Array(4) }, "atmega2560")).toEqual(['! this page does not know the chip "atmega2560"']);
   });
 });

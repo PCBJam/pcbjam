@@ -323,6 +323,8 @@ self.onmessage = async (e) => {
   } catch (err) {
     res = { error: String(err && err.message || err) };
   }
+  // a command that failed: the lines that say why are on the page before its answer
+  if (res && res.error) flushLog();
   postMessage({ id: m.id, res }, transfer);
 };
 

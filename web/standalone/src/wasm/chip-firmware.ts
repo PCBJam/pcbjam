@@ -14,14 +14,10 @@
 // sheet, so a chip on another sheet has to be opened first.
 import type * as Y from "yjs";
 import {
-  FIRMWARE_CHIPS,
-  FIRMWARE_SNIFF_BYTES,
   MAX_FIRMWARE_UPLOAD_BYTES,
-  firmwareChipId,
   firmwareKind,
   isFirmwareUploadPath,
   kicadItemsMap,
-  looksLikeFirmware,
   parseSexpr,
   printSexpr,
   renderItem,
@@ -33,6 +29,7 @@ import {
 import { FIELD_SETTINGS, formatSettings, parseSettings, resolveSettings, type PartManifest } from "@pcbjam/shared/sim-library";
 import type { EditRequest } from "@/plugins/edits";
 import { FIRMWARE_SETTING } from "./chip-parts";
+import { imageProblem } from "./esp-image";
 import { programProblem, readIntelHex } from "./intel-hex";
 import type { SaveOutcome } from "./save-flow";
 import type { SimParts } from "./sim-parts";
@@ -100,7 +97,8 @@ export function firmwareName(picked: string, ext: FirmwareExtension = ".bin"): s
  * Why a file is not a firmware a project takes, in words, or null. The server asks the
  * same of its first bytes. With `chip` (what the part is, as its emulator names it) a
  * firmware built for another chip is not one either: it would be stored, and then not start.
- * An image is judged by its header; a program (`.hex`) is read whole, so `head` is the file.
+ * The same for an image that holds the program alone (esp-image.ts). An image is judged
+ * by its first bytes; a program (`.hex`) is read whole, so `head` is the file.
  */
 export function firmwareProblem(size: number, head: Uint8Array, chip?: string, ext: FirmwareExtension = ".bin"): string | null {
   if (size > MAX_FIRMWARE_UPLOAD_BYTES) return `it is larger than ${MAX_FIRMWARE_UPLOAD_BYTES / (1024 * 1024)} MB, the most a firmware image can be`;
@@ -112,18 +110,7 @@ export function firmwareProblem(size: number, head: Uint8Array, chip?: string, e
       return /not an Intel HEX file/.test(why) ? `${why}. The file the Arduino IDE writes is needed: Sketch > Export Compiled Binary` : why;
     }
   }
-  const header = head.subarray(0, FIRMWARE_SNIFF_BYTES);
-  if (!looksLikeFirmware(header))
-    return "it does not start like an ESP32 firmware image. The merged image is needed: the one file that is written to the chip at address 0";
-  // a chip this list does not have is left to its emulator, which says so at Play
-  const wanted = chip ? FIRMWARE_CHIPS.find((c) => c.chip === chip) : undefined;
-  const id = firmwareChipId(header);
-  if (wanted && id !== wanted.id) {
-    const built = FIRMWARE_CHIPS.find((c) => c.id === id);
-    const other = built ? `the ${built.title}` : `another chip (number 0x${(id ?? 0).toString(16).padStart(4, "0")})`;
-    return `it was built for ${other}, and this chip is an ${wanted.title}`;
-  }
-  return null;
+  return imageProblem(head, chip);
 }
 
 function words(e: unknown): string {

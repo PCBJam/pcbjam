@@ -63,6 +63,9 @@
 
   function avr8jsAdapter(env) {
     const blobs = env.blobs, config = env.config, out = env.out, log = env.log;
+    // What the user has to be told: the chip does not run, or not as its firmware expects.
+    // The page shows such a line where the user looks (live-session.ts, "! ").
+    const trouble = (text) => log("! " + text);
     const ZERO = 0, ONE = 1, STRONG = 0;
     const pads = config.pads, N = pads.length;
     const HZ = config.clock || 16e6;
@@ -102,11 +105,11 @@
     // The program memory: the sketch from address 0, 0xff where it has nothing (an erased chip).
     let image = null, dead = false;
     const program = blobs["firmware.bin"];
-    if (!chip) { dead = true; log('this page does not know the chip "' + config.chip + '"'); }
-    else if (!program || !program.length) { dead = true; log("the chip has no program"); }
+    if (!chip) { dead = true; trouble('this page does not know the chip "' + config.chip + '"'); }
+    else if (!program || !program.length) { dead = true; trouble("the chip has no program"); }
     else if (program.length > chip.flash) {
       dead = true;
-      log("the sketch does not fit this chip (" + (chip.flash / 1024) + " kB of program memory): it was built for another board");
+      trouble("the sketch does not fit this chip (" + (chip.flash / 1024) + " kB of program memory): it was built for another board");
     } else {
       image = new Uint8Array(chip.flash).fill(0xff);
       image.set(program);
@@ -233,7 +236,7 @@
           // avr8js's own converter: every pin reads 0 V, and a conversion takes the real time
           if (!saidAnalog && input.type === T.SingleEnded) {
             saidAnalog = true;
-            log("the sketch reads an analog input, and this board cannot measure a voltage here: analogRead gives 0");
+            trouble("the sketch reads an analog input, and this board cannot measure a voltage here: analogRead gives 0");
           }
           convert(input);
           return;
@@ -254,7 +257,7 @@
             const name = "A" + input.channel;
             if (taps.indexOf(name) < 0 && !saidChannel[name]) {
               saidChannel[name] = true;
-              log("the sketch reads the analog input " + name + ", which this board does not have: it reads 0");
+              trouble("the sketch reads the analog input " + name + ", which this board does not have: it reads 0");
             }
             v = volt(name);
           } else if (input.type === T.Constant) v = input.voltage;
@@ -307,7 +310,7 @@
 
     function start() {
       try { boot(); return true; }
-      catch (e) { dead = true; cpu = null; log("the chip did not start: " + e); return false; }
+      catch (e) { dead = true; cpu = null; trouble("the chip did not start: " + e); return false; }
     }
 
     return {
@@ -324,7 +327,7 @@
           powered = true;
           rebase(target);
           held = enable !== 1;
-          if (held) log("the reset pin is not high: the chip is held in reset");
+          if (held) trouble("the reset pin is not high: the chip is held in reset and its sketch does not run");
           else if (!start()) return target;
         }
         const goal = target - base;

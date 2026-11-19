@@ -52,6 +52,16 @@ const placed = (ref: string, connected: string[], firmware = "firmware.bin", fro
   settings: { [FIRMWARE_SETTING]: { value: firmware, from } } as PlacedPart["settings"],
 });
 
+// The start of an ESP32-C3 image as a merged file has it (the bootloader's header), with a
+// byte of its own at the end.
+const esp = (tag: number, chip = 0x05): Uint8Array => {
+  const bytes = new Uint8Array(40);
+  bytes.set([0xe9, 3, 2, 0x2f]);
+  bytes[12] = chip;
+  bytes[39] = tag;
+  return bytes;
+};
+
 // as the netlist step lists them: every placed chip with code of its own, numbered in order
 const run = (chips: PlacedPart[], manifest: PartManifest = CHIP): Pick<PreparedRun, "codeParts" | "placed" | "parts"> => ({
   codeParts: chips.map((chip, i) => ({ partId: manifest.id, kind: "emulator" as const, name: `${manifest.id}_${i + 1}`, ref: chip.ref, logic: null })),
@@ -163,13 +173,13 @@ describe("chipParts", () => {
       .rejects.toThrow('A1 needs its firmware: the project has no file "firmware.hex"');
     // an emulator that should have a program and does not say which file it is
     const { program: _none, ...bare } = EMULATOR;
-    await expect(chipParts(run([placed("U1", [])]), { ...opts, library: library([bare]), readFile: async () => new Uint8Array(1) }))
+    await expect(chipParts(run([placed("U1", [])]), { ...opts, library: library([bare]), readFile: async () => esp(1) }))
       .rejects.toThrow('the emulator "esp-emu" of the library has no program');
   });
 
   it("packs the emulator, the firmware of the project and what the adapter must know", async () => {
     const lib = library();
-    const readFile = vi.fn(async () => new Uint8Array([0xe9, 1, 2]));
+    const readFile = vi.fn(async () => esp(2));
     const scriptUrl = vi.fn((_text: string) => "blob:loader-1");
     const parts = await chipParts(run([placed("U1", ["3V3", "VSS", "EN", "IO4", "IO9"])]), { library: lib, readFile, scriptUrl });
     expect(parts.map((p) => p.name)).toEqual(["esp32-c3-wroom-02_1"]);
@@ -181,7 +191,7 @@ describe("chipParts", () => {
       iomux: { base: 1610649604, count: 22, pullUpBit: 8, pullDownBit: 7 },
       wired: [4, 9], emulatorKey: "esp-emu@1.0.0-rc2", glueUrl: "blob:loader-1",
     });
-    expect([...got.blobs["firmware.bin"]!]).toEqual([0xe9, 1, 2]);
+    expect([...got.blobs["firmware.bin"]!]).toEqual([...esp(2)]);
     expect([...got.blobs["emulator.wasm"]!]).toEqual([0, 97, 115, 109]);
     expect(lib.emulatorFile.mock.calls.map((c) => c[1]).sort()).toEqual(["esp_emu.js", "esp_emu_bg.wasm"]);
     expect(scriptUrl.mock.calls[0]?.[0]).toContain('["esp-emu@1.0.0-rc2"]');
@@ -193,8 +203,8 @@ describe("chipParts", () => {
   });
 
   it("gives every placed chip a package of its own, with the firmware its own setting names", async () => {
-    const images: Record<string, number[]> = { "blink.bin": [0xe9, 1], "motor.bin": [0xe9, 2] };
-    const readFile = vi.fn(async (name: string) => (images[name] ? new Uint8Array(images[name]) : null));
+    const images: Record<string, Uint8Array> = { "blink.bin": esp(1), "motor.bin": esp(2) };
+    const readFile = vi.fn(async (name: string) => images[name] ?? null);
     const lib = library();
     const parts = await chipParts(
       run([placed("U1", ["IO4"], "blink.bin", "symbol"), placed("U2", ["IO5"], "motor.bin", "symbol"), placed("U3", ["IO9"], "blink.bin", "symbol")]),
@@ -202,12 +212,31 @@ describe("chipParts", () => {
     );
     expect(parts.map((p) => p.name)).toEqual(["esp32-c3-wroom-02_1", "esp32-c3-wroom-02_2", "esp32-c3-wroom-02_3"]);
     const got = parts.map((p) => unpack(p.bytes));
-    expect(got.map((g) => [...g.blobs["firmware.bin"]!])).toEqual([[0xe9, 1], [0xe9, 2], [0xe9, 1]]);
+    expect(got.map((g) => [...g.blobs["firmware.bin"]!])).toEqual([[...esp(1)], [...esp(2)], [...esp(1)]]);
     // a pad is wired when that chip has something on its pin
     expect(got.map((g) => g.config.wired)).toEqual([[4], [5], [9]]);
     // a file two chips name is read once, and so are the emulator's files
     expect(readFile.mock.calls.map((c) => c[0])).toEqual(["blink.bin", "motor.bin"]);
     expect(lib.emulatorFile.mock.calls.map((c) => c[1]).sort()).toEqual(["esp_emu.js", "esp_emu_bg.wasm"]);
+  });
+
+  it("does not start a chip with a file it would not start from, and says which kind the file is", async () => {
+    const one = run([placed("U1", [])]);
+    const opts = { library: library(), scriptUrl: () => "blob:x" };
+    // the program alone, as a build writes it next to the merged image: a chip crashes on it without end
+    const alone = esp(1);
+    alone.set([0x32, 0x54, 0xcd, 0xab], 32);
+    await expect(chipParts(one, { ...opts, readFile: async () => alone })).rejects.toThrow(
+      'U1: the firmware file "firmware.bin" cannot run: it holds the program alone, without the bootloader. The merged image is needed',
+    );
+    // built for another chip
+    await expect(chipParts(one, { ...opts, readFile: async () => esp(1, 0x09) })).rejects.toThrow(
+      'U1: the firmware file "firmware.bin" cannot run: it was built for the ESP32-S3, and this chip is an ESP32-C3. Choose the file on the chip\'s line',
+    );
+    // no image at all
+    await expect(chipParts(one, { ...opts, readFile: async () => new Uint8Array(64) })).rejects.toThrow(
+      'U1: the firmware file "firmware.bin" cannot run: it does not start like an ESP32 firmware image',
+    );
   });
 
   it("does nothing for a run without chips", async () => {
@@ -220,14 +249,17 @@ describe("chipParts", () => {
     const lib = library();
     const one = run([placed("U1", [])]);
     const opts = { library: lib, scriptUrl: () => "blob:x" };
+    // where a file is chosen is said once, at the end
     await expect(chipParts(one, { ...opts, readFile: async () => null }))
-      .rejects.toThrow('U1 needs its firmware: the project has no file "firmware.bin"');
+      .rejects.toThrow('U1 needs its firmware: the project has no file "firmware.bin". Choose the file on the chip\'s line in the Simulation parts list (Session menu)');
+    await expect(chipParts(run([placed("U1", [], "")]), { ...opts, readFile: async () => null }))
+      .rejects.toThrow("U1 needs its firmware: no file is chosen for it. Choose the file on the chip's line in the Simulation parts list (Session menu)");
     await expect(chipParts(one, { ...opts, readFile: async () => new Uint8Array(0) }))
       .rejects.toThrow('U1: the firmware file "firmware.bin" is empty');
     await expect(chipParts(one, opts)).rejects.toThrow("U1: a chip with firmware can only run in a project");
     // every chip that cannot run is named, not only the first
-    await expect(chipParts(run([placed("U1", [], "a.bin"), placed("U2", [], "b.bin"), placed("U3", [], "c.bin")]), { ...opts, readFile: async (name) => (name === "b.bin" ? new Uint8Array(1) : null) }))
-      .rejects.toThrow('U1 needs its firmware: the project has no file "a.bin"; U3 needs its firmware: the project has no file "c.bin"');
+    await expect(chipParts(run([placed("U1", [], "a.bin"), placed("U2", [], "b.bin"), placed("U3", [], "c.bin")]), { ...opts, readFile: async (name) => (name === "b.bin" ? esp(1) : null) }))
+      .rejects.toThrow('U1 needs its firmware: the project has no file "a.bin"; U3 needs its firmware: the project has no file "c.bin". Choose the file');
     await expect(chipParts(one, { ...opts, library: library([]), readFile: async () => new Uint8Array(1) }))
       .rejects.toThrow('U1: this page cannot run the chip (its emulator "esp-emu" is not known here)');
     const other: PartManifest = { ...CHIP, digital: { ...(CHIP.digital as object), emulator: "other-emu" } as PartManifest["digital"] };

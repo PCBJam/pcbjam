@@ -7,9 +7,11 @@
  * that runs firmware has a console of its own. It holds, in the order things
  * happened:
  *
- *   out   what the chip sent, as it sent it (a line need not be whole)
- *   in    what the user typed to the chip
- *   note  what the simulator says about the chip ("reset went low: ...")
+ *   out      what the chip sent, as it sent it (a line need not be whole)
+ *   in       what the user typed to the chip
+ *   note     what the simulator says about the chip ("reset went low: ...")
+ *   problem  the same, when the chip does not run or not as its firmware expects
+ *            ("the firmware keeps restarting the chip: ...")
  *
  * The consoles belong to a run: a new run starts with empty ones, and what a
  * run printed stays readable after it was stopped. Text is kept while nobody
@@ -28,7 +30,7 @@ export interface ConsoleChip {
   ref: string;
 }
 
-export type ConsoleKind = "out" | "in" | "note";
+export type ConsoleKind = "out" | "in" | "note" | "problem";
 
 /** A stretch of a console's text of one kind. Stretches of one kind that follow each other are one. */
 export interface ConsoleEntry {
@@ -51,12 +53,16 @@ export interface LiveConsole {
   readonly run: number;
   /** True when a chip of this run has sent something. */
   readonly printed: boolean;
+  /** True when the simulator told of a problem with a chip of this run. */
+  readonly troubled: boolean;
   /** Whether typed text can be sent now: a circuit runs. */
   readonly canSend: boolean;
   /** What a chip's console holds, oldest first. */
   entries(name: string): readonly ConsoleEntry[];
   /** True when the console's oldest lines were dropped. */
   cut(name: string): boolean;
+  /** How many problems the simulator told of this chip, since the run started or its console was emptied. */
+  problems(name: string): number;
   /** Hears every change. Returns the way to stop listening. */
   onChange(listener: () => void): () => void;
   /** Sends text to a chip's serial input. Rejects with a sentence when it was not sent. */
@@ -73,6 +79,8 @@ export interface ConsoleStore extends LiveConsole {
   out(name: string, text: string, dropped?: number): void;
   /** A word of the simulator about the chip. */
   note(name: string, text: string): void;
+  /** The same, about a chip that does not run, or not as its firmware expects. */
+  problem(name: string, text: string): void;
   /** Tells the listeners that `canSend` may have changed. */
   touch(): void;
 }
@@ -120,6 +128,7 @@ interface Log {
   chars: number;
   cut: boolean;
   carry: string;
+  problems: number;
 }
 
 export function createConsoleStore(options: ConsoleStoreOptions): ConsoleStore {
@@ -128,6 +137,7 @@ export function createConsoleStore(options: ConsoleStoreOptions): ConsoleStore {
   let stamp = 0;
   let run = 0;
   let printed = false;
+  let troubled = false;
   const listeners = new Set<() => void>();
 
   const changed = (): void => {
@@ -192,11 +202,15 @@ export function createConsoleStore(options: ConsoleStoreOptions): ConsoleStore {
     get printed() {
       return printed;
     },
+    get troubled() {
+      return troubled;
+    },
     get canSend() {
       return options.canSend();
     },
     entries: (name) => logs.get(name)?.entries ?? [],
     cut: (name) => logs.get(name)?.cut ?? false,
+    problems: (name) => logs.get(name)?.problems ?? 0,
 
     onChange(listener) {
       listeners.add(listener);
@@ -218,17 +232,19 @@ export function createConsoleStore(options: ConsoleStoreOptions): ConsoleStore {
 
     clear(name) {
       const log = logs.get(name);
-      if (!log || !log.entries.length) return;
+      if (!log || (!log.entries.length && !log.problems)) return;
       log.entries = [];
       log.chars = 0;
       log.cut = false;
+      log.problems = 0;
       changed();
     },
 
     reset(next) {
       chips = next.map((c) => ({ name: c.name, ref: c.ref }));
-      logs = new Map(chips.map((c) => [c.name, { entries: [], chars: 0, cut: false, carry: "" }]));
+      logs = new Map(chips.map((c) => [c.name, { entries: [], chars: 0, cut: false, carry: "", problems: 0 }]));
       printed = false;
+      troubled = false;
       run++;
       changed();
     },
@@ -254,6 +270,16 @@ export function createConsoleStore(options: ConsoleStoreOptions): ConsoleStore {
       if (!log || !text) return;
       ownLine(log);
       add(log, "note", text.endsWith("\n") ? text : `${text}\n`);
+      changed();
+    },
+
+    problem(name, text) {
+      const log = logs.get(name);
+      if (!log || !text) return;
+      ownLine(log);
+      add(log, "problem", text.endsWith("\n") ? text : `${text}\n`);
+      log.problems++;
+      troubled = true;
       changed();
     },
 

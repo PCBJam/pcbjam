@@ -129,6 +129,37 @@ describe("the serial consoles of a run", () => {
     expect(fresh.entries("uno_1")).toEqual([{ kind: "note", text: "the chip has no program\n" }]);
   });
 
+  it("keep a problem apart from a note, and count the problems of each chip", () => {
+    const { s } = store();
+    expect(s.troubled).toBe(false);
+    s.out("uno_1", "> ");
+    s.note("uno_1", "reset went low: the chip is held in reset");
+    expect(s.troubled).toBe(false);
+    s.problem("uno_1", "the chip has no program");
+    expect(s.entries("uno_1")).toEqual([
+      { kind: "out", text: "> \n" },
+      { kind: "note", text: "reset went low: the chip is held in reset\n" },
+      { kind: "problem", text: "the chip has no program\n" },
+    ]);
+    expect(s.troubled).toBe(true);
+    expect(s.problems("uno_1")).toBe(1);
+    expect(s.problems("c3_2")).toBe(0);
+    // a problem is not something the chip printed
+    expect(s.printed).toBe(true);
+    const quiet = store().s;
+    quiet.problem("c3_2", "the enable pin is not high");
+    expect(quiet.printed).toBe(false);
+    expect(quiet.troubled).toBe(true);
+    // Clear takes the mark off the chip; a new run starts without trouble
+    s.clear("uno_1");
+    expect(s.problems("uno_1")).toBe(0);
+    s.reset([{ name: "uno_1", ref: "U1" }]);
+    expect(s.troubled).toBe(false);
+    // a chip the run does not have
+    s.problem("other", "x");
+    expect(s.troubled).toBe(false);
+  });
+
   it("say how much did not arrive when a chip prints faster than it can be shown", () => {
     const { s } = store();
     s.out("uno_1", "line 1\nline", 5000);

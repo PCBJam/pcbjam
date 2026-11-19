@@ -562,6 +562,11 @@ describe("live session: a chip that runs firmware", () => {
     emulatorFile: async (_id: string, name: string) => new TextEncoder().encode(name === "esp_emu.js" ? LOADER : "wasm"),
   });
 
+  // the start of an ESP32-C3's merged image
+  const IMAGE = new Uint8Array(40);
+  IMAGE.set([0xe9, 3, 2, 0x2f]);
+  IMAGE[12] = 0x05;
+
   function start(readFile?: (path: string) => Promise<Uint8Array | null>) {
     const mod: SimSymbolsModule & ToolbarButtonModule = { kicadSimSymbols: () => "{}", kicadSimNetlist: () => "{}", kicadSchToolbarButton: () => true };
     const engine = { start: vi.fn(async (_circuit: LiveCircuit) => {}), stop: vi.fn(async () => {}), frame: vi.fn(async () => frame()), dispose: vi.fn() };
@@ -577,7 +582,7 @@ describe("live session: a chip that runs firmware", () => {
   }
 
   it("hands the engine the chip's package: the emulator from the library, the firmware from the project", async () => {
-    const readFile = vi.fn(async () => new Uint8Array([0xe9, 7]));
+    const readFile = vi.fn(async () => IMAGE);
     const { mod, engine, errors, session } = start(readFile);
     mod.onHostToolbarButton!(LIVE_BUTTON_ID);
     await vi.waitFor(() => expect(session.state).toBe("running"));
@@ -594,7 +599,12 @@ describe("live session: a chip that runs firmware", () => {
     let onLog: (lines: [string, string][]) => void = () => {};
     const engine = {
       start: vi.fn(async (_circuit: LiveCircuit) => {
-        onLog([["part", "esp32-c3-wroom-02_1: > hello"], ["part", "counter: tick"]]);
+        onLog([
+          ["part", "esp32-c3-wroom-02_1: > hello"],
+          ["part", "counter: tick"],
+          ["part", "esp32-c3-wroom-02_1: @stat {}"],
+          ["part", "esp32-c3-wroom-02_1: load failed: Error: the emulator's loader is not there"],
+        ]);
         throw new Error("code part 'esp32-c3-wroom-02_1' could not be started (its own lines say why)");
       }),
       stop: vi.fn(async () => {}), frame: vi.fn(async () => frame()), dispose: vi.fn(),
@@ -604,7 +614,7 @@ describe("live session: a chip that runs firmware", () => {
     const session = createLiveSession({
       mod,
       reader: { prepare: async () => chip(), library } as unknown as SimPartsReader,
-      readFile: async () => new Uint8Array([0xe9, 7]),
+      readFile: async () => IMAGE,
       onError: (text) => errors.push(text),
       log: (text) => logged.push(text),
       createEngine: (opts) => {
@@ -614,7 +624,8 @@ describe("live session: a chip that runs firmware", () => {
     });
     mod.onHostToolbarButton!(LIVE_BUTTON_ID);
     await vi.waitFor(() => expect(errors).toHaveLength(1));
-    expect(errors[0]).toBe("Live simulation did not start: code part 'U1' could not be started (its own lines say why)");
+    // the part's own lines are in the sentence: what it printed and its numbers are not
+    expect(errors[0]).toBe("Live simulation did not start: U1 could not be started: load failed: Error: the emulator's loader is not there");
     expect(logged).toContain("U1: > hello");
     expect(logged).toContain("counter: tick");
     session.dispose();
@@ -629,11 +640,13 @@ describe("live session: a chip that runs firmware", () => {
       sendSerial: vi.fn(async (_name: string, _bytes: Uint8Array) => {}),
     };
     const logged: string[] = [];
+    const notes: [text: string, about: string][] = [];
     const session = createLiveSession({
       mod,
       reader: { prepare: async () => chip(), library } as unknown as SimPartsReader,
-      readFile: async () => new Uint8Array([0xe9, 7]),
+      readFile: async () => IMAGE,
       onError: () => {},
+      onNote: (text, about) => notes.push([text, about]),
       log: (text) => logged.push(text),
       createEngine: (opts) => {
         options = opts;
@@ -644,7 +657,7 @@ describe("live session: a chip that runs firmware", () => {
       mod.onHostToolbarButton!(LIVE_BUTTON_ID);
       await vi.waitFor(() => expect(session.state).toBe("running"));
     };
-    return { engine, logged, session, play, options: () => options };
+    return { engine, logged, notes, session, play, options: () => options };
   }
   const CHIP = "esp32-c3-wroom-02_1";
 
@@ -678,6 +691,54 @@ describe("live session: a chip that runs firmware", () => {
     expect(logged).toContain("U1: > ready");
     expect(logged).toContain("U1: > > the LED is on");
     expect(logged).toContain('U1: @stat {"t":1}');
+    session.dispose();
+  });
+
+  it("tells the user of a chip in trouble: a notice once, and a problem in the chip's console", async () => {
+    const { logged, notes, session, play, options } = talking();
+    await play();
+    expect(session.console.troubled).toBe(false);
+    options().onLog!([
+      ["part", `${CHIP}: the firmware restarted the chip`],
+      ["part", `${CHIP}: ! the firmware keeps restarting the chip: it does not get through its start-up`],
+      // said again, and by a part that has no console: neither is a second notice
+      ["part", `${CHIP}: ! the firmware keeps restarting the chip: it does not get through its start-up`],
+      ["part", "counter: ! nothing to count"],
+    ], 0);
+    expect(notes).toEqual([["U1: the firmware keeps restarting the chip: it does not get through its start-up", "chip"]]);
+    expect(session.console.entries(CHIP)).toEqual([
+      { kind: "note", text: "the firmware restarted the chip\n" },
+      { kind: "problem", text: "the firmware keeps restarting the chip: it does not get through its start-up\nthe firmware keeps restarting the chip: it does not get through its start-up\n" },
+    ]);
+    expect(session.console.troubled).toBe(true);
+    expect(session.console.problems(CHIP)).toBe(2);
+    // the app's log keeps the line as the adapter said it
+    expect(logged).toContain("U1: ! the firmware keeps restarting the chip: it does not get through its start-up");
+
+    // what the engine says of the chip's code is a problem in its console; the run's end is told by onError
+    options().onLog!([["problem", `${CHIP}: its step failed`]], 0);
+    expect(session.console.entries(CHIP).at(-1)).toEqual({
+      kind: "problem",
+      text: "the firmware keeps restarting the chip: it does not get through its start-up\nthe firmware keeps restarting the chip: it does not get through its start-up\nits step failed\n",
+    });
+    expect(notes).toHaveLength(1);
+
+    // a run gives a few notices, not one for every line; the console has them all
+    options().onLog!([1, 2, 3, 4, 5].map((n): ["part", string] => ["part", `${CHIP}: ! trouble ${n}`]), 0);
+    expect(notes.map((n) => n[0])).toEqual([
+      "U1: the firmware keeps restarting the chip: it does not get through its start-up",
+      "U1: trouble 1",
+      "U1: trouble 2",
+      "U1: trouble 3",
+    ]);
+    expect(session.console.problems(CHIP)).toBe(8);
+
+    // the next run tells again
+    await session.stop();
+    await play();
+    expect(session.console.troubled).toBe(false);
+    options().onLog!([["part", `${CHIP}: ! the enable pin is not high: the chip is held in reset and its firmware does not run`]], 0);
+    expect(notes.at(-1)).toEqual(["U1: the enable pin is not high: the chip is held in reset and its firmware does not run", "chip"]);
     session.dispose();
   });
 
@@ -734,7 +795,9 @@ describe("live session: a chip that runs firmware", () => {
     const { mod, engine, errors, session } = start(async () => null);
     mod.onHostToolbarButton!(LIVE_BUTTON_ID);
     await vi.waitFor(() => expect(errors).toHaveLength(1));
-    expect(errors[0]).toBe('Live simulation did not start: U1 needs its firmware: the project has no file "firmware.bin"');
+    expect(errors[0]).toBe(
+      'Live simulation did not start: U1 needs its firmware: the project has no file "firmware.bin". Choose the file on the chip\'s line in the Simulation parts list (Session menu)',
+    );
     expect(engine.start).not.toHaveBeenCalled();
     expect(session.state).toBe("idle");
     session.dispose();
