@@ -187,6 +187,13 @@ jobs:
       - name: Install build toolchain
         run: |
           export DEBIAN_FRONTEND=noninteractive
+          # Ubuntu's package server answers "503 Service Unavailable" for minutes now and
+          # then, and one failed download fails the job before a test ran. As the runner
+          # comes, apt tries a failed download once more, a second later: not enough. With
+          # this it tries 12 more times, waiting longer each time (up to 30 s, about 4
+          # minutes in all). It holds for every apt run of the job, also the one inside
+          # `playwright install --with-deps` below.
+          echo 'Acquire::Retries "12";' | sudo tee /etc/apt/apt.conf.d/99-retries > /dev/null
           sudo apt-get update
           # xvfb: kicad e2e runs headed Firefox under a virtual display.
           # autoconf/automake/make: host wxWidgets + wx test-app builds.
