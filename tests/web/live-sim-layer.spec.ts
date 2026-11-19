@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { test, expect, type Locator, type Page, type Route } from '@playwright/test';
 import { clickByLabel } from '../e2e/utils/element-tracker';
-import { openOverlayMenu } from './overlay-menu';
+import { openSimulationMenu } from './overlay-menu';
 
 /**
  * Live simulation, the live layer (web/standalone/src/components/LiveLayer.tsx):
@@ -340,9 +340,9 @@ async function closeOverlayMenu(page: Page): Promise<void> {
 
 /** A click on the Session menu's row, then the row says `state`. */
 async function clickRow(page: Page, state: 'running' | 'idle'): Promise<void> {
-  await openOverlayMenu(page);
+  await openSimulationMenu(page);
   await menuRow(page).click();
-  await openOverlayMenu(page);
+  await openSimulationMenu(page);
   await expect(menuRow(page)).toHaveAttribute('data-live-state', state, { timeout: 60000 });
   await expect(menuRow(page)).toHaveText(state === 'running' ? STOP : PLAY);
   await closeOverlayMenu(page);
@@ -445,7 +445,7 @@ test.describe('live simulation: the widgets on the sheet', () => {
     await expect(layer(page)).toHaveAttribute('data-widgets', '6');
     // no part of this circuit has a tone of its own: nothing is played, and the menu has no row for it
     await expect(page.getByTestId('live-sound-out')).toHaveCount(0);
-    await openOverlayMenu(page);
+    await openSimulationMenu(page);
     await expect(page.getByTestId('live-sim-sound')).toHaveCount(0);
     await closeOverlayMenu(page);
     const key = widget(page, 'press', 'K1');
@@ -908,7 +908,7 @@ test.describe('live simulation: the widgets on the sheet', () => {
     await expect.poll(loud, { message: 'let go: silence again', timeout: 15000 }).toBeLessThan(0.002);
 
     // --- the Session menu mutes it --------------------------------------------
-    await openOverlayMenu(page);
+    await openSimulationMenu(page);
     await expect(row, 'the menu has the row while such a circuit runs').toHaveText('Mute simulation sound');
     await row.click();
     await expect(row).toHaveAttribute('data-muted', 'true');
@@ -919,7 +919,7 @@ test.describe('live simulation: the widgets on the sheet', () => {
     await expect(played, 'muted: nothing is played').toHaveAttribute('data-heard', '');
     expect(await loud(), 'and nothing reaches the speakers').toBeLessThan(0.002);
     await letGo();
-    await openOverlayMenu(page);
+    await openSimulationMenu(page);
     await row.click();
     await expect(row).toHaveAttribute('data-muted', 'false');
     await closeOverlayMenu(page);
@@ -932,7 +932,7 @@ test.describe('live simulation: the widgets on the sheet', () => {
     // --- Stop ends it ----------------------------------------------------------
     await clickRow(page, 'idle');
     await expect(played).toHaveCount(0);
-    await openOverlayMenu(page);
+    await openSimulationMenu(page);
     await expect(row, 'nothing runs: the menu has no sound row').toHaveCount(0);
     await closeOverlayMenu(page);
     await expect(page.getByTestId('live-sim-error')).toHaveCount(0);

@@ -1,6 +1,8 @@
 import * as React from "react";
 import { ArrowDownToLine, ChevronDown, ChevronRight, CornerDownLeft, Eraser, X } from "lucide-react";
 import { useDraggablePanel } from "@/components/useDraggablePanel";
+import { PanelPin } from "@/overlay/PanelPin";
+import { PanelDock } from "@/overlay/PanelDock";
 import { Button, Input, Tip, cn } from "@pcbjam/ui";
 import { overlayIconClass } from "@/components/OverlayMenu";
 import type { ConsoleKind, LiveConsole } from "@/wasm/live-console";
@@ -165,11 +167,13 @@ export function SimConsolePanel({ console: serial, onClose }: { console: LiveCon
   return (
     <div
       ref={rootRef}
+      data-snap-panel={drag.snapId}
+      data-dock-title="Serial console"
       data-testid="sim-console-panel"
       data-chip={chip?.ref ?? ""}
       data-can-send={canSend ? "yes" : "no"}
       className="absolute z-40 flex w-[28rem] max-w-[calc(100vw-1.5rem)] flex-col overflow-hidden rounded-xl bg-white/95 text-neutral-900 shadow-2xl ring-1 ring-inset ring-black/10 backdrop-blur-sm dark:bg-neutral-950/90 dark:text-white dark:ring-white/10"
-      style={style}
+      style={drag.docked ?? style}
     >
       {/* Header = drag handle. Interactive children stop pointerdown so they
           don't start a drag. */}
@@ -182,6 +186,8 @@ export function SimConsolePanel({ console: serial, onClose }: { console: LiveCon
           onPointerMove={(e) => void drag.onPointerMove(e)}
           onPointerUp={() => void drag.onPointerUp()}
         >
+          <PanelDock id={drag.snapId} />
+          <PanelPin id={drag.snapId} />
           <Tip content={collapsed ? "Expand" : "Collapse to header"}>
             <Button
               data-testid="sim-console-panel-collapse"

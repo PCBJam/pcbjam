@@ -1,11 +1,12 @@
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { clickByTooltip, findAll, findByTooltip } from '../e2e/utils/element-tracker';
-import { openOverlayMenu } from './overlay-menu';
+import { openOverlayMenu, openSimulationMenu } from './overlay-menu';
 
 /**
  * Live simulation, Play and Stop (web/standalone/src/wasm/live-session.ts), in
  * the real app. Play is in two places: a button on the schematic editor's own
- * toolbar, and a row of the Session menu that does the same.
+ * toolbar, and a row of the Session menu that does the same. Live simulation's
+ * rows are in the menu's Simulation child menu (openSimulationMenu).
  *
  *   - without the `liveSimulation` toggle there is neither;
  *   - with it, KiCad's toolbar has "Run live simulation". A click reads the
@@ -126,7 +127,7 @@ test.describe('live simulation: Play and Stop', () => {
     await expectTool(page, 'Simulator', true, "KiCad's toolbar is up");
     expect(await tool(page, PLAY)).toBeNull();
     await openOverlayMenu(page);
-    await expect(menuRow(page), 'and the Session menu has no row for it').toHaveCount(0);
+    await expect(page.getByTestId('overlay-menu-sub-simulation'), 'and the Session menu has no Simulation menu').toHaveCount(0);
   });
 
   test('Play runs the circuit of the schematic; Stop halts it', async ({ page }) => {
@@ -149,7 +150,7 @@ test.describe('live simulation: Play and Stop', () => {
     expect(fetched.length, 'the engine was fetched for the run').toBeGreaterThan(0);
     await expect(page.getByTestId('live-sim-error')).toHaveCount(0);
     // the Session menu's row says the same
-    await openOverlayMenu(page);
+    await openSimulationMenu(page);
     await expect(menuRow(page)).toHaveAttribute('data-live-state', 'running');
     await expect(menuRow(page)).toHaveText(STOP);
     await closeOverlayMenu(page);
@@ -214,7 +215,7 @@ test.describe('live simulation: Play and Stop in the Session menu', () => {
   // where the button is, is not on screen.
 
   async function expectRow(page: Page, state: string, words: string, message: string): Promise<void> {
-    await openOverlayMenu(page);
+    await openSimulationMenu(page);
     await expect(menuRow(page), message).toHaveAttribute('data-live-state', state, { timeout: 60000 });
     await expect(menuRow(page)).toHaveText(words);
   }
@@ -272,7 +273,7 @@ test.describe('live simulation: the serial console', () => {
     await bootSchematic(page, 'live-sim/run.kicad_sch');
     await expectTool(page, 'Simulator', true, "KiCad's toolbar is up");
     await openOverlayMenu(page);
-    await expect(row(page)).toHaveCount(0);
+    await expect(page.getByTestId('overlay-menu-sub-simulation')).toHaveCount(0);
     await expect(panel(page)).toHaveCount(0);
   });
 
@@ -283,7 +284,7 @@ test.describe('live simulation: the serial console', () => {
     await bootSchematic(page, 'live-sim/run.kicad_sch');
     await expectTool(page, 'Simulator', true, "KiCad's toolbar is up");
 
-    await openOverlayMenu(page);
+    await openSimulationMenu(page);
     await expect(row(page)).toHaveText('Serial console');
     await expect(panel(page), 'the panel is not there until it is asked for').toHaveCount(0);
     await row(page).click();
@@ -294,10 +295,10 @@ test.describe('live simulation: the serial console', () => {
     await expect(page.getByTestId('sim-console-panel-clear')).toBeDisabled();
 
     // The circuit runs: it has no chip, so there is still nothing to show and nobody to type to.
-    await openOverlayMenu(page);
+    await openSimulationMenu(page);
     await expect(row(page)).toHaveText('Hide serial console');
     await menuRow(page).click();
-    await openOverlayMenu(page);
+    await openSimulationMenu(page);
     await expect(menuRow(page)).toHaveAttribute('data-live-state', 'running', { timeout: 60000 });
     await closeOverlayMenu(page);
     await expect(panel(page)).toHaveAttribute('data-can-send', 'no');
@@ -311,11 +312,11 @@ test.describe('live simulation: the serial console', () => {
     await expect(page.getByTestId('sim-console-text')).toBeVisible();
     await page.getByTestId('sim-console-panel-close').click();
     await expect(panel(page)).toHaveCount(0);
-    await openOverlayMenu(page);
+    await openSimulationMenu(page);
     await expect(row(page)).toHaveText('Serial console');
 
     await menuRow(page).click();
-    await openOverlayMenu(page);
+    await openSimulationMenu(page);
     await expect(menuRow(page)).toHaveAttribute('data-live-state', 'idle', { timeout: 60000 });
     await expect(page.getByTestId('live-sim-error')).toHaveCount(0);
   });

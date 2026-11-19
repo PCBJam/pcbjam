@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { test, expect, type Page, type Route } from '@playwright/test';
-import { openOverlayMenu } from './overlay-menu';
+import { openOverlayMenu, openSimulationMenu } from './overlay-menu';
 import { shotPath } from '../e2e/utils/element-tracker';
 
 /**
@@ -158,7 +158,7 @@ async function bootSchematic(page: Page, file = 'demo.kicad_sch'): Promise<void>
 }
 
 async function openPanel(page: Page) {
-  await openOverlayMenu(page);
+  await openSimulationMenu(page);
   await page.getByTestId('sim-parts-panel-toggle').click();
   const panel = page.getByTestId('sim-parts-panel');
   await expect(panel).toBeVisible();
@@ -343,7 +343,7 @@ test.describe('simulation parts panel', () => {
     await bootSchematic(page);
 
     await openOverlayMenu(page);
-    await expect(page.getByTestId('sim-parts-panel-toggle')).toHaveCount(0);
+    await expect(page.getByTestId('overlay-menu-sub-simulation'), 'the Session menu has no Simulation menu').toHaveCount(0);
     await expect(page.getByTestId('sim-parts-panel')).toHaveCount(0);
     expect(asked).toEqual([]);
   });
