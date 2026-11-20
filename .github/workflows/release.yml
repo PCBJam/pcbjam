@@ -290,6 +290,8 @@ jobs:
       # kind='model3d' origin libs (chunked packages3D ingest, libs/0016), not
       # the CDN snapshot — MODELS_TAG only feeds the demo build above.
       # --brand-base: see BRAND_BASE above.
+      # --sim-library: where the editor reads live simulation's part library. It
+      # reads it only for a session whose API turns live simulation on.
       - name: Build editor (remote mode)
         run: >
           node scripts/deploy/build-editor.mjs --tag "$RELEASE_TAG"
@@ -297,7 +299,7 @@ jobs:
           --brand-base "$BRAND_BASE"
           --plausible "https://plausible.io/js/pa-KjNS9YmidydULZTstsjRg.js"
           ${ERRORS_DSN:+--errors-dsn "$ERRORS_DSN" --errors-env production}
-          --models-source registry
+          --models-source registry --sim-library "$CDN/sim-library"
 
       - name: Verify immutable plugin runtime assets
         run: node scripts/deploy/verify-plugin-runtime.mjs web/standalone/src/generated/plugin-runtime.json web/standalone/dist
