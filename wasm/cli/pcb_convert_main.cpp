@@ -16,15 +16,28 @@
  *             Exit: 0 clean, 1 violations (--strict: also warnings +
  *             unconnected), 2 usage, 4 load/run failure.
  *
- *   gerbers:  pcb_convert --gerbers <file.kicad_pcb> [<outdir>]
- *             One .gbr per enabled layer (stackup plot order) + the .gbrjob
- *             file, kicad-cli CLI defaults (no board-plot-params), into
+ *   gerbers:  pcb_convert --gerbers <file.kicad_pcb> [<outdir>] [options]
+ *             One Gerber file per enabled layer (stackup plot order) + the
+ *             .gbrjob file, kicad-cli CLI defaults (no board-plot-params), into
  *             <outdir> (default: the input's directory). Zone fills plot as
  *             saved (no re-check). Exit: 0 ok, 2 usage, 4 failure.
+ *             Options (plugins 0027, what a manufacturer's own KiCad plugin
+ *             sets): --layers <a,b,...> these layers in this order, the ones
+ *             the board has not enabled left out; --canonical-names files
+ *             named by KiCad's layer name (board-F_SilkS.gbr), not the
+ *             board's own name for the layer; --no-protel-ext every file
+ *             .gbr; --no-job-file; --zero-mask-expansion and
+ *             --zero-mask-min-width: the board's solder mask expansion, and
+ *             its minimum web width, count as 0 for this plot;
+ *             --precision <5|6>.
  *
- *   drill:    pcb_convert --drill <file.kicad_pcb> [<outdir>]
- *             Excellon drill files, kicad-cli defaults (mm, decimal, absolute
- *             origin), no map files. Exit: 0 ok, 2 usage, 4 failure.
+ *   drill:    pcb_convert --drill <file.kicad_pcb> [<outdir>] [options]
+ *             Excellon drill files, the drill job's defaults (inches,
+ *             decimal, absolute origin, one file), no map files. Exit: 0 ok,
+ *             2 usage, 4 failure.
+ *             Options (plugins 0027): --separate-plated PTH and NPTH in two
+ *             files; --minimal-header; --route-oval-holes oval holes as
+ *             routed slots instead of the canned G85 slot.
  *
  *   plot:     pcb_convert --plot-board [--pdf] [--layers <a,b,...>]
  *                         <file.kicad_pcb> [<out>]
@@ -512,7 +525,98 @@ int runDrc( const char* aInPath, bool aJson, bool aStrict, const char* aOutPath,
 // The export* functions take a loaded board, so --fab-batch can run several
 // on one load; the run* wrappers load it for the single flags.
 
-int exportGerbers( BOARD* brd, const char* aInPath, const wxString& aOutDir )
+// plugins 0027: what a manufacturer's own KiCad plugin sets before it plots,
+// as options of the Gerber and drill exports. The defaults are the exports as
+// they always were; --fab-batch takes the options of both kinds in one list.
+struct FAB_OPTIONS
+{
+    // gerbers
+    const char* layers = nullptr;           // --layers a,b,...
+    bool        canonicalNames = false;     // --canonical-names
+    bool        protelExtensions = true;    // --no-protel-ext
+    bool        jobFile = true;             // --no-job-file
+    bool        zeroMaskExpansion = false;  // --zero-mask-expansion
+    bool        zeroMaskMinWidth = false;   // --zero-mask-min-width
+    int         precision = 0;              // --precision 5|6 (0: the job's default)
+    // drill
+    bool        separatePlated = false;     // --separate-plated
+    bool        minimalHeader = false;      // --minimal-header
+    bool        routeOvalHoles = false;     // --route-oval-holes
+};
+
+
+// Reads the option flags in argv[aFrom..]. False on a word that is not an
+// option of the kinds asked for: a usage error, never ignored (a caller that
+// asked for options must not get the plain files back).
+bool parseFabOptions( int argc, char** argv, int aFrom, bool aGerbers, bool aDrill,
+                      FAB_OPTIONS& aOptions )
+{
+    for( int arg = aFrom; arg < argc; ++arg )
+    {
+        const char* word = argv[arg];
+
+        if( aGerbers && std::strcmp( word, "--layers" ) == 0 && arg + 1 < argc )
+        {
+            aOptions.layers = argv[++arg];
+        }
+        else if( aGerbers && std::strcmp( word, "--canonical-names" ) == 0 )
+        {
+            aOptions.canonicalNames = true;
+        }
+        else if( aGerbers && std::strcmp( word, "--no-protel-ext" ) == 0 )
+        {
+            aOptions.protelExtensions = false;
+        }
+        else if( aGerbers && std::strcmp( word, "--no-job-file" ) == 0 )
+        {
+            aOptions.jobFile = false;
+        }
+        else if( aGerbers && std::strcmp( word, "--zero-mask-expansion" ) == 0 )
+        {
+            aOptions.zeroMaskExpansion = true;
+        }
+        else if( aGerbers && std::strcmp( word, "--zero-mask-min-width" ) == 0 )
+        {
+            aOptions.zeroMaskMinWidth = true;
+        }
+        else if( aGerbers && std::strcmp( word, "--precision" ) == 0 && arg + 1 < argc )
+        {
+            const char* value = argv[++arg];
+
+            if( std::strcmp( value, "5" ) == 0 )
+                aOptions.precision = 5;
+            else if( std::strcmp( value, "6" ) == 0 )
+                aOptions.precision = 6;
+            else
+                return false;
+        }
+        else if( aDrill && std::strcmp( word, "--separate-plated" ) == 0 )
+        {
+            aOptions.separatePlated = true;
+        }
+        else if( aDrill && std::strcmp( word, "--minimal-header" ) == 0 )
+        {
+            aOptions.minimalHeader = true;
+        }
+        else if( aDrill && std::strcmp( word, "--route-oval-holes" ) == 0 )
+        {
+            aOptions.routeOvalHoles = true;
+        }
+        else
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+
+LSEQ parseLayerList( BOARD* aBrd, const char* aArg, std::string& aError );
+
+
+int exportGerbers( BOARD* brd, const char* aInPath, const wxString& aOutDir,
+                   const FAB_OPTIONS& aOptions = FAB_OPTIONS() )
 {
     wxString outPath = aOutDir;
 
@@ -524,11 +628,79 @@ int exportGerbers( BOARD* brd, const char* aInPath, const wxString& aOutDir )
     // kicad-cli defaults (m_useBoardPlotParams=false, m_createJobsFile=true);
     // layer selection = the board's enabled layers, stackup plot order.
     JOB_EXPORT_PCB_GERBERS gerberJob;
+    gerberJob.m_useProtelFileExtension = aOptions.protelExtensions;
+    gerberJob.m_createJobsFile = aOptions.jobFile;
+
+    if( aOptions.precision )
+        gerberJob.m_precision = aOptions.precision;
+
     PCB_PLOT_PARAMS        plotOpts;
     PCB_PLOTTER::PlotJobToPlotOpts( plotOpts, &gerberJob, reporter );
 
+    LSEQ layersToPlot;
+
+    if( aOptions.layers )
+    {
+        std::string layerError;
+        const LSEQ  asked = parseLayerList( brd, aOptions.layers, layerError );
+
+        if( asked.empty() )
+        {
+            std::fprintf( stderr, "%s: error: %s\n", aInPath, layerError.c_str() );
+            return 2;
+        }
+
+        // A fixed list serves every board: a 2-layer board has no In1.Cu to plot.
+        for( PCB_LAYER_ID layer : asked )
+        {
+            if( brd->IsLayerEnabled( layer ) )
+                layersToPlot.push_back( layer );
+        }
+
+        if( layersToPlot.empty() )
+        {
+            std::fprintf( stderr, "%s: error: the board has none of the layers asked for\n",
+                          aInPath );
+            return 4;
+        }
+    }
+    else
+    {
+        layersToPlot = brd->GetEnabledLayers().SeqStackupForPlotting();
+    }
+
+    // A manufacturer whose CAM sets the mask openings itself asks for the
+    // pads as drawn (expansion 0) and for no merged mask webs (minimum width
+    // 0). On the loaded copy only, and put back, because --fab-batch runs the
+    // other exports on the same board.
+    struct MASK_SETTINGS_GUARD
+    {
+        BOARD_DESIGN_SETTINGS& m_bds;
+        const int              m_expansion;
+        const int              m_minWidth;
+
+        MASK_SETTINGS_GUARD( BOARD_DESIGN_SETTINGS& aBds, bool aZeroExpansion,
+                             bool aZeroMinWidth ) :
+                m_bds( aBds ),
+                m_expansion( aBds.m_SolderMaskExpansion ),
+                m_minWidth( aBds.m_SolderMaskMinWidth )
+        {
+            if( aZeroExpansion )
+                m_bds.m_SolderMaskExpansion = 0;
+
+            if( aZeroMinWidth )
+                m_bds.m_SolderMaskMinWidth = 0;
+        }
+
+        ~MASK_SETTINGS_GUARD()
+        {
+            m_bds.m_SolderMaskExpansion = m_expansion;
+            m_bds.m_SolderMaskMinWidth = m_minWidth;
+        }
+    } maskGuard( brd->GetDesignSettings(), aOptions.zeroMaskExpansion,
+                 aOptions.zeroMaskMinWidth );
+
     GERBER_JOBFILE_WRITER jobfileWriter( brd );
-    LSEQ layersToPlot = brd->GetEnabledLayers().SeqStackupForPlotting();
     int  plotted = 0;
     bool failed = false;
 
@@ -543,7 +715,10 @@ int exportGerbers( BOARD* brd, const char* aInPath, const wxString& aOutDir )
                                      ? GetGerberProtelExtension( layer )
                                      : wxString( wxS( "gbr" ) );
 
-        BuildPlotFileName( &gbrFn, outPath, layerName, fileExt );
+        // KiCad's own name for the layer (F.SilkS) gives the same file name
+        // on every board; the board's name may be anything its owner typed.
+        BuildPlotFileName( &gbrFn, outPath,
+                           aOptions.canonicalNames ? LSET::Name( layer ) : layerName, fileExt );
         wxString gbrName = gbrFn.GetFullName(); // AddGbrFile wants a non-const ref
         jobfileWriter.AddGbrFile( layer, gbrName );
 
@@ -568,18 +743,21 @@ int exportGerbers( BOARD* brd, const char* aInPath, const wxString& aOutDir )
         delete plotter;
     }
 
-    wxFileName jobFn( brd->GetFileName() );
-    BuildPlotFileName( &jobFn, outPath, wxS( "job" ), wxS( "gbrjob" ) );
-    jobfileWriter.CreateJobFile( jobFn.GetFullPath() );
+    if( aOptions.jobFile )
+    {
+        wxFileName jobFn( brd->GetFileName() );
+        BuildPlotFileName( &jobFn, outPath, wxS( "job" ), wxS( "gbrjob" ) );
+        jobfileWriter.CreateJobFile( jobFn.GetFullPath() );
+    }
 
-    std::fprintf( stderr, "%s: %s (%d layers + job file) -> %s\n", aInPath,
-                  failed ? "FAIL" : "OK", plotted, (const char*) outPath.ToUTF8() );
+    std::fprintf( stderr, "%s: %s (%d layers%s) -> %s\n", aInPath, failed ? "FAIL" : "OK", plotted,
+                  aOptions.jobFile ? " + job file" : "", (const char*) outPath.ToUTF8() );
 
     return failed ? 4 : 0;
 }
 
 
-int runGerbers( const char* aInPath, const char* aOutDir )
+int runGerbers( const char* aInPath, const char* aOutDir, const FAB_OPTIONS& aOptions = FAB_OPTIONS() )
 {
     wxFileName fn( wxString::FromUTF8( aInPath ) );
     fn.MakeAbsolute();
@@ -589,7 +767,8 @@ int runGerbers( const char* aInPath, const char* aOutDir )
     if( !brd )
         return 4;
 
-    return exportGerbers( brd, aInPath, aOutDir ? wxString::FromUTF8( aOutDir ) : fn.GetPath() );
+    return exportGerbers( brd, aInPath, aOutDir ? wxString::FromUTF8( aOutDir ) : fn.GetPath(),
+                          aOptions );
 }
 
 // ── headless board plot (SVG / PDF) ───────────────────────────────────────────
@@ -703,7 +882,8 @@ int runPlotBoard( const char* aInPath, bool aPdf, const char* aLayersArg, const 
 // default JOB_EXPORT_PCB_DRILL options (kicad-cli defaults); no map files
 // (the writer would drive a plotter for those — add on demand).
 
-int exportDrill( BOARD* brd, const char* aInPath, const wxString& aOutDir )
+int exportDrill( BOARD* brd, const char* aInPath, const wxString& aOutDir,
+                 const FAB_OPTIONS& aOptions = FAB_OPTIONS() )
 {
     wxString outPath = aOutDir;
 
@@ -711,6 +891,16 @@ int exportDrill( BOARD* brd, const char* aInPath, const wxString& aOutDir )
         outPath += wxS( "/" );
 
     JOB_EXPORT_PCB_DRILL drillJob; // kicad-cli defaults
+
+    // plugins 0027; each stays the job's default unless asked.
+    if( aOptions.separatePlated )
+        drillJob.m_excellonCombinePTHNPTH = false;
+
+    if( aOptions.minimalHeader )
+        drillJob.m_excellonMinimalHeader = true;
+
+    if( aOptions.routeOvalHoles )
+        drillJob.m_excellonOvalDrillRoute = true;
 
     VECTOR2I offset;
 
@@ -762,7 +952,7 @@ int exportDrill( BOARD* brd, const char* aInPath, const wxString& aOutDir )
 }
 
 
-int runDrill( const char* aInPath, const char* aOutDir )
+int runDrill( const char* aInPath, const char* aOutDir, const FAB_OPTIONS& aOptions = FAB_OPTIONS() )
 {
     wxFileName fn( wxString::FromUTF8( aInPath ) );
     fn.MakeAbsolute();
@@ -772,7 +962,8 @@ int runDrill( const char* aInPath, const char* aOutDir )
     if( !brd )
         return 4;
 
-    return exportDrill( brd, aInPath, aOutDir ? wxString::FromUTF8( aOutDir ) : fn.GetPath() );
+    return exportDrill( brd, aInPath, aOutDir ? wxString::FromUTF8( aOutDir ) : fn.GetPath(),
+                        aOptions );
 }
 
 // ── IPC-D-356 netlist export ──────────────────────────────────────────────────
@@ -953,7 +1144,8 @@ bool isFabBatchKind( const std::string& aKind )
 }
 
 
-void runFabBatch( const char* aInPath, const char* aOutDir, const std::vector<std::string>& aKinds )
+void runFabBatch( const char* aInPath, const char* aOutDir, const std::vector<std::string>& aKinds,
+                  const FAB_OPTIONS& aOptions = FAB_OPTIONS() )
 {
     BOARD* brd = loadBoardHeadless( aInPath );
 
@@ -977,9 +1169,9 @@ void runFabBatch( const char* aInPath, const char* aOutDir, const std::vector<st
             try
             {
                 if( kind == "gerbers" )
-                    rc = exportGerbers( brd, aInPath, dir );
+                    rc = exportGerbers( brd, aInPath, dir, aOptions );
                 else if( kind == "drill" )
-                    rc = exportDrill( brd, aInPath, dir );
+                    rc = exportDrill( brd, aInPath, dir, aOptions );
                 else if( kind == "ipc356" )
                     rc = exportIpc356( brd, aInPath, dir + wxS( "/netlist.ipc" ) );
                 else
@@ -1554,9 +1746,19 @@ int pcbConvertMain( int argc, char** argv )
     {
         wxDisableAsserts();
 
-        if( argc < 3 )
+        // <outdir> is optional: the options start at the first word with two dashes.
+        const bool  hasOutDir = argc >= 4 && std::strncmp( argv[3], "--", 2 ) != 0;
+        FAB_OPTIONS options;
+
+        if( argc < 3
+            || !parseFabOptions( argc, argv, hasOutDir ? 4 : 3, true /*gerbers*/, false, options ) )
         {
-            std::fprintf( stderr, "usage: kicad_tools --gerbers <file.kicad_pcb> [<outdir>]\n" );
+            std::fprintf( stderr, "usage: kicad_tools --gerbers <file.kicad_pcb> [<outdir>] "
+                                  "[--layers <a,b,...>] [--canonical-names]\n"
+                                  "                   [--no-protel-ext] [--no-job-file] "
+                                  "[--zero-mask-expansion]\n"
+                                  "                   [--zero-mask-min-width] "
+                                  "[--precision <5|6>]\n" );
             return 2;
         }
 
@@ -1564,7 +1766,7 @@ int pcbConvertMain( int argc, char** argv )
 
         try
         {
-            rc = runGerbers( argv[2], argc >= 4 ? argv[3] : nullptr );
+            rc = runGerbers( argv[2], hasOutDir ? argv[3] : nullptr, options );
         }
         catch( const std::exception& e )
         {
@@ -1580,9 +1782,14 @@ int pcbConvertMain( int argc, char** argv )
     {
         wxDisableAsserts();
 
-        if( argc < 3 )
+        const bool  hasOutDir = argc >= 4 && std::strncmp( argv[3], "--", 2 ) != 0;
+        FAB_OPTIONS options;
+
+        if( argc < 3
+            || !parseFabOptions( argc, argv, hasOutDir ? 4 : 3, false, true /*drill*/, options ) )
         {
-            std::fprintf( stderr, "usage: kicad_tools --drill <file.kicad_pcb> [<outdir>]\n" );
+            std::fprintf( stderr, "usage: kicad_tools --drill <file.kicad_pcb> [<outdir>] "
+                                  "[--separate-plated] [--minimal-header] [--route-oval-holes]\n" );
             return 2;
         }
 
@@ -1590,7 +1797,7 @@ int pcbConvertMain( int argc, char** argv )
 
         try
         {
-            rc = runDrill( argv[2], argc >= 4 ? argv[3] : nullptr );
+            rc = runDrill( argv[2], hasOutDir ? argv[3] : nullptr, options );
         }
         catch( const std::exception& e )
         {
@@ -1713,9 +1920,9 @@ int pcbConvertMain( int argc, char** argv )
         // Kinds are checked before anything runs: a typo is a usage error,
         // not a verdict line.
         std::vector<std::string> kinds;
-        bool                     usage = argc != 5;
+        bool                     usage = argc < 5;
 
-        for( const wxString& token : wxSplit( wxString::FromUTF8( argc == 5 ? argv[4] : "" ), ',' ) )
+        for( const wxString& token : wxSplit( wxString::FromUTF8( argc >= 5 ? argv[4] : "" ), ',' ) )
         {
             const std::string kind( token.ToUTF8() );
 
@@ -1725,16 +1932,29 @@ int pcbConvertMain( int argc, char** argv )
             kinds.push_back( kind );
         }
 
+        // plugins 0027: the options of the Gerber and drill exports, for the
+        // kinds of this batch only.
+        const auto  has = [&]( const char* aKind )
+        {
+            return std::find( kinds.begin(), kinds.end(), aKind ) != kinds.end();
+        };
+        FAB_OPTIONS options;
+
+        if( !usage && !parseFabOptions( argc, argv, 5, has( "gerbers" ), has( "drill" ), options ) )
+            usage = true;
+
         if( usage || kinds.empty() )
         {
             std::fprintf( stderr, "usage: kicad_tools --fab-batch <file.kicad_pcb> <outdir> "
-                                  "<gerbers|drill|ipc356|fab-components>[,...]\n" );
+                                  "<gerbers|drill|ipc356|fab-components>[,...]\n"
+                                  "                   [the options of --gerbers and --drill, "
+                                  "for the kinds asked]\n" );
             return 2;
         }
 
         try
         {
-            runFabBatch( argv[2], argv[3], kinds );
+            runFabBatch( argv[2], argv[3], kinds, options );
         }
         catch( const std::exception& e )
         {
@@ -1805,12 +2025,12 @@ int pcbConvertMain( int argc, char** argv )
     }
 
     std::fprintf( stderr, "usage: kicad_tools --drc [--json] [--strict] <file.kicad_pcb> [<out>]\n"
-                          "       kicad_tools --gerbers <file.kicad_pcb> [<outdir>]\n"
-                          "       kicad_tools --drill <file.kicad_pcb> [<outdir>]\n"
+                          "       kicad_tools --gerbers <file.kicad_pcb> [<outdir>] [options]\n"
+                          "       kicad_tools --drill <file.kicad_pcb> [<outdir>] [options]\n"
                           "       kicad_tools --plot-board [--pdf] [--layers <a,b,...>] <file.kicad_pcb> [<out>]\n"
                           "       kicad_tools --ipc356 <file.kicad_pcb> [<out.ipc>]\n"
                           "       kicad_tools --fab-components <file.kicad_pcb> [<out.json>]\n"
-                          "       kicad_tools --fab-batch <file.kicad_pcb> <outdir> <kind>[,<kind>...]\n"
+                          "       kicad_tools --fab-batch <file.kicad_pcb> <outdir> <kind>[,<kind>...] [options]\n"
                           "       kicad_tools --update-from-netlist [--dry-run] [--delete-unused] [--footprints <dir>]\n"
                           "                   [--expect <approved.json>] <board.kicad_pcb> <netlist.net> [<out>]\n" );
     return 2;
