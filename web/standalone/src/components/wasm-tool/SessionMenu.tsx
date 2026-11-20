@@ -10,6 +10,7 @@ import {
   Layers,
   LifeBuoy,
   ListTree,
+  Megaphone,
   Moon,
   PanelsTopLeft,
   Play,
@@ -32,6 +33,7 @@ import type { StaleLibEntry } from "./useLibNotices";
 import type { LocalFontsMenuState } from "./useLocalFonts";
 import type { LibFontsMenuState } from "./useLibFonts";
 import { PluginMenu, type PluginMenuProps } from "@/plugins/PluginMenu";
+import { NewDot } from "@/components/whats-new/SidePanel";
 import { Button, Kbd, Tip, Toggle } from "@pcbjam/ui";
 import { cn } from "@/lib/utils";
 
@@ -197,6 +199,8 @@ export function SessionMenu({
   libFonts,
   fontsOpen,
   setFontsOpen,
+  whatsNew,
+  fresh,
 }: {
   tool: Tool;
   readOnly: boolean;
@@ -279,6 +283,11 @@ export function SessionMenu({
   /** The team fonts panel (LibFontsPanel) is open. */
   fontsOpen?: boolean;
   setFontsOpen?: (v: boolean) => void;
+  /** What's new: the newest release, whether its notes are unread, and its panel. Absent
+   *  without the backend's feature or before there is a release. */
+  whatsNew?: WhatsNewMenuState;
+  /** Something in the menu is new: the dot on the menu's button. */
+  fresh?: boolean;
 }) {
   // The child menus show only with something in them.
   const hasViewRows =
@@ -292,6 +301,7 @@ export function SessionMenu({
       unread={commentsUnread.threads}
       unreadMention={commentsUnread.mentioned}
       alert={staleLibItems.size > 0}
+      fresh={fresh}
     >
       {/* PEOPLE — who else is here, and whose view you're locked to. The
           follow state lives on each person's own row (PresenceRoster), so
@@ -416,6 +426,7 @@ export function SessionMenu({
 
       {/* No Tutorials here: the Tutorials page starts them, and the remembered panel reopens one. */}
       <OverlayMenuSection>
+        {whatsNew && <WhatsNewRow {...whatsNew} />}
         {plugins && !plugins.tutorialsOnly && <PluginMenu {...plugins} />}
         {hasViewRows && (
           <OverlayMenuSub id="view" label="View" icon={Eye}>
@@ -733,6 +744,36 @@ function LiveSoundRow({ muted, onMuted }: { muted: boolean; onMuted: (muted: boo
         <span>{muted ? "Unmute simulation sound" : "Mute simulation sound"}</span>
       </Toggle>
     </Tip>
+  );
+}
+
+export interface WhatsNewMenuState {
+  version: string;
+  unread: boolean;
+  open: boolean;
+  setOpen: (open: boolean) => void;
+}
+
+/** Opens the release notes' panel and closes the menu, which would cover it. */
+function WhatsNewRow({ version, unread, open, setOpen }: WhatsNewMenuState) {
+  const closeMenu = useCloseOverlayMenu();
+  return (
+    <Toggle
+      data-testid="whats-new-toggle"
+      variant="ghost"
+      size="row"
+      pressed={open}
+      onPressedChange={(v) => {
+        if (v) closeMenu();
+        setOpen(v);
+      }}
+      className={overlayRowClass}
+    >
+      <Megaphone size={14} className="shrink-0 text-neutral-400 dark:text-white/50" />
+      <span className="min-w-0 flex-1 truncate">What&apos;s new</span>
+      <span className="text-[10px] text-neutral-400 dark:text-white/40">{version}</span>
+      {unread && <NewDot />}
+    </Toggle>
   );
 }
 

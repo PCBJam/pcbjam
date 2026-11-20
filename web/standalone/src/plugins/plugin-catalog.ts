@@ -2,6 +2,7 @@ import * as React from "react";
 import type { createDocumentAPI } from "./document-api";
 import type { PluginTourAdapter } from "@/overlay/plugin-tours";
 import { API_BASE_URL } from "@/lib/config";
+import { sessionIdentity } from "@/lib/session-identity";
 
 export interface Descriptor {
   pluginId?: string;
@@ -219,3 +220,11 @@ export type PluginCatalog = ReturnType<typeof usePluginCatalog>;
  * manifest id; local development packages only have the manifest id.
  */
 export const pluginKey = (plugin: Descriptor) => plugin.pluginId ?? plugin.manifest.id;
+/** PCBJam AI's manifest id: it has a row of its own in the session menu. */
+export const AI_CHAT_PLUGIN = "ai-chat";
+/**
+ * A plugin panel's layout key (its position, size, pin and dock are remembered under it), by
+ * the plugin's key: per backend and account, so two accounts in one browser don't share it.
+ */
+export const pluginPanelKey = (key: string) =>
+  "pcbjam:plugin-panel-layout:" + JSON.stringify([API_BASE_URL, sessionIdentity()?.slug ?? null, key]);

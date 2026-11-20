@@ -191,10 +191,14 @@ export function OverlayMenu({
   unread = 0,
   unreadMention = false,
   alert = false,
+  fresh = false,
   children,
 }: {
   /** Peer count shown on the FAB (0 hides the badge). */
   badge: number;
+  /** Something in the menu is new (a release's notes, a feature it announced): a small dot
+   *  on the FAB, top-left, until the person has opened what it marks. */
+  fresh?: boolean;
   /** Something in this session is behind the latest state (libs 0017 §2b —
    *  e.g. placed library items updated by a peer): amber warning triangle on
    *  the FAB, persisting until the session-menu row resolves it. */
@@ -297,6 +301,14 @@ export function OverlayMenu({
             >
               {badge}
             </Badge>
+          )}
+          {fresh && (
+            <span
+              data-testid="overlay-menu-new"
+              className="absolute -left-0.5 -top-0.5 size-2.5 rounded-full bg-sky-500 ring-2 ring-white dark:ring-neutral-950"
+            >
+              <span className="sr-only">Something is new</span>
+            </span>
           )}
           {alert && (
             <Tip content="Some of what you see is behind the latest library state - open the session menu">

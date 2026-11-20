@@ -1,7 +1,8 @@
 import * as React from 'react';
 import type * as Y from 'yjs';
 import { Puzzle, X, Trash2, BookOpen, ExternalLink } from 'lucide-react';
-import { BUILTIN, hostedPlugins, packageHost, pluginKey, type Descriptor, type PluginCatalog, type PluginView } from './plugin-catalog';
+import { AI_CHAT_PLUGIN, BUILTIN, hostedPlugins, packageHost, pluginKey, pluginPanelKey, type Descriptor, type PluginCatalog, type PluginView } from './plugin-catalog';
+import { AiTrialStrip } from '@/components/whats-new/AiOfferPanel';
 import { PluginFloatingPanel } from './PluginFloatingPanel';
 import { getLocalSelection, subscribeLocalSelection } from '@/wasm/collab/local-selection';
 import { inspectorSnapshot, type InspectorSnapshot } from './board-inspector-projection';
@@ -351,7 +352,7 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
   };
   const [resetCandidate,setResetCandidate]=React.useState<Descriptor|null>(null);
   const title = selected === BUILTIN ? 'Board Inspector' : active?.manifest.name ?? 'Plugin unavailable';
-  const panelStorageKey = 'pcbjam:plugin-panel-layout:' + JSON.stringify([API_BASE_URL, sessionIdentity()?.slug ?? null, active?.pluginId ?? selected]);
+  const panelStorageKey = pluginPanelKey(active?.pluginId ?? selected);
   return <>
     {open && <aside aria-label="Plugins sidebar" className="absolute inset-y-0 right-0 z-[55] flex flex-col border-l border-black/10 bg-white text-neutral-900 shadow-2xl dark:border-white/15 dark:bg-neutral-950 dark:text-white" style={{ width: 'min(360px, 90vw)' }}>
       <header className="flex h-14 shrink-0 items-center gap-2 border-b border-black/10 px-4 dark:border-white/10">
@@ -430,6 +431,8 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
       </div>
     </aside>}
     {selected && <PluginFloatingPanel key={panelStorageKey} storageKey={panelStorageKey} preferredSize={isProvider(active) ? PROVIDER_PANEL_SIZE : active?.manifest.uiSize} title={title} forceExpanded={!!prompt} hidden={panelHidden && !prompt} collapseSignal={collapseSignal} onRestart={restart} onClose={closePanel}>
+      {/* While Pro comes from the free trial: the days left, above the chat. */}
+      {active?.manifest.id === AI_CHAT_PLUGIN && sessionFeature('whatsNew') && <AiTrialStrip />}
       <div className="max-h-[55%] shrink-0 overflow-y-auto border-b border-black/10 px-3 py-2 text-xs dark:border-white/10">
         <Tip content={fileName}>
           <p className="truncate text-neutral-500 dark:text-white/60">{fileName} · {selection.uuids.length} selected</p>

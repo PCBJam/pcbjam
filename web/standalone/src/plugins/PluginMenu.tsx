@@ -2,21 +2,26 @@ import * as React from 'react';
 import { ExternalLink, Plus, Puzzle, Sparkles } from 'lucide-react';
 import { APP_URL } from '@/lib/config';
 import { OverlayMenuSub, overlayRowClass, useCloseOverlayMenu } from '@/components/OverlayMenu';
-import { BUILTIN, hostedPlugins, pluginKey, type Descriptor, type PluginCatalog, type PluginView } from './plugin-catalog';
+import { AI_CHAT_PLUGIN as AI_CHAT, BUILTIN, hostedPlugins, pluginKey, type Descriptor, type PluginCatalog, type PluginView } from './plugin-catalog';
+import { NewDot, ProBadge } from '@/components/whats-new/SidePanel';
 import { Button, Tip, Toggle } from "@pcbjam/ui";
 import { cn } from "@/lib/utils";
-
-/** The AI chat's plugin id: its row sits in the session menu itself, with its own icon. */
-const AI_CHAT = 'ai-chat';
 
 export interface PluginMenuProps {
   tool: string;
   catalog: PluginCatalog;
   view: PluginView;
   onViewChange(view: PluginView): void;
+  /**
+   * What's new for PCBJam AI's row. `fresh`: a release announced it and the person hasn't
+   * opened it, so the row has a dot. `offer`: the person is on Free and PCBJam AI is part of
+   * Pro, so they don't have the plugin: the row is there all the same, with the Pro badge, and
+   * opens the offer (`onOffer`) where the chat would be.
+   */
+  ai?: { fresh: boolean; offer: boolean; offerOpen: boolean; onOffer(): void };
 }
 
-export function PluginMenu({ tool, catalog, view, onViewChange }: PluginMenuProps) {
+export function PluginMenu({ tool, catalog, view, onViewChange, ai: aiRow }: PluginMenuProps) {
   const closeMenu = useCloseOverlayMenu();
   React.useEffect(() => { void catalog.refresh(); }, [catalog.refresh]);
   const open = (next: PluginView) => { onViewChange(next); closeMenu(); };
@@ -34,10 +39,19 @@ export function PluginMenu({ tool, catalog, view, onViewChange }: PluginMenuProp
       <Icon size={14} className={cn('shrink-0', Icon === Sparkles ? 'text-violet-500 dark:text-violet-300' : 'text-neutral-400 dark:text-white/50')} />
       <span className="min-w-0 flex-1 truncate">{plugin.manifest.name}</span>
       {hostedPlugins && plugin.source === 'upload' && <span className="text-[10px] text-neutral-400 dark:text-white/40">Private</span>}
+      {Icon === Sparkles && aiRow?.fresh && <NewDot />}
     </Toggle></Tip>;
   };
   return <div data-testid="overlay-menu-plugins" className="flex flex-col gap-1">
     {ai && row(ai, Sparkles)}
+    {!ai && aiRow?.offer && <Tip content="PCBJam AI is part of Pro"><Toggle variant="ghost" size="row" data-testid="ai-offer-row"
+      className={overlayRowClass} pressed={aiRow.offerOpen}
+      onClick={() => { aiRow.onOffer(); closeMenu(); }}>
+      <Sparkles size={14} className="shrink-0 text-violet-500 dark:text-violet-300" />
+      <span className="min-w-0 flex-1 truncate">PCBJam AI</span>
+      <ProBadge />
+      {aiRow.fresh && <NewDot />}
+    </Toggle></Tip>}
     <OverlayMenuSub id="plugins" label="Plugins" icon={Puzzle}>
       <div className="max-h-48 overflow-y-auto">
         {!hostedPlugins && tool === 'pcbnew' && <Toggle variant="ghost" size="row" className={overlayRowClass} pressed={selected === BUILTIN}

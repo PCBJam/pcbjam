@@ -107,6 +107,11 @@ import { hasLayersBridge, LayerPanel, type LayersModule } from "@/components/Lay
 import { ImportItemPanel } from "@/components/ImportItemPanel";
 import { LibFilesPanel } from "@/components/LibFilesPanel";
 import { LibFontsPanel } from "@/components/LibFontsPanel";
+import { WHATS_NEW_PANEL, WhatsNewPanel } from "@/components/whats-new/WhatsNewPanel";
+import { roomToDock } from "@/components/whats-new/SidePanel";
+import { AI_OFFER_PANEL, AiOfferPanel } from "@/components/whats-new/AiOfferPanel";
+import { OPEN_AI_CHAT, announcedRelease, featuredRelease, useWhatsNew, whatsNew } from "@/lib/whats-new";
+import { panelDock } from "@/overlay/panel-dock";
 import { hasImportBridge, type ImportModule } from "@/wasm/import-item";
 import { hasSimSymbols, type SimSymbolsModule } from "@/wasm/sim-parts";
 import { giveFirmware, type ChipFirmware } from "@/wasm/chip-firmware";
@@ -114,7 +119,7 @@ import { applyEdit, editError, editModule, validateEdit } from "@/plugins/edits"
 import { createLiveSession, hasToolbarButton, type LiveSession, type LiveSessionState } from "@/wasm/live-session";
 import { tonesFor } from "@/wasm/live-sound";
 import { hasSimPlaces } from "@/wasm/live-overlay";
-import { localPluginLab, usePluginCatalog, type PluginView } from "@/plugins/plugin-catalog";
+import { AI_CHAT_PLUGIN, localPluginLab, pluginKey, pluginPanelKey, usePluginCatalog, type PluginView } from "@/plugins/plugin-catalog";
 import { useSessionFeature } from "@/lib/session-identity";
 import { useTutorialFromUrl } from "@/plugins/tutorials";
 import { SelectionInspector } from "@/components/SelectionInspector";
@@ -233,6 +238,14 @@ const READER_COMMENTS_KEY = "pcbjam-reader-comments";
 const REVIEWER_SELECTIONS_KEY = "pcbjam-reviewer-selections";
 /** "1": the user closed the serial console of live simulation; it does not open by itself. */
 const SIM_CONSOLE_CLOSED_KEY = "pcbjam:sim-console-closed";
+/** A docked panel that is open behind another tab of its side comes to the front. */
+function frontTab(id: string): void {
+  const side = panelDock.sideOf(id);
+  if (side) panelDock.activate(side, id);
+}
+
+/** The release whose toast this browser has shown (What's new, on a narrow window). */
+const WHATS_NEW_TOAST_KEY = "pcbjam:whats-new-toast";
 
 export function WasmTool({
   tool,
@@ -620,6 +633,94 @@ export function WasmTool({
   const pluginCatalog = usePluginCatalog(ready && pluginPocEnabled);
   // A tutorial just started here (Tutorials menu / web Tutorials page): open its panel.
   useTutorialFromUrl(pluginCatalog, setPluginView, pluginPocEnabled && tutorialsOn && !localPluginLab);
+  // What's new (the backend's `whatsNew` feature): the release notes' row and panel, the "new"
+  // dots, and PCBJam AI's offer for a Free account. All of it is decoration: `news` stays null
+  // without the feature, for an anonymous session, and when the backend doesn't answer.
+  const whatsNewOn = useSessionFeature("whatsNew");
+  const news = useWhatsNew(ready && whatsNewOn);
+  const [newsOpen, setNewsOpen] = React.useState(false);
+  // The release the open panel shows.
+  const [newsVersion, setNewsVersion] = React.useState<string | null>(null);
+  const [aiOfferOpen, setAiOfferOpen] = React.useState(false);
+  // Of the two panels, the one opened or pressed last is on top where they overlap.
+  const [frontPanel, setFrontPanel] = React.useState<"news" | "ai">("news");
+  const newsToFront = React.useCallback(() => setFrontPanel("news"), []);
+  const aiToFront = React.useCallback(() => setFrontPanel("ai"), []);
+  const pluginRows = pluginPocEnabled && !tutorialsOnly;
+  const aiPlugin = pluginRows
+    ? pluginCatalog.plugins.find((p) => p.manifest.id === AI_CHAT_PLUGIN && p.source !== "tutorial")
+    : undefined;
+  const aiPluginKey = aiPlugin ? pluginKey(aiPlugin) : null;
+  // On Free, with PCBJam AI part of Pro: the person has no plugin, and gets the row and the offer.
+  const aiOffer = pluginRows && !aiPlugin && news?.ai === "offer";
+  const aiFresh = !!news?.fresh.includes(OPEN_AI_CHAT) && (!!aiPlugin || aiOffer);
+  const showNews = React.useCallback((open: boolean, version?: string) => {
+    setNewsOpen(open);
+    if (!open) return;
+    // Settled before the notes are marked seen: after that nothing is unread.
+    setNewsVersion(version ?? featuredRelease(whatsNew.get())?.version ?? null);
+    whatsNew.markSeen();
+    frontTab(WHATS_NEW_PANEL);
+    setFrontPanel("news");
+  }, []);
+  const openAi = () => {
+    whatsNew.markTried(OPEN_AI_CHAT);
+    setFrontPanel("ai");
+    if (aiPluginKey) {
+      setPluginView({ kind: "plugin", id: aiPluginKey });
+      frontTab(pluginPanelKey(aiPluginKey));
+    } else if (aiOffer) {
+      setAiOfferOpen(true);
+      frontTab(AI_OFFER_PANEL);
+    }
+  };
+  // The chat is on screen, however it got there (its row, the notes' button, the panel the
+  // editor reopened): its "new" dot has done its job.
+  const aiShown = !!aiPluginKey && pluginView?.kind === "plugin" && pluginView.id === aiPluginKey;
+  React.useEffect(() => {
+    if (aiShown && aiFresh) whatsNew.markTried(OPEN_AI_CHAT);
+  }, [aiShown, aiFresh]);
+  // The offer is open and PCBJam AI became theirs (the trial started here, or they came back
+  // from the billing page with Pro): the chat takes the offer's place, on the same side when
+  // the offer was docked.
+  const onTrialStarted = React.useCallback(() => {
+    void whatsNew.refresh();
+    void pluginCatalog.refresh();
+  }, [pluginCatalog.refresh]);
+  React.useEffect(() => {
+    if (!aiOfferOpen || !aiPluginKey) return;
+    const key = pluginPanelKey(aiPluginKey);
+    const side = panelDock.sideOf(AI_OFFER_PANEL);
+    if (side && !panelDock.sideOf(key)) panelDock.dock(key, side, "PCBJam AI");
+    setAiOfferOpen(false);
+    setPluginView({ kind: "plugin", id: aiPluginKey });
+  }, [aiOfferOpen, aiPluginKey]);
+  // A big release (its file says `modal: true`) with highlights shows them once, by themselves:
+  // the panel opens, docked on the right unless the person keeps it elsewhere, and that counts
+  // as seen, so the web app's dialog stays away. A narrow window has no room for the panel
+  // beside the editor: there a toast says so, once per browser, and the dot stays until the
+  // notes were opened. A release of notes only opens nothing, and neither does anything for a
+  // person who ticked "Don't show this after updates" (in the web app).
+  const announce = announcedRelease(news)?.version;
+  React.useEffect(() => {
+    if (!announce) return;
+    if (roomToDock()) {
+      showNews(true, announce);
+      return;
+    }
+    try {
+      if (localStorage.getItem(WHATS_NEW_TOAST_KEY) === announce) return;
+      localStorage.setItem(WHATS_NEW_TOAST_KEY, announce);
+    } catch {
+      return; // no storage: no way to show it only once
+    }
+    toast(`PCBJam ${announce} is out`, {
+      id: "whats-new",
+      testId: "whats-new-toast",
+      duration: 15_000,
+      action: { label: "See what's new", onClick: () => showNews(true, announce) },
+    });
+  }, [announce, showNews]);
   // Read-only sessions never bind presence, so the inspector's selection
   // store is fed by this minimal local handler (+ the C++ input hooks).
   const localSelectionRef = React.useRef<{ destroy(): void } | null>(null);
@@ -2540,7 +2641,12 @@ export function WasmTool({
           onToggleChrome={() => toggleChromeHidden()}
           onShow3D={show3DFn}
           jumpTool={jumpTool}
-          plugins={pluginPocEnabled ? { tool, catalog: pluginCatalog, view: pluginView, onViewChange: setPluginView, tutorialsOnly } : undefined}
+          plugins={pluginPocEnabled ? {
+            tool, catalog: pluginCatalog, view: pluginView, onViewChange: setPluginView, tutorialsOnly,
+            ai: { fresh: aiFresh, offer: aiOffer, offerOpen: aiOfferOpen, onOffer: openAi },
+          } : undefined}
+          whatsNew={news?.releases[0] ? { version: news.releases[0].version, unread: news.unread !== null, open: newsOpen, setOpen: showNews } : undefined}
+          fresh={!!news && (news.unread !== null || aiFresh)}
           localFonts={localFonts}
           libFonts={libFonts}
           fontsOpen={fontsOpen}
@@ -2623,6 +2729,29 @@ export function WasmTool({
           apiBase={API_BASE_URL}
           canUpload={!readOnly}
           onClose={() => setFontsOpen(false)}
+        />
+      )}
+
+      {/* What's new: the newest release's highlights (the session menu's row or the toast opens it). */}
+      {ready && newsOpen && news && (
+        <WhatsNewPanel
+          state={news}
+          version={newsVersion}
+          canOpenAi={!!aiPlugin || aiOffer}
+          front={frontPanel === "news"}
+          onFront={newsToFront}
+          onOpenAi={openAi}
+          onClose={() => setNewsOpen(false)}
+        />
+      )}
+      {/* PCBJam AI for a Free account: the Pro offer, where the chat would be. It stays up
+          between the trial starting and the plugin arriving, when the chat replaces it. */}
+      {ready && aiOfferOpen && pluginRows && !aiPlugin && news && news.ai !== "none" && (
+        <AiOfferPanel
+          front={frontPanel === "ai"}
+          onFront={aiToFront}
+          onStarted={onTrialStarted}
+          onClose={() => setAiOfferOpen(false)}
         />
       )}
 
