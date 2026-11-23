@@ -1,6 +1,8 @@
 import type * as Y from "yjs";
 import { Awareness } from "y-protocols/awareness";
 import { parseCollabRoomId } from "@pcbjam/shared";
+import { BUILD_QUERY_PARAM } from "@pcbjam/shared/site-status";
+import { buildParamValue, noteSyncSocketClose, syncHeld, whenSyncAllowed } from "@/lib/site-status";
 import { copyGeneration, copySegment } from "@/lib/copy-context";
 import { connectBroadcastChannel } from "./broadcast-transport";
 import { connectAwarenessBroadcast } from "./awareness-bc";
@@ -129,10 +131,24 @@ async function partyKitProvider(
   const provider = new YProvider(endpoint, encodeURIComponent(room), doc, {
     party: PARTYKIT_PARTY,
     connect: true,
-    params,
+    // pcbjam-private admin 0009: the build rides the handshake for the minimum-build check.
+    params: { ...params, [BUILD_QUERY_PARAM]: buildParamValue() },
     // Default maxBackoffTime is 2.5s — a room that's down would re-dial (and
     // re-run the server's authorize round trip) every 2.5s forever, per room.
     maxBackoffTime: 30_000,
+  });
+  // pcbjam-private admin 0009: behind the maintenance / reload screen, stop
+  // re-dialing (each handshake is refused) and connect again when it clears.
+  let holding = false;
+  provider.on("connection-close", (event: CloseEvent) => {
+    noteSyncSocketClose(event?.code);
+    if (holding || !syncHeld()) return;
+    holding = true;
+    provider.disconnect();
+    whenSyncAllowed(() => {
+      holding = false;
+      void provider.connect();
+    });
   });
   return {
     whenSynced: () =>

@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { Route, Routes, useLocation } from "react-router-dom";
 import { VersionBadge } from "@/components/VersionBadge";
+import { SiteStatusGate } from "@/components/SiteStatusGate";
 import { useChromeHidden } from "@/lib/chrome-visibility";
 import { APP_URL } from "@/lib/config";
 import { redirectTargetFor } from "@/lib/redirect";
@@ -34,6 +35,8 @@ export default function App() {
       {/* Version + source link, bottom-right on every route (home + editor).
           Keys off the Figma-like hide-UI toggle (hidden is the mobile default). */}
       {!chromeHidden && <VersionBadge />}
+      {/* Maintenance window / reload required (pcbjam-private admin 0009). */}
+      <SiteStatusGate />
     </>
   );
 }

@@ -22,6 +22,8 @@ import {
   removeAwarenessStates,
 } from "y-protocols/awareness";
 import * as syncProtocol from "y-protocols/sync";
+import { BUILD_QUERY_PARAM } from "@pcbjam/shared/site-status";
+import { buildParamValue, noteSyncSocketClose, syncHeld, whenSyncAllowed } from "@/lib/site-status";
 import type * as Y from "yjs";
 import {
   type GatewayClientMsg,
@@ -136,6 +138,8 @@ function gatewayWsUrl(endpoint: string, room: string, token?: string): string {
   );
   url.searchParams.set("_pk", Math.random().toString(36).slice(2, 12));
   if (token) url.searchParams.set("token", token);
+  // pcbjam-private admin 0009: the authorizer checks this build against the minimum.
+  url.searchParams.set(BUILD_QUERY_PARAM, buildParamValue());
   return url.toString();
 }
 
@@ -152,6 +156,8 @@ class GatewayConnection {
   private isFenced = false;
   private attempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  /** pcbjam-private admin 0009: waiting out a maintenance / reload screen. */
+  private cancelHold: (() => void) | undefined;
   private chSeq = 0;
   private readonly facades = new Map<number, GatewayDocFacade>();
   private readonly unsubscribeIdle: () => void;
@@ -253,6 +259,16 @@ class GatewayConnection {
 
   private dial(): void {
     if (this.closed || this.suspended || this.isFenced) return;
+    // pcbjam-private admin 0009: no dialing behind the maintenance / reload
+    // screen (every handshake would be refused); dial when it clears.
+    if (syncHeld()) {
+      this.cancelHold ??= whenSyncAllowed(() => {
+        this.cancelHold = undefined;
+        this.attempts = 0;
+        this.dial();
+      });
+      return;
+    }
     let ws: WebSocket;
     try {
       ws = new WebSocket(gatewayWsUrl(this.endpoint, this.room, this.token));
@@ -299,6 +315,9 @@ class GatewayConnection {
     };
     ws.onclose = (e: CloseEvent) => {
       if (this.ws !== ws) return;
+      // A maintenance close (4503) or a refused handshake: let the status
+      // client decide whether to show the maintenance / reload screen.
+      noteSyncSocketClose(e?.code);
       // A 4409 close is the fence itself (the sub refusal is the other path).
       if (e?.code === GENERATION_CLOSE_CODE) {
         this.fence();
@@ -365,6 +384,8 @@ class GatewayConnection {
   private shutdown(): void {
     this.closed = true;
     this.unsubscribeIdle();
+    this.cancelHold?.();
+    this.cancelHold = undefined;
     if (this.reconnectTimer !== undefined) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = undefined;

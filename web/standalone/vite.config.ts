@@ -202,12 +202,24 @@ function brand(): Plugin {
   };
 }
 
+function buildNumberNow(): string {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}${p(d.getUTCHours())}${p(d.getUTCMinutes())}`;
+}
+
 export default defineConfig(async () => {
 const runtime = await buildPluginRuntime(path.resolve(__dirname, 'public/plugin-runtime'));
 fs.mkdirSync(path.resolve(__dirname,'src/generated'),{recursive:true});
 fs.writeFileSync(path.resolve(__dirname,'src/generated/plugin-runtime.json'),JSON.stringify({version:runtime.version,files:Object.keys(runtime.manifest.files)}));
 return {
-  define: { 'import.meta.env.VITE_PLUGIN_RUNTIME_BASE': JSON.stringify(runtime.base) },
+  define: {
+    'import.meta.env.VITE_PLUGIN_RUNTIME_BASE': JSON.stringify(runtime.base),
+    // pcbjam-private admin 0009: the build number (`YYYYMMDDHHmm`, UTC) the API
+    // compares with the minimum editor build. CI may set VITE_BUILD_NUMBER;
+    // otherwise the time this build ran.
+    'import.meta.env.VITE_BUILD_NUMBER': JSON.stringify(process.env.VITE_BUILD_NUMBER || buildNumberNow()),
+  },
   plugins: [recoverAirlock(), pluginRuntimeAssets(), serveWasm(), react(), brand()],
   build: {
     rollupOptions: {

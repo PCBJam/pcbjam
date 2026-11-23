@@ -9,6 +9,7 @@ import { initErrorReporting } from "./lib/error-reporting";
 import { initTheme } from "./lib/theme";
 import { installFatalScreenListeners } from "./wasm/fatal-screen";
 import { installConsoleBuffer } from "./lib/diagnostics/console-buffer";
+import { startSiteStatus } from "./lib/site-status";
 import "./index.css";
 
 // Console + uncaught-error capture for "Report a problem" (problem-reports
@@ -26,6 +27,11 @@ initErrorReporting();
 // wasm trap can never end in a white page, even if React unmounts itself
 // (which it did, three prod releases in a row — see async/16).
 installFatalScreenListeners();
+
+// pcbjam-private admin 0009: stamp every API request and sync socket with this
+// build, and follow the maintenance window / minimum build. Before anything
+// fetches (the wasm boot does).
+startSiteStatus();
 
 // Privacy-friendly analytics (Plausible), only when VITE_PLAUSIBLE_SRC is set.
 initAnalytics();
