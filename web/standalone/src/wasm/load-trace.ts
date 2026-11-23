@@ -75,6 +75,13 @@ const mb = (bytes: number): string => `${(bytes / (1024 * 1024)).toFixed(0)}MB`;
 export function mark(phase: string, detail?: string): string {
   const heap = heapBytes();
   const t = now();
+  // Also a User Timing mark (`lt:<phase>`): the trace line rounds to 0.1 s, and a harness or the
+  // browser's performance panel can read these with their exact times.
+  try {
+    performance.mark(`lt:${phase}`, detail ? { detail } : undefined);
+  } catch {
+    /* no User Timing */
+  }
   if (entries.length >= MAX_ENTRIES) entries.shift();
   entries.push(detail ? { t, phase, detail, heap } : { t, phase, heap });
 

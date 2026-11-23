@@ -13,6 +13,7 @@ import { presenceUser, yjsProviderConfig, type DocSource } from "@/lib/config";
 import { copySegment } from "@/lib/copy-context";
 import { memfsFilePath } from "@/wasm/constants";
 import { readStagedFile, type ToolFile } from "@/wasm/kicad-runner";
+import { mark as traceMark } from "@/wasm/load-trace";
 import { resolveSheetHierarchy } from "@/wasm/collab/sheet-hierarchy";
 import type { SaveBytes } from "@/wasm/save-flow";
 import type { KicadCollabHandle, KicadDocSession, KicadItemsWindow } from "@/wasm/collab";
@@ -81,6 +82,9 @@ export async function maybeConnectDocSession(
   if (opts.docSource !== "ydoc") return {};
   if (!opts.targetPath || !COLLAB_TOOLS.has(opts.tool)) return {};
 
+  // The join's phases on the load trace: the editor waits for this join before it stages any file,
+  // so its share of an open is worth seeing next to stage:done and open:settled.
+  traceMark("ydoc:connect-start", opts.targetPath);
   const { connectKicadDoc } = await import("@/wasm/collab");
   const room = collabRoomId(opts.scopeId, opts.projectId, opts.targetPath, copySegment());
   const session = await connectKicadDoc({
@@ -88,6 +92,7 @@ export async function maybeConnectDocSession(
     room,
     signal: opts.signal,
   });
+  traceMark("ydoc:synced", opts.targetPath);
 
   // Use the full doc state (meta + layout + items), NOT just item count: a
   // populated drawing sheet (pl_editor `.kicad_wks`) has zero uuid items, so an
@@ -103,6 +108,7 @@ export async function maybeConnectDocSession(
     // Keep the items AS MATERIALIZED: the doc keeps syncing while the native
     // open runs, and the first seed reconciles against this snapshot (0012 #1).
     session.loadedView = kdoc.items;
+    traceMark("ydoc:materialized", `${text.length} chars`);
     opts.log(`[ydoc] materialized ${opts.targetPath} from room ${room} (${text.length} chars)`);
     return { session, targetBytes: new TextEncoder().encode(text) };
   } catch (err) {
