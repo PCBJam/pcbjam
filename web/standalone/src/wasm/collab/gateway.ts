@@ -22,8 +22,7 @@ import {
   removeAwarenessStates,
 } from "y-protocols/awareness";
 import * as syncProtocol from "y-protocols/sync";
-import { BUILD_QUERY_PARAM } from "@pcbjam/shared/site-status";
-import { buildParamValue, noteSyncSocketClose, syncHeld, whenSyncAllowed } from "@/lib/site-status";
+import { SYNC_BUILD_PARAM, noteSyncSocketClose, syncBuildParam, syncHeld, whenSyncAllowed } from "@/lib/sync-site-hooks";
 import type * as Y from "yjs";
 import {
   type GatewayClientMsg,
@@ -139,7 +138,8 @@ function gatewayWsUrl(endpoint: string, room: string, token?: string): string {
   url.searchParams.set("_pk", Math.random().toString(36).slice(2, 12));
   if (token) url.searchParams.set("token", token);
   // pcbjam-private admin 0009: the authorizer checks this build against the minimum.
-  url.searchParams.set(BUILD_QUERY_PARAM, buildParamValue());
+  const build = syncBuildParam();
+  if (build) url.searchParams.set(SYNC_BUILD_PARAM, build);
   return url.toString();
 }
 

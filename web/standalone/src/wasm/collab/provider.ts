@@ -1,8 +1,7 @@
 import type * as Y from "yjs";
 import { Awareness } from "y-protocols/awareness";
 import { parseCollabRoomId } from "@pcbjam/shared";
-import { BUILD_QUERY_PARAM } from "@pcbjam/shared/site-status";
-import { buildParamValue, noteSyncSocketClose, syncHeld, whenSyncAllowed } from "@/lib/site-status";
+import { SYNC_BUILD_PARAM, noteSyncSocketClose, syncBuildParam, syncHeld, whenSyncAllowed } from "@/lib/sync-site-hooks";
 import { copyGeneration, copySegment } from "@/lib/copy-context";
 import { connectBroadcastChannel } from "./broadcast-transport";
 import { connectAwarenessBroadcast } from "./awareness-bc";
@@ -116,6 +115,12 @@ function broadcastChannelProvider(
   };
 }
 
+/** pcbjam-private admin 0009: the build on the handshake, when site status runs. */
+function buildParams(): Record<string, string> {
+  const build = syncBuildParam();
+  return build ? { [SYNC_BUILD_PARAM]: build } : {};
+}
+
 async function partyKitProvider(
   doc: Y.Doc,
   endpoint: string,
@@ -132,7 +137,7 @@ async function partyKitProvider(
     party: PARTYKIT_PARTY,
     connect: true,
     // pcbjam-private admin 0009: the build rides the handshake for the minimum-build check.
-    params: { ...params, [BUILD_QUERY_PARAM]: buildParamValue() },
+    params: { ...params, ...buildParams() },
     // Default maxBackoffTime is 2.5s — a room that's down would re-dial (and
     // re-run the server's authorize round trip) every 2.5s forever, per room.
     maxBackoffTime: 30_000,

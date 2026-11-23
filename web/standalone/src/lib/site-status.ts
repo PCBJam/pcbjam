@@ -9,6 +9,7 @@ import {
   type SiteStatusClient,
 } from "@pcbjam/shared/site-status";
 import { API_BASE_URL, APP_GIT_SHA } from "@/lib/config";
+import { setSyncSiteHooks } from "@/lib/sync-site-hooks";
 
 /**
  * pcbjam-private admin 0009: this editor build and its view of the
@@ -38,6 +39,12 @@ export function startSiteStatus(): void {
   started = true;
   installBuildHeader({ apiBase: API_BASE_URL, stamp: BUILD_STAMP, client: siteStatus });
   siteStatus.subscribe(releaseWaiters);
+  setSyncSiteHooks({
+    buildParam: formatBuildHeader(BUILD_STAMP),
+    noteClose: noteSyncSocketClose,
+    held: syncHeld,
+    whenAllowed: whenSyncAllowed,
+  });
   siteStatus.start();
 }
 
@@ -57,12 +64,12 @@ function releaseWaiters(): void {
  * (not for admins) or the reload screen. Reconnecting then would only be
  * refused at the handshake, over and over.
  */
-export function syncHeld(): boolean {
+function syncHeld(): boolean {
   return maintenanceHold || siteViewBlocks(siteStatus.getView());
 }
 
 /** Run `fn` once sync sockets may connect again (now, if they may). Returns a cancel. */
-export function whenSyncAllowed(fn: () => void): () => void {
+function whenSyncAllowed(fn: () => void): () => void {
   if (!syncHeld()) {
     fn();
     return () => undefined;
@@ -71,18 +78,12 @@ export function whenSyncAllowed(fn: () => void): () => void {
   return () => void waiters.delete(fn);
 }
 
-/** The `build` value a sync socket URL carries. */
-export function buildParamValue(): string {
-  return formatBuildHeader(BUILD_STAMP);
-}
-
 /**
  * A sync socket closed. 4503 is a maintenance window; any other close may be
  * a refused handshake (the window, or a build below the minimum), so ask the
  * server (throttled inside the client).
  */
-export function noteSyncSocketClose(code: number | undefined): void {
-  if (!started) return;
+function noteSyncSocketClose(code: number | undefined): void {
   if (code === MAINTENANCE_CLOSE_CODE) {
     // Hold reconnects until the server says whether this tab is shut out.
     maintenanceHold = true;
