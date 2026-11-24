@@ -114,6 +114,7 @@ import { OPEN_AI_CHAT, announcedRelease, featuredRelease, useWhatsNew, whatsNew 
 import { panelDock } from "@/overlay/panel-dock";
 import { hasImportBridge, type ImportModule } from "@/wasm/import-item";
 import { hasSimSymbols, type SimSymbolsModule } from "@/wasm/sim-parts";
+import { putOnWires } from "@/wasm/sim-thermal";
 import { giveFirmware, type ChipFirmware } from "@/wasm/chip-firmware";
 import { applyEdit, editError, editModule, validateEdit } from "@/plugins/edits";
 import { createLiveSession, hasToolbarButton, type LiveSession, type LiveSessionState } from "@/wasm/live-session";
@@ -2375,6 +2376,8 @@ export function WasmTool({
             toast.warning(text, { duration: 20_000, testId: "live-sim-chip" })
           : about === "power"
             ? toast.info(text, { duration: 15_000, testId: "live-sim-power" })
+            : about === "heat"
+              ? toast.info(text, { duration: 15_000, testId: "live-sim-heat" })
             : toast.info(text, { duration: 10_000, testId: "live-sim-note" }),
       onState: setLiveState,
       log: (msg) => append(`[live-sim] ${msg}`),
@@ -2418,6 +2421,32 @@ export function WasmTool({
             },
     }),
     [storedFirmware, files, readOnly, saveOutput, panelDoc, append],
+  );
+  // The wires of a part's thermal pins on its line of the list (wasm/sim-thermal.ts): typing
+  // a name writes it onto the part's symbol as one edit of the shown sheet. A session that
+  // cannot write only reads.
+  const simPartsThermal = React.useMemo(
+    () => ({
+      put: readOnly
+        ? undefined
+        : async (row: { uuid: string; ref: string }, names: string[]) => {
+            const said = await putOnWires({
+              uuid: row.uuid,
+              ref: row.ref,
+              names,
+              doc: panelDoc,
+              edit: (request) => {
+                const mod = editModule();
+                if (!mod) throw editError("NO_EDITOR");
+                validateEdit(request, "eeschema");
+                return applyEdit(mod, request, new AbortController().signal);
+              },
+            });
+            append(said.length ? `[live-sim] ${row.ref}: on the heat wires ${said.join(" ")}` : `[live-sim] ${row.ref}: off its heat wires`);
+            return said;
+          },
+    }),
+    [readOnly, panelDoc, append],
   );
   // What is heard of it (wasm/live-sound.ts): the menu has the mute switch while a
   // circuit runs that has a part with a tone of its own.
@@ -2718,7 +2747,7 @@ export function WasmTool({
         <SimConsolePanel console={liveSession.console} onClose={() => setSimConsoleOpen(false)} />
       )}
       {ready && simPartsOpen && simPartsMod && simParts && (
-        <SimPartsPanel mod={simPartsMod} reader={simParts} doc={panelDoc} firmware={simPartsFirmware} onClose={() => setSimPartsOpen(false)} />
+        <SimPartsPanel mod={simPartsMod} reader={simParts} doc={panelDoc} firmware={simPartsFirmware} thermal={simPartsThermal} onClose={() => setSimPartsOpen(false)} />
       )}
 
       {/* Team fonts (fonts 0002): the session menu's "Team fonts" row opens it. */}

@@ -132,31 +132,41 @@ const isHidden = (field: SNode[]): boolean =>
   field.some((c) => says(c, "hide") || (Array.isArray(c) && c[0] === "effects" && c.some((e) => says(e, "hide"))));
 
 /**
- * A placed symbol's text with its firmware setting set to `name`. The symbol's other
- * settings and everything else stay. A symbol that has no settings field yet gets one,
- * placed like one of its fields that is not drawn.
+ * A placed symbol's text with one of its fields changed: `change` gets the field's text
+ * ("" when the symbol has no such field) and gives the new one. Everything else stays. A
+ * symbol that has no such field yet gets one, placed like one of its fields that is not
+ * drawn.
  */
-export function withFirmware(symbol: string, name: string): string {
+export function withSymbolField(symbol: string, field: string, change: (text: string) => string): string {
   const forms = parseSexpr(symbol);
   const node = forms[0];
   if (forms.length !== 1 || !Array.isArray(node) || node[0] !== "symbol") throw new Error("the item is not a symbol");
   const fields = node.filter(isField);
-  const settings = fields.find((f) => unquote(f[1]) === FIELD_SETTINGS);
-  if (settings) {
-    const values = parseSettings(typeof settings[2] === "string" ? unquote(settings[2]) : "");
-    values[FIRMWARE_SETTING] = name;
-    settings[2] = quote(formatSettings(values));
+  const has = fields.find((f) => unquote(f[1]) === field);
+  if (has) {
+    has[2] = quote(change(typeof has[2] === "string" ? unquote(has[2]) : ""));
     return printSexpr(node);
   }
   const last = fields[fields.length - 1];
   if (!last) throw new Error("the symbol has no fields");
   const like = [...fields].reverse().find(isHidden) ?? last;
   // an older file numbers its fields: the new one takes no number of another
-  const made: SNode[] = ["property", quote(FIELD_SETTINGS), quote(formatSettings({ [FIRMWARE_SETTING]: name })),
-    ...like.slice(3).filter((c) => !(Array.isArray(c) && c[0] === "id"))];
+  const made: SNode[] = ["property", quote(field), quote(change("")), ...like.slice(3).filter((c) => !(Array.isArray(c) && c[0] === "id"))];
   if (!isHidden(made)) made.push(["hide", "yes"]);
   node.splice(node.indexOf(last) + 1, 0, made);
   return printSexpr(node);
+}
+
+/**
+ * A placed symbol's text with its firmware setting set to `name`. The symbol's other
+ * settings and everything else stay.
+ */
+export function withFirmware(symbol: string, name: string): string {
+  return withSymbolField(symbol, FIELD_SETTINGS, (text) => {
+    const values = parseSettings(text);
+    values[FIRMWARE_SETTING] = name;
+    return formatSettings(values);
+  });
 }
 
 /** A symbol of the shown sheet as KiCad's text, from the shared document. Null when the sheet does not have it. */

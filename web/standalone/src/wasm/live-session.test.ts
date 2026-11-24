@@ -16,6 +16,7 @@ import {
   LIVE_BUTTON_PLAY,
   LIVE_BUTTON_STOP,
   powerNote,
+  heatNote,
   type LiveSessionState,
   type ToolbarButtonModule,
 } from "./live-session";
@@ -30,6 +31,8 @@ const prepared = (over: Partial<PreparedRun> = {}): PreparedRun => ({
   placed: [],
   notSimulated: [],
   power: { byName: [], noVolts: [], assumed: [], noPower: [], unfed: [] },
+  wires: [],
+  notOnWire: [],
   notes: [],
   errors: [],
   plan: [],
@@ -541,6 +544,40 @@ describe("where the power of a run comes from", () => {
       "+5V is powered with 5 V, by its name. VCC is not powered: its name does not say a voltage. A battery or a voltage source on the wire powers it. "
       + "U1 has no power: nothing is connected to its supply pin 8. BT1 runs with 9 V: its value does not say the voltage.",
     );
+  });
+});
+
+describe("the heat of a run", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+  const box = { name: "BOX", node: "/BOX", heat: ["R5"], feel: ["TH1"], air: ["M1"] };
+
+  it("is not talked about when every symbol is on the wires it names", async () => {
+    expect(heatNote([])).toBeNull();
+    const { press, settle, notes } = setup({ prepare: async () => prepared({ wires: [box] }) });
+    press();
+    await settle();
+    expect(notes).toEqual([]);
+  });
+
+  it("is talked about when a symbol names heat wires and is on none", async () => {
+    expect(heatNote([{ ref: "R5", said: "OVEN", why: "wires", title: "Heater", problem: { why: "no-wire", name: "OVEN" } }]))
+      .toBe('R5 is on no heat wire: no wire of the schematic is called "OVEN". A wire has the name of the label on it, and something has to be connected to it.');
+    expect(heatNote([{ ref: "M1", said: "BOX", why: "wires", title: "Fan", problem: { why: "count", needs: 2 } }]))
+      .toBe("M1 is on no heat wires: Fan has 2 thermal pins, so it takes the names of 2 wires.");
+    expect(heatNote([{ ref: "LA1", said: "BOX", why: "part", title: "Lamp" }])).toBe("LA1 is on no heat wire: Lamp has no thermal pin.");
+    expect(heatNote([{ ref: "R1", said: "BOX", why: "no-part" }])).toBe("R1 is on no heat wire: only a part of the simulation library has a thermal pin.");
+    const { session, press, settle, notes, abouts, errors } = setup({ prepare: async () => prepared({ wires: [box], notOnWire: [{ ref: "R1", said: "BOX", why: "no-part" }] }) });
+    press();
+    await settle();
+    expect(session.state).toBe("running");
+    expect(errors).toEqual([]);
+    expect(notes).toEqual(["R1 is on no heat wire: only a part of the simulation library has a thermal pin."]);
+    expect(abouts).toEqual(["heat"]);
   });
 });
 

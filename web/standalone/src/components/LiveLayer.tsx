@@ -41,6 +41,7 @@ import { worldToScreen, type ViewportState } from "@/wasm/collab/comments";
 import type { LiveFrame } from "@/wasm/live-engine";
 import {
   countValue,
+  fixedValue,
   createInputSender,
   formatValue,
   leftOutFor,
@@ -713,7 +714,8 @@ function Sound({ widget, box }: WidgetProps): React.ReactElement {
 
 /**
  * A number with a unit under the symbol. A part that counts something (a motor's turns a
- * minute) has it whole, without a prefix in front of the unit.
+ * minute) has it whole, without a prefix in front of the unit; a temperature has it with
+ * the decimals the part asks for.
  */
 function Meter({ widget, box, tag }: WidgetProps): React.ReactElement {
   const { hit } = useLayer();
@@ -721,7 +723,13 @@ function Meter({ widget, box, tag }: WidgetProps): React.ReactElement {
   const el = React.useRef<HTMLSpanElement>(null);
   const shownAt = React.useRef(-Infinity);
   const unit = typeof widget.props.unit === "string" ? widget.props.unit : "";
-  const say = widget.props.prefix === false ? countValue : formatValue;
+  const decimals = widget.props.decimals;
+  const say =
+    widget.props.prefix !== false
+      ? formatValue
+      : typeof decimals === "number"
+        ? (value: number, u: string): string => fixedValue(value, u, decimals)
+        : countValue;
   const vector = widget.signal!.vector;
   useValues(widget.key, (values) => {
     const now = performance.now();

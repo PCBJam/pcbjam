@@ -30,11 +30,16 @@ import {
   prepareRun,
   readEditorNetlist,
   readEditorSymbols,
+  thermalPins,
+  wireProblemText,
+  wiresOf,
+  wiresSaid,
   type EditorNetlist,
   type EditorSymbol,
   type Match,
   type PreparedRun,
   type SimLibrary,
+  type ThermalPin,
 } from "@pcbjam/shared/sim-library";
 
 /** Bridge surface: the schematic editor's reads (eeschema builds). */
@@ -199,6 +204,12 @@ export interface SimPartRow {
   label: string;
   /** One plain sentence: why the row says what it says. */
   note: string;
+  /**
+   * Only for a part with thermal pins (a heater, a fan, a temperature sensor): the pins,
+   * the names of the wires its symbol says they are on (none when it says none), and why
+   * the part is on no wires with those names, as a sentence.
+   */
+  thermal?: { pins: ThermalPin[]; wires: string[]; problem?: string };
 }
 
 // Rows about a library part first (they are what the list is for), then the
@@ -213,14 +224,23 @@ const byRef = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
 /** The parts list: one row per placed symbol, in the order it is shown. */
 export function simPartRows(parts: SimParts): SimPartRow[] {
   const title = (id: string): string => parts.library.part(id)?.title ?? id;
+  /** The nets of the schematic: a symbol names the wires of its part's thermal pins among them. */
+  const nets = [...new Set([...parts.symbols, ...parts.excluded].flatMap((s) => Object.values(s.pins).flatMap((p) => (p.node ? [p.node] : []))))];
   const rows: SimPartRow[] = parts.matches.map((m, i) => {
     const sym = parts.symbols[i];
     const base = { key: `${sym?.sheetPath ?? m.sheet}${m.uuid}`, uuid: m.uuid, ref: m.ref, value: m.value, sheet: m.sheet };
     switch (m.status) {
-      case "matched":
+      case "matched": {
+        const part = parts.library.part(m.partId);
+        const pins = part?.thermal ? thermalPins(part.thermal) : [];
+        const on = sym && pins.length ? wiresOf(sym, pins.length, nets) : null;
+        const thermal = pins.length
+          ? { thermal: { pins, wires: sym ? wiresSaid(sym) : [], ...(on && "problem" in on ? { problem: wireProblemText(m.ref, part?.title ?? m.partId, on.problem) } : {}) } }
+          : {};
         return m.rule === 1
-          ? { ...base, state: "live", part: title(m.partId), label: "live, set by hand", note: `Runs as the library part "${title(m.partId)}", named on the symbol by hand.` }
-          : { ...base, state: "live", part: title(m.partId), label: "live", note: `Runs as the library part "${title(m.partId)}".` };
+          ? { ...base, ...thermal, state: "live", part: title(m.partId), label: "live, set by hand", note: `Runs as the library part "${title(m.partId)}", named on the symbol by hand.` }
+          : { ...base, ...thermal, state: "live", part: title(m.partId), label: "live", note: `Runs as the library part "${title(m.partId)}".` };
+      }
       case "suggested": {
         const names = m.candidates.map((c) => c.title).join(", ");
         return { ...base, state: "suggested", part: names, label: "suggestion", note: `The library offers ${names} for this value. Not used until it is confirmed.` };

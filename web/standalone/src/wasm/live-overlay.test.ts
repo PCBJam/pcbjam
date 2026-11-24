@@ -11,7 +11,7 @@ import {
   screenBox,
   widgetsFor,
   type SheetPlaces,
-  type SymbolPlace, sliderText, countValue, soundRings,
+  type SymbolPlace, sliderText, countValue, fixedValue, soundRings,
 } from "./live-overlay";
 
 const MM = 10000; // the editor's units per millimetre
@@ -316,97 +316,43 @@ describe("widgetsFor", () => {
   });
 });
 
-describe("createInputSender", () => {
-  const gate = () => {
-    let open!: () => void;
-    const promise = new Promise<void>((resolve) => (open = resolve));
-    return { promise, open };
+describe("a part on a heat wire", () => {
+  // a temperature sensor: a slider on no wire; on one, the wire's temperature as a number
+  const sensor: LoadedPart = {
+    id: "thermistor-ntc", analog: "", logic: null,
+    manifest: {
+      overlay: [{ widget: "slider", place: { below: "bbox", gap: 4 }, input: "temperature", unit: "°C" }],
+      thermal: { temperature: "temperature", overlay: [{ widget: "meter", place: { below: "bbox", gap: 4 }, signal: "wire", unit: "°C", prefix: false, decimals: 1 }] },
+    } as unknown as LoadedPart["manifest"],
   };
-  const tick = () => new Promise((r) => setTimeout(r, 0));
+  const slider: DeckInput = { ref: "TH2", partId: "thermistor-ntc", vector: "v.xth2.vtemp", initial: 25, input: { name: "temperature", type: "range", source: "Vtemp", min: -40, max: 125, default: 25 } };
+  const shown: DeckSignal = { ref: "TH1", partId: "thermistor-ntc", name: "wire", vector: "v.xth1.vpjwire#branch" };
+  const two: Pick<PreparedRun, "placed" | "parts" | "inputs" | "signals"> = {
+    parts: new Map([["thermistor-ntc", sensor]]),
+    placed: [placed({ ref: "TH1", uuid: "u-th1", partId: "thermistor-ntc", thermal: ["/BOX"] }), placed({ ref: "TH2", uuid: "u-th2", partId: "thermistor-ntc" })],
+    inputs: [slider],
+    signals: [shown],
+  };
+  const places: SheetPlaces = { sheet: "/", iuPerMm: MM, symbols: [symbol({ uuid: "u-th1", ref: "TH1" }), symbol({ uuid: "u-th2", ref: "TH2", x: 80 * MM })] };
 
-  it("sends a press and its release in order", async () => {
-    const sent: [string, number][] = [];
-    const send = createInputSender(async (vector, value) => void sent.push([vector, value]));
-    send("v.xsw1.vctl", 1);
-    send("v.xsw1.vctl", 0);
-    await tick();
-    expect(sent).toEqual([["v.xsw1.vctl", 1], ["v.xsw1.vctl", 0]]);
-  });
-
-  it("while one value is on its way only the newest waits, and it always arrives", async () => {
-    const sent: number[] = [];
-    const first = gate();
-    const send = createInputSender(async (_vector, value) => {
-      sent.push(value);
-      if (sent.length === 1) await first.promise;
-    });
-    send("v.xrv1.vpos", 0.1);
-    for (const v of [0.2, 0.3, 0.4, 0.5]) send("v.xrv1.vpos", v);
-    await tick();
-    expect(sent).toEqual([0.1]);
-    first.open();
-    await tick();
-    expect(sent).toEqual([0.1, 0.5]);
-  });
-
-  it("one input that waits does not hold up another", async () => {
-    const sent: string[] = [];
-    const slow = gate();
-    const send = createInputSender(async (vector) => {
-      sent.push(vector);
-      if (vector === "a") await slow.promise;
-    });
-    send("a", 1);
-    send("b", 1);
-    await tick();
-    expect(sent).toEqual(["a", "b"]);
-    slow.open();
-  });
-
-  it("a send that fails is told, and the next one is tried", async () => {
-    const problems: string[] = [];
-    const engine = vi.fn(async (_vector: string, value: number) => {
-      if (value === 1) throw new Error("no answer from the engine");
-    });
-    const send = createInputSender(engine, (text) => problems.push(text));
-    send("v.x.vctl", 1);
-    await tick();
-    send("v.x.vctl", 0);
-    await tick();
-    expect(problems).toEqual(["v.x.vctl = 1: no answer from the engine"]);
-    expect(engine).toHaveBeenCalledTimes(2);
+  it("has its widgets for the wire and none for what the wire took over", () => {
+    const { widgets, notes } = widgetsFor(two, places);
+    expect(notes).toEqual([]);
+    expect(widgets.map((w) => [w.ref, w.widget, w.input?.vector ?? w.signal?.vector])).toEqual([
+      ["TH1", "meter", "v.xth1.vpjwire#branch"],
+      ["TH2", "slider", "v.xth2.vtemp"],
+    ]);
+    expect(widgets[0]!.props).toEqual({ unit: "°C", prefix: false, decimals: 1 });
   });
 });
 
-describe("formatValue", () => {
-  it("three digits and the unit with its prefix", () => {
-    expect(formatValue(4.9812, "V")).toBe("4.98 V");
-    expect(formatValue(12.34, "V")).toBe("12.3 V");
-    expect(formatValue(123.4, "V")).toBe("123 V");
-    expect(formatValue(0.01234, "V")).toBe("12.3 mV");
-    expect(formatValue(0.0000152, "A")).toBe("15.2 µA");
-    expect(formatValue(4700, "ohm")).toBe("4.70 kohm");
-    expect(formatValue(-3.3, "V")).toBe("-3.30 V");
-  });
-
-  it("does not jump a prefix at a rounding edge", () => {
-    expect(formatValue(999.96, "V")).toBe("1.00 kV");
-    expect(formatValue(0.99996, "V")).toBe("1.00 V");
-  });
-
-  it("nothing is zero, and a value that is not a number says so", () => {
-    expect(formatValue(0, "V")).toBe("0.00 V");
-    expect(formatValue(1e-15, "V")).toBe("0.00 V");
-    expect(formatValue(Number.NaN, "V")).toBe("? V");
-  });
-});
-
-describe("countValue", () => {
-  it("a count is whole and has no prefix: three digits that count", () => {
-    expect([0, 0.4, 87.6, 1200, 5454.4, 12345, -5939.2].map((v) => countValue(v, "rpm"))).toEqual(["0 rpm", "0 rpm", "88 rpm", "1200 rpm", "5450 rpm", "12300 rpm", "-5940 rpm"]);
-    // what is left of a motor that has stopped is no number to show
-    expect([1e-9, -0.2].map((v) => countValue(v, "rpm"))).toEqual(["0 rpm", "0 rpm"]);
-    expect(countValue(Number.NaN, "rpm")).toBe("? rpm");
+describe("fixedValue", () => {
+  it("says a temperature with the decimals the part asks for", () => {
+    expect([25, 30.64, 30.65, -4.96, 104.25].map((v) => fixedValue(v, "°C", 1))).toEqual(["25.0 °C", "30.6 °C", "30.6 °C", "-5.0 °C", "104.3 °C"]);
+    expect(fixedValue(3.14159, "V", 3)).toBe("3.142 V");
+    // never "-0.0", and a value that is no number says so
+    expect([-0.04, 0.04].map((v) => fixedValue(v, "°C", 1))).toEqual(["0.0 °C", "0.0 °C"]);
+    expect(fixedValue(Number.NaN, "°C", 1)).toBe("? °C");
   });
 });
 

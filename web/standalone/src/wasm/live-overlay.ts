@@ -1,4 +1,4 @@
-import type { DeckInput, DeckSignal, PreparedRun } from "@pcbjam/shared/sim-library";
+import { overlayOf, type DeckInput, type DeckSignal, type PreparedRun } from "@pcbjam/shared/sim-library";
 
 /**
  * The live layer, the part without a screen: which widgets a running circuit
@@ -222,7 +222,9 @@ export function widgetsFor(
     if (placed.sheet !== places.sheet) continue;
     const sym = byUuid.get(placed.uuid);
     if (!sym) continue; // deleted since Play
-    const overlay = run.parts.get(placed.partId)?.manifest.overlay ?? [];
+    // a part on heat wires has its widgets for them too, and none for what the wire took over
+    const manifest = run.parts.get(placed.partId)?.manifest;
+    const overlay = manifest ? overlayOf(manifest, placed.thermal !== undefined) : [];
     const input = (name: string) => run.inputs.find((i) => i.ref === placed.ref && i.input.name === name);
     const signal = (name: string) => run.signals.find((s) => s.ref === placed.ref && s.name === name);
 
@@ -376,6 +378,13 @@ export function countValue(value: number, unit: string): string {
   if (!Number.isFinite(value)) return `? ${unit}`;
   // Number(): no "-0"
   return `${Number(Number(Math.round(value).toPrecision(3)))} ${unit}`;
+}
+
+/** A number with so many decimals, for a meter that says a temperature: "30.6 °C". */
+export function fixedValue(value: number, unit: string, decimals: number): string {
+  if (!Number.isFinite(value)) return `? ${unit}`;
+  // Number(): no "-0.0"
+  return `${(Number(value.toFixed(decimals)) || 0).toFixed(decimals)} ${unit}`;
 }
 
 /** From this much of a part's full loudness on, one more ring spreads from it. */

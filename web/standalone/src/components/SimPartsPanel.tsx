@@ -4,9 +4,10 @@ import type * as Y from "yjs";
 import { useDraggablePanel } from "@/components/useDraggablePanel";
 import { PanelPin } from "@/overlay/PanelPin";
 import { PanelDock } from "@/overlay/PanelDock";
-import { Button, Tip } from "@pcbjam/ui";
+import { Button, Input, Tip } from "@pcbjam/ui";
 import { overlayIconClass } from "@/components/OverlayMenu";
 import { chipFirmwares, firmwareExtension, type ChipFirmware } from "@/wasm/chip-firmware";
+import { thermalPinLabel, thermalPinTip, wireNameProblem } from "@/wasm/sim-thermal";
 import {
   simPartRows,
   type SimPartRow,
@@ -24,8 +25,17 @@ import {
  * A chip that runs firmware (a microcontroller of the library) has a second
  * line: the file of the project it runs, and "Choose file..." to give it one
  * from the user's computer (wasm/chip-firmware.ts stores the file in the
- * project and writes its name onto the chip's symbol). That is the one thing
- * here that changes the schematic; everything else only reads it.
+ * project and writes its name onto the chip's symbol).
+ *
+ * A part that has to do with heat (a heater, a fan, a temperature sensor) has
+ * thermal pins, and a line for them: the name of the wire each pin is on.
+ * Heat is drawn as a circuit, so such a wire is one the user draws: 1 V on it
+ * is 1 degree Celsius. Typing a name writes it onto the symbol
+ * (wasm/sim-thermal.ts); no names take the part off its wires. A name that no
+ * wire of the schematic has is said under the line.
+ *
+ * Those two lines are what changes the schematic here; everything else only
+ * reads it.
  *
  * The rows come from wasm/sim-parts.ts (the editor's `kicadSimSymbols` and
  * `kicadSimNetlist` reads matched against the published library). The list is read when the panel
@@ -61,6 +71,100 @@ export interface SimPartsFirmware {
   choose?: (chip: ChipFirmware, file: File) => Promise<string>;
 }
 
+/** What the list needs to join a part's thermal pins to wires. */
+export interface SimPartsThermal {
+  /**
+   * Writes the names of its wires onto the part's symbol, in the order of its thermal
+   * pins; none takes the part off its wires. Rejects with a sentence for the user. Left
+   * out in a session that cannot write: the line then only says the wires.
+   */
+  put?: (row: Pick<SimPartRow, "uuid" | "ref">, names: string[]) => Promise<string[]>;
+}
+
+/**
+ * The line of a part's thermal pins: the name of the wire each one is on. The names are
+ * written when a field is left or Enter is pressed, and only when they changed.
+ */
+function ThermalLine({ row, thermal, put, onPut }: { row: SimPartRow; thermal: NonNullable<SimPartRow["thermal"]>; put: SimPartsThermal["put"]; onPut: () => void }): React.ReactElement {
+  const { pins, wires } = thermal;
+  const named = pins.map((_, i) => wires[i] ?? "");
+  const key = named.join(" ");
+  const [draft, setDraft] = React.useState(named);
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+  // the schematic's names win when they change under the line: an undo, a collaborator
+  React.useEffect(() => setDraft(key.split(" ")), [key]);
+  const commit = (): void => {
+    const said = draft.map((n) => n.trim());
+    if (!put || busy || said.join(" ") === key) return;
+    const problem = said.map(wireNameProblem).find((p) => p !== null);
+    if (problem) return setError(problem);
+    setBusy(true);
+    setError(null);
+    put(row, said).then(
+      () => {
+        setBusy(false);
+        onPut();
+      },
+      (err: unknown) => {
+        setBusy(false);
+        setError(err instanceof Error ? err.message : String(err));
+      },
+    );
+  };
+  const problem = error ?? thermal.problem ?? null;
+  return (
+    <>
+      <div
+        data-testid="sim-part-thermal"
+        data-ref={row.ref}
+        data-wires={wires.join(" ")}
+        data-busy={busy ? "yes" : "no"}
+        className="flex flex-wrap items-center gap-x-2 gap-y-1 pb-1 pl-[4.25rem] pr-3 text-[11px]"
+      >
+        {pins.map((pin, i) => (
+          <React.Fragment key={pin.pin}>
+            <span className="shrink-0 text-neutral-500 dark:text-white/60">{thermalPinLabel(pins, i)}</span>
+            {put ? (
+              <Tip content={thermalPinTip(row.ref, pin)}>
+                <Input
+                  data-testid="sim-part-thermal-input"
+                  data-pin={pin.pin}
+                  aria-label={`Heat wire ${i + 1} of ${row.ref}`}
+                  value={draft[i] ?? ""}
+                  placeholder="wire name"
+                  disabled={busy}
+                  spellCheck={false}
+                  autoComplete="off"
+                  className={`h-6 ${pins.length > 1 ? "w-20" : "w-28"} px-1.5 font-mono text-[11px]`}
+                  onChange={(e) => {
+                    const next = [...draft];
+                    next[i] = e.target.value;
+                    setDraft(next);
+                    setError(null);
+                  }}
+                  onBlur={commit}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") commit();
+                    else if (e.key === "Escape") setDraft(named);
+                  }}
+                />
+              </Tip>
+            ) : (
+              <span className="font-mono">{named[i] || "none"}</span>
+            )}
+          </React.Fragment>
+        ))}
+      </div>
+      {problem && (
+        <p data-testid="sim-part-thermal-error" className="pb-1 pl-[4.25rem] pr-3 text-[11px] text-red-600 dark:text-red-300">
+          {problem}
+        </p>
+      )}
+    </>
+  );
+}
+
 /** The chip a file is being stored for, or the sentence its last try ended with. */
 type Giving = { uuid: string; busy: true } | { uuid: string; busy: false; error: string };
 
@@ -81,6 +185,7 @@ export function SimPartsPanel({
   reader,
   doc,
   firmware,
+  thermal,
   onClose,
 }: {
   mod: SimSymbolsModule;
@@ -89,6 +194,8 @@ export function SimPartsPanel({
   doc: Y.Doc | null;
   /** The chips' firmware lines. Left out, the list says nothing about firmware. */
   firmware?: SimPartsFirmware;
+  /** The lines of the parts' thermal pins. Left out, the list says nothing about heat. */
+  thermal?: SimPartsThermal;
   onClose: () => void;
 }) {
   const rootRef = React.useRef<HTMLDivElement | null>(null);
@@ -328,6 +435,7 @@ export function SimPartsPanel({
                     )}
                   </div>
                 )}
+                {thermal && r.state === "live" && r.thermal && <ThermalLine row={r} thermal={r.thermal} put={thermal.put} onPut={refresh} />}
                 {mine && !mine.busy && (
                   <p
                     data-testid="sim-part-firmware-error"

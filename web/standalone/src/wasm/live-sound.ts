@@ -15,7 +15,7 @@
  *     inside such a press only);
  *   - the user can mute it. That is kept in the browser.
  */
-import type { PreparedRun } from "@pcbjam/shared/sim-library";
+import { overlayOf, type PreparedRun } from "@pcbjam/shared/sim-library";
 import { SOUND_STEPS } from "./live-overlay";
 
 /** One part that is heard. */
@@ -46,7 +46,8 @@ export function toneHz(value: unknown): number | null {
 export function tonesFor(run: Pick<PreparedRun, "placed" | "parts" | "signals">): Tone[] {
   const tones: Tone[] = [];
   for (const placed of run.placed) {
-    const overlay = run.parts.get(placed.partId)?.manifest.overlay ?? [];
+    const manifest = run.parts.get(placed.partId)?.manifest;
+    const overlay = manifest ? overlayOf(manifest, placed.thermal !== undefined) : [];
     overlay.forEach((entry, index) => {
       if (entry.widget !== "sound" || entry.tone === undefined || !entry.signal) return;
       const said = entry.tone;

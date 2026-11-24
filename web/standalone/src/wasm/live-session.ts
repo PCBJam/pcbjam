@@ -1,4 +1,4 @@
-import type { Power, PreparedRun } from "@pcbjam/shared/sim-library";
+import { wireProblemText, type NotOnWire, type Power, type PreparedRun } from "@pcbjam/shared/sim-library";
 import { chipParts } from "./chip-parts";
 import {
   circuitOf,
@@ -41,6 +41,10 @@ import type { SimPartsReader, SimSymbolsModule } from "./sim-parts";
  * When the simulation cannot start, or stops by itself, `onError` gets one
  * sentence for the user and the button is Play again. Nothing is restarted
  * without a click.
+ *
+ * Heat is part of the circuit the user draws: a heater, a fan and a temperature
+ * sensor have thermal pins, and their symbols name the wires those are on.
+ * `onNote` says when a symbol names heat wires and is on none.
  *
  * A chip that runs firmware can be in trouble while the circuit runs on: its
  * firmware restarts it without end, its reset pin is low from the start, the
@@ -94,8 +98,8 @@ export interface LiveSessionOptions {
   onError: (text: string) => void;
   /**
    * A notice for the user about a run that started: what it runs without ("left-out"),
-   * where its power comes from ("power"), or a chip that does not run as its firmware
-   * expects ("chip").
+   * where its power comes from ("power"), a chip that does not run as its firmware
+   * expects ("chip"), or a symbol that names heat wires and is on none ("heat").
    */
   onNote?: (text: string, about: LiveNoteAbout) => void;
   onState?: (state: LiveSessionState) => void;
@@ -136,7 +140,7 @@ export interface LiveSession {
   dispose(): void;
 }
 
-export type LiveNoteAbout = "left-out" | "power" | "chip";
+export type LiveNoteAbout = "left-out" | "power" | "chip" | "heat";
 
 /** How many symbols or wires a note names before it counts the rest. */
 const NAMED_IN_NOTE = 6;
@@ -181,6 +185,19 @@ export function powerNote(power: Power): string | null {
   if (assumed.length === 1) out.push(`${runs[0]}: its value does not say the ${(assumed[0]?.label ?? "").toLowerCase()}.`);
   else if (assumed.length) out.push(`${firstFew(runs)}: their values do not say it.`);
   return out.length ? out.join(" ") : null;
+}
+
+/**
+ * The notice about heat, when a symbol names heat wires and is on none. Null when there
+ * is nothing to say.
+ */
+export function heatNote(notOnWire: readonly NotOnWire[]): string | null {
+  const out = notOnWire.map((n) => {
+    if (n.why === "wires" && n.problem) return wireProblemText(n.ref, n.title ?? "its part", n.problem);
+    if (n.why === "part") return `${n.ref} is on no heat wire: ${n.title ?? "its part"} has no thermal pin.`;
+    return `${n.ref} is on no heat wire: only a part of the simulation library has a thermal pin.`;
+  });
+  return out.length ? out.slice(0, NAMED_IN_NOTE).join(" ") : null;
 }
 
 const WATCH_MS = 250;
@@ -422,6 +439,8 @@ export function createLiveSession(options: LiveSessionOptions): LiveSession {
       if (note) options.onNote?.(note, "left-out");
       const power = powerNote(prepared.power);
       if (power) options.onNote?.(power, "power");
+      const heat = heatNote(prepared.notOnWire);
+      if (heat) options.onNote?.(heat, "heat");
     } catch (e) {
       if (mine !== epoch) return;
       set("idle");

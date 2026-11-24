@@ -196,6 +196,43 @@ describe("the parts of the open schematic", () => {
     expect(rows[3]?.note).toBe("The library has no part for this symbol. KiCad's own model is used when the symbol has one.");
   });
 
+  it("says which wires a part's thermal pins are on, for the parts that have such pins", async () => {
+    const index = {
+      ...INDEX,
+      parts: [
+        ...INDEX.parts,
+        { id: "heater", version: 1, title: "Heater", description: "", fits: [{ symbol: "Device:Heater" }], pins: ["1", "2"], code: false, thermal: ["heat"], files: [] },
+        { id: "fan", version: 1, title: "Fan", description: "", fits: [{ symbol: "Motor:Fan" }], pins: ["1", "2"], code: false, thermal: ["air"], files: [] },
+      ],
+    };
+    const { fetchImpl } = cdn({ ...published(), [`${SNAPSHOT}/index.json`]: index });
+    const two = { "1": { name: "", node: "+12V" }, "2": { name: "", node: "GND" } };
+    const drawn = {
+      symbols: [
+        sym("C1", "Device:C", "5", { "1": { name: "", node: "/BOX" }, "2": { name: "", node: "GND" } }),
+        sym("R9", "Device:R", "4", { "1": { name: "", node: "/OUTSIDE" }, "2": { name: "", node: "/BOX" } }),
+        sym("R5", "Device:Heater", "12V 5W", two, { fields: { Value: "12V 5W", "PCBJam.SimThermal": " box " } }),
+        sym("R6", "Device:Heater", "Heater", two),
+        sym("R7", "Device:Heater", "Heater", two, { fields: { Value: "Heater", "PCBJam.SimThermal": "OVEN" } }),
+        sym("M1", "Motor:Fan", "12V", two, { fields: { Value: "12V", "PCBJam.SimThermal": "BOX OUTSIDE" } }),
+        sym("M2", "Motor:Fan", "12V", two, { fields: { Value: "12V", "PCBJam.SimThermal": "BOX" } }),
+        // a part without a thermal pin has no line for one, whatever its symbol says
+        sym("D1", "Device:LED", "red", { "1": { name: "K", node: "GND" }, "2": { name: "A", node: "/LED" } }, { fields: { Value: "red", "PCBJam.SimThermal": "BOX" } }),
+      ],
+    };
+    const rows = simPartRows(await simPartsReader(BASE, { fetch: fetchImpl }).read(editor(drawn)));
+    const heats = [{ pin: "PJTH", does: "heats" }];
+    const air = [{ pin: "PJTA", does: "air" }, { pin: "PJTB", does: "air" }];
+    expect(rows.filter((r) => r.state === "live").map((r) => [r.ref, r.thermal])).toEqual([
+      ["D1", undefined],
+      ["M1", { pins: air, wires: ["BOX", "OUTSIDE"] }],
+      ["M2", { pins: air, wires: ["BOX"], problem: "M2 is on no heat wires: Fan has 2 thermal pins, so it takes the names of 2 wires." }],
+      ["R5", { pins: heats, wires: ["box"] }],
+      ["R6", { pins: heats, wires: [] }],
+      ["R7", { pins: heats, wires: ["OVEN"], problem: 'R7 is on no heat wire: no wire of the schematic is called "OVEN". A wire has the name of the label on it, and something has to be connected to it.' }],
+    ]);
+  });
+
   it("says in the rows what was set by hand, and what KiCad runs", async () => {
     const { fetchImpl } = cdn(published());
     const reader = simPartsReader(BASE, { fetch: fetchImpl });
