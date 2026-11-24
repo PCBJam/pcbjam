@@ -110,6 +110,16 @@ const chooserUp = (page: Page) =>
     window.wxElementRegistry.findAll({ visible: true }).some((e) => /^&?Cancel$/i.test(e.label ?? "")),
   );
 
+/**
+ * The chooser has the part selected and shows its previews. Under the footprint preview it
+ * says "No footprint specified" only while a symbol without a footprint is selected, and
+ * CtxPart has none.
+ */
+const partPreviewed = (page: Page) =>
+  page.evaluate(() =>
+    window.wxElementRegistry.findAll({ visible: true }).some((e) => e.label === "No footprint specified"),
+  );
+
 const placedParts = (page: Page): Promise<number> =>
   page.evaluate(
     () =>
@@ -155,11 +165,15 @@ test("Add Symbol many times in a row: the schematic keeps its WebGL canvas", asy
       .poll(() => chooserUp(page), { message: `opening ${i + 1}: the symbol chooser opens`, timeout: 60000 })
       .toBe(true);
 
-    // Select the part, so that the chooser's previews really draw.
-    await page.keyboard.press("ControlOrMeta+a");
-    await page.keyboard.type("CtxPart", { delay: 40 });
-    await settledShot(page, expect);
-    await page.keyboard.press("ArrowDown");
+    // The chooser opens with the part selected, so its previews really draw: the first time
+    // because the project's one library holds one symbol, after that because KiCad selects
+    // the part that was used last. Nothing is typed into the search box: KiCad applies a
+    // search 200 ms after the last key and then selects the first hit, which from the second
+    // opening on is the copy under "Recently Used", with the heading "Already Placed" below
+    // it. A key pressed next would act before or after that, depending on the machine.
+    await expect
+      .poll(() => partPreviewed(page), { message: `opening ${i + 1}: the chooser previews the part`, timeout: 30000 })
+      .toBe(true);
     await settledShot(page, expect);
     await page.keyboard.press("Enter");
     await expect
