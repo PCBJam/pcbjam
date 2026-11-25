@@ -98,7 +98,8 @@ export class SavePartError extends Error {
 export interface SavePartDeps {
   editor(): ActiveEditor | null;
   identity(): { slug: string } | null;
-  createLib(scope: string, name: string): Promise<{ status: number; body?: { id: string; name: string } }>;
+  /** Created from inside `projectId`: the server then adds the library to that project's own set. */
+  createLib(scope: string, name: string, projectId: string): Promise<{ status: number; body?: { id: string; name: string } }>;
   /** A FRESH listing (not the boot-frozen one): `name` is the mounted nickname. */
   listLibs(scope: string, projectId: string): Promise<LibInfo[]>;
   putItem(scope: string, projectId: string, libId: string, kind: string, name: string, body: string): Promise<{ ok: boolean; status: number }>;
@@ -139,8 +140,11 @@ function defaultDeps(): SavePartDeps {
       if (USER_OVERRIDE_ALLOWED && new URLSearchParams(window.location.search).has("user")) return { slug: userSlug() };
       return null;
     },
-    createLib: async (scope, name) => {
-      const res = await client.createLib({ params: { scope }, body: { name } });
+    createLib: async (scope, name, projectId) => {
+      // The project header is what makes the new library one of this project's (pricing 0006
+      // T3c): in a project of a personal team only those and the public ones are listed, so
+      // without it the listing below would not hold the library that was just created.
+      const res = await client.createLib({ params: { scope }, body: { name }, extraHeaders: { [PROJECT_HEADER]: projectId } });
       return res.status === 201 ? { status: 201, body: { id: res.body.id, name: res.body.name } } : { status: res.status };
     },
     listLibs: (scope, projectId) => remoteLibsSource(API_BASE_URL, scope, userSlug(), projectId).listLibs(),
@@ -178,7 +182,7 @@ function decode(bytes: Uint8Array, code: "INVALID_SYMBOL" | "INVALID_FOOTPRINT")
 
 /** Find-or-create the scope's lib for this provider; returns its id and MOUNTED nickname. */
 export async function ensureProviderLib(deps: SavePartDeps, scope: string, projectId: string, name: string): Promise<{ id: string; nickname: string; created: boolean }> {
-  const created = await deps.createLib(scope, name);
+  const created = await deps.createLib(scope, name, projectId);
   if (created.status === 403) throw new SavePartError("NO_TEAM_WRITE", "You cannot add libraries to this team");
   if (created.status !== 201 && created.status !== 409) throw new Error("Could not create the team library");
   // The create response carries the raw name only; the mounted nickname (which may carry a

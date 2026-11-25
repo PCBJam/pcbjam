@@ -80,7 +80,8 @@ describe('savePart', () => {
   it('a host-chosen libraryName wins over the origin-derived name (plugin parts)', async () => {
     const { deps, saved } = fakeDeps({ libs: [{ id: 'lib-1', name: 'plugin_usb', type: 'org' }] });
     const result = await savePart(pack({ providerOrigin: '', libraryName: 'plugin_usb' }), opts(), deps);
-    expect((deps.createLib as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual(['team', 'plugin_usb']);
+    // The project goes with it: the server adds the new library to that project's own set.
+    expect((deps.createLib as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual(['team', 'plugin_usb', 'proj']);
     expect(result).toMatchObject({ libNickname: 'plugin_usb', symbolLibId: 'plugin_usb:R', footprintLibId: 'plugin_usb:R_0603' });
     expect(saved[0]!.body).toContain('(property "Footprint" "plugin_usb:R_0603"');
   });
