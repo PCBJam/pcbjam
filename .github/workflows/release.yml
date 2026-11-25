@@ -304,6 +304,9 @@ jobs:
       - name: Verify immutable plugin runtime assets
         run: node scripts/deploy/verify-plugin-runtime.mjs web/standalone/src/generated/plugin-runtime.json web/standalone/dist
 
+      - name: Verify the built remote-provider callback page
+        run: node scripts/deploy/verify-remote-provider-callback.mjs web/standalone/dist
+
       - name: Ensure Pages project exists
         run: >
           npx --yes wrangler@4 pages project create "$EDITOR_PAGES_PROJECT"
@@ -323,6 +326,17 @@ jobs:
         run: |
           for attempt in 1 2 3 4 5 6; do
             node scripts/deploy/verify-plugin-runtime.mjs web/standalone/src/generated/plugin-runtime.json "$EDITOR_ORIGIN" && exit 0
+            sleep 10
+          done
+          exit 1
+
+      # Where a remote provider's sign-in window comes back: dist/_worker.js
+      # serves the page at /remote-provider-callback/<host>, never the editor
+      # (the Pages `/* /index.html 200` line must not win there).
+      - name: Verify deployed remote-provider callback page
+        run: |
+          for attempt in 1 2 3 4 5 6; do
+            node scripts/deploy/verify-remote-provider-callback.mjs "$EDITOR_ORIGIN" && exit 0
             sleep 10
           done
           exit 1

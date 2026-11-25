@@ -17,7 +17,7 @@ import { sessionFeature, sessionIdentity } from '@/lib/session-identity';
 import { API_BASE_URL, PLUGIN_DOCS_URL } from '@/lib/config';
 import { downloadBytes } from '@/lib/download';
 import { verifyPluginAccount } from './verify-account';
-import { mountRemoteProvider, type PartRequest } from '@/remote-provider/host';
+import { mountRemoteProvider, type PartRequest, type RemoteProviderHandle } from '@/remote-provider/host';
 import { savePartAndPlace } from '@/libs/save-part';
 import { providerPermissions } from '@pcbjam/plugin-platform/remote-provider-contract.mjs';
 import { isHostedUi } from '@pcbjam/plugin-platform/hosted-ui-contract.mjs';
@@ -108,6 +108,10 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
   const [candidate, setCandidate] = React.useState<Descriptor | null>(null);
   const [notice, setNotice] = React.useState('');
   const [status, setStatus] = React.useState('');
+  // A provider's sign-in that is running (plugins 0028): shown in PCBJam's chrome, where the
+  // user can open its window from a real click (a blocked popup) or stop it.
+  const [signIn, setSignIn] = React.useState<{ provider: string; site: string; step: 'popup' | 'blocked' | 'exchanging' } | null>(null);
+  const providerRef = React.useRef<RemoteProviderHandle | undefined>(undefined);
   const [busy, setBusy] = React.useState(false);
   const placing = React.useRef(false);
   const [placementBusy, setPlacementBusy] = React.useState(false);
@@ -182,14 +186,15 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
         // The provider's own page is the UI; no runtime, no ticket, one iframe.
         if (!project) throw new Error('Open a saved project to use this provider');
         if (tool !== 'eeschema') throw new Error('Remote providers place symbols: open the schematic');
-        instance = mountRemoteProvider(target, {
+        instance = providerRef.current = mountRemoteProvider(target, {
           plugin: active, projectId: project.id, document: fileName, apiBase: API_BASE_URL,
           runtimeVersion: import.meta.env.VITE_PLUGIN_RUNTIME_BASE!.split('/')[2]!, clientVersion: KICAD_VERSION_DIR, signal: abort.signal,
           savePart: savePartAndPlace,
           confirmPart: (request, signal) => requestUser<boolean>(signal, finish => ({ kind: 'part', request, finish })),
           // Outcomes after the confirmation belong in PCBJam's chrome, not only in the provider's page.
-          onLog: line => { if (/failed|cancelled/.test(line)) setNotice(line); else if (/placed|saved/.test(line)) setNotice(''); },
-          onStatus: s => setStatus(s.state === 'failed' ? s.message : s.state === 'ready' ? `${s.provider.providerName} · ${new URL(s.provider.panelUrl).host}` : s.state === 'busy' ? s.message : s.state === 'connecting' ? `Connecting to ${s.provider.providerName}… (${s.attempt})` : s.state === 'loading' ? `Loading ${s.provider.providerName}…` : 'Starting provider…'),
+          onLog: line => { if (line.startsWith('sign-in:')) return; if (/failed|cancelled/.test(line)) setNotice(line); else if (/placed|saved/.test(line)) setNotice(''); },
+          onNotice: setNotice,
+          onStatus: s => { setSignIn(s.state === 'sign-in' && s.provider.auth ? { provider: s.provider.providerName, site: new URL(s.provider.auth.issuer).host, step: s.step } : null); setStatus(s.state === 'failed' ? s.message : s.state === 'ready' ? `${s.provider.providerName} · ${new URL(s.provider.panelUrl).host}` : s.state === 'busy' ? s.message : s.state === 'connecting' ? `Connecting to ${s.provider.providerName}… (${s.attempt})` : s.state === 'loading' ? `Loading ${s.provider.providerName}…` : s.state === 'sign-in' ? (s.step === 'exchanging' ? `Signing in to ${s.provider.providerName}…` : `Waiting for the sign-in to ${s.provider.providerName}…`) : 'Starting provider…'); },
         });
         return;
       } else if (active) {
@@ -277,7 +282,7 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
       else instanceRef.current = instance;
       if (!abort.signal.aborted) setStatus(selected === BUILTIN ? 'Read only · Current board' : hostedPlugins ? (active?.source === 'marketplace' ? 'Published by PCBJam · Signed in' : active?.source === 'tutorial' ? 'Tutorial by PCBJam · Signed in' : active?.source === 'platform' ? 'Turned on for you by PCBJam · Signed in' : 'Private plugin · Signed in') : 'Local development plugin');
     })().catch(error => fail(error instanceof Error ? error.message : 'Plugin could not start'));
-    return () => { abort.abort(); instance?.dispose(); instanceRef.current = undefined; doc.off('update', changed); clearHighlight(); };
+    return () => { abort.abort(); instance?.dispose(); instanceRef.current = undefined; providerRef.current = undefined; setSignIn(null); doc.off('update', changed); clearHighlight(); };
     // A persistent panel isn't restarted by a file, tool or read-only switch: it follows them below.
   }, [...(persistent ? [] : [doc, fileName, tool, readOnly]), persistent, attempt, selected, active?.digest, active?.generation, active?.enabled, project?.id, project?.scope, project?.name]);
 
@@ -386,7 +391,8 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
             <p className="break-all font-semibold">{candidate.providerMetadata.providerName} {candidate.providerMetadata.providerVersion}</p>
             <p className="break-all">Panel: {candidate.providerMetadata.panelUrl}</p>
             {candidate.providerMetadata.originSet.length > 1 && <p className="break-all">Downloads from: {candidate.providerMetadata.originSet.join(', ')}</p>}
-            <p>Parts: {candidate.providerMetadata.supportedAssetTypes.join(', ')} · up to {Math.round(candidate.providerMetadata.maxDownloadBytes / 1048576)} MiB per part · no sign-in</p>
+            <p>Parts: {candidate.providerMetadata.supportedAssetTypes.join(', ')} · up to {Math.round(candidate.providerMetadata.maxDownloadBytes / 1048576)} MiB per part{candidate.providerMetadata.auth ? '' : ' · no sign-in'}</p>
+            {candidate.providerMetadata.auth && <p className="[overflow-wrap:anywhere]" data-testid="provider-sign-in">Sign-in: at {new URL(candidate.providerMetadata.auth.issuer).host}, in a window of its own. PCBJam passes the sign-in on to the provider and keeps none of it.</p>}
           </div>}
           {candidate.backends?.filter(b => b.kind === 'hosted-ui').map(backend=><div key={backend.endpoint} className="my-3 rounded border border-amber-500/40 p-2">
             <p className="break-all font-semibold">{backend.origin}</p>
@@ -506,6 +512,16 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
         <p className="my-2 text-neutral-500 dark:text-white/60">This starts the editor's placement tool. You choose the position on the canvas.</p>
         <details className="mb-2"><summary>View clipboard data</summary><pre className="max-h-32 overflow-auto whitespace-pre-wrap text-[10px]">{prompt.sexpr}</pre></details>
         <Button variant="outline" size="xs" disabled={placementBusy} onClick={() => void place()}>Place on canvas</Button>{' '}<Button variant="outline" size="xs" disabled={placementBusy} onClick={() => prompt.finish({ status: 'cancelled' })}>Cancel placement</Button>
+      </section>}
+      {/* A provider's sign-in happens in a window of its own, at the provider's sign-in server.
+          PCBJam says where, opens it from this button when the browser blocked it, and can stop it. */}
+      {signIn && <section aria-label="Provider sign-in" className="mt-3 rounded border border-sky-500/40 p-3">
+        <p>{signIn.step === 'exchanging' ? <>Signing you in to <strong>{signIn.provider}</strong>…</>
+          : signIn.step === 'blocked' ? <>{signIn.provider} asks you to sign in at <strong>{signIn.site}</strong>. Your browser did not open the sign-in window.</>
+          : <>Sign in to {signIn.provider} in the window that opened, at <strong>{signIn.site}</strong>.</>}</p>
+        <p className="my-2 text-neutral-500 dark:text-white/60">You sign in at {signIn.provider}'s own site. PCBJam never sees your password and keeps no sign-in for you.</p>
+        {signIn.step === 'blocked' && <><Button variant="outline" size="xs" onClick={() => providerRef.current?.signIn()}>Sign in to {signIn.provider}</Button>{' '}</>}
+        <Button variant="outline" size="xs" onClick={() => providerRef.current?.cancelSignIn()}>{signIn.step === 'exchanging' ? 'Stop' : 'Cancel sign-in'}</Button>
       </section>}
         {notice && <p role="alert" className="mt-3 text-amber-700 dark:text-amber-200">{notice}</p>}
       </div>

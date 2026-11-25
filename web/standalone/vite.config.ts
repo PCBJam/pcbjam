@@ -99,6 +99,32 @@ function recoverAirlock(): Plugin {
   return { name: "recover-airlock", configureServer: middleware, configurePreviewServer: middleware };
 }
 
+// The sign-in callback of remote providers (plugins 0028 §6.7): the sign-in server sends the
+// sign-in window to /remote-provider-callback/<its host>, which has no file. Deployed, the
+// editor's Worker (plugin-assets-worker.ts) serves the built page there; here the dev and
+// preview servers map that address onto the same page. A segment that is not a host name is a
+// 404, never the editor.
+function remoteProviderCallback(): Plugin {
+  const middleware = (server: { middlewares: { use: Function } }) => {
+    server.middlewares.use((req: { url?: string }, res: import("node:http").ServerResponse, next: () => void) => {
+      const pathname = (req.url ?? "").split("?")[0]!;
+      if (!pathname.startsWith("/remote-provider-callback/")) return next();
+      res.setHeader("Cache-Control", "no-store");
+      res.setHeader("Referrer-Policy", "no-referrer");
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      if (!/^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?(:\d{1,5})?$/.test(pathname.slice("/remote-provider-callback/".length))) {
+        res.writeHead(404, { "Content-Type": "text/plain" });
+        res.end("Sign-in failed. Close this window and try again.");
+        return;
+      }
+      // The page reads the code from the browser's address; the file needs no query.
+      req.url = "/remote-provider-callback.html";
+      next();
+    });
+  };
+  return { name: "remote-provider-callback", configureServer: middleware, configurePreviewServer: middleware };
+}
+
 // A versioned runtime file, or the Worker of a plugin that may call sites directly
 // (plugins 0022 M3): net/<sites>/package-worker.js is package-worker.js with connect-src
 // limited to those sites, as plugin-assets-worker.ts serves it. null: not a valid path.
@@ -220,13 +246,15 @@ return {
     // otherwise the time this build ran.
     'import.meta.env.VITE_BUILD_NUMBER': JSON.stringify(process.env.VITE_BUILD_NUMBER || buildNumberNow()),
   },
-  plugins: [recoverAirlock(), pluginRuntimeAssets(), serveWasm(), react(), brand()],
+  plugins: [recoverAirlock(), remoteProviderCallback(), pluginRuntimeAssets(), serveWasm(), react(), brand()],
   build: {
     rollupOptions: {
       // recover.html: the OOM process airlock (0009), its own tiny entry.
       input: {
         main: path.resolve(__dirname, "index.html"),
         recover: path.resolve(__dirname, "recover.html"),
+        // Where a provider's sign-in window comes back (plugins 0028): one inline script, no bundle.
+        "remote-provider-callback": path.resolve(__dirname, "remote-provider-callback.html"),
       },
     },
   },

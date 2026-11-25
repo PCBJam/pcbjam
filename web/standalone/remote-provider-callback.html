@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex" />
+    <meta name="referrer" content="no-referrer" />
+    <!-- The editor's Worker serves this page at /remote-provider-callback/<sign-in server host>
+         and checks this marker first: without it the answer is not this page (a missing file
+         is answered with the editor's index.html) and must not reach the browser. -->
+    <meta name="pcbjam-page" content="remote-provider-callback" />
+    <title>Sign-in - PCBJam</title>
+    <!-- Where a remote provider's sign-in server sends the sign-in window back (the OAuth
+         redirect URI). The window has no opener, so this page hands what it received to the
+         editor tab that started the sign-in, over a channel named by that attempt's `state`,
+         and closes. Keep it this small: one classic inline script, no bundle, no wasm. The
+         Worker allows exactly this script by its hash; src/remote-provider/login.ts holds the
+         same reading rules (`readCallback`) and a unit test runs both on the same addresses. -->
+    <style>
+      :root { color-scheme: light dark; }
+      html, body { height: 100%; }
+      body { margin: 0; font: 14px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; display: grid; place-items: center; padding: 16px; box-sizing: border-box; }
+      main { max-width: 26rem; text-align: center; }
+      h1 { font-size: 18px; margin: 0 0 8px; }
+      p { margin: 0; opacity: 0.75; }
+    </style>
+  </head>
+  <body>
+    <main aria-live="polite">
+      <h1>PCBJam</h1>
+      <p id="message">Finishing the sign-in…</p>
+    </main>
+    <script>
+      (function () {
+        var PREFIX = "/remote-provider-callback/";
+        var message = document.getElementById("message");
+        var path = location.pathname;
+        var query = new URLSearchParams(location.search);
+        // The code is for the editor tab only: take it out of the address and the history
+        // before anything else.
+        try { history.replaceState(null, "", path); } catch (e) { /* the values were read already */ }
+        var as = path.indexOf(PREFIX) === 0 ? path.slice(PREFIX.length) : "";
+        var states = query.getAll("state");
+        if (!/^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?(:\d{1,5})?$/.test(as) || states.length !== 1 || !/^[A-Za-z0-9_-]{43}$/.test(states[0])) {
+          message.textContent = "Sign-in failed. Close this window and try again.";
+          return;
+        }
+        // Lists, so the editor sees a doubled or a missing value. It does all the judging.
+        var channel = new BroadcastChannel("pcbjam-remote-provider-login:" + states[0]);
+        channel.postMessage({ as: as, state: states[0], code: query.getAll("code"), error: query.getAll("error"), iss: query.getAll("iss") });
+        channel.close();
+        message.textContent = "You can close this window.";
+        window.close();
+      })();
+    </script>
+  </body>
+</html>

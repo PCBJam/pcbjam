@@ -20,7 +20,9 @@ export interface Descriptor {
   fileMetadata?: Record<string, { sha256: string; bytes: number }>;
   backends?: Array<{endpoint:string;origin:string;paths?:string[];methods?:('GET'|'POST')[];auth?:'none'|'pcbjam-user';kind?:'remote-provider'|'hosted-ui';path?:string;registrationId?:string;policyDigest:string;status:string;ready:boolean;audience?:string;issuer?:string}>;
   /** Snapshot of a remote provider's /.well-known document (kind: "remote-provider" only). */
-  providerMetadata?: { providerName: string; providerVersion: string; panelUrl: string; originSet: string[]; maxDownloadBytes: number; supportedAssetTypes: string[]; authType: string };
+  providerMetadata?: { providerName: string; providerVersion: string; panelUrl: string; originSet: string[]; maxDownloadBytes: number; supportedAssetTypes: string[]; authType: string;
+    /** Present when the provider signs its users in: where. */
+    auth?: { type: 'oauth2'; issuer: string } };
   digest: string;
   manifest: {
     kind?: 'plugin' | 'remote-provider';

@@ -200,7 +200,10 @@ async function main() {
 
 // Plugin runtime files (pcbjam-private docs/features/plugins/0013): a missing
 // or stale /plugin-runtime/* URL must answer 404, never the SPA index.html the
-// `/*` fallback above serves. Pages advanced mode runs dist/_worker.js, and
+// `/*` fallback above serves. The same holds for /remote-provider-callback/*,
+// where a provider's sign-in server sends the sign-in window back (plugins
+// 0028): that address is answered with the built callback page or a fixed
+// failure, never with the editor. Pages advanced mode runs dist/_worker.js, and
 // _routes.json limits it to those URLs; every other request stays static, with
 // _headers/_redirects. It is the handler the staging editor Worker runs
 // (wrangler.staging.jsonc `main`), bundled with its runtime list. A Workers
@@ -232,7 +235,7 @@ async function writePagesRuntimeWorker(standalone, dist) {
   }
   writeFileSync(
     join(dist, "_routes.json"),
-    JSON.stringify({ version: 1, include: ["/plugin-runtime/*"], exclude: [] }) + "\n",
+    JSON.stringify({ version: 1, include: ["/plugin-runtime/*", "/remote-provider-callback/*"], exclude: [] }) + "\n",
   );
 }
 

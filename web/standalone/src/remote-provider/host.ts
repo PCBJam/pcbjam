@@ -4,7 +4,8 @@
 // the injected savePart (libs/save-part.ts in the app, a recorder in tests).
 import { PROVIDER_LIMITS } from "@pcbjam/plugin-platform/remote-provider-contract.mjs";
 import type { PartPack, SavePartOptions, SavePartResult } from "@/libs/save-part";
-import { createProviderSession, manifestToPack, type Effect, type ProviderSession } from "./protocol";
+import { createProviderSession, manifestToPack, type HostActivity, type PartEffect, type ProviderSession } from "./protocol";
+import { LOGIN_CHANNEL_PREFIX, authorizationUrl, judgeCallback, makePkcePair, randomToken, type PkcePair, type SignInConfig } from "./login";
 
 export interface ProviderActivation {
   id: string;
@@ -19,6 +20,8 @@ export interface ProviderActivation {
     maxDownloadBytes: number;
     supportedAssetTypes: string[];
     capabilities: { webUi: boolean; parts: boolean; directDownloads: boolean; inlinePayloads: boolean };
+    /** Present when the provider signs its users in (plugins 0028): what the sign-in popup needs. */
+    auth?: SignInConfig;
   };
 }
 export type HostStatus =
@@ -27,6 +30,12 @@ export type HostStatus =
   | { state: "connecting"; provider: ProviderActivation["provider"]; attempt: number }
   | { state: "ready"; provider: ProviderActivation["provider"] }
   | { state: "busy"; provider: ProviderActivation["provider"]; message: string }
+  /**
+   * A sign-in is running. "popup": its window is open; "blocked": the browser did not open it,
+   * PCBJam's chrome shows a button that calls `signIn()` from a real click; "exchanging": the
+   * window came back and the server is finishing the sign-in.
+   */
+  | { state: "sign-in"; provider: ProviderActivation["provider"]; step: "popup" | "blocked" | "exchanging" }
   | { state: "failed"; message: string; provider?: ProviderActivation["provider"] };
 export interface PartRequest {
   command: string;
@@ -53,13 +62,29 @@ export interface RemoteProviderMountOptions {
   confirmPart(request: PartRequest, signal: AbortSignal): Promise<boolean>;
   onStatus(status: HostStatus): void;
   onLog?(line: string): void;
+  /** How a sign-in ended, for PCBJam's chrome: one of a few fixed texts, "" clears it. */
+  onNotice?(message: string): void;
   /** Injection points for tests. */
   fetchImpl?: typeof fetch;
   uuid?: () => string;
   heartbeatMs?: number;
+  /** Opens the sign-in window; a falsy answer means the browser blocked it. */
+  openPopup?(url: string): unknown;
+  signInTimeoutMs?: number;
+}
+export interface RemoteProviderHandle {
+  dispose(): void;
+  /** Opens the sign-in window of the pending sign-in. Call it from a click in PCBJam's chrome. */
+  signIn(): void;
+  /** Ends a running sign-in; whatever arrives for it later is dropped. */
+  cancelSignIn(): void;
 }
 
 export const HEARTBEAT_MS = 40000;
+/** A sign-in window nobody came back from. */
+export const SIGN_IN_TIMEOUT_MS = 5 * 60 * 1000;
+/** The server gives itself 35 s for the exchange (plugins 0028 §6.8), so the browser normally hears the answer. */
+export const SIGN_IN_EXCHANGE_MS = 45000;
 /** Server answers that mean the activation is over for good (revoked, removed, unapproved, expired). */
 const ENDED = new Set([401, 403, 404, 409]);
 const SAVER_CODES = new Set(["NOT_SIGNED_IN", "NO_TEAM_WRITE", "INVALID_SYMBOL", "INVALID_FOOTPRINT", "TOO_LARGE", "PLACEMENT_UNAVAILABLE", "LIB_WRITE_FAILED"]);
@@ -87,8 +112,8 @@ export function createPlatformClient(apiBase: string, fetchImpl: typeof fetch = 
     return Object.assign(new Error(result.error ?? "Plugin operation failed"), { status: response.status }, typeof result.code === "string" ? { code: result.code } : {});
   };
   return {
-    async json<T>(path: string, method: string, data?: unknown, signal?: AbortSignal): Promise<T> {
-      const response = await call(path, method, data, signal);
+    async json<T>(path: string, method: string, data?: unknown, signal?: AbortSignal, timeoutMs?: number): Promise<T> {
+      const response = await call(path, method, data, signal, timeoutMs);
       if (!response.ok) throw await failure(response);
       return response.json() as Promise<T>;
     },
@@ -103,9 +128,14 @@ export function createPlatformClient(apiBase: string, fetchImpl: typeof fetch = 
   };
 }
 
-export function mountRemoteProvider(container: HTMLElement, options: RemoteProviderMountOptions): { dispose(): void } {
+export function mountRemoteProvider(container: HTMLElement, options: RemoteProviderMountOptions): RemoteProviderHandle {
   const api = createPlatformClient(options.apiBase, options.fetchImpl);
   const log = options.onLog ?? noop;
+  const notice = (message: string) => { if (!disposed && !ended) options.onNotice?.(message); };
+  // A separate window, never a tab of the editor's browsing context group: the editor's COOP
+  // gives it no opener either way. No "noopener": that makes window.open answer null always,
+  // and null is how a blocked popup is seen.
+  const openPopup = options.openPopup ?? ((url: string) => window.open(url, "_blank", "popup,width=520,height=720"));
   const abort = new AbortController();
   const signal = AbortSignal.any([abort.signal, options.signal]);
   let activation: ProviderActivation | undefined;
@@ -116,6 +146,18 @@ export function mountRemoteProvider(container: HTMLElement, options: RemoteProvi
   // One part request at a time: later ones are refused (protocol BUSY) rather
   // than queued behind a confirmation the user has not answered yet.
   let working = false;
+  // Sign-in (plugins 0028 §6.6). One attempt per panel, numbered, so the late answer of an
+  // ended attempt (its popup, or the server) is dropped. Without that a late address could
+  // sign the panel in again after a sign-out.
+  //  - `pair`: the next unused PKCE pair, made ahead so the popup opens without an await;
+  //  - `pending`: a sign-in was started and its window has not come back;
+  //  - `exchanging`: the attempt whose code the server is exchanging.
+  let pair: PkcePair | undefined;
+  let pending: { id: number; state: string; pair?: PkcePair; channel: BroadcastChannel; timer: ReturnType<typeof setTimeout>; opened: boolean } | undefined;
+  let exchanging: number | undefined;
+  let attempts = 0;
+  // A sign-out that arrived while a part was being saved: the panel reloads when the save has settled.
+  let reloadAfterSave = false;
   let disposed = false;
   // Access ended: the frame is gone and nothing the page sent earlier may still land.
   let ended = false;
@@ -133,6 +175,7 @@ export function mountRemoteProvider(container: HTMLElement, options: RemoteProvi
   };
   const teardown = () => {
     stopTimers();
+    endSignIn();
     abort.abort();
     window.removeEventListener("message", onMessage);
     frame?.removeEventListener("load", onLoad);
@@ -152,8 +195,125 @@ export function mountRemoteProvider(container: HTMLElement, options: RemoteProvi
     frame.contentWindow.postMessage(JSON.stringify(envelope), activation.provider.panelOrigin);
   };
 
+  const activity = (): HostActivity => (working ? "saving" : pending ? "pending" : exchanging !== undefined ? "exchanging" : "idle");
+  /** Back to what the panel showed before a sign-in. */
+  const settle = () => { if (activation && session?.handshake === "ready") status({ state: "ready", provider: activation.provider }); };
+  /** Ends the running attempt, if any: its channel closes and whatever arrives later is dropped. */
+  function endSignIn() {
+    if (pending) { clearTimeout(pending.timer); pending.channel.close(); pending = undefined; }
+    exchanging = undefined;
+  }
+  const failSignIn = (message: string) => {
+    endSignIn();
+    log("sign-in: " + message);
+    notice(message);
+    settle();
+  };
+  /** Makes the next PKCE pair; an attempt that started without one gets it. */
+  const preparePair = () => {
+    void makePkcePair().then((made) => {
+      if (disposed || ended) return;
+      if (pending && !pending.pair) { pending.pair = made; preparePair(); }
+      else pair = made;
+    }, noop);
+  };
+  /**
+   * Opens the sign-in window of the pending attempt. Runs in the task of the page's message or
+   * of a click in PCBJam's chrome, with no await before window.open: the browser lets a popup
+   * through only while that click is fresh.
+   */
+  const openSignIn = () => {
+    const auth = activation?.provider.auth;
+    if (!auth || !pending?.pair) return false;
+    let opened: unknown = null;
+    try { opened = openPopup(authorizationUrl(auth, pending.state, pending.pair.challenge)); } catch { /* treated as blocked */ }
+    if (!opened) return false;
+    pending.opened = true;
+    return true;
+  };
+  const startSignIn = () => {
+    if (!activation?.provider.auth) return;
+    const provider = activation.provider, auth = activation.provider.auth;
+    // A new request replaces a pending attempt: the user may have closed its window, which the editor cannot see.
+    endSignIn();
+    notice("");
+    // The sign-in server sends the window back to the editor address the server is set up for.
+    // On another address (a preview) the answer would never reach this page.
+    if (new URL(auth.redirectUri).origin !== location.origin) { failSignIn("Sign-in is not available on this address of PCBJam."); return; }
+    const id = ++attempts;
+    const state = randomToken();
+    // The channel is open before the window is.
+    const channel = new BroadcastChannel(LOGIN_CHANNEL_PREFIX + state);
+    channel.onmessage = (event) => onCallback(id, event.data);
+    const timer = setTimeout(() => { if (pending?.id === id) failSignIn("Sign-in did not finish. Try again."); }, options.signInTimeoutMs ?? SIGN_IN_TIMEOUT_MS);
+    // A pair is used for one attempt only; the next one is made right away.
+    pending = { id, state, pair, channel, timer, opened: false };
+    if (pair) { pair = undefined; preparePair(); }
+    log("sign-in: started");
+    status({ state: "sign-in", provider, step: openSignIn() ? "popup" : "blocked" });
+  };
+  /** The callback page's message (plugins 0028 §6.6 "Accepting a callback"). One per attempt. */
+  const onCallback = (id: number, data: unknown) => {
+    const auth = activation?.provider.auth;
+    if (!auth || !pending || pending.id !== id || !pending.opened || !pending.pair) return;
+    const verdict = judgeCallback(data, { state: pending.state, issuer: auth.issuer });
+    if (verdict.kind === "ignore") return;
+    const verifier = pending.pair.verifier;
+    endSignIn();
+    if (verdict.kind !== "code") { failSignIn(verdict.kind === "error" ? verdict.text : "Sign-in failed"); return; }
+    exchanging = id;
+    status({ state: "sign-in", provider: activation!.provider, step: "exchanging" });
+    void exchange(id, verdict.code, verifier);
+  };
+  /** The server trades the code for the provider's one-time panel address; the panel loads it. */
+  async function exchange(id: number, code: string, codeVerifier: string) {
+    const provider = activation!.provider;
+    try {
+      const answer = await api.json<{ nonceUrl?: unknown }>(`activations/${activation!.id}/login`, "POST", { code, codeVerifier }, signal, SIGN_IN_EXCHANGE_MS);
+      // Ended meanwhile (sign-out, cancel, a reload of the panel): the answer is dropped.
+      if (exchanging !== id) return;
+      exchanging = undefined;
+      let onPanelOrigin = false;
+      try { onPanelOrigin = typeof answer.nonceUrl === "string" && new URL(answer.nonceUrl).origin === provider.panelOrigin; } catch { /* not a URL */ }
+      if (!onPanelOrigin || !frame) { failSignIn("Sign-in failed"); return; }
+      // The address carries a one-time secret: it is never logged.
+      log("sign-in: signed in");
+      notice("");
+      status({ state: "loading", provider });
+      // onLoad starts a new NEW_SESSION handshake with the signed-in page.
+      frame.src = answer.nonceUrl as string;
+    } catch (error) {
+      if (exchanging !== id) return;
+      exchanging = undefined;
+      const e = error as Error & { status?: number; code?: string };
+      // A LOGIN_ code carries one of the server's fixed texts and is about this sign-in only;
+      // every other refusal is about the activation, as for any call.
+      if (typeof e.code === "string" && e.code.startsWith("LOGIN_") && e.code !== "LOGIN_UNSUPPORTED") failSignIn(e.message);
+      else if (denied(e)) end("Provider access ended: " + e.message + ". Reopen the panel to continue.");
+      else if (e.status === 429) failSignIn("Too many sign-in attempts. Try again in a minute.");
+      else if (e.status === 400) failSignIn("Sign-in failed");
+      // No answer (the network lost it, or the deadline passed): PCBJam cannot know whether the sign-in went through.
+      else if (!signal.aborted) failSignIn("Sign-in did not finish. Try again.");
+    }
+  }
+  const reloadPanel = () => {
+    if (!frame || !activation) return;
+    status({ state: "loading", provider: activation.provider });
+    frame.src = activation.provider.panelUrl;
+  };
+  /** PCBJam holds nothing to delete: the page clears its own session, the panel loads afresh like in KiCad. */
+  const signOut = () => {
+    endSignIn();
+    notice("");
+    log("sign-in: signed out");
+    if (working) reloadAfterSave = true;
+    else reloadPanel();
+  };
+
   const onLoad = () => {
     if (!session || !activation) return;
+    // A page that loaded anew has a new session: a sign-in the old page asked for ends with it.
+    endSignIn();
     if (handshakeTimer) clearInterval(handshakeTimer);
     post(session.begin());
     status({ state: "connecting", provider: activation.provider, attempt: 1 });
@@ -173,17 +333,25 @@ export function mountRemoteProvider(container: HTMLElement, options: RemoteProvi
     const raw = typeof event.data === "string" ? event.data : event.data && typeof event.data === "object" ? event.data : null;
     if (raw === null) return;
     if (typeof raw === "string" && raw.length > PROVIDER_LIMITS.messageBytes) { log("dropped: message too large"); return; }
-    const handled = session.handleIncoming(raw, { busy: working });
+    const handled = session.handleIncoming(raw, { activity: activity() });
     if (handled.dropped) log("dropped: " + handled.dropped);
     for (const out of handled.outbound) post(out);
     if (handled.ready) { if (handshakeTimer) clearInterval(handshakeTimer); handshakeTimer = undefined; status({ state: "ready", provider: activation.provider }); }
-    if (handled.effect) {
+    const effect = handled.effect;
+    if (!effect) return;
+    // The two sign-in effects run in this task: the popup needs the click that sent the message.
+    if (effect.kind === "login") startSignIn();
+    else if (effect.kind === "sign-out") signOut();
+    else {
       working = true;
-      void runEffect(handled.effect).finally(() => { working = false; });
+      void runEffect(effect).finally(() => {
+        working = false;
+        if (reloadAfterSave) { reloadAfterSave = false; reloadPanel(); }
+      });
     }
   };
 
-  async function runEffect(effect: Effect) {
+  async function runEffect(effect: PartEffect) {
     if (!session || !activation) return;
     const { requestId, command } = effect;
     const provider = activation.provider;
@@ -256,8 +424,10 @@ export function mountRemoteProvider(container: HTMLElement, options: RemoteProvi
         providerOrigin: provider.origin, panelUrl: provider.panelUrl, originSet: provider.originSet,
         supportedAssetTypes: provider.supportedAssetTypes, maxDownloadBytes: provider.maxDownloadBytes,
         supportsDirectDownloads: provider.capabilities.directDownloads, supportsInlinePayloads: provider.capabilities.inlinePayloads,
+        authType: provider.auth ? "oauth2" : "none",
         uuid: options.uuid,
       });
+      if (provider.auth) preparePair();
       window.addEventListener("message", onMessage);
       frame = document.createElement("iframe");
       frame.title = provider.providerName + " parts";
@@ -292,5 +462,18 @@ export function mountRemoteProvider(container: HTMLElement, options: RemoteProvi
     if (activation) void api.json(`activations/${activation.id}`, "DELETE").catch(noop);
   };
   options.signal.addEventListener("abort", dispose, { once: true });
-  return { dispose };
+  return {
+    dispose,
+    signIn() {
+      if (disposed || ended || !activation || !pending || pending.opened) return;
+      if (openSignIn()) status({ state: "sign-in", provider: activation.provider, step: "popup" });
+    },
+    cancelSignIn() {
+      if (disposed || ended || (!pending && exchanging === undefined)) return;
+      endSignIn();
+      notice("");
+      log("sign-in: stopped in PCBJam");
+      settle();
+    },
+  };
 }

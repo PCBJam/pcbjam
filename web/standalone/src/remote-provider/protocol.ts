@@ -37,12 +37,29 @@ export interface ProviderSessionOptions {
   maxDownloadBytes: number;
   supportsDirectDownloads: boolean;
   supportsInlinePayloads: boolean;
+  /** How the provider signs its users in; "oauth2" turns REMOTE_LOGIN on (plugins 0028). */
+  authType?: "none" | "oauth2";
   uuid?: () => string;
 }
-/** A request the page made that needs asynchronous work before it can be answered. */
-export type Effect =
+/**
+ * What the host is doing when a message arrives. Sign-in and part saving share this one state,
+ * so they never overlap: the reload after a sign-in would otherwise start a new session under
+ * a running save.
+ *  - "saving": a part request is being downloaded, confirmed or saved;
+ *  - "pending": a sign-in was started and its popup has not come back;
+ *  - "exchanging": the popup came back and the server is finishing the sign-in.
+ */
+export type HostActivity = "idle" | "saving" | "pending" | "exchanging";
+/**
+ * Work a message asks of the host. A part request is answered when its work is done; the two
+ * sign-in effects are answered at once (the reply is in `outbound`) and the host acts on them
+ * in the same task: "login" opens the sign-in popup, "sign-out" ends a running sign-in and
+ * reloads the panel.
+ */
+export type PartEffect =
   | { kind: "place"; requestId: number; command: string; manifest: PlaceManifest }
   | { kind: "inline-part"; requestId: number; command: string; place: boolean; pack: PartPack; skipped: string[] };
+export type Effect = PartEffect | { kind: "login" } | { kind: "sign-out" };
 export interface Handled {
   /** Envelopes to post to the page, in order. */
   outbound: object[];
@@ -58,9 +75,10 @@ const ERRORS = {
   UNSUPPORTED_VERSION: (v: number) => `Unsupported RPC version ${v}.`,
   INVALID_PARAMETERS: "Missing session identifier.",
   SESSION_MISMATCH: "Session identifier did not match the active provider session.",
-  LOGIN_FAILED: "Sign-in through a remote provider is not supported in PCBJam yet.",
+  LOGIN_IN_PROGRESS: "A sign-in is already in progress.",
   UNKNOWN_COMMAND: (c: string) => `Command '${c}' is not supported.`,
   BUSY: "PCBJam is still handling the previous part. Try again when it has finished.",
+  SIGNING_IN: "PCBJam is signing you in. Try again when it has finished.",
 };
 
 export function createProviderSession(options: ProviderSessionOptions) {
@@ -108,11 +126,11 @@ export function createProviderSession(options: ProviderSessionOptions) {
     reply,
     error,
     /**
-     * `busy`: the host is still working on an earlier part request. Part
-     * commands are then refused before their payload is decoded, so a page
-     * cannot pile up work (or memory) behind a pending confirmation.
+     * `activity`: what the host is doing (see HostActivity). While it is not idle, part
+     * commands are refused before their payload is decoded, so a page cannot pile up work
+     * (or memory) behind a pending confirmation or a sign-in.
      */
-    handleIncoming(raw: unknown, { busy = false }: { busy?: boolean } = {}): Handled {
+    handleIncoming(raw: unknown, { activity = "idle" }: { activity?: HostActivity } = {}): Handled {
       let m: Envelope;
       try { m = validateEnvelope(raw); } catch (e) { return { outbound: [], dropped: (e as Error).message }; }
       if (m.version !== RPC_VERSION) return { outbound: [error(m.messageId, m.command, "UNSUPPORTED_VERSION", ERRORS.UNSUPPORTED_VERSION(m.version))] };
@@ -137,19 +155,32 @@ export function createProviderSession(options: ProviderSessionOptions) {
         case "GET_SOURCE_INFO":
           return { outbound: [reply(m.messageId, m.command, {
             provider_id: options.providerId, provider_name: options.providerName, panel_url: options.panelUrl,
-            authenticated: false, auth_type: "none",
+            // Always false: with sign-in the provider's page keeps the session, PCBJam holds no
+            // token (desktop KiCad answers true once it has one). A panel decides from its own session.
+            authenticated: false, auth_type: options.authType ?? "none",
             supports_direct_downloads: options.supportsDirectDownloads, supports_inline_payloads: options.supportsInlinePayloads,
           })] };
-        case "REMOTE_LOGIN":
-          if (p.sign_out === true) return { outbound: [reply(m.messageId, m.command, { authenticated: false, signed_out: true })] };
-          return { outbound: [error(m.messageId, m.command, "LOGIN_FAILED", ERRORS.LOGIN_FAILED)] };
+        case "REMOTE_LOGIN": {
+          // Answers follow desktop KiCad (panel_remote_symbol.cpp): sign-out first, then a
+          // provider without sign-in, then a request that may not open anything.
+          const oauth = options.authType === "oauth2";
+          if (p.sign_out === true)
+            return { outbound: [reply(m.messageId, m.command, { authenticated: false, signed_out: true })], ...(oauth ? { effect: { kind: "sign-out" } as const } : {}) };
+          if (!oauth) return { outbound: [reply(m.messageId, m.command, { authenticated: false, auth_type: "none" })] };
+          if (p.interactive === false) return { outbound: [reply(m.messageId, m.command, { authenticated: false, started: false })] };
+          if (activity === "saving") return { outbound: [error(m.messageId, m.command, "LOGIN_FAILED", ERRORS.BUSY)] };
+          if (activity === "exchanging") return { outbound: [error(m.messageId, m.command, "LOGIN_FAILED", ERRORS.LOGIN_IN_PROGRESS)] };
+          // Idle, or a popup is open: a new request replaces that attempt (the user may have
+          // closed the popup, which the editor cannot see).
+          return { outbound: [reply(m.messageId, m.command, { authenticated: false, started: true })], effect: { kind: "login" } };
+        }
         case "PLACE_COMPONENT":
         case "DL_COMPONENT":
         case "DL_SYMBOL":
         case "DL_FOOTPRINT":
         case "DL_3DMODEL":
         case "DL_SPICE": {
-          if (busy) return { outbound: [error(m.messageId, m.command, "IMPORT_FAILED", ERRORS.BUSY)] };
+          if (activity !== "idle") return { outbound: [error(m.messageId, m.command, "IMPORT_FAILED", activity === "saving" ? ERRORS.BUSY : ERRORS.SIGNING_IN)] };
           const place = m.command === "PLACE_COMPONENT" || String(p.mode ?? "").toUpperCase() === "PLACE";
           const isComponent = m.command === "PLACE_COMPONENT" || m.command === "DL_COMPONENT";
           try {

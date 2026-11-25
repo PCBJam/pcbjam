@@ -72,8 +72,15 @@ describe("informational commands", () => {
     expect(caps.compression).toEqual(["NONE"]);
     expect(caps.commands).toContain("PLACE_COMPONENT");
     expect(send("GET_SOURCE_INFO").outbound[0]).toMatchObject({ parameters: { provider_id: "acme", provider_name: "Acme", panel_url: ORIGIN + "/panel", authenticated: false, auth_type: "none", supports_direct_downloads: true, supports_inline_payloads: true } });
-    expect(send("REMOTE_LOGIN", { parameters: { interactive: true } }).outbound[0]).toMatchObject({ status: "ERROR", error_code: "LOGIN_FAILED" });
-    expect(send("REMOTE_LOGIN", { parameters: { sign_out: true } }).outbound[0]).toMatchObject({ status: "OK", parameters: { authenticated: false, signed_out: true } });
+    // A provider without sign-in is answered like desktop KiCad does: OK, and nothing starts.
+    for (const parameters of [{ interactive: true }, { interactive: false }, {}]) {
+      const answered = send("REMOTE_LOGIN", { parameters });
+      expect(answered.outbound).toEqual([expect.objectContaining({ status: "OK", parameters: { authenticated: false, auth_type: "none" } })]);
+      expect(answered.effect).toBeUndefined();
+    }
+    const signedOut = send("REMOTE_LOGIN", { parameters: { sign_out: true } });
+    expect(signedOut.outbound[0]).toMatchObject({ status: "OK", parameters: { authenticated: false, signed_out: true } });
+    expect(signedOut.effect).toBeUndefined();
   });
 });
 
@@ -176,7 +183,7 @@ describe("busy host", () => {
     s.begin();
     let id = 500;
     const send = (command: string, extra: Record<string, unknown>, busy: boolean) =>
-      s.handleIncoming({ version: 1, session_id: s.sessionId, message_id: ++id, command, parameters: {}, ...extra }, { busy });
+      s.handleIncoming({ version: 1, session_id: s.sessionId, message_id: ++id, command, parameters: {}, ...extra }, { activity: busy ? "saving" : "idle" });
     // Not even valid base64: a busy host must refuse before looking at it.
     for (const command of ["DL_SYMBOL", "DL_COMPONENT", "PLACE_COMPONENT"]) {
       const handled = send(command, { data: "%%%" }, true);
@@ -186,5 +193,75 @@ describe("busy host", () => {
     expect(send("CAPABILITIES", {}, true).outbound[0]).toMatchObject({ status: "OK", command: "CAPABILITIES" });
     const free = send("DL_SYMBOL", { data: b64(SYMBOL), parameters: { name: "R" } }, false);
     expect(free.effect).toMatchObject({ kind: "inline-part", command: "DL_SYMBOL" });
+  });
+});
+
+describe("sign-in (auth.type oauth2)", () => {
+  const session = () => {
+    const s = createProviderSession({ ...options, authType: "oauth2" });
+    s.begin();
+    let id = 700;
+    const send = (parameters: Record<string, unknown>, activity?: "idle" | "saving" | "pending" | "exchanging", command = "REMOTE_LOGIN", extra: Record<string, unknown> = {}) =>
+      s.handleIncoming({ version: 1, session_id: s.sessionId, message_id: ++id, command, parameters, ...extra }, activity ? { activity } : undefined);
+    return { send, id: () => id };
+  };
+  const STARTED = { status: "OK", parameters: { authenticated: false, started: true } };
+  const NOT_STARTED = { status: "OK", parameters: { authenticated: false, started: false } };
+  const SIGNED_OUT = { status: "OK", parameters: { authenticated: false, signed_out: true } };
+
+  it("GET_SOURCE_INFO names the auth type and never claims a session PCBJam cannot see", () => {
+    const { send } = session();
+    expect(send({}, "idle", "GET_SOURCE_INFO").outbound[0]).toMatchObject({ status: "OK", parameters: { auth_type: "oauth2", authenticated: false } });
+  });
+
+  it("an interactive request replies started and asks the host to open the popup; interactive defaults to true", () => {
+    const { send, id } = session();
+    for (const parameters of [{ interactive: true }, {}, { interactive: "yes" }]) {
+      const handled = send(parameters);
+      expect(handled.outbound).toEqual([expect.objectContaining({ ...STARTED, command: "REMOTE_LOGIN", response_to: id() })]);
+      expect(handled.effect).toEqual({ kind: "login" });
+    }
+    // A request that may not open anything starts nothing, in every state.
+    for (const activity of ["idle", "saving", "pending", "exchanging"] as const) {
+      const handled = send({ interactive: false }, activity);
+      expect(handled.outbound[0]).toMatchObject(NOT_STARTED);
+      expect(handled.effect).toBeUndefined();
+    }
+  });
+
+  it("follows one state for sign-in and part saving", () => {
+    const { send } = session();
+    // Saving a part: no sign-in under a running save.
+    const saving = send({ interactive: true }, "saving");
+    expect(saving.outbound[0]).toMatchObject({ status: "ERROR", error_code: "LOGIN_FAILED", error_message: expect.stringContaining("still handling the previous part") });
+    expect(saving.effect).toBeUndefined();
+    // A popup is open: the new request replaces that attempt.
+    const pending = send({ interactive: true }, "pending");
+    expect(pending.outbound[0]).toMatchObject(STARTED);
+    expect(pending.effect).toEqual({ kind: "login" });
+    // The server is finishing a sign-in: a second one is refused.
+    const exchanging = send({ interactive: true }, "exchanging");
+    expect(exchanging.outbound[0]).toMatchObject({ status: "ERROR", error_code: "LOGIN_FAILED", error_message: "A sign-in is already in progress." });
+    expect(exchanging.effect).toBeUndefined();
+    // Sign-out is answered in every state and always reaches the host, which ends a running
+    // attempt and reloads the panel (after a running save has settled).
+    for (const activity of ["idle", "saving", "pending", "exchanging"] as const) {
+      const out = send({ sign_out: true, interactive: true }, activity);
+      expect(out.outbound[0]).toMatchObject(SIGNED_OUT);
+      expect(out.effect).toEqual({ kind: "sign-out" });
+    }
+  });
+
+  it("refuses part commands during a sign-in with a text of their own, before decoding them", () => {
+    const { send } = session();
+    for (const activity of ["pending", "exchanging"] as const)
+      for (const command of ["DL_SYMBOL", "DL_COMPONENT", "PLACE_COMPONENT"]) {
+        const handled = send({}, activity, command, { data: "%%%" });
+        expect(handled.effect).toBeUndefined();
+        expect(handled.outbound[0]).toMatchObject({ status: "ERROR", error_code: "IMPORT_FAILED", error_message: "PCBJam is signing you in. Try again when it has finished." });
+      }
+    // Everything else still answers.
+    expect(send({}, "pending", "CAPABILITIES").outbound[0]).toMatchObject({ status: "OK" });
+    expect(send({}, "exchanging", "GET_KICAD_VERSION").outbound[0]).toMatchObject({ status: "OK" });
   });
 });
