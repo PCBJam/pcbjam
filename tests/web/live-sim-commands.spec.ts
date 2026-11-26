@@ -84,18 +84,6 @@ async function serveLibrary(page: Page): Promise<void> {
   });
 }
 
-async function answerSession(page: Page): Promise<void> {
-  await page.route('**/api/me', (route) => {
-    const origin = route.request().headers()['origin'] ?? '*';
-    return route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      headers: { 'access-control-allow-origin': origin, 'access-control-allow-credentials': 'true' },
-      body: JSON.stringify({ user: null, features: { liveSimulation: true } }),
-    });
-  });
-}
-
 async function bootSchematic(page: Page, file: string): Promise<void> {
   await page.goto(`/${SCOPE}/projects/demo/${file}`);
   await expect(page.locator('#canvas')).toBeVisible({ timeout: 180000 });
@@ -143,7 +131,6 @@ test.describe('live simulation: simulator commands in a schematic\'s texts', () 
 
   test('the circuit runs without them, what defines the circuit stays, and a notice says so', async ({ page }) => {
     test.setTimeout(300000);
-    await answerSession(page);
     await serveLibrary(page);
     await bootSchematic(page, 'live-sim/commands.kicad_sch');
     await expectTool(page, PLAY, 'the Play button is on the toolbar');

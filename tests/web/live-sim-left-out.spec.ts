@@ -46,8 +46,7 @@ import { openSimulationMenu } from './overlay-menu';
  * The library is a published snapshot of static files; the e2e build points
  * VITE_SIM_LIBRARY_URL at /e2e-sim-library (playwright-web.config.ts) and the
  * test answers it with a library that has no parts: every symbol runs with
- * KiCad's own model or not at all. The reference backend has no /api/me; the
- * test answers that too.
+ * KiCad's own model or not at all.
  *
  * Needs a wasm build with kicadSimNetlist and kicadSchToolbarButton, and an
  * ngspice_service with the live engine: rebuild + `npm run setup:kicad`.
@@ -60,18 +59,6 @@ const STOP = 'Stop live simulation';
 
 const json = (route: Route, body: unknown) =>
   route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
-
-async function answerSession(page: Page): Promise<void> {
-  await page.route('**/api/me', (route) => {
-    const origin = route.request().headers()['origin'] ?? '*';
-    return route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      headers: { 'access-control-allow-origin': origin, 'access-control-allow-credentials': 'true' },
-      body: JSON.stringify({ user: null, features: { liveSimulation: true } }),
-    });
-  });
-}
 
 /** A library with no parts. */
 async function serveEmptyLibrary(page: Page): Promise<void> {
@@ -159,7 +146,6 @@ test.describe('live simulation: what Play leaves out, and why', () => {
 
   test('one symbol for every reason: the notice counts them, the list groups them, the report stays after Stop', async ({ page }) => {
     test.setTimeout(300000);
-    await answerSession(page);
     await serveEmptyLibrary(page);
     await bootSchematic(page, 'live-sim/left-out.kicad_sch');
 
@@ -246,7 +232,6 @@ test.describe('live simulation: what Play leaves out, and why', () => {
 
   test('before Play the list says what a run would leave out; a board that leaves nothing out gets no notice', async ({ page }) => {
     test.setTimeout(300000);
-    await answerSession(page);
     await serveEmptyLibrary(page);
     await bootSchematic(page, 'live-sim/left-out.kicad_sch');
     await expectTool(page, PLAY, 'the Play button is on the toolbar');
@@ -281,7 +266,6 @@ test.describe('live simulation: what Play leaves out, and why', () => {
 
   test('a run the simulator refuses names the symbol, and the list keeps the reason', async ({ page }) => {
     test.setTimeout(300000);
-    await answerSession(page);
     await serveEmptyLibrary(page);
     // D1 asks for the line "D1 ... red" itself (Sim.Device "SPICE"): the user's
     // own line stays in the circuit, and nothing defines the model "red"
@@ -317,7 +301,6 @@ test.describe('live simulation: what Play leaves out, and why', () => {
 
   test('a sheet whose file is not in the project: the run does not start and says which file', async ({ page }) => {
     test.setTimeout(300000);
-    await answerSession(page);
     await serveEmptyLibrary(page);
     await bootSchematic(page, 'live-sim/lost-sheet.kicad_sch');
 

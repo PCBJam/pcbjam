@@ -28,8 +28,7 @@ import { openSimulationMenu } from './overlay-menu';
  *
  * The library is a published snapshot of static files; the e2e build points
  * VITE_SIM_LIBRARY_URL at /e2e-sim-library (playwright-web.config.ts) and the
- * test answers it with small parts of its own. The reference backend has
- * no /api/me; the test answers that too.
+ * test answers it with small parts of its own.
  *
  * Needs a wasm build with kicadSimPlaces, kicadSimNetlist and an
  * ngspice_service with the live engine: rebuild + `npm run setup:kicad`.
@@ -135,18 +134,6 @@ async function serveLibrary(page: Page): Promise<void> {
   });
 }
 
-async function turnFeatureOn(page: Page): Promise<void> {
-  await page.route('**/api/me', (route) => {
-    const origin = route.request().headers()['origin'] ?? '*';
-    return route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      headers: { 'access-control-allow-origin': origin, 'access-control-allow-credentials': 'true' },
-      body: JSON.stringify({ user: null, features: { liveSimulation: true } }),
-    });
-  });
-}
-
 // --- the app -----------------------------------------------------------------
 
 async function bootSchematic(page: Page): Promise<void> {
@@ -206,7 +193,6 @@ const level = async (glow: Locator): Promise<number> => Number(await glow.getAtt
 test.describe('live simulation: heat as a drawn circuit', () => {
   test('a heater warms the wire it names, a fan cools it, a sensor is as warm as it', async ({ page }) => {
     test.setTimeout(300000);
-    await turnFeatureOn(page);
     await serveLibrary(page);
     await bootSchematic(page);
 

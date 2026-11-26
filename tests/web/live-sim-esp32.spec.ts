@@ -23,8 +23,7 @@ import { openSimulationMenu } from './overlay-menu';
  *
  * The e2e build points VITE_SIM_LIBRARY_URL at /e2e-sim-library (playwright-web.config.ts);
  * the test answers that address from the folder, and the project's firmware.bin from the
- * image (the fixture folder stays as it is). The reference backend has no /api/me; the
- * test answers that too.
+ * image (the fixture folder stays as it is).
  *
  * Time is never waited for: every wait is a poll for a state of the page.
  */
@@ -37,18 +36,6 @@ const FIRMWARE = here(process.env.PCBJAM_ESP_FIRMWARE);
 const menuRow = (page: Page) => page.getByTestId('live-sim-toggle');
 const widget = (page: Page, kind: string, ref: string) => page.locator(`[data-testid="live-${kind}"][data-ref="${ref}"]`);
 const level = async (glow: Locator): Promise<number> => Number(await glow.getAttribute('data-level'));
-
-async function answerSession(page: Page): Promise<void> {
-  await page.route('**/api/me', (route) => {
-    const origin = route.request().headers()['origin'] ?? '*';
-    return route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      headers: { 'access-control-allow-origin': origin, 'access-control-allow-credentials': 'true' },
-      body: JSON.stringify({ user: null, features: { liveSimulation: true } }),
-    });
-  });
-}
 
 /** Answers the library's address from the published folder; returns the paths that were asked for. */
 async function serveLibrary(page: Page): Promise<string[]> {
@@ -104,7 +91,6 @@ test.describe('live simulation: an ESP32 module runs the firmware of the project
 
   test('Play boots the chip: it prints, its LED blinks, and its button is answered', async ({ page }) => {
     test.setTimeout(600000);
-    await answerSession(page);
     const asked = await serveLibrary(page);
     const firmware = await serveProjectFile(page, 'firmware.bin', FIRMWARE);
     await bootSchematic(page, 'live-sim/esp32-c3.kicad_sch');

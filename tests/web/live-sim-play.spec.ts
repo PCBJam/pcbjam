@@ -8,8 +8,7 @@ import { openOverlayMenu, openSimulationMenu } from './overlay-menu';
  * toolbar, and a row of the Session menu that does the same. Live simulation's
  * rows are in the menu's Simulation child menu (openSimulationMenu).
  *
- *   - without the `liveSimulation` toggle there is neither;
- *   - with it, KiCad's toolbar has "Run live simulation". A click reads the
+ *   - KiCad's toolbar has "Run live simulation". A click reads the
  *     schematic, builds its circuit and runs it in the live engine: the button
  *     is "Stop live simulation" from the click on, also while the run starts,
  *     so a start that waits can be given up. A click on Stop brings Play back,
@@ -38,8 +37,7 @@ import { openOverlayMenu, openSimulationMenu } from './overlay-menu';
  * The library is a published snapshot of static files; the e2e build points
  * VITE_SIM_LIBRARY_URL at /e2e-sim-library (playwright-web.config.ts) and the
  * test answers it with a library that has no parts: every symbol runs with
- * KiCad's own model. The reference backend has no /api/me; the test answers
- * that too.
+ * KiCad's own model.
  *
  * Needs a wasm build with kicadSimNetlist and kicadSchToolbarButton, and an
  * ngspice_service with the live engine: rebuild + `npm run setup:kicad`.
@@ -52,18 +50,6 @@ const STOP = 'Stop live simulation';
 
 const json = (route: Route, body: unknown) =>
   route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
-
-async function answerSession(page: Page, liveSimulation: boolean): Promise<void> {
-  await page.route('**/api/me', (route) => {
-    const origin = route.request().headers()['origin'] ?? '*';
-    return route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      headers: { 'access-control-allow-origin': origin, 'access-control-allow-credentials': 'true' },
-      body: JSON.stringify({ user: null, features: { liveSimulation } }),
-    });
-  });
-}
 
 /** A library with no parts. */
 async function serveEmptyLibrary(page: Page): Promise<void> {
@@ -129,25 +115,12 @@ test.describe('live simulation: Play and Stop', () => {
   // the left: a window wide enough to have that place on screen.
   test.use({ viewport: { width: 1600, height: 720 } });
 
-  test('without the toggle there is no button', async ({ page }) => {
-    test.setTimeout(300000);
-    await answerSession(page, false);
-    await serveEmptyLibrary(page);
-    await bootSchematic(page, 'live-sim/run.kicad_sch');
-    // KiCad's own simulator button is there; ours is not, also after the loop has turned
-    await expectTool(page, 'Simulator', true, "KiCad's toolbar is up");
-    expect(await tool(page, PLAY)).toBeNull();
-    await openOverlayMenu(page);
-    await expect(page.getByTestId('overlay-menu-sub-simulation'), 'and the Session menu has no Simulation menu').toHaveCount(0);
-  });
-
   test('Play runs the circuit of the schematic; Stop halts it', async ({ page }) => {
     test.setTimeout(300000);
     const fetched: string[] = [];
     page.on('request', (r) => {
       if (/ngspice_service\.(js|wasm)/.test(r.url())) fetched.push(r.url());
     });
-    await answerSession(page, true);
     await serveEmptyLibrary(page);
     await bootSchematic(page, 'live-sim/run.kicad_sch');
 
@@ -181,7 +154,6 @@ test.describe('live simulation: Play and Stop', () => {
 
   test('a symbol nobody has a model for is left out; the rest runs and the page says which one', async ({ page }) => {
     test.setTimeout(300000);
-    await answerSession(page, true);
     await serveEmptyLibrary(page);
     await bootSchematic(page, 'live-sim/no-model.kicad_sch');
 
@@ -206,7 +178,6 @@ test.describe('live simulation: Play and Stop', () => {
 
   test('a circuit the simulator does not run says why and stays on Play', async ({ page }) => {
     test.setTimeout(300000);
-    await answerSession(page, true);
     await serveEmptyLibrary(page);
     // D1 asks for the line "D1 ... red" itself: the user's own line is not left out
     await bootSchematic(page, 'live-sim/raw-model.kicad_sch');
@@ -237,7 +208,6 @@ test.describe('live simulation: Play and Stop in the Session menu', () => {
 
   test('the row plays and stops, in a window that does not show the toolbar button', async ({ page }) => {
     test.setTimeout(300000);
-    await answerSession(page, true);
     await serveEmptyLibrary(page);
     await bootSchematic(page, 'live-sim/run.kicad_sch');
     await expectTool(page, 'Simulator', true, "KiCad's toolbar is up");
@@ -257,7 +227,6 @@ test.describe('live simulation: Play and Stop in the Session menu', () => {
   // given up, and the next Play works.
   test('a start that waits for the library is given up by Stop, and Play works again', async ({ page }) => {
     test.setTimeout(300000);
-    await answerSession(page, true);
     const files: Record<string, unknown> = {
       'current.json': { schema: 1, version: SNAPSHOT },
       [`${SNAPSHOT}/index.json`]: { schema: 1, version: SNAPSHOT, parts: [], emulators: [] },
@@ -295,7 +264,6 @@ test.describe('live simulation: Play and Stop in the Session menu', () => {
 
   test('with the UI hidden the row plays and stops, and the toolbars stay hidden', async ({ page }) => {
     test.setTimeout(300000);
-    await answerSession(page, true);
     await serveEmptyLibrary(page);
     await bootSchematic(page, 'live-sim/run.kicad_sch');
     await expectTool(page, 'Simulator', true, "KiCad's toolbar is up");
@@ -321,20 +289,8 @@ test.describe('live simulation: the serial console', () => {
   const row = (page: Page) => page.getByTestId('sim-console-panel-toggle');
   const panel = (page: Page) => page.getByTestId('sim-console-panel');
 
-  test('without the toggle the Session menu has no row for it', async ({ page }) => {
-    test.setTimeout(300000);
-    await answerSession(page, false);
-    await serveEmptyLibrary(page);
-    await bootSchematic(page, 'live-sim/run.kicad_sch');
-    await expectTool(page, 'Simulator', true, "KiCad's toolbar is up");
-    await openOverlayMenu(page);
-    await expect(page.getByTestId('overlay-menu-sub-simulation')).toHaveCount(0);
-    await expect(panel(page)).toHaveCount(0);
-  });
-
   test('the row shows and hides the panel; a circuit without a chip that runs firmware has nothing to show', async ({ page }) => {
     test.setTimeout(300000);
-    await answerSession(page, true);
     await serveEmptyLibrary(page);
     await bootSchematic(page, 'live-sim/run.kicad_sch');
     await expectTool(page, 'Simulator', true, "KiCad's toolbar is up");

@@ -94,8 +94,7 @@ import { openSimulationMenu } from './overlay-menu';
  *
  * The library is a published snapshot of static files; the e2e build points
  * VITE_SIM_LIBRARY_URL at /e2e-sim-library (playwright-web.config.ts) and the
- * test answers it with small parts of its own. The reference backend has
- * no /api/me; the test answers that too.
+ * test answers it with small parts of its own.
  *
  * Needs a wasm build with kicadSimPlaces, kicadSimNetlist and an
  * ngspice_service with the live engine: rebuild + `npm run setup:kicad`.
@@ -306,18 +305,6 @@ async function serveLibrary(page: Page, parts: TestPart[] = PARTS): Promise<void
   });
 }
 
-async function turnFeatureOn(page: Page): Promise<void> {
-  await page.route('**/api/me', (route) => {
-    const origin = route.request().headers()['origin'] ?? '*';
-    return route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      headers: { 'access-control-allow-origin': origin, 'access-control-allow-credentials': 'true' },
-      body: JSON.stringify({ user: null, features: { liveSimulation: true } }),
-    });
-  });
-}
-
 // --- the app -----------------------------------------------------------------
 
 async function bootSchematic(page: Page, file = 'widgets'): Promise<void> {
@@ -428,7 +415,6 @@ const level = async (glow: Locator): Promise<number> => Number(await glow.getAtt
 test.describe('live simulation: the widgets on the sheet', () => {
   test('every part has its widget on its symbol; key, switch and dial work', async ({ page }) => {
     test.setTimeout(300000);
-    await turnFeatureOn(page);
     await serveLibrary(page);
     await bootSchematic(page);
 
@@ -551,7 +537,6 @@ test.describe('live simulation: the widgets on the sheet', () => {
 
   test('a schematic that draws no source runs: a wire named +5V is powered by its name', async ({ page }) => {
     test.setTimeout(300000);
-    await turnFeatureOn(page);
     await serveLibrary(page);
     await bootSchematic(page, 'named-supply');
 
@@ -574,7 +559,6 @@ test.describe('live simulation: the widgets on the sheet', () => {
 
   test('a chip with several units: a unit that is not placed is left open, a chip without its supply is named', async ({ page }) => {
     test.setTimeout(300000);
-    await turnFeatureOn(page);
     await serveLibrary(page, CHIP_PARTS);
     await bootSchematic(page, 'chips');
 
@@ -599,7 +583,6 @@ test.describe('live simulation: the widgets on the sheet', () => {
 
   test('a regulator is the source of its output wire when a source reaches it; one that none reaches is named', async ({ page }) => {
     test.setTimeout(300000);
-    await turnFeatureOn(page);
     await serveLibrary(page, REG_PARTS);
     await bootSchematic(page, 'regulators');
 
@@ -629,7 +612,6 @@ test.describe('live simulation: the widgets on the sheet', () => {
 
   test('a part with several currents: a digit lights its bars, a light mixes its colours', async ({ page }) => {
     test.setTimeout(300000);
-    await turnFeatureOn(page);
     await serveLibrary(page, DIGIT_PARTS);
     await bootSchematic(page, 'named-supply');
 
@@ -671,7 +653,6 @@ test.describe('live simulation: the widgets on the sheet', () => {
 
   test('a relay moves its contact by itself: pulled in while its coil has current', async ({ page }) => {
     test.setTimeout(300000);
-    await turnFeatureOn(page);
     await serveLibrary(page, RELAY_PARTS);
     await bootSchematic(page);
 
@@ -738,7 +719,6 @@ test.describe('live simulation: the widgets on the sheet', () => {
 
   test('a sensor set by hand: its slider says the value it is set to', async ({ page }) => {
     test.setTimeout(300000);
-    await turnFeatureOn(page);
     await serveLibrary(page, SENSOR_PARTS);
     await bootSchematic(page);
 
@@ -770,7 +750,6 @@ test.describe('live simulation: the widgets on the sheet', () => {
 
   test('a part that turns and sounds: a mark goes round, rings spread, a number counts the turns', async ({ page }) => {
     test.setTimeout(300000);
-    await turnFeatureOn(page);
     await serveLibrary(page, MOVER_PARTS);
     await bootSchematic(page);
 
@@ -866,7 +845,6 @@ test.describe('live simulation: the widgets on the sheet', () => {
         return connect.call(this, to, ...rest);
       } as typeof AudioNode.prototype.connect;
     });
-    await turnFeatureOn(page);
     await serveLibrary(page, MOVER_PARTS);
     await bootSchematic(page);
     await clickRow(page, 'running');
@@ -951,7 +929,6 @@ test.describe('live simulation: the widgets on the sheet', () => {
 
   test('a tag is dragged off what it covers: it stays there through a zoom and the next run, a double-click puts it back', async ({ page }) => {
     test.setTimeout(300000);
-    await turnFeatureOn(page);
     await serveLibrary(page);
     await bootSchematic(page);
     await clickRow(page, 'running');
@@ -1093,7 +1070,6 @@ test.describe('live simulation: the widgets on the sheet', () => {
 
   test('the widgets stay on their symbols; pan, zoom and dialogs are the editor\'s', async ({ page }) => {
     test.setTimeout(300000);
-    await turnFeatureOn(page);
     await serveLibrary(page);
     await bootSchematic(page);
     await clickRow(page, 'running');

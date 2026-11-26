@@ -625,7 +625,6 @@ export function WasmTool({
   // lab turns plugins on without a backend.
   const pluginsOn = useSessionFeature("plugins");
   const tutorialsOn = useSessionFeature("tutorials");
-  const liveSimulationOn = useSessionFeature("liveSimulation");
   // Tutorials run on the plugin machinery without `plugins` (plugins 0021):
   // the server then lists tutorials only, and the Session menu shows the
   // Tutorials section without the Plugins one.
@@ -635,11 +634,11 @@ export function WasmTool({
   const pluginCatalog = usePluginCatalog(ready && pluginPocEnabled);
   // A tutorial just started here (Tutorials menu / web Tutorials page): open its panel.
   useTutorialFromUrl(pluginCatalog, setPluginView, pluginPocEnabled && tutorialsOn && !localPluginLab);
-  // What's new (the backend's `whatsNew` feature): the release notes' row and panel, the "new"
-  // dots, and PCBJam AI's offer for a Free account. All of it is decoration: `news` stays null
-  // without the feature, for an anonymous session, and when the backend doesn't answer.
-  const whatsNewOn = useSessionFeature("whatsNew");
-  const news = useWhatsNew(ready && whatsNewOn);
+  // What's new: the release notes' row and panel, the "new" dots, and PCBJam AI's offer for a
+  // Free account. No feature toggle: every signed-in session asks (the identity is loaded before
+  // `ready`). All of it is decoration: `news` stays null for an anonymous session and when the
+  // backend doesn't answer or has no such endpoint.
+  const news = useWhatsNew(ready && sessionIdentity() !== null);
   const [newsOpen, setNewsOpen] = React.useState(false);
   // The release the open panel shows.
   const [newsVersion, setNewsVersion] = React.useState<string | null>(null);
@@ -2333,10 +2332,10 @@ export function WasmTool({
     return hasImportBridge(mod) ? mod : null;
   }, [ready, tool]);
 
-  // Simulation parts (live simulation), eeschema sessions only: the backend
-  // turned `liveSimulation` on for this session, the build knows where the
-  // part library is published, and the editor build has the read.
-  const simParts = React.useMemo(() => (liveSimulationOn ? simPartsConfig() : null), [liveSimulationOn]);
+  // Simulation parts (live simulation), eeschema sessions only: the build knows
+  // where the part library is published, and the editor build has the read.
+  // There is no feature toggle: a build with the library's address has it.
+  const simParts = React.useMemo(() => simPartsConfig(), []);
   const simPartsMod = React.useMemo<SimSymbolsModule | null>(() => {
     if (!ready || tool !== "eeschema" || !simParts) return null;
     const mod = (window as { Module?: unknown }).Module;

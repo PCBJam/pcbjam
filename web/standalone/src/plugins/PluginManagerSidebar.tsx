@@ -438,7 +438,7 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
     </aside>}
     {selected && <PluginFloatingPanel key={panelStorageKey} storageKey={panelStorageKey} preferredSize={isProvider(active) ? PROVIDER_PANEL_SIZE : active?.manifest.uiSize} title={title} forceExpanded={!!prompt} hidden={panelHidden && !prompt} collapseSignal={collapseSignal} onRestart={restart} onClose={closePanel}>
       {/* While Pro comes from the free trial: the days left, above the chat. */}
-      {active?.manifest.id === AI_CHAT_PLUGIN && sessionFeature('whatsNew') && <AiTrialStrip />}
+      {active?.manifest.id === AI_CHAT_PLUGIN && <AiTrialStrip />}
       <div className="max-h-[55%] shrink-0 overflow-y-auto border-b border-black/10 px-3 py-2 text-xs dark:border-white/10">
         <Tip content={fileName}>
           <p className="truncate text-neutral-500 dark:text-white/60">{fileName} · {selection.uuids.length} selected</p>

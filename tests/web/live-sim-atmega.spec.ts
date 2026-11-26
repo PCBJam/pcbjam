@@ -368,18 +368,6 @@ async function serveProjectFile(page: Page, name: string, file: string): Promise
   return count;
 }
 
-async function answerSession(page: Page): Promise<void> {
-  await page.route('**/api/me', (route) => {
-    const origin = route.request().headers()['origin'] ?? '*';
-    return route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      headers: { 'access-control-allow-origin': origin, 'access-control-allow-credentials': 'true' },
-      body: JSON.stringify({ user: null, features: { liveSimulation: true } }),
-    });
-  });
-}
-
 // --- the app -----------------------------------------------------------------
 
 async function bootSchematic(page: Page, name: string): Promise<void> {
@@ -500,7 +488,6 @@ const beats = (page: Page): Promise<Record<string, number>> => page.evaluate(() 
 test.describe('live simulation: a bare ATmega328P runs the sketch of the project', () => {
   test('the chip runs only with its supply, at its crystal\'s speed; its button, its reset and its list line work', async ({ page }) => {
     test.setTimeout(300000);
-    await answerSession(page);
     await serveLibrary(page);
     await serveProjectFile(page, 'firmware.hex', HEX);
     await bootSchematic(page, 'atmega');
@@ -574,7 +561,6 @@ test.describe('live simulation: a bare ATmega328P runs the sketch of the project
 
   test('two chips on one sheet: the one without a crystal runs at 8 MHz, Play says so, and the list sets its speed', async ({ page }) => {
     test.setTimeout(300000);
-    await answerSession(page);
     await serveLibrary(page);
     await serveProjectFile(page, 'firmware.hex', HEX);
     await bootSchematic(page, 'atmega-two');
@@ -629,7 +615,6 @@ test.describe('live simulation: a bare ATmega328P runs the sketch of the project
 
   test('a chip on 5 V and one on 3.3 V: each drives, reads and measures against its own supply', async ({ page }) => {
     test.setTimeout(300000);
-    await answerSession(page);
     await serveLibrary(page);
     await serveProjectFile(page, 'firmware.hex', HEX);
     await bootSchematic(page, 'atmega-levels');
@@ -689,7 +674,6 @@ test.describe('live simulation: a bare ATmega328P runs the sketch of the project
 test.describe('live simulation: a board with no source drawn takes its power through a socket', () => {
   test('a barrel jack feeds the regulator and the regulator the chip: the board runs as it is drawn', async ({ page }) => {
     test.setTimeout(300000);
-    await answerSession(page);
     await serveLibrary(page);
     await serveProjectFile(page, 'firmware.hex', HEX);
     await bootSchematic(page, 'atmega-board');
@@ -746,7 +730,6 @@ test.describe('live simulation: a board with no source drawn takes its power thr
 
   test('a USB socket feeds a regulator whose wire has no voltage in its name; a socket that gives power out is no source', async ({ page }) => {
     test.setTimeout(300000);
-    await answerSession(page);
     await serveLibrary(page);
     await serveProjectFile(page, 'firmware.hex', HEX);
     await bootSchematic(page, 'atmega-usb-board');

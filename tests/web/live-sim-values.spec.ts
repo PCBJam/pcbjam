@@ -39,8 +39,7 @@ import { openSimulationMenu } from './overlay-menu';
  *
  * The library is a published snapshot of static files; the e2e build points
  * VITE_SIM_LIBRARY_URL at /e2e-sim-library (playwright-web.config.ts) and the
- * test answers it with one part of its own, a voltmeter. The reference backend
- * has no /api/me; the test answers that too.
+ * test answers it with one part of its own, a voltmeter.
  *
  * Needs a wasm build with kicadSimNetlist and kicadSchToolbarButton, and an
  * ngspice_service with the live engine: rebuild + `npm run setup:kicad`.
@@ -93,18 +92,6 @@ async function serveLibrary(page: Page): Promise<void> {
     return body === undefined
       ? route.fulfill({ status: 404, body: 'not found' })
       : route.fulfill({ status: 200, contentType: rel.endsWith('.json') ? 'application/json' : 'text/plain', body });
-  });
-}
-
-async function answerSession(page: Page): Promise<void> {
-  await page.route('**/api/me', (route) => {
-    const origin = route.request().headers()['origin'] ?? '*';
-    return route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      headers: { 'access-control-allow-origin': origin, 'access-control-allow-credentials': 'true' },
-      body: JSON.stringify({ user: null, features: { liveSimulation: true } }),
-    });
   });
 }
 
@@ -172,7 +159,6 @@ test.describe('live simulation: a Value that says its ratings too', () => {
 
   test('the value alone runs, the list says which, and a Value that is not read is left out with what to type', async ({ page }) => {
     test.setTimeout(300000);
-    await answerSession(page);
     await serveLibrary(page);
     await bootSchematic(page, 'live-sim/values.kicad_sch');
     await expectTool(page, PLAY, 'the Play button is on the toolbar');

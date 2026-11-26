@@ -8,8 +8,7 @@ import { shotPath } from '../e2e/utils/element-tracker';
  * list that says, for every symbol of the open schematic, what the simulation
  * library has for it. Opens the demo schematic (tests/fixtures/demo: R1-R4,
  * C1, C2, P1-P8, the three-unit valve U1, power symbols) and asserts
- *   - the Session menu has the "Simulation parts" row only when the backend
- *     turned `liveSimulation` on for the session (/api/me `features`);
+ *   - the Session menu has the "Simulation parts" row;
  *   - the panel lists one row per symbol from the editor's own read
  *     (kicadSimSymbols: all sheets, one row for the three units of U1, no
  *     power symbols), matched against the published library: the resistors
@@ -30,8 +29,7 @@ import { shotPath } from '../e2e/utils/element-tracker';
  *
  * The library is a published snapshot of static files. The e2e build points
  * VITE_SIM_LIBRARY_URL at /e2e-sim-library on the app's own origin
- * (playwright-web.config.ts); nothing is there, each test answers it. The
- * reference backend has no /api/me, so the test answers that too.
+ * (playwright-web.config.ts); nothing is there, each test answers it.
  *
  * Needs a wasm build exporting kicadSimSymbols and kicadSimNetlist. A bundle
  * without the first hides the menu row (feature-detected), which fails the
@@ -90,19 +88,6 @@ const WORDS = Buffer.from('just words, long enough to fill the header of an imag
 // The same image as built for an ESP32-S3: the number of the chip is in bytes 12 and 13.
 const OTHER_CHIP = Buffer.from(IMAGE);
 OTHER_CHIP[12] = 0x09;
-
-/** The session payload of a backend that turned live simulation on. */
-async function turnFeatureOn(page: Page): Promise<void> {
-  await page.route('**/api/me', (route) => {
-    const origin = route.request().headers()['origin'] ?? '*';
-    return route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      headers: { 'access-control-allow-origin': origin, 'access-control-allow-credentials': 'true' },
-      body: JSON.stringify({ user: null, features: { liveSimulation: true } }),
-    });
-  });
-}
 
 /** Answers the library's address; returns the paths that were asked for. */
 async function serveLibrary(page: Page, files: Record<string, unknown>): Promise<string[]> {
@@ -172,7 +157,6 @@ async function openPanel(page: Page) {
 test.describe('simulation parts panel', () => {
   test('lists every symbol with what the library has for it', async ({ page }) => {
     test.setTimeout(300000);
-    await turnFeatureOn(page);
     const asked = await serveLibrary(page, {
       'current.json': { schema: 1, version: SNAPSHOT },
       [`${SNAPSHOT}/index.json`]: INDEX,
@@ -243,7 +227,6 @@ test.describe('simulation parts panel', () => {
 
   test('a chip has its firmware on its line: a picked file is sent and named on the symbol', async ({ page }) => {
     test.setTimeout(300000);
-    await turnFeatureOn(page);
     const asked = await serveLibrary(page, {
       'current.json': { schema: 1, version: SNAPSHOT },
       [`${SNAPSHOT}/index.json`]: CHIP_INDEX,
@@ -320,7 +303,6 @@ test.describe('simulation parts panel', () => {
 
   test('says so when the library cannot be reached, and recovers', async ({ page }) => {
     test.setTimeout(300000);
-    await turnFeatureOn(page);
     const files: Record<string, unknown> = {};
     await serveLibrary(page, files);
     await bootSchematic(page);
@@ -338,16 +320,5 @@ test.describe('simulation parts panel', () => {
     await page.getByTestId('sim-parts-panel-refresh').click();
     await expect(panel).toHaveAttribute('data-status', 'ready', { timeout: 30000 });
     await expect(page.getByTestId('sim-part-row')).toHaveCount(15);
-  });
-
-  test('is not offered when the feature is off for the session', async ({ page }) => {
-    test.setTimeout(300000);
-    const asked = await serveLibrary(page, {});
-    await bootSchematic(page);
-
-    await openOverlayMenu(page);
-    await expect(page.getByTestId('overlay-menu-sub-simulation'), 'the Session menu has no Simulation menu').toHaveCount(0);
-    await expect(page.getByTestId('sim-parts-panel')).toHaveCount(0);
-    expect(asked).toEqual([]);
   });
 });

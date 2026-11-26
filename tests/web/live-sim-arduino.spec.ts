@@ -29,8 +29,7 @@ import { openSimulationMenu } from './overlay-menu';
  * The library is a published snapshot of static files; the e2e build points
  * VITE_SIM_LIBRARY_URL at /e2e-sim-library (playwright-web.config.ts) and the test
  * answers it with parts of its own: a board for KiCad's Uno symbol with the three pads
- * this circuit uses, a button and an LED. The reference backend has no /api/me; the test
- * answers that too.
+ * this circuit uses, a button and an LED.
  *
  * With PCBJAM_SIM_SNAPSHOT=<a folder written by the library's publish:snapshot --to> the
  * test answers the library's address with that folder instead: the same board then runs
@@ -216,18 +215,6 @@ async function serveProjectFile(page: Page, name: string, file: string): Promise
   return count;
 }
 
-async function answerSession(page: Page): Promise<void> {
-  await page.route('**/api/me', (route) => {
-    const origin = route.request().headers()['origin'] ?? '*';
-    return route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      headers: { 'access-control-allow-origin': origin, 'access-control-allow-credentials': 'true' },
-      body: JSON.stringify({ user: null, features: { liveSimulation: true } }),
-    });
-  });
-}
-
 // --- the app -----------------------------------------------------------------
 
 async function bootSchematic(page: Page): Promise<void> {
@@ -276,7 +263,6 @@ const said = async (text: Locator, words: string): Promise<number> => ((await te
 test.describe('live simulation: an Arduino Uno runs the sketch of the project', () => {
   test('Play starts the sketch: it prints, its LED blinks, its button and its reset are answered', async ({ page }) => {
     test.setTimeout(300000);
-    await answerSession(page);
     const asked = await serveLibrary(page);
     const firmware = await serveProjectFile(page, 'firmware.hex', HEX);
     await bootSchematic(page);

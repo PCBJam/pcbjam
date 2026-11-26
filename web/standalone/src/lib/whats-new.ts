@@ -5,9 +5,9 @@
  *
  * Like session-identity.ts this is a plain fetch of a small documented shape
  * (`GET /api/whats-new`): the GPL editor must not import the closed contract.
- * The backend's `whatsNew` feature decides whether the editor asks at all, so a
- * backend without the endpoint is never called. Everything here is decoration:
- * a failed call leaves the editor as it was.
+ * Every signed-in session asks; there is no feature toggle. A backend without
+ * the endpoint answers 404 and nothing shows. Everything here is decoration: a
+ * failed call leaves the editor as it was.
  */
 import { useEffect, useSyncExternalStore } from "react";
 import { API_BASE_URL } from "@/lib/config";
