@@ -38,6 +38,7 @@
     "@types/node": "^24.10.1",
     "@types/pixelmatch": "^5.2.6",
     "@types/pngjs": "^6.0.5",
+    "avr8js": "0.21.1",
     "aws4fetch": "^1.0.20",
     "compression": "1.8.1",
     "esbuild": "^0.28.0",
