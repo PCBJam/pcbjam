@@ -4,12 +4,13 @@
 // emulator: somebody else's program, kept by the library, that runs a firmware image. The
 // engine takes such a part as a package of files ("PJPK", see pj_part_load in
 // wasm/ngspice-service/ngspice_live.cpp) and hands it to an adapter of this app in the
-// simulation thread: esp-emu-adapter.js for Espressif's emulator (the ESP32 modules),
-// avr8js-adapter.js for avr8js (the Arduino boards with an AVR chip).
+// simulation thread: esp32sim-adapter.js for esp32sim (the ESP32 modules), avr8js-adapter.js
+// for avr8js (the Arduino boards with an AVR chip).
 //
 // This file builds the packages for a prepared run, one for every placed chip (the netlist
 // step gives each its own model and its own name for its code):
-//   - the emulator's files come from the library, checked against its checksums
+//   - the emulator's files come from the library, checked against its checksums: its
+//     program, and what the chip needs besides (its ROM, named by the part)
 //   - the firmware is a file of the project. Which one, says the chip's setting "firmware"
 //     (the part gives the name a chip without the setting looks for). Two chips can name
 //     the same file or two files. An ESP32's is its flash image and goes on as it is; an
@@ -17,9 +18,9 @@
 //   - what the adapter must know about the chip (its pads, which of them are wired) comes
 //     from the part's description and the netlist step
 //
-// The emulator's own JavaScript (its loader, or all of it) is not part of this app. It is
-// fetched with the emulator, wrapped so that it leaves what it defines in one place, and
-// loaded in the simulation thread by its address.
+// The emulator's own JavaScript (a script beside its program, or all of it) is not part of
+// this app. It is fetched with the emulator, wrapped so that it leaves what it defines in
+// one place, and loaded in the simulation thread by its address.
 import type { DigitalEmulator, IndexEmulator, PlacedPart, PreparedRun, SimLibrary } from "@pcbjam/shared/sim-library";
 import { imageProblem } from "./esp-image";
 import { programProblem, readIntelHex } from "./intel-hex";
@@ -29,7 +30,7 @@ export const FIRMWARE_SETTING = "firmware";
 
 /** How a kind of emulator is run here. */
 interface EmulatorKind {
-  /** The adapter it is run by (the names esp-emu-adapter.js and its like register). */
+  /** The adapter it is run by (the names esp32sim-adapter.js and its like register). */
   adapter: string;
   /** The emulator's JavaScript as a script that leaves what it defines in `__pjGlue[key]`. */
   script: (text: string, key: string) => string;
@@ -59,7 +60,7 @@ function espImage(file: Uint8Array, chip: string): Uint8Array {
 }
 
 const KINDS: Record<string, EmulatorKind> = {
-  "esp-emu": { adapter: "esp-emu", script: loaderScript, program: true, firmware: espImage },
+  esp32sim: { adapter: "esp32sim", script: jitHostScript, program: true, firmware: espImage },
   avr8js: { adapter: "avr8js", script: (text, key) => libraryScript(text, key, "avr8js"), program: false, firmware: avrProgram },
 };
 
@@ -94,21 +95,16 @@ export function packPart({ adapter, config, blobs }: PartPackage): Uint8Array {
 }
 
 /**
- * An emulator's loader, which is written as a module, as a script a Worker can load by its
- * address: what it defines is left in `__pjGlue[key]`, and nothing else gets out. A loader
- * with an import or an export this does not know is refused: a new release of an emulator
- * is looked at before it is used.
+ * esp32sim's own script (jit.mjs: a module with the one function createJitHost), as a
+ * script a Worker can load by its address: the function is left in `__pjGlue[key]`, and
+ * nothing else gets out. A script with an import or an export this does not know is
+ * refused: a new release of an emulator is looked at before it is used.
  */
-export function loaderScript(text: string, key: string): string {
-  const body = text
-    .replace(/^export class /gm, "class ")
-    .replace(/^export \{[^}]*\};?[ \t]*$/gm, "")
-    .replace(/import\.meta\.url/g, "undefined");
-  if (/^\s*(import|export)\s/m.test(body)) throw new Error("the emulator's loader has an import or an export that is not known");
-  for (const name of ["WasmEmulator", "initSync"]) {
-    if (!new RegExp(`^(class|function) ${name}\\b`, "m").test(body)) throw new Error(`the emulator's loader has no ${name}`);
-  }
-  return `(function () {\n${body}\n(globalThis.__pjGlue = globalThis.__pjGlue || {})[${JSON.stringify(key)}] = { WasmEmulator: WasmEmulator, initSync: initSync };\n})();\n`;
+export function jitHostScript(text: string, key: string): string {
+  const body = text.replace(/^export function createJitHost\b/m, "function createJitHost");
+  if (/^\s*(import|export)\s/m.test(body)) throw new Error("the emulator's script has an import or an export that is not known");
+  if (!/^function createJitHost\b/m.test(body)) throw new Error("the emulator's script has no createJitHost");
+  return `(function () {\n${body}\n(globalThis.__pjGlue = globalThis.__pjGlue || {})[${JSON.stringify(key)}] = { createJitHost: createJitHost };\n})();\n`;
 }
 
 /**
@@ -163,6 +159,17 @@ export async function chipParts(run: Run, { library, readFile, scriptUrl = defau
     if (!got) programs.set(key, (got = emulatorFiles(library, emulator, kind, scriptUrl)));
     return got;
   };
+  // What a chip needs of its emulator's files besides the program (its ROM), by the adapter's names.
+  const extras = new Map<string, Promise<Uint8Array>>();
+  const extra = async (emulator: IndexEmulator, files: Record<string, string>): Promise<Record<string, Uint8Array>> => {
+    const got = await Promise.all(Object.entries(files).map(async ([as, name]): Promise<[string, Uint8Array]> => {
+      const key = `${emulatorKey(emulator)}/${name}`;
+      let bytes = extras.get(key);
+      if (!bytes) extras.set(key, (bytes = library.emulatorFile(emulator.id, name)));
+      return [as, await bytes];
+    }));
+    return Object.fromEntries(got);
+  };
 
   const out: { name: string; bytes: Uint8Array }[] = [];
   const problems: string[] = [];
@@ -194,7 +201,13 @@ export async function chipParts(run: Run, { library, readFile, scriptUrl = defau
     if (!firmware) choose = true;
     if (!firmware || problems.length) continue;
 
-    out.push({ name: code.name, bytes: packPart(emulatorPackage(emulator, kind, digital, chip, firmware, await program(emulator, kind))) });
+    const missing = Object.values(digital.files ?? {}).filter((name) => !emulator.files.some((f) => f.name === name));
+    if (missing.length) {
+      problems.push(`${chip.ref}: this page cannot run the chip (its emulator has no file "${missing[0]}")`);
+      continue;
+    }
+    const files = await extra(emulator, digital.files ?? {});
+    out.push({ name: code.name, bytes: packPart(emulatorPackage(emulator, kind, digital, chip, firmware, await program(emulator, kind), files)) });
   }
   if (problems.length) throw cannotRun(problems, choose);
   return out;
@@ -227,7 +240,7 @@ async function emulatorFiles(
 
 function emulatorPackage(
   emulator: IndexEmulator, kind: EmulatorKind, digital: DigitalEmulator, chip: PlacedPart, firmware: Uint8Array,
-  { program, glueUrl }: EmulatorFiles,
+  { program, glueUrl }: EmulatorFiles, files: Record<string, Uint8Array> = {},
 ): PartPackage {
   const key = emulatorKey(emulator);
   // A pad is wired when the chip has something on its pin (or on a pin the part joins it with).
@@ -237,17 +250,20 @@ function emulatorPackage(
     config: {
       chip: digital.chip,
       cores: digital.cores ?? 1,
-      ...(digital.clock ? { clock: digital.clock } : {}),
+      // a board's crystal, or what the schematic gives a chip without a board (its crystal, a setting)
+      ...(chip.clock ? { clock: chip.clock.hz } : digital.clock ? { clock: digital.clock } : {}),
       // the model's emulator line takes the pads in the order the part lists them
       pads: Object.values(digital.pads),
       enable: !!digital.enable,
-      ...(digital.padRegisters ? { iomux: digital.padRegisters } : {}),
+      // a chip without a board runs only while its supply is high enough: one more input of its model
+      ...(digital.supply ? { supply: true } : {}),
       // the voltages the chip's program may ask the engine for, in the order of the model's voltage tap
-      ...(digital.taps ? { taps: digital.taps } : {}),
+      // ... and for an emulator that numbers its analog inputs by pad: the GPIO each of them is on (-1: not a pad)
+      ...(digital.taps ? { taps: digital.taps, tapPads: digital.taps.map((name) => digital.pads[name] ?? -1) } : {}),
       wired,
       emulatorKey: key,
       glueUrl,
     },
-    blobs: { ...(program ? { "emulator.wasm": program } : {}), "firmware.bin": firmware },
+    blobs: { ...(program ? { "emulator.wasm": program } : {}), ...files, "firmware.bin": firmware },
   };
 }

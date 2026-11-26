@@ -1,10 +1,10 @@
 // The worker-side wrapper as text (vite ?raw): one source, also read off disk
 // by the e2e harness (tests/kicad/sim-live-engine.spec.ts).
 import liveWorkerSource from "./ngspice-live-worker.js?raw";
-// The adapter that runs a chip's firmware in Espressif's emulator, as text: it has to be
-// in the simulation thread, and the Worker's script is that thread's script too.
+// The adapters that run a chip's firmware in its emulator, as text: they have to be in the
+// simulation thread, and the Worker's script is that thread's script too.
 import avr8jsAdapterSource from "./avr8js-adapter.js?raw";
-import espEmuAdapterSource from "./esp-emu-adapter.js?raw";
+import esp32simAdapterSource from "./esp32sim-adapter.js?raw";
 import type { Deck } from "@pcbjam/shared/sim-library";
 import { resolveWasmBase } from "./wasm-assets";
 
@@ -171,7 +171,7 @@ export const LIVE_START_TIMEOUT_MS = 60_000;
  * parts (they must be there before the engine's glue runs), the worker source.
  */
 export function liveWorkerBlobParts(glueHref: string): string[] {
-  return [`self.NGSPICE_GLUE_URL = ${JSON.stringify(glueHref)};\n`, `${espEmuAdapterSource}\n`, `${avr8jsAdapterSource}\n`, liveWorkerSource];
+  return [`self.NGSPICE_GLUE_URL = ${JSON.stringify(glueHref)};\n`, `${esp32simAdapterSource}\n`, `${avr8jsAdapterSource}\n`, liveWorkerSource];
 }
 
 interface WorkerResult {
@@ -199,6 +199,8 @@ export function createLiveEngine(options: LiveEngineOptions = {}): LiveEngine {
     worker?: Worker;
     workerUrl?: string;
     failed: boolean;
+    /** The Worker said it is ready: it hears commands now. */
+    booted?: boolean;
     ready: Promise<Slot>;
     bootTimer?: ReturnType<typeof setTimeout>;
     rejectBoot?: (reason: Error) => void;
@@ -343,6 +345,7 @@ export function createLiveEngine(options: LiveEngineOptions = {}): LiveEngine {
             if (s.bootTimer !== undefined) clearTimeout(s.bootTimer);
             s.bootTimer = undefined;
             s.rejectBoot = undefined;
+            s.booted = true;
             worker.onmessage = (ev) => onMessage(s, (ev.data ?? {}) as Record<string, unknown>);
             resolve();
           } else if (data.bootError !== undefined) {
@@ -391,10 +394,13 @@ export function createLiveEngine(options: LiveEngineOptions = {}): LiveEngine {
     });
   };
 
-  /** A command for the Worker that is there. Without one, nothing is sent. */
+  /**
+   * A command for the Worker that is there. Without one, nothing is sent; neither to one
+   * that is still being made: it runs nothing and does not hear commands yet.
+   */
   const tell = async (cmd: string, args: Record<string, unknown>): Promise<void> => {
     const s = slot;
-    if (!s || s.failed || !s.worker) return;
+    if (!s || s.failed || !s.worker || !s.booted) return;
     await send(s, cmd, args, responseTimeoutMs);
   };
 
@@ -407,6 +413,8 @@ export function createLiveEngine(options: LiveEngineOptions = {}): LiveEngine {
     frameInFlight = null;
     try {
       const s = await ensureWorker();
+      // a stop (or another start) came while the Worker was being made: this run is not wanted any more
+      if (epoch !== mine) throw new Error("the start was given up");
       await send(
         s,
         "start",

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./ngspice-live-worker.js?raw", () => ({ default: "// fake live worker" }));
-vi.mock("./esp-emu-adapter.js?raw", () => ({ default: "// fake adapter" }));
+vi.mock("./esp32sim-adapter.js?raw", () => ({ default: "// fake adapter" }));
 vi.mock("./avr8js-adapter.js?raw", () => ({ default: "// fake AVR adapter" }));
 vi.mock("./wasm-assets", () => ({
   resolveWasmBase: vi.fn(async () => "/wasm"),
@@ -275,6 +275,32 @@ describe("live engine", () => {
     expect(FakeWorker.instances).toHaveLength(1);
     // the circuit that was handed in is not written to
     expect(CIRCUIT.inputs).toEqual({ "v.xsw1.vctl": 0 });
+  });
+
+  // Stop while the engine is still being made: there is nothing to stop yet, and the
+  // start that waits for the Worker must not run its circuit when the Worker is up.
+  it("a stop while the worker is being made sends nothing, and the start that waited is not sent", async () => {
+    const engine = engineWith();
+    const started = engine.start(CIRCUIT).then(() => "started", (e: Error) => e.message);
+    const worker = await waitForWorker(0);
+    await engine.stop();
+    expect(worker.postMessage).not.toHaveBeenCalled();
+    expect(engine.state).toBe("stopped");
+
+    worker.emitMessage({ ready: true });
+    expect(await started).toBe("the start was given up");
+    expect(worker.postMessage).not.toHaveBeenCalled();
+    expect(engine.state).toBe("stopped");
+    expect(engine.crashes).toBe(0);
+
+    // the worker that came up is the one the next start uses
+    const again = engine.start(CIRCUIT);
+    await commands(worker, 1);
+    expect(sent(worker, 0)).toMatchObject({ cmd: "start" });
+    answer(worker);
+    await again;
+    expect(engine.state).toBe("running");
+    expect(FakeWorker.instances).toHaveLength(1);
   });
 
   it("stop halts the run and keeps the circuit for a restart", async () => {

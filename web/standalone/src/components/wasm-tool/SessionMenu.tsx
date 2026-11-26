@@ -692,10 +692,11 @@ function LibFontsRow({ count, readOnly, open, setOpen }: { count: number; readOn
  */
 function LiveSimRow({ state, onClick }: { state: LiveSessionState; onClick: () => void }) {
   const closeMenu = useCloseOverlayMenu();
-  const stops = state === "running" || state === "stopping";
+  // also while it starts: a start that waits for a download can be given up
+  const stops = state !== "idle";
   const label =
     state === "starting"
-      ? "Starting live simulation..."
+      ? "Starting live simulation... Stop"
       : state === "stopping"
         ? "Stopping live simulation..."
         : stops
@@ -703,14 +704,14 @@ function LiveSimRow({ state, onClick }: { state: LiveSessionState; onClick: () =
           : LIVE_BUTTON_PLAY.tooltip;
   const Icon = stops ? Square : Play;
   return (
-    <Tip content={stops ? "Stop the circuit that runs" : "Run the circuit of this schematic, live"}>
+    <Tip content={state === "starting" ? "Give this start up" : stops ? "Stop the circuit that runs" : "Run the circuit of this schematic, live"}>
       <Button
         data-testid="live-sim-toggle"
         data-live-state={state}
         variant="plain"
         size="row"
         className={overlayRowClass}
-        disabled={state === "starting" || state === "stopping"}
+        disabled={state === "stopping"}
         onClick={() => {
           closeMenu();
           onClick();

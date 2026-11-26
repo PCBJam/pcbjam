@@ -26,7 +26,10 @@ import {
   type SNode,
   type Slot,
 } from "@pcbjam/shared";
-import { FIELD_SETTINGS, formatSettings, parseSettings, resolveSettings, type PartManifest } from "@pcbjam/shared/sim-library";
+import {
+  FIELD_SETTINGS, chipClock, crystalOn, formatSettings, parseSettings, resolveSettings, settingAllows,
+  type ChipClock, type PartManifest, type PartSetting,
+} from "@pcbjam/shared/sim-library";
 import type { EditRequest } from "@/plugins/edits";
 import { FIRMWARE_SETTING } from "./chip-parts";
 import { imageProblem } from "./esp-image";
@@ -43,6 +46,18 @@ export interface ChipFirmware {
   name: string;
   /** Which chip the part is, as its emulator names it ("esp32c3"). Absent when the part does not say. */
   chip?: string;
+  /** Only for a chip without a board: its clock (see ChipClockLine). */
+  clock?: ChipClockLine;
+}
+
+/** The clock of a chip without a board, for its line in the list. */
+export interface ChipClockLine {
+  /** The speed the chip runs at when Play is clicked, and where it comes from. */
+  now: ChipClock;
+  /** The part's setting that says the speed by hand ... */
+  setting: PartSetting;
+  /** ... and its value on this symbol ("auto": the schematic says). */
+  value: string;
 }
 
 /**
@@ -55,9 +70,21 @@ export async function chipFirmwares(parts: Pick<SimParts, "library" | "matches" 
     const symbol = parts.symbols[i];
     if (match.status !== "matched" || !symbol || !parts.library.part(match.partId)?.emulator) continue;
     const manifest = JSON.parse(await parts.library.text(match.partId, "part.json")) as PartManifest;
-    const name = resolveSettings(manifest, symbol).values[FIRMWARE_SETTING]?.value;
-    const chip = manifest.digital?.kind === "emulator" ? manifest.digital.chip : undefined;
-    if (name) out.set(symbol.uuid, { uuid: symbol.uuid, ref: match.ref, name, ...(chip ? { chip } : {}) });
+    const settings = resolveSettings(manifest, symbol).values;
+    const name = settings[FIRMWARE_SETTING]?.value;
+    const digital = manifest.digital?.kind === "emulator" ? manifest.digital : undefined;
+    const chip = digital?.chip;
+    // a chip without a board: the net of each clock pin, and what the schematic has on the two
+    const setting = digital?.crystal ? manifest.settings?.find((s) => s.name === digital.crystal?.setting) : undefined;
+    const net = (pin: string): string | undefined => symbol.pins[match.pinMap[manifest.pins.indexOf(pin)] ?? ""]?.node;
+    const clock: ChipClockLine | undefined = digital?.crystal && setting
+      ? {
+          now: chipClock(digital, settings[setting.name]?.value, crystalOn([net(digital.crystal.pins[0]), net(digital.crystal.pins[1])], parts.symbols, match.ref)),
+          setting,
+          value: settings[setting.name]?.value ?? setting.default,
+        }
+      : undefined;
+    if (name) out.set(symbol.uuid, { uuid: symbol.uuid, ref: match.ref, name, ...(chip ? { chip } : {}), ...(clock ? { clock } : {}) });
   }
   return out;
 }
@@ -188,6 +215,51 @@ export function symbolText(doc: Y.Doc, uuid: string): string | null {
   };
   take(uuid);
   return items[uuid]?.type === "symbol" ? renderItem({ items }, uuid) : null;
+}
+
+/**
+ * A symbol's text with one setting of its part changed, in the field the settings live in.
+ * `value` null takes the setting off the symbol: the part's own value counts again.
+ */
+export function withSetting(symbol: string, name: string, value: string | null): string {
+  return withSymbolField(symbol, FIELD_SETTINGS, (text) => {
+    const values = parseSettings(text);
+    if (value === null) delete values[name];
+    else values[name] = value;
+    return formatSettings(values);
+  });
+}
+
+export interface GiveSetting {
+  chip: Pick<ChipFirmware, "uuid" | "ref">;
+  setting: PartSetting;
+  value: string;
+  /** The shared document of the shown sheet. Null in a session without one. */
+  doc: Y.Doc | null;
+  /** Changes items of the shown sheet as one step of the schematic's history. */
+  edit: (request: EditRequest) => Promise<unknown>;
+}
+
+/**
+ * Writes one setting of a chip onto its symbol, as one edit of the schematic. The part's
+ * own value is not written: it takes the setting off the symbol. Rejects with a sentence
+ * for the user, and changes nothing, when the setting does not take the value or the
+ * chip's symbol cannot be reached.
+ */
+export async function giveSetting({ chip, setting, value, doc, edit }: GiveSetting): Promise<void> {
+  const label = setting.label ?? setting.name;
+  if (!settingAllows(setting, value)) throw new Error(`"${value}" is not a value the setting "${label}" of ${chip.ref} takes`);
+  if (!doc) throw new Error(`This session cannot change the schematic from the list: ${chip.ref} keeps its ${label.toLowerCase()}`);
+  const symbol = symbolText(doc, chip.uuid);
+  if (!symbol) throw new Error(`${chip.ref} is not on the sheet that is shown. Open its sheet, then set its ${label.toLowerCase()}`);
+  await edit({ label: `${label} of ${chip.ref}`, upsert: [{ sexpr: withSetting(symbol, setting.name, value === setting.default ? null : value) }], remove: [] });
+}
+
+/** The crystals that clock a chip, by their references: the crystal's -> the chip's. */
+export function clockingCrystals(chips: ReadonlyMap<string, ChipFirmware>): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const chip of chips.values()) if (chip.clock?.now.from === "crystal" && chip.clock.now.crystal) out.set(chip.clock.now.crystal, chip.ref);
+  return out;
 }
 
 export interface GiveFirmware {

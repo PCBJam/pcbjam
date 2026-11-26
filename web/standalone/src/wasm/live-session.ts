@@ -1,4 +1,4 @@
-import { wireProblemText, type NotOnWire, type Power, type PreparedRun } from "@pcbjam/shared/sim-library";
+import { FIELD_SETTINGS, clockSentence, leftOutNotice, symbolsNamed, wireProblemText, type LeftOut, type NotOnWire, type Power, type PreparedRun } from "@pcbjam/shared/sim-library";
 import { chipParts } from "./chip-parts";
 import {
   circuitOf,
@@ -49,9 +49,14 @@ import type { SimPartsReader, SimSymbolsModule } from "./sim-parts";
  * A chip that runs firmware can be in trouble while the circuit runs on: its
  * firmware restarts it without end, its reset pin is low from the start, the
  * sketch reads an input the board does not have. The chip's adapter says so
- * in a line it marks with "! " (esp-emu-adapter.js, avr8js-adapter.js). Such
+ * in a line it marks with "! " (esp32sim-adapter.js, avr8js-adapter.js). Such
  * a line goes to `onNote` once per run, with the chip's name in front, and
  * into the chip's console as a problem.
+ *
+ * A schematic can carry commands for the simulator in a text of its sheet (a
+ * block from ".control" to ".endc", a line that begins with "*#"). They come
+ * with the schematic, whoever drew it, and a live run needs none of them: the
+ * netlist step takes them out, the circuit runs, and `onNote` says so.
  */
 
 /** Bridge surface: a button of the page on the schematic editor's toolbar. */
@@ -77,7 +82,8 @@ export const LIVE_BUTTON_STOP = { tooltip: "Stop live simulation", icon: "sim_st
 
 /**
  * idle      nothing runs; the button says Play
- * starting  Play was clicked; the circuit is being read and loaded
+ * starting  Play was clicked; the circuit is being read and loaded. The button says Stop:
+ *           a click gives the start up
  * running   it runs; the button says Stop
  * stopping  Stop was clicked; the run is being halted
  */
@@ -99,12 +105,18 @@ export interface LiveSessionOptions {
   /**
    * A notice for the user about a run that started: what it runs without ("left-out"),
    * where its power comes from ("power"), a chip that does not run as its firmware
-   * expects ("chip"), or a symbol that names heat wires and is on none ("heat").
+   * expects ("chip"), a symbol that names heat wires and is on none ("heat"), the speed
+   * a chip without a board runs at when no crystal says it ("clock"), or simulator commands
+   * the schematic carries, which are not run ("commands").
    */
   onNote?: (text: string, about: LiveNoteAbout) => void;
   onState?: (state: LiveSessionState) => void;
+  /** The report of the run that was tried, at every change of it (see LiveReport). */
+  onReport?: (report: LiveReport) => void;
   /** A line for the app's own log. */
   log?: (msg: string) => void;
+  /** How long a file of the project (a chip's firmware) is waited for, in ms (default LIVE_FILE_TIMEOUT_MS). */
+  fileTimeoutMs?: number;
   /** How often the running circuit is looked at, in ms (default 250). */
   watchMs?: number;
   /** The same while somebody listens to the looks (onFrame), in ms (default 33). */
@@ -113,8 +125,35 @@ export interface LiveSessionOptions {
   createEngine?: (options: LiveEngineOptions) => LiveEngine;
 }
 
+/**
+ * What became of the run that was tried, and what it left out. It is made when the circuit
+ * is written, before the engine starts, and it is kept: after a start that failed, after a
+ * run that ended by itself and after Stop it still says what that run was. The next Play
+ * makes a new one. A list that reads the schematic anew can say something else, because the
+ * schematic can have changed since.
+ */
+export interface LiveReport {
+  /**
+   * "starting": the circuit is written and the engine is being started. "running". "stopped":
+   * by a click on Stop. "not-started": the run did not start, `problem` says why. "ended":
+   * it ran and ended by itself, `problem` says why.
+   */
+  outcome: "starting" | "running" | "stopped" | "not-started" | "ended";
+  /**
+   * The symbols the run left out, each with its reason (@pcbjam/shared, left-out.ts). Empty
+   * for a run whose circuit could not be written at all.
+   */
+  leftOut: LeftOut[];
+  /** Why it did not start, or why it ended: the sentence the user was told. */
+  problem?: string;
+  /** The symbols that sentence is about, by reference: the ones the simulator's own words name. */
+  about: string[];
+}
+
 export interface LiveSession {
   readonly state: LiveSessionState;
+  /** The report of the run that was tried last. Null before the first Play. */
+  readonly report: LiveReport | null;
   /** The circuit that runs: its inputs and the values it shows. Null when nothing runs. */
   readonly run: PreparedRun | null;
   /** The engine of this session, for the layer that shows the values. */
@@ -132,15 +171,20 @@ export interface LiveSession {
    * way to stop listening.
    */
   onFrame(listener: (frame: LiveFrame) => void): () => void;
-  /** What a click on the button does: Play when idle, Stop when it runs. */
+  /**
+   * What a click on the button does: Play when idle, Stop when it runs or is starting. A
+   * second click right behind the one that began the start is the same click (a
+   * double-click), not a Stop.
+   */
   click(): Promise<void>;
   play(): Promise<void>;
+  /** Halts the run, or gives up a start that is not through yet. */
   stop(): Promise<void>;
   /** Stops, throws the engine away and takes the button off the toolbar. */
   dispose(): void;
 }
 
-export type LiveNoteAbout = "left-out" | "power" | "chip" | "heat";
+export type LiveNoteAbout = "left-out" | "power" | "chip" | "heat" | "clock" | "commands";
 
 /** How many symbols or wires a note names before it counts the rest. */
 const NAMED_IN_NOTE = 6;
@@ -151,12 +195,24 @@ const firstFew = (items: readonly string[]): string => {
   return `${items.slice(0, NAMED_IN_NOTE).join(", ")}${more > 0 ? ` and ${more} more` : ""}`;
 };
 
-/** The sentence about the symbols a run leaves out. Null when there are none. */
-export function leftOutNote(refs: readonly string[]): string | null {
-  if (!refs.length) return null;
-  if (refs.length === 1) return `${refs[0]} is not simulated: nothing has a model for it. The rest of the circuit runs.`;
-  return `Not simulated, nothing has a model for them: ${firstFew(refs)}. The rest of the circuit runs.`;
+/** "U1", "U1 and R2", "U1, R2 and D3". */
+const allOf = (items: readonly string[]): string =>
+  items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+
+/** What the engine's answers start with when the words after it are the simulator's own. */
+const SIMULATORS_WORDS = /^(ngspice did not (take|run) the circuit|the run did not start)\b/;
+
+/**
+ * The symbols the simulator's own words are about. Only its own words are searched: the
+ * other reasons (a chip without its firmware, a part that is not loaded) name their symbol
+ * already.
+ */
+export function namedBySimulator(text: string, marks: ReadonlyMap<string, string> | undefined, own = SIMULATORS_WORDS.test(text)): string[] {
+  return own && marks ? symbolsNamed(text, marks).slice(0, NAMED_IN_NOTE) : [];
 }
+
+/** "The simulator names Q1: " before the simulator's words, when they name a line of a symbol. */
+const naming = (about: readonly string[]): string => (about.length ? `The simulator names ${allOf(about)}: ` : "");
 
 /** "pin 8" or "pins 4 and 8". */
 const pinsOf = (pins: readonly string[]): string =>
@@ -165,12 +221,24 @@ const pinsOf = (pins: readonly string[]): string =>
 /**
  * The notice about where a run's power comes from, when the schematic does not draw all of
  * it: the supply wires powered by their names, the supply wires that stay without power, the
- * regulators that no source reaches, the chips with nothing on a supply pin, and the
- * batteries whose voltage is the part's own. Null when there is nothing to say.
+ * regulators that no source reaches, the chips with nothing on a supply pin, the batteries
+ * whose voltage is the part's own, and the sockets (a USB socket, a barrel jack): which feed
+ * the board and with what, and which give nothing. Null when there is nothing to say.
  */
+/** How many sockets the power notice names one by one. */
+const NAMED_SOCKETS = 3;
+
 export function powerNote(power: Power): string | null {
   const out: string[] = [];
-  const { byName, noVolts, assumed, noPower, unfed } = power;
+  const { byName, noVolts, assumed, noPower, unfed, sockets } = power;
+  // the sockets the board is fed through, and the ones that give nothing
+  for (const s of sockets.slice(0, NAMED_SOCKETS)) {
+    const what = `${s.ref} (${/^[A-Z][a-z]/.test(s.title) ? s.title.charAt(0).toLowerCase() + s.title.slice(1) : s.title})`;
+    const where = s.label.replace(/^Voltage\s*/i, "");
+    if (s.feeds) out.push(`${what} feeds the board${s.volts ? ` with ${s.volts} V${where ? ` ${where}` : ""}` : ""}${s.fromWire ? ", as the name of its wire says" : ""}${s.assumed ? "; its value does not say a voltage" : ""}.`);
+    else out.push(`${what} gives no power: it does not count as plugged in (${s.setting}=${s.on} in the symbol's field ${FIELD_SETTINGS} changes that).`);
+  }
+  if (sockets.length > NAMED_SOCKETS) out.push(`And ${sockets.length - NAMED_SOCKETS} more ${sockets.length - NAMED_SOCKETS === 1 ? "socket" : "sockets"}.`);
   if (byName.length === 1) out.push(`${byName[0]?.net} is powered with ${byName[0]?.volts} V, by its name.`);
   else if (byName.length) out.push(`Powered by their names: ${firstFew(byName.map((s) => `${s.net} with ${s.volts} V`))}.`);
   if (noVolts.length === 1) out.push(`${noVolts[0]} is not powered: its name does not say a voltage. A battery or a voltage source on the wire powers it.`);
@@ -191,6 +259,15 @@ export function powerNote(power: Power): string | null {
  * The notice about heat, when a symbol names heat wires and is on none. Null when there
  * is nothing to say.
  */
+/**
+ * What a run says about simulator commands the schematic carries (a text of the sheet
+ * from ".control" to ".endc", a line that begins with "*#"): they are not run.
+ */
+export function commandsNote(count: number): string | null {
+  if (count <= 0) return null;
+  return "A text of this schematic holds commands for the simulator (\".control\" or \"*#\"). Live simulation does not run them: the circuit runs without them.";
+}
+
 export function heatNote(notOnWire: readonly NotOnWire[]): string | null {
   const out = notOnWire.map((n) => {
     if (n.why === "wires" && n.problem) return wireProblemText(n.ref, n.title ?? "its part", n.problem);
@@ -201,6 +278,13 @@ export function heatNote(notOnWire: readonly NotOnWire[]): string | null {
 }
 
 const WATCH_MS = 250;
+/** How long a file of the project (a chip's firmware) is waited for. */
+export const LIVE_FILE_TIMEOUT_MS = 60_000;
+/**
+ * A click this soon after the click on Play is the same click: people double-click a
+ * button, and a start must not be given up by its own second click.
+ */
+export const SAME_CLICK_MS = 700;
 const FRAME_MS = 33;
 const KEPT_LOG_LINES = 40;
 /** How many lines of the parts with code one batch of the engine's log puts into the app's log. */
@@ -221,17 +305,40 @@ const words = (e: unknown): string => (e instanceof Error ? e.message : String(e
 export function createLiveSession(options: LiveSessionOptions): LiveSession {
   const { mod, reader, onError, onState } = options;
   const log = options.log ?? (() => {});
+  const fileTimeoutMs = options.fileTimeoutMs ?? LIVE_FILE_TIMEOUT_MS;
+  // A file of the project that never arrives must not keep a start waiting for ever.
+  const readFile = options.readFile
+    ? (path: string): Promise<Uint8Array | null> => {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const late = new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`the project's file "${path}" did not arrive within ${Math.round(fileTimeoutMs / 1000)} seconds`)), fileTimeoutMs);
+        });
+        return Promise.race([options.readFile!(path), late]).finally(() => clearTimeout(timer));
+      }
+    : undefined;
   const watchMs = options.watchMs ?? WATCH_MS;
   const frameMs = options.frameMs ?? FRAME_MS;
   const listeners = new Set<(frame: LiveFrame) => void>();
 
   let state: LiveSessionState = "idle";
   let run: PreparedRun | null = null;
+  // What became of the run that was tried last; kept until the next Play.
+  let report: LiveReport | null = null;
+  const tell = (next: LiveReport): void => {
+    report = next;
+    try {
+      options.onReport?.(next);
+    } catch (e) {
+      log(`live simulation: a listener of the report failed: ${words(e)}`);
+    }
+  };
   let lastFrame: LiveFrame | null = null;
   let disposed = false;
   // Counts up at every Play and at dispose: what an older Play still has to
   // do after one of its waits is no longer wanted.
   let epoch = 0;
+  /** When the Play that is starting was clicked (see SAME_CLICK_MS). */
+  let startedAt = 0;
   let watchTimer: ReturnType<typeof setInterval> | null = null;
   let watching = false;
   // ngspice's last lines: when a run ends by itself, the reason is in there.
@@ -350,7 +457,8 @@ export function createLiveSession(options: LiveSessionOptions): LiveSession {
   function set(next: LiveSessionState): void {
     if (state === next) return;
     state = next;
-    showButton(next === "running" || next === "stopping" ? LIVE_BUTTON_STOP : LIVE_BUTTON_PLAY);
+    // Stop also while it starts: a start that waits for a download can be given up
+    showButton(next === "idle" ? LIVE_BUTTON_PLAY : LIVE_BUTTON_STOP);
     store.touch(); // whether a chip can be typed to
     onState?.(next);
   }
@@ -367,13 +475,15 @@ export function createLiveSession(options: LiveSessionOptions): LiveSession {
     watchTimer = setInterval(() => void watch(mine), listeners.size ? frameMs : watchMs);
   }
 
-  /** The run is over without a click on Stop. */
-  function ended(text: string): void {
+  /** The run is over without a click on Stop. `about`: the symbols the reason names. */
+  function ended(text: string, about: string[] = []): void {
     stopWatch();
     run = null;
     lastFrame = null;
     set("idle");
-    onError(byRef(text));
+    const problem = byRef(text);
+    tell({ outcome: "ended", leftOut: report?.leftOut ?? [], problem, about });
+    onError(problem);
   }
 
   async function watch(mine: number): Promise<void> {
@@ -387,7 +497,9 @@ export function createLiveSession(options: LiveSessionOptions): LiveSession {
         ended(`Live simulation stopped: ${frame.problem}`);
       } else if (!frame || !frame.running) {
         const why = [...recent].reverse().find((line) => /error|too small|singular/i.test(line));
-        ended(why ? `Live simulation stopped by itself: ${why}` : "Live simulation stopped by itself.");
+        // the simulator's own line: it names an element or a node of the circuit, never a symbol
+        const about = why ? namedBySimulator(why, run?.marks, true) : [];
+        ended(!why ? "Live simulation stopped by itself." : about.length ? `Live simulation stopped by itself. ${naming(about)}${why}` : `Live simulation stopped by itself: ${why}`, about);
       } else {
         for (const listener of [...listeners]) {
           try {
@@ -409,17 +521,22 @@ export function createLiveSession(options: LiveSessionOptions): LiveSession {
   async function play(): Promise<void> {
     if (disposed || state !== "idle") return;
     const mine = ++epoch;
+    startedAt = Date.now();
     set("starting");
     recent = [];
+    // the circuit of this Play, once it is written: a start that fails after that still says what it left out
+    let written: PreparedRun | null = null;
     try {
       const prepared = await reader.prepare(mod);
       if (mine !== epoch) return;
+      written = prepared;
+      tell({ outcome: "starting", leftOut: prepared.leftOut, about: [] });
       chipNames = prepared.codeParts
         .flatMap((c): [string, string][] => (c.ref && c.name !== c.ref ? [[c.name, c.ref]] : []))
         .sort((a, b) => b[0].length - a[0].length);
       // the chips that run firmware: the emulator from the library, the image from the project
       const chips = prepared.codeParts.some((p) => p.kind === "emulator")
-        ? await chipParts(prepared, { library: await reader.library(), readFile: options.readFile })
+        ? await chipParts(prepared, { library: await reader.library(), readFile })
         : [];
       if (mine !== epoch) return;
       // each of them has a console, empty for this run
@@ -435,16 +552,26 @@ export function createLiveSession(options: LiveSessionOptions): LiveSession {
       run = prepared;
       set("running");
       startWatch(mine);
-      const note = leftOutNote(prepared.notSimulated);
+      tell({ outcome: "running", leftOut: prepared.leftOut, about: [] });
+      const note = leftOutNotice(prepared.leftOut);
       if (note) options.onNote?.(note, "left-out");
       const power = powerNote(prepared.power);
       if (power) options.onNote?.(power, "power");
       const heat = heatNote(prepared.notOnWire);
       if (heat) options.onNote?.(heat, "heat");
+      // a chip without a board: the speed it runs at, when the schematic does not say it with a crystal
+      const clocks = prepared.placed.flatMap((p) => { const said = p.clock ? clockSentence(p.ref, p.clock) : null; return said ? [said] : []; });
+      if (clocks.length) options.onNote?.(clocks.slice(0, NAMED_IN_NOTE).join(" "), "clock");
+      const commands = commandsNote(prepared.commandsLeftOut);
+      if (commands) options.onNote?.(commands, "commands");
     } catch (e) {
       if (mine !== epoch) return;
       set("idle");
-      onError(`Live simulation did not start: ${byRef(whyNotStarted(words(e)))}`);
+      const why = byRef(whyNotStarted(words(e)));
+      const about = namedBySimulator(why, written?.marks);
+      const problem = about.length ? `Live simulation did not start. ${naming(about)}${why}` : `Live simulation did not start: ${why}`;
+      tell({ outcome: "not-started", leftOut: written?.leftOut ?? [], problem, about });
+      onError(problem);
     }
   }
 
@@ -460,11 +587,15 @@ export function createLiveSession(options: LiveSessionOptions): LiveSession {
   }
 
   async function stop(): Promise<void> {
-    if (disposed || state !== "running") return;
-    const mine = epoch;
+    if (disposed || (state !== "running" && state !== "starting")) return;
+    // A start that is not through is given up: whatever it waits for (the library, a
+    // firmware file, the engine) is not waited for any more, and its answer is dropped.
+    const givenUp = state === "starting";
+    const mine = givenUp ? ++epoch : epoch;
     stopWatch();
     set("stopping");
     try {
+      // also for a start: the engine may be loading the circuit, or run it already
       await engine.stop();
     } catch (e) {
       // A run that does not stop: the engine threw its Worker away. Nothing runs.
@@ -474,12 +605,15 @@ export function createLiveSession(options: LiveSessionOptions): LiveSession {
     run = null;
     lastFrame = null;
     set("idle");
+    // the report of this Play: a start given up before its circuit was written has none
+    if (report && (!givenUp || report.outcome === "starting")) tell({ ...report, outcome: "stopped" });
   }
 
   async function click(): Promise<void> {
     if (state === "idle") await play();
     else if (state === "running") await stop();
-    // starting, stopping: the click that began it is still being served
+    else if (state === "starting" && Date.now() - startedAt >= SAME_CLICK_MS) await stop();
+    // stopping: the click that began it is still being served
   }
 
   // --- the editor's side ----------------------------------------------------
@@ -497,6 +631,9 @@ export function createLiveSession(options: LiveSessionOptions): LiveSession {
     },
     get run() {
       return run;
+    },
+    get report() {
+      return report;
     },
     engine,
     get lastFrame() {

@@ -761,18 +761,20 @@ function Meter({ widget, box, tag }: WidgetProps): React.ReactElement {
 /** Below this many CSS px per mm the mark of a left-out symbol has no words: too small to read. */
 const WORDS_PX_PER_MM = 3.5;
 
-/** A symbol the run leaves out because nothing has a model for it: a dashed frame, and the words when there is room. */
+/** A symbol the run leaves out (it has no value, or the library has no part for it): a dashed frame, and why in two words when there is room. */
 function LeftOut({ mark, box, words }: { mark: LeftOutMark; box: ScreenBox; words: boolean }): React.ReactElement {
   return (
     <div
       data-testid="live-left-out"
       data-ref={mark.ref}
+      data-reason={mark.reason}
+      aria-label={mark.sentence}
       className="pointer-events-none absolute rounded-sm border border-dashed border-neutral-500/80 bg-neutral-400/15 dark:border-white/50 dark:bg-white/10"
       style={boxStyle(box)}
     >
       {words && (
         <span className="absolute bottom-full left-0 mb-0.5 whitespace-nowrap rounded-sm bg-white/80 px-1 text-[9px] font-medium leading-tight text-neutral-600 dark:bg-neutral-900/80 dark:text-white/70">
-          not simulated
+          {mark.words}
         </span>
       )}
     </div>

@@ -115,9 +115,10 @@ import { panelDock } from "@/overlay/panel-dock";
 import { hasImportBridge, type ImportModule } from "@/wasm/import-item";
 import { hasSimSymbols, type SimSymbolsModule } from "@/wasm/sim-parts";
 import { putOnWires } from "@/wasm/sim-thermal";
-import { giveFirmware, type ChipFirmware } from "@/wasm/chip-firmware";
+import { giveFirmware, giveSetting, type ChipFirmware } from "@/wasm/chip-firmware";
+import type { PartSetting } from "@pcbjam/shared/sim-library";
 import { applyEdit, editError, editModule, validateEdit } from "@/plugins/edits";
-import { createLiveSession, hasToolbarButton, type LiveSession, type LiveSessionState } from "@/wasm/live-session";
+import { createLiveSession, hasToolbarButton, type LiveReport, type LiveSession, type LiveSessionState } from "@/wasm/live-session";
 import { tonesFor } from "@/wasm/live-sound";
 import { hasSimPlaces } from "@/wasm/live-overlay";
 import { AI_CHAT_PLUGIN, localPluginLab, pluginKey, pluginPanelKey, usePluginCatalog, type PluginView } from "@/plugins/plugin-catalog";
@@ -2350,6 +2351,11 @@ export function WasmTool({
   // the editor stops what runs and takes the button away.
   const [liveSession, setLiveSession] = React.useState<LiveSession | null>(null);
   const [liveState, setLiveState] = React.useState<LiveSessionState>("idle");
+  // What became of the run that was tried last, and what it left out. Kept after a failure
+  // and after Stop: the Simulation parts list shows it.
+  const [liveReport, setLiveReport] = React.useState<LiveReport | null>(null);
+  // Counts up at a click on a run's notice: the Simulation parts list opens, and unfolds.
+  const [simPartsShow, setSimPartsShow] = React.useState(0);
   // A chip that runs firmware takes its image from the project (wasm/chip-parts.ts).
   const readProjectFile = React.useCallback(
     async (path: string): Promise<Uint8Array | null> => {
@@ -2378,8 +2384,24 @@ export function WasmTool({
             ? toast.info(text, { duration: 15_000, testId: "live-sim-power" })
             : about === "heat"
               ? toast.info(text, { duration: 15_000, testId: "live-sim-heat" })
-            : toast.info(text, { duration: 10_000, testId: "live-sim-note" }),
+            : about === "clock"
+              ? toast.info(text, { duration: 15_000, testId: "live-sim-clock" })
+            : about === "commands"
+              ? toast.info(text, { duration: 15_000, testId: "live-sim-commands" })
+            : // what the run left out, in counts: the list has every symbol, and what to do
+              toast.info(text, {
+                duration: 15_000,
+                testId: "live-sim-note",
+                action: {
+                  label: "Show the list",
+                  onClick: () => {
+                    setSimPartsShow((n) => n + 1);
+                    setSimPartsOpen(true);
+                  },
+                },
+              }),
       onState: setLiveState,
+      onReport: setLiveReport,
       log: (msg) => append(`[live-sim] ${msg}`),
     });
     setLiveSession(session);
@@ -2387,6 +2409,7 @@ export function WasmTool({
       session.dispose();
       setLiveSession(null);
       setLiveState("idle");
+      setLiveReport(null);
     };
   }, [simPartsMod, simParts, append, readProjectFile]);
   const liveLayerLog = React.useCallback((msg: string) => append(`[live-sim] ${msg}`), [append]);
@@ -2419,6 +2442,24 @@ export function WasmTool({
               append(`[live-sim] ${chip.ref}: firmware ${name} stored in the project`);
               return name;
             },
+      // a setting of a chip (its clock), written onto its symbol as one edit of the shown sheet
+      set: readOnly
+        ? undefined
+        : async (chip: ChipFirmware, setting: PartSetting, value: string) => {
+            await giveSetting({
+              chip,
+              setting,
+              value,
+              doc: panelDoc,
+              edit: (request) => {
+                const mod = editModule();
+                if (!mod) throw editError("NO_EDITOR");
+                validateEdit(request, "eeschema");
+                return applyEdit(mod, request, new AbortController().signal);
+              },
+            });
+            append(`[live-sim] ${chip.ref}: ${setting.name} = ${value}`);
+          },
     }),
     [storedFirmware, files, readOnly, saveOutput, panelDoc, append],
   );
@@ -2494,7 +2535,10 @@ export function WasmTool({
       liveSession
         ? {
             state: liveState,
-            onClick: () => void liveSession.click(),
+            // While it starts the row is Stop at once: the menu closes with the click, so the
+            // second click of a double-click cannot land on it (the toolbar button waits, see
+            // SAME_CLICK_MS).
+            onClick: () => void (liveSession.state === "starting" ? liveSession.stop() : liveSession.click()),
             sound: liveSoundParts > 0 ? { muted: liveSoundIsMuted, onMuted: setLiveSoundMuted } : null,
             console: { open: simConsoleOpen, onOpen: setSimConsoleOpen },
           }
@@ -2747,7 +2791,7 @@ export function WasmTool({
         <SimConsolePanel console={liveSession.console} onClose={() => setSimConsoleOpen(false)} />
       )}
       {ready && simPartsOpen && simPartsMod && simParts && (
-        <SimPartsPanel mod={simPartsMod} reader={simParts} doc={panelDoc} firmware={simPartsFirmware} thermal={simPartsThermal} onClose={() => setSimPartsOpen(false)} />
+        <SimPartsPanel mod={simPartsMod} reader={simParts} doc={panelDoc} firmware={simPartsFirmware} thermal={simPartsThermal} report={liveReport} show={simPartsShow} onClose={() => setSimPartsOpen(false)} />
       )}
 
       {/* Team fonts (fonts 0002): the session menu's "Team fonts" row opens it. */}

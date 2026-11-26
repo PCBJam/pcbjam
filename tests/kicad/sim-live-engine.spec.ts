@@ -26,7 +26,7 @@ const PART_BASE64 = fs.readFileSync(
     path.join(REPO, 'tests', 'fixtures', 'sim-live', 'test-part.wasm')).toString('base64');
 
 // A packaged part's adapter, as the page would put it in front of the worker script (the
-// app's own is web/standalone/src/wasm/esp-emu-adapter.js, for a chip emulator). This one
+// app's own is web/standalone/src/wasm/esp32sim-adapter.js, for a chip emulator). This one
 // does the least: its output is its input 0, it says what it was given, and it counts how
 // often a part of its kind was made and let go.
 const TEST_ADAPTER = `(globalThis.__pjAdapters = globalThis.__pjAdapters || {})["test-adapter"] = function (env) {

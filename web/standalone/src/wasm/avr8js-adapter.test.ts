@@ -304,6 +304,174 @@ describe.skipIf(!here)("the avr8js adapter with the real avr8js", () => {
     part.pj_unload();
   }, 120_000);
 
+  // ---- a chip without a board (the bare ATmega328 parts): its supply and its clock ----
+
+  /** A bare chip with the sketch, and ngspice's side of it. */
+  const bare = (config: Record<string, unknown>, program: Uint8Array = readIntelHex(readFileSync(FIRMWARE, "utf8")), engine: Partial<Parameters<Adapter>[0]> = {}) => {
+    const events: { t: number; bit: number; state: number }[] = [];
+    const lines: string[] = [];
+    const part = load()({
+      blobs: { "firmware.bin": program },
+      config: { chip: "atmega328", clock: 16_000_000, pads: PADS, enable: true, supply: true, wired: [26, 8, 13], emulatorKey: KEY, ...config },
+      out: (t, bit, state) => events.push({ t, bit, state }),
+      log: (text) => lines.push(text),
+      ...engine,
+    });
+    let now = 0;
+    const run = (until: number): void => {
+      while (now < until) {
+        const target = Math.min(until, now + 1e-4);
+        for (;;) { now = part.pj_step(target); if (now >= target) break; }
+      }
+    };
+    return {
+      part, events, lines, run,
+      at: () => now,
+      last: (bit: number): number | undefined => [...events].reverse().find((e) => e.bit === bit)?.state,
+      ready: () => lines.filter((l) => /^> .*ready/.test(l)).length,
+      beats: (from = 0) => events.filter((e) => e.bit === BEAT && e.t > from).map((e) => e.t),
+    };
+  };
+  const SUPPLY = N + 1;
+
+  it("a chip without a board runs only while its supply is up, and starts from reset when it comes back", () => {
+    const { part, lines, run, at, last, ready } = bare({});
+    // one more input than a board: the supply, after the pads and the reset pin
+    expect(part.pj_setup()).toBe((N + 2) | ((3 * N) << 8));
+    // reset is high (held from elsewhere), and nothing says the supply is up
+    part.pj_input(0, N, 1, 0);
+    part.pj_input(0, BUTTON, 1, 0);
+    run(0.3);
+    expect(lines).toContain("! the chip has no supply: its VCC pin has less than 1.8 V, so its sketch does not run");
+    expect(lines.some((l) => l.includes("reset pin is not high"))).toBe(false);
+    expect(ready()).toBe(0);
+    expect(last(N + BEAT)).not.toBe(1);
+
+    // the supply comes: the sketch starts from the beginning
+    part.pj_input(at(), SUPPLY, 1, 0);
+    run(at() + 0.4);
+    expect(lines).toContain("the chip has its supply: it starts");
+    expect(lines).not.toContain("the supply is back: the chip starts");
+    expect(ready()).toBe(1);
+    expect(last(N + BEAT)).toBe(1);
+
+    // it goes: every pad is let go, and the chip is silent
+    part.pj_input(at(), SUPPLY, 0, 0);
+    run(at() + 0.3);
+    expect(lines).toContain("the supply went below 1.7 V: the chip stopped");
+    expect(last(N + BEAT)).toBe(0);
+    expect(last(2 * N + BUTTON)).toBe(0);
+    expect(ready()).toBe(1);
+    // reset moving while there is no supply starts nothing
+    part.pj_input(at(), N, 0, 0);
+    part.pj_input(at() + 1e-4, N, 1, 0);
+    run(at() + 0.3);
+    expect(ready()).toBe(1);
+
+    // and comes back: a second start
+    part.pj_input(at(), SUPPLY, 1, 0);
+    run(at() + 0.4);
+    expect(lines).toContain("the supply is back: the chip starts");
+    expect(ready()).toBe(2);
+    // with the supply up, reset still holds the chip
+    part.pj_input(at(), N, 0, 0);
+    run(at() + 0.01);
+    expect(lines).toContain("reset went low: the chip is held in reset");
+    expect(last(N + BEAT)).toBe(0);
+    part.pj_unload();
+  }, 120_000);
+
+  it("a chip held in reset with its supply up says the reset, not the supply", () => {
+    const { part, lines, run } = bare({});
+    part.pj_setup();
+    part.pj_input(0, SUPPLY, 1, 0);
+    part.pj_input(0, N, 0, 0);
+    run(0.05);
+    expect(lines).toContain("! the reset pin is not high: the chip is held in reset and its sketch does not run");
+    expect(lines.some((l) => l.includes("no supply"))).toBe(false);
+    part.pj_unload();
+  }, 120_000);
+
+  it("runs at the clock it is told: a sketch built for 16 MHz beats half as fast at 8 MHz, and 16 times slower at 1 MHz", () => {
+    const beatsAt = (clock: number, until = 1.3): number[] => {
+      const chip = bare({ clock });
+      chip.part.pj_setup();
+      chip.part.pj_input(0, N, 1, 0);
+      chip.part.pj_input(0, SUPPLY, 1, 0);
+      chip.part.pj_input(0, BUTTON, 1, 0);
+      chip.run(until);
+      chip.part.pj_unload();
+      return chip.beats(0.05);
+    };
+    const gaps = (times: number[]): number[] => times.slice(1).map((t, i) => t - times[i]!);
+    const fast = gaps(beatsAt(16_000_000)), slow = gaps(beatsAt(8_000_000));
+    expect(fast.length).toBeGreaterThanOrEqual(3);
+    expect(slow.length).toBeGreaterThanOrEqual(1);
+    for (const g of fast) expect(g).toBeCloseTo(0.25, 3);
+    for (const g of slow) expect(g).toBeCloseTo(0.5, 3);
+    // 1 MHz, the speed of a chip as it leaves the factory (8 MHz divided by 8)
+    const slowest = gaps(beatsAt(1_000_000, 9));
+    expect(slowest.length).toBeGreaterThanOrEqual(1);
+    for (const g of slowest) expect(g).toBeCloseTo(4, 2);
+  }, 120_000);
+
+  it("measures against the voltage on its AVCC pin or on its AREF pin, and on the two extra inputs of the larger packages", () => {
+    // the sketch answers "a" with analogRead of A0, A6 and A7 against AVCC, and "e" with the same against AREF
+    const measured = (taps: string[], volts: Record<string, number>, typed: string): string[] => {
+      const { part, lines, run, at } = bare({ taps }, undefined, { volt: (input) => volts[taps[input] ?? ""] ?? NaN, sampleAt: () => true });
+      part.pj_setup();
+      part.pj_input(0, N, 1, 0);
+      part.pj_input(0, SUPPLY, 1, 0);
+      part.pj_input(0, BUTTON, 1, 0);
+      run(0.05);
+      for (const letter of typed) {
+        part.pj_serial(new TextEncoder().encode(letter));
+        run(at() + 0.05);
+      }
+      part.pj_unload();
+      return lines;
+    };
+    const ALL = ["A0", "A1", "A2", "A3", "A4", "A5", "A6", "A7", "AVCC", "AREF"];
+    // a chip on 3.3 V with 2.5 V on AREF: the same three voltages are other numbers against each
+    const lines = measured(ALL, { A0: 1.65, A6: 1.1, A7: 2.2, AVCC: 3.3, AREF: 2.5 }, "ae");
+    expect(lines).toContain("> uno-demo: analog avcc A0=512 A6=341 A7=682");
+    expect(lines).toContain("> uno-demo: analog aref A0=675 A6=450 A7=901");
+    expect(lines.some((l) => l.startsWith("! "))).toBe(false);
+
+    // the packages with 28 pins have no A6 and no A7: 0, said once for each
+    const small = measured(["A0", "A1", "A2", "A3", "A4", "A5", "AVCC", "AREF"], { A0: 2.5, AVCC: 5, AREF: 5 }, "aa");
+    expect(small.filter((l) => l === "> uno-demo: analog avcc A0=512 A6=0 A7=0").length).toBe(2);
+    expect(small.filter((l) => /reads the analog input A6, which this (board|part) does not have/.test(l)).length).toBe(1);
+    expect(small.filter((l) => /reads the analog input A7/.test(l)).length).toBe(1);
+
+    // AVCC with nothing on it: the chip's converter has no supply, and the sketch is told
+    const open = measured(ALL, { A0: 1.65, A6: 0, A7: 0, AVCC: 0, AREF: 0 }, "a");
+    expect(open).toContain("> uno-demo: analog avcc A0=1023 A6=1023 A7=1023");
+    expect(open.filter((l) => l.includes("measures against AVCC, the supply of its converter, and that pin has no voltage")).length).toBe(1);
+  }, 120_000);
+
+  it("follows the chip's own clock divider when a sketch sets it", () => {
+    // A program by hand, no Arduino core: CLKPR = 0x80, CLKPR = 1 (the clock divided by 2),
+    // PB5 an output, then for ever: toggle PB5 and count 3999 down, 16001 clock cycles a round.
+    //   ldi r16,0x80  sts 0x61,r16  ldi r16,1  sts 0x61,r16  sbi DDRB,5
+    //   loop: sbi PINB,5  ldi r24,0x9f  ldi r25,0x0f  d: sbiw r24,1  brne d  rjmp loop
+    const words = [0xe800, 0x9300, 0x0061, 0xe001, 0x9300, 0x0061, 0x9a25, 0x9a1d, 0xe98f, 0xe09f, 0x9701, 0xf7f1, 0xcffa];
+    const program = Uint8Array.from(words.flatMap((w) => [w & 0xff, w >> 8]));
+    const { part, events, lines, run } = bare({ wired: [13] }, program);
+    part.pj_setup();
+    part.pj_input(0, N, 1, 0);
+    part.pj_input(0, SUPPLY, 1, 0);
+    run(0.05);
+    expect(lines).toContain("the sketch set the chip's clock divider to 2: the chip runs at 8 MHz");
+    // 16001 cycles at 8 MHz: a toggle every 2.000125 ms (it would be 1.0000625 ms without the divider)
+    // (the first millisecond has the pad's levels of the start itself)
+    const toggles = events.filter((e) => e.bit === BEAT && e.t > 0.001).map((e) => e.t);
+    expect(toggles.length).toBeGreaterThanOrEqual(23);
+    expect(toggles.length).toBeLessThanOrEqual(25);
+    for (let i = 1; i < toggles.length; i++) expect(toggles[i]! - toggles[i - 1]!).toBeCloseTo(0.002000125, 7);
+    part.pj_unload();
+  }, 120_000);
+
   it("stays silent, in words, about a program that is none for this chip", () => {
     const make = load();
     const said = (blobs: Record<string, Uint8Array>, chip = "atmega328p"): string[] => {

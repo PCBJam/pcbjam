@@ -6,10 +6,17 @@ import { PanelPin } from "@/overlay/PanelPin";
 import { PanelDock } from "@/overlay/PanelDock";
 import { Button, Input, Tip } from "@pcbjam/ui";
 import { overlayIconClass } from "@/components/OverlayMenu";
-import { chipFirmwares, firmwareExtension, type ChipFirmware } from "@/wasm/chip-firmware";
+import {
+  LEFT_OUT_ORDER, clockSettingValue, clockSource, leftOutBy, leftOutGroup, leftOutName, leftOutRemark, settingAllows, type LeftOut, type PartSetting,
+} from "@pcbjam/shared/sim-library";
+import { chipFirmwares, clockingCrystals, firmwareExtension, type ChipClockLine, type ChipFirmware } from "@/wasm/chip-firmware";
+import type { LiveReport } from "@/wasm/live-session";
 import { thermalPinLabel, thermalPinTip, wireNameProblem } from "@/wasm/sim-thermal";
 import {
+  notLoadedSentence,
   simPartRows,
+  withClocking,
+  type SheetNotLoaded,
   type SimPartRow,
   type SimPartsReader,
   type SimPartState,
@@ -37,6 +44,13 @@ import {
  * Those two lines are what changes the schematic here; everything else only
  * reads it.
  *
+ * Above the rows: what a run leaves out, in groups by the reason, each with what
+ * to do about it (the reasons and their words are @pcbjam/shared's, the same a
+ * run's notice uses). Once Play was pressed it is that run's own report, kept
+ * after a start that failed and after Stop, with why the run did not start or
+ * why it ended. The rows below are always the schematic as it is now; when that
+ * differs from the run's report, the block says so.
+ *
  * The rows come from wasm/sim-parts.ts (the editor's `kicadSimSymbols` and
  * `kicadSimNetlist` reads matched against the published library). The list is read when the panel
  * opens, on the refresh button, and a moment after every change of the bound
@@ -57,7 +71,86 @@ const REFRESH_QUIET_MS = 400;
 type View =
   | { status: "loading" }
   | { status: "error"; message: string }
-  | { status: "ready"; version: string; rows: SimPartRow[]; problems: string[]; chips: Map<string, ChipFirmware> };
+  | { status: "ready"; version: string; rows: SimPartRow[]; problems: string[]; chips: Map<string, ChipFirmware>; leftOut: LeftOut[]; notLoaded: SheetNotLoaded[] };
+
+/** The same list of left-out symbols, whatever its order: who, and why. */
+const sameLeftOut = (a: readonly LeftOut[], b: readonly LeftOut[]): boolean => {
+  const key = (list: readonly LeftOut[]): string => list.map((s) => `${s.ref} ${s.reason} ${s.off ?? ""} ${s.instead ?? ""}`).sort().join("\n");
+  return a.length === b.length && key(a) === key(b);
+};
+
+const REPORT_TITLE: Record<LiveReport["outcome"], string> = {
+  starting: "This run",
+  running: "This run",
+  stopped: "The last run",
+  "not-started": "The last run did not start",
+  ended: "The last run stopped by itself",
+};
+
+/**
+ * What a run leaves out, in groups by the reason. `report`: the run that was tried last,
+ * and then the list is that run's. Without one it is `now`, the schematic as it is: what
+ * the next Play will leave out.
+ */
+function LeftOutBlock({ report, now }: { report: LiveReport | null; now: LeftOut[] | null }): React.ReactElement | null {
+  const list = report ? report.leftOut : now ?? [];
+  if (!report && !list.length) return null;
+  // the circuit of a run that could not be written has no list of its own
+  const unwritten = report?.outcome === "not-started" && !report.leftOut.length;
+  const stale = !!report && !!now && !unwritten && !sameLeftOut(report.leftOut, now);
+  return (
+    <div
+      data-testid="sim-parts-report"
+      data-outcome={report?.outcome ?? "none"}
+      data-left-out={list.length}
+      data-stale={stale ? "yes" : "no"}
+      className="border-t border-black/5 px-3 py-1.5 text-[11px] dark:border-white/5"
+    >
+      <p className="font-semibold text-neutral-700 dark:text-white/80">
+        {report ? REPORT_TITLE[report.outcome] : "When it plays"}
+        {list.length > 0 && <span className="font-normal text-neutral-500 dark:text-white/50"> - {list.length} left out</span>}
+      </p>
+      {report?.problem && (
+        <p data-testid="sim-parts-report-problem" data-about={report.about.join(" ")} className="mt-0.5 break-words text-red-600 dark:text-red-300">
+          {report.problem}
+        </p>
+      )}
+      {report && !list.length && !unwritten && (
+        <p data-testid="sim-parts-report-none" className="mt-0.5 text-neutral-500 dark:text-white/50">
+          Nothing was left out.
+        </p>
+      )}
+      {LEFT_OUT_ORDER.map((reason) => {
+        const group = leftOutBy(list, reason);
+        if (!group.length) return null;
+        const { title, todo } = leftOutGroup(reason, group);
+        // what the group's words cover is named in one line; the rest has a line each
+        const plain = group.filter((s) => leftOutRemark(s) === null);
+        const remarked = group.filter((s) => leftOutRemark(s) !== null);
+        return (
+          <div key={reason} data-testid="sim-parts-left-out" data-reason={reason} data-count={group.length} data-refs={group.map((s) => s.ref).join(" ")} className="mt-1">
+            <p>
+              <span className="font-semibold">{title}</span>
+              <span className="text-neutral-500 dark:text-white/50"> ({group.length})</span>
+              {reason !== "nothing" && plain.length > 0 && <span>: {plain.map(leftOutName).join(", ")}</span>}
+            </p>
+            {remarked.map((s) => (
+              <p key={`${s.sheet}${s.ref}`} data-testid="sim-parts-left-out-remark" data-ref={s.ref} className="pl-2">
+                <span className="font-semibold">{leftOutName(s)}</span>: {leftOutRemark(s)}
+              </p>
+            ))}
+            <p className="text-neutral-500 dark:text-white/50">{todo}</p>
+          </div>
+        );
+      })}
+      {stale && (
+        <p data-testid="sim-parts-report-stale" className="mt-1 text-amber-700 dark:text-amber-300">
+          The schematic changed since this run. The rows below are the schematic as it is now; Play again for a new report.
+        </p>
+      )}
+    </div>
+  );
+}
 
 /** What the list needs to show and to change a chip's firmware. */
 export interface SimPartsFirmware {
@@ -69,6 +162,11 @@ export interface SimPartsFirmware {
    * the line then only says which file the chip runs.
    */
   choose?: (chip: ChipFirmware, file: File) => Promise<string>;
+  /**
+   * Writes one setting of a chip onto its symbol (its clock); rejects with a sentence for
+   * the user. Left out in a session that cannot write: the line then only says the value.
+   */
+  set?: (chip: ChipFirmware, setting: PartSetting, value: string) => Promise<void>;
 }
 
 /** What the list needs to join a part's thermal pins to wires. */
@@ -165,6 +263,84 @@ function ThermalLine({ row, thermal, put, onPut }: { row: SimPartRow; thermal: N
   );
 }
 
+/**
+ * The line of a chip without a board: the speed it runs at and where that comes from, and
+ * a field for the speed by hand ("16MHz"; empty leaves it to the schematic). It is written
+ * when the field is left or Enter is pressed, and only when it changed.
+ */
+function ClockLine({ chip, clock, set, onSet }: { chip: ChipFirmware; clock: ChipClockLine; set: SimPartsFirmware["set"]; onSet: () => void }): React.ReactElement {
+  const shown = clock.value === clock.setting.default ? "" : clock.value;
+  const [draft, setDraft] = React.useState(shown);
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+  // the schematic's value wins when it changes under the line: an undo, a collaborator
+  React.useEffect(() => setDraft(shown), [shown]);
+  const commit = (): void => {
+    const value = clockSettingValue(draft);
+    if (!set || busy || value === clock.value) return;
+    if (!settingAllows(clock.setting, value)) return setError(`"${draft.trim()}" is not a speed: write it like 16MHz, 8MHz or 500kHz, or leave the field empty.`);
+    setBusy(true);
+    setError(null);
+    set(chip, clock.setting, value).then(
+      () => {
+        setBusy(false);
+        onSet();
+      },
+      (err: unknown) => {
+        setBusy(false);
+        setError(err instanceof Error ? err.message : String(err));
+      },
+    );
+  };
+  const label = clock.setting.label ?? "Clock";
+  return (
+    <>
+      <div
+        data-testid="sim-part-clock"
+        data-ref={chip.ref}
+        data-hz={clock.now.hz}
+        data-from={clock.now.from}
+        data-setting={clock.value}
+        data-busy={busy ? "yes" : "no"}
+        className="flex items-center gap-2 pb-1 pl-[4.25rem] pr-3 text-[11px]"
+      >
+        <span className="shrink-0 text-neutral-500 dark:text-white/60">{label}</span>
+        <Tip content={`${chip.ref} runs at this speed when Play is clicked. A sketch is built for one speed: at another its delays and its serial speed are off.`}>
+          <span data-testid="sim-part-clock-now" className={`min-w-0 flex-1 truncate ${clock.now.from === "assumed" ? "text-amber-600 dark:text-amber-300" : ""}`}>{clockSource(clock.now)}</span>
+        </Tip>
+        {set && (
+          <Tip content="The speed by hand, like 16MHz. Empty: the crystal on the chip's clock pins says it, or the chip's own 8 MHz.">
+            <Input
+              data-testid="sim-part-clock-input"
+              aria-label={`${label} of ${chip.ref}`}
+              value={draft}
+              placeholder="auto"
+              disabled={busy}
+              spellCheck={false}
+              autoComplete="off"
+              className="h-6 w-20 shrink-0 px-1.5 font-mono text-[11px]"
+              onChange={(e) => {
+                setDraft(e.target.value);
+                setError(null);
+              }}
+              onBlur={commit}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") commit();
+                else if (e.key === "Escape") setDraft(shown);
+              }}
+            />
+          </Tip>
+        )}
+      </div>
+      {error && (
+        <p data-testid="sim-part-clock-error" className="pb-1 pl-[4.25rem] pr-3 text-[11px] text-red-600 dark:text-red-300">
+          {error}
+        </p>
+      )}
+    </>
+  );
+}
+
 /** The chip a file is being stored for, or the sentence its last try ended with. */
 type Giving = { uuid: string; busy: true } | { uuid: string; busy: false; error: string };
 
@@ -186,6 +362,8 @@ export function SimPartsPanel({
   doc,
   firmware,
   thermal,
+  report,
+  show,
   onClose,
 }: {
   mod: SimSymbolsModule;
@@ -196,6 +374,10 @@ export function SimPartsPanel({
   firmware?: SimPartsFirmware;
   /** The lines of the parts' thermal pins. Left out, the list says nothing about heat. */
   thermal?: SimPartsThermal;
+  /** The report of the run that was tried last (wasm/live-session.ts). Null: no Play yet. */
+  report?: LiveReport | null;
+  /** Counts up when something asks for the list (a click on a run's notice): a collapsed panel opens. */
+  show?: number;
   onClose: () => void;
 }) {
   const rootRef = React.useRef<HTMLDivElement | null>(null);
@@ -220,6 +402,11 @@ export function SimPartsPanel({
     }
   };
 
+  // somebody asked for the list: a panel that was left collapsed shows it
+  React.useEffect(() => {
+    if (show) setCollapsedState(false);
+  }, [show]);
+
   const [view, setView] = React.useState<View>({ status: "loading" });
   const [busy, setBusy] = React.useState(false);
   // Only the newest read may answer: a slow first read must not overwrite a later one.
@@ -235,7 +422,9 @@ export function SimPartsPanel({
         const none = new Map<string, ChipFirmware>();
         const chips = withFirmware ? await chipFirmwares(parts).catch(() => none) : none;
         if (turn !== latest.current) return;
-        setView({ status: "ready", version: parts.library.version, rows: simPartRows(parts), problems: parts.problems, chips });
+        // a crystal that clocks a chip is used by the run, though no part and no model stands for it
+        const { rows, leftOut } = withClocking(simPartRows(parts), parts.leftOut, clockingCrystals(chips));
+        setView({ status: "ready", version: parts.library.version, rows, problems: parts.problems, chips, leftOut, notLoaded: parts.notLoaded });
         setBusy(false);
       },
       (err: unknown) => {
@@ -376,6 +565,13 @@ export function SimPartsPanel({
               The parts could not be listed: {view.message}
             </p>
           )}
+          {/* a sheet that did not load: said here, unless the last run's own reason says the same below */}
+          {view.status === "ready" && view.notLoaded.length > 0 && !report?.problem?.includes(notLoadedSentence(view.notLoaded)) && (
+            <p data-testid="sim-parts-not-loaded" className="border-t border-black/5 px-3 py-1 text-[11px] text-red-600 dark:border-white/5 dark:text-red-300">
+              {notLoadedSentence(view.notLoaded).replace(/^t/, "T")}
+            </p>
+          )}
+          <LeftOutBlock report={report ?? null} now={view.status === "ready" ? view.leftOut : null} />
           {view.status === "ready" && rows.length === 0 && (
             <p className="px-3 pb-3 text-xs text-neutral-500 dark:text-white/50">
               This schematic has no symbols yet.
@@ -385,6 +581,8 @@ export function SimPartsPanel({
             const chip = firmware && r.state === "live" ? chips?.get(r.uuid) : undefined;
             const stored = chip ? firmware!.inProject(chip.name) : false;
             const mine = chip && giving?.uuid === chip.uuid ? giving : null;
+            // the simulator's reason for the last run names a line of this symbol
+            const named = !!report?.problem && report.about.includes(r.ref);
             return (
               <React.Fragment key={r.key}>
                 <Tip content={r.sheet === "/" ? r.note : `${r.note} Sheet ${r.sheet}`}>
@@ -392,12 +590,14 @@ export function SimPartsPanel({
                     data-testid="sim-part-row"
                     data-ref={r.ref}
                     data-state={r.state}
-                    className="flex items-baseline gap-2 border-t border-black/5 px-3 py-1 text-xs dark:border-white/5"
+                    data-reason={r.reason ?? ""}
+                    data-named={named ? "yes" : "no"}
+                    className={`flex items-baseline gap-2 border-t border-black/5 px-3 py-1 text-xs dark:border-white/5 ${named ? "bg-red-500/10" : ""}`}
                   >
                     <span className="w-12 shrink-0 truncate font-semibold">{r.ref}</span>
                     <span className="w-24 shrink-0 truncate text-neutral-500 dark:text-white/60">{r.value}</span>
                     <span data-testid="sim-part-row-part" className="min-w-0 flex-1 truncate">{r.part}</span>
-                    <span className={`shrink-0 text-[11px] ${STATE_CLASS[r.state]}`}>{r.label}</span>
+                    <span className={`shrink-0 text-[11px] ${named ? "text-red-600 dark:text-red-300" : STATE_CLASS[r.state]}`}>{named ? "named by the simulator" : r.label}</span>
                   </div>
                 </Tip>
                 {chip && (
@@ -435,6 +635,7 @@ export function SimPartsPanel({
                     )}
                   </div>
                 )}
+                {chip?.clock && <ClockLine chip={chip} clock={chip.clock} set={firmware?.set} onSet={refresh} />}
                 {thermal && r.state === "live" && r.thermal && <ThermalLine row={r} thermal={r.thermal} put={thermal.put} onPut={refresh} />}
                 {mine && !mine.busy && (
                   <p

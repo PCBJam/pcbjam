@@ -1,4 +1,7 @@
-import { overlayOf, type DeckInput, type DeckSignal, type PreparedRun } from "@pcbjam/shared/sim-library";
+import {
+  leftOutMatters, leftOutSentence, leftOutWords, overlayOf,
+  type DeckInput, type DeckSignal, type LeftOutReason, type PreparedRun,
+} from "@pcbjam/shared/sim-library";
 
 /**
  * The live layer, the part without a screen: which widgets a running circuit
@@ -270,6 +273,11 @@ export interface LeftOutMark {
   key: string;
   ref: string;
   uuid: string;
+  /** Why it is left out: a missing value, or no part. */
+  reason: LeftOutReason;
+  /** Two words for the mark ("no value"), and the sentence with what to do. */
+  words: string;
+  sentence: string;
   box: WidgetBox;
 }
 
@@ -277,26 +285,31 @@ export interface LeftOutMark {
 const LEFT_OUT_MARGIN_MM = 0.6;
 
 /**
- * The symbols of the open sheet that the run leaves out because nothing has a
- * model for them. The references are those of this use of the sheet, so a sheet
- * that is used twice marks the right ones. A symbol of several units is marked
- * on each unit.
+ * The symbols of the open sheet that the run leaves out and that the user may want to
+ * mend: a resistor without its value, a chip the library has no part for. What somebody
+ * switched off and what has nothing to simulate (a mounting hole, a pin header) gets no
+ * mark: the Simulation parts list has those. The references are those of this use of the
+ * sheet, so a sheet that is used twice marks the right ones. A symbol of several units is
+ * marked on each unit.
  */
-export function leftOutFor(run: Pick<PreparedRun, "notSimulated">, places: SheetPlaces): LeftOutMark[] {
-  if (!run.notSimulated.length) return [];
-  const refs = new Set(run.notSimulated);
+export function leftOutFor(run: Pick<PreparedRun, "leftOut">, places: SheetPlaces): LeftOutMark[] {
+  const marked = new Map(run.leftOut.filter(leftOutMatters).map((s) => [s.ref, s]));
+  if (!marked.size) return [];
   const m = LEFT_OUT_MARGIN_MM * places.iuPerMm;
-  return places.symbols
-    .filter((sym) => refs.has(sym.ref))
-    .map((sym) => {
-      const [x0, y0, x1, y1] = sym.body;
-      return {
-        key: `${places.sheet}:${sym.uuid}:left-out`,
-        ref: sym.ref,
-        uuid: sym.uuid,
-        box: { x: x0 - m, y: y0 - m, w: x1 - x0 + 2 * m, h: y1 - y0 + 2 * m, anchor: "corner" as const },
-      };
-    });
+  return places.symbols.flatMap((sym) => {
+    const why = marked.get(sym.ref);
+    if (!why) return [];
+    const [x0, y0, x1, y1] = sym.body;
+    return [{
+      key: `${places.sheet}:${sym.uuid}:left-out`,
+      ref: sym.ref,
+      uuid: sym.uuid,
+      reason: why.reason,
+      words: leftOutWords(why.reason),
+      sentence: leftOutSentence(why),
+      box: { x: x0 - m, y: y0 - m, w: x1 - x0 + 2 * m, h: y1 - y0 + 2 * m, anchor: "corner" as const },
+    }];
+  });
 }
 
 export interface ScreenBox {

@@ -11,12 +11,16 @@ import { openOverlayMenu, openSimulationMenu } from './overlay-menu';
  *   - without the `liveSimulation` toggle there is neither;
  *   - with it, KiCad's toolbar has "Run live simulation". A click reads the
  *     schematic, builds its circuit and runs it in the live engine: the button
- *     becomes "Stop live simulation" only once the circuit's first moment is
- *     solved. A click on Stop brings Play back, and it plays again;
+ *     is "Stop live simulation" from the click on, also while the run starts,
+ *     so a start that waits can be given up. A click on Stop brings Play back,
+ *     and it plays again;
+ *   - a start that waits for the library is given up by Stop, and the next
+ *     Play works;
  *   - a symbol nobody has a model for is left out: the rest of the circuit
- *     runs, a notice names the symbol and the sheet marks it;
+ *     runs, a notice names the symbol and the sheet marks it (the reasons a
+ *     symbol is left out have a test of their own, live-sim-left-out.spec.ts);
  *   - a circuit the simulator does not run stays on Play and says why, in the
- *     simulator's words;
+ *     simulator's words, with the symbol its line belongs to;
  *   - KiCad puts the button at the far end of its toolbar, which a window of
  *     the usual size does not show. The Session menu's row plays and stops
  *     there, and also with the UI hidden, where there is no toolbar at all;
@@ -84,6 +88,13 @@ async function bootSchematic(page: Page, file: string): Promise<void> {
 
 const tool = (page: Page, tooltip: string) => findByTooltip(page, tooltip, { elementType: 'tool' });
 
+/**
+ * The circuit runs: the layer over the sheet is there. The button is no sign of it: it
+ * says Stop from the click on Play, also while the run still starts.
+ */
+const expectRunning = (page: Page, message: string) =>
+  expect(page.getByTestId('live-layer'), message).toHaveCount(1, { timeout: 60000 });
+
 /** The Session menu's row: its words, and where the run stands (`data-live-state`). */
 const menuRow = (page: Page) => page.getByTestId('live-sim-toggle');
 
@@ -144,9 +155,9 @@ test.describe('live simulation: Play and Stop', () => {
     expect(fetched, 'the engine is not fetched before the first Play').toEqual([]);
 
     expect(await clickByTooltip(page, PLAY, { elementType: 'tool' })).toBe(true);
-    // Stop appears only when the circuit runs: its first moment is solved.
-    await expectTool(page, STOP, true, 'the circuit runs: the button is Stop');
+    await expectTool(page, STOP, true, 'the button is Stop');
     expect(await tool(page, PLAY), 'one button, not two').toBeNull();
+    await expectRunning(page, 'the circuit runs: its first moment is solved');
     expect(fetched.length, 'the engine was fetched for the run').toBeGreaterThan(0);
     await expect(page.getByTestId('live-sim-error')).toHaveCount(0);
     // the Session menu's row says the same
@@ -161,7 +172,8 @@ test.describe('live simulation: Play and Stop', () => {
 
     // and once more
     expect(await clickByTooltip(page, PLAY, { elementType: 'tool' })).toBe(true);
-    await expectTool(page, STOP, true, 'it plays again');
+    await expectTool(page, STOP, true, 'the button is Stop again');
+    await expectRunning(page, 'it plays again');
     expect(await clickByTooltip(page, STOP, { elementType: 'tool' })).toBe(true);
     await expectTool(page, PLAY, true, 'and stops again');
     await expect(page.getByTestId('live-sim-error')).toHaveCount(0);
@@ -175,15 +187,17 @@ test.describe('live simulation: Play and Stop', () => {
 
     await expectTool(page, PLAY, true, 'the Play button is on the toolbar');
     expect(await clickByTooltip(page, PLAY, { elementType: 'tool' })).toBe(true);
-    await expectTool(page, STOP, true, 'the circuit runs without D1: the button is Stop');
-    await expect(page.getByTestId('live-sim-note'), 'a notice names the symbol').toContainText(
-      'D1 is not simulated: nothing has a model for it. The rest of the circuit runs.',
+    await expectTool(page, STOP, true, 'the button is Stop');
+    await expectRunning(page, 'the circuit runs without D1');
+    await expect(page.getByTestId('live-sim-note'), 'a notice names the symbol, and says why').toContainText(
+      'D1 (red) is not simulated: the library has no part for it. The rest runs without it.',
     );
     await expect(page.getByTestId('live-sim-error')).toHaveCount(0);
-    // and the sheet marks it
+    // and the sheet marks it, with the reason
     const layer = page.getByTestId('live-layer');
     await expect(layer).toHaveAttribute('data-left-out', '1', { timeout: 30000 });
     await expect(layer.getByTestId('live-left-out')).toHaveAttribute('data-ref', 'D1');
+    await expect(layer.getByTestId('live-left-out')).toHaveAttribute('data-reason', 'no-part');
 
     expect(await clickByTooltip(page, STOP, { elementType: 'tool' })).toBe(true);
     await expectTool(page, PLAY, true, 'stopped: the button is Play again');
@@ -202,7 +216,8 @@ test.describe('live simulation: Play and Stop', () => {
 
     const error = page.getByTestId('live-sim-error');
     await expect(error).toBeVisible({ timeout: 60000 });
-    await expect(error).toContainText('Live simulation did not start: ngspice did not run the circuit');
+    // the simulator names a line of the netlist; the page says which symbol that is
+    await expect(error).toContainText('Live simulation did not start. The simulator names D1: ngspice did not run the circuit');
     // the simulator's own words name the line and the model nobody defines
     await expect(error).toContainText(/d1 .*red/i);
     expect(await tool(page, PLAY), 'the button is still Play').not.toBeNull();
@@ -236,6 +251,46 @@ test.describe('live simulation: Play and Stop in the Session menu', () => {
     await menuRow(page).click();
     await expectRow(page, 'idle', PLAY, 'stopped: the row is Play again');
     await expect(page.getByTestId('live-sim-error')).toHaveCount(0);
+  });
+
+  // A start waits for the library. When the library does not answer, the start can be
+  // given up, and the next Play works.
+  test('a start that waits for the library is given up by Stop, and Play works again', async ({ page }) => {
+    test.setTimeout(300000);
+    await answerSession(page, true);
+    const files: Record<string, unknown> = {
+      'current.json': { schema: 1, version: SNAPSHOT },
+      [`${SNAPSHOT}/index.json`]: { schema: 1, version: SNAPSHOT, parts: [], emulators: [] },
+    };
+    // the library's first file gets no answer until the test gives one
+    const held: Route[] = [];
+    let answers = false;
+    await page.route('**/e2e-sim-library/**', (route) => {
+      const path = new URL(route.request().url()).pathname.replace(/^\/e2e-sim-library\//, '');
+      if (!answers && path === 'current.json') return void held.push(route);
+      return path in files ? json(route, files[path]) : route.fulfill({ status: 404, body: 'not found' });
+    });
+    await bootSchematic(page, 'live-sim/run.kicad_sch');
+
+    await expectRow(page, 'idle', PLAY, 'the menu has the Play row');
+    await menuRow(page).click();
+    await expectRow(page, 'starting', 'Starting live simulation... Stop', 'the start waits for the library: the row offers Stop');
+    await expect(menuRow(page)).toBeEnabled();
+    await expect.poll(() => held.length, { message: 'the library was asked and got no answer' }).toBeGreaterThan(0);
+
+    await menuRow(page).click();
+    await expectRow(page, 'idle', PLAY, 'the start is given up: the row is Play again');
+    await expect(page.getByTestId('live-sim-error'), 'giving a start up is no error').toHaveCount(0);
+
+    // the library answers now, also the request that waited
+    answers = true;
+    for (const route of held) await json(route, files['current.json']);
+    await menuRow(page).click();
+    await expectRow(page, 'running', STOP, 'Play works again: the circuit runs');
+    await expect(page.getByTestId('live-sim-error')).toHaveCount(0);
+
+    await menuRow(page).click();
+    await expectRow(page, 'idle', PLAY, 'stopped');
   });
 
   test('with the UI hidden the row plays and stops, and the toolbars stay hidden', async ({ page }) => {

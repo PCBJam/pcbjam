@@ -3,7 +3,9 @@ import * as Y from "yjs";
 import { docToY, fileToDoc, parseSexpr } from "@pcbjam/shared";
 import { settingAllows, type Match, type PartManifest, type SimLibrary } from "@pcbjam/shared/sim-library";
 import type { EditRequest } from "@/plugins/edits";
-import { chipFirmwares, firmwareExtension, firmwareName, firmwareProblem, giveFirmware, symbolText, withFirmware, type GiveFirmware } from "./chip-firmware";
+import {
+  chipFirmwares, clockingCrystals, firmwareExtension, firmwareName, firmwareProblem, giveFirmware, giveSetting, symbolText, withFirmware, withSetting, type GiveFirmware,
+} from "./chip-firmware";
 import type { SaveOutcome } from "./save-flow";
 
 // The header of a real ESP32-C3 image, and a file of words with a firmware's name.
@@ -309,7 +311,7 @@ describe("giveFirmware", () => {
 describe("chipFirmwares", () => {
   const manifest = { settings: [FIRMWARE] } as unknown as PartManifest;
   const library = {
-    part: (id: string) => (id === "chip" ? { emulator: "esp-emu" } : id === "led" ? {} : undefined),
+    part: (id: string) => (id === "chip" ? { emulator: "esp32sim" } : id === "led" ? {} : undefined),
     text: vi.fn(async (_id: string, _file: string) => JSON.stringify(manifest)),
   } as unknown as SimLibrary;
   const sym = (uuid: string, ref: string, fields: Record<string, string> = {}) =>
@@ -317,7 +319,7 @@ describe("chipFirmwares", () => {
   const matched = (uuid: string, ref: string, partId: string): Match => ({ status: "matched", uuid, ref, partId } as unknown as Match);
 
   it("says which chip a part is when its description does", async () => {
-    const esp = { settings: [FIRMWARE], digital: { kind: "emulator", emulator: "esp-emu", chip: "esp32c3" } };
+    const esp = { settings: [FIRMWARE], digital: { kind: "emulator", emulator: "esp32sim", chip: "esp32c3" } };
     const wasm = { settings: [FIRMWARE], digital: { kind: "part-wasm", file: "part.wasm" } };
     for (const [described, chip] of [[esp, "esp32c3"], [wasm, undefined]] as const) {
       const chips = await chipFirmwares({
@@ -342,5 +344,65 @@ describe("chipFirmwares", () => {
     // the part's description is asked for the chips only
     expect(library.text).toHaveBeenCalledTimes(2);
     expect(library.text).toHaveBeenCalledWith("chip", "part.json");
+  });
+});
+
+describe("a chip without a board: its clock on its line, and a setting written onto its symbol", () => {
+  const CLOCK = { name: "clock", label: "Clock", default: "auto", accept: "^(auto|[0-9]{1,2}(\\.[0-9]{1,6})?MHz|[0-9]{3,5}(\\.[0-9]{1,3})?kHz)$" };
+  const bare: PartManifest = {
+    schema: 1, id: "mcu", version: 1, title: "Bare chip", fits: [{ symbol: "MCU:Chip", pins: { VCC: "1", VSS: "2", PB6: "3", PB7: "4" } }], pins: ["VCC", "VSS", "PB6", "PB7"],
+    settings: [{ name: "firmware", label: "Firmware file", default: "firmware.hex", accept: "^[A-Za-z0-9_.+-]+\\.hex$" }, CLOCK],
+    analog: { file: "model.lib", subckt: "MCU" },
+    digital: { kind: "emulator", emulator: "avr8js", chip: "atmega328p", clock: 8_000_000, orderParam: "IRR", pads: { PB6: 14, PB7: 15 }, enable: "VCC", crystal: { pins: ["PB6", "PB7"], setting: "clock" } },
+  };
+  const sym = (ref: string, libId: string, value: string, nets: string[], fields: Record<string, string> = {}) => ({
+    ref, uuid: `uuid-${ref}`, sheet: "/", sheetPath: "/", libId, value, fields, pins: Object.fromEntries(nets.map((node, i) => [String(i + 1), { name: String(i + 1), node }])),
+  });
+  const read = (symbols: ReturnType<typeof sym>[]) => chipFirmwares({
+    library: { part: (id: string) => (id === "mcu" ? { emulator: "avr8js" } : undefined), text: async () => JSON.stringify(bare) } as unknown as SimLibrary,
+    matches: symbols.map((s) => (s.libId === "MCU:Chip"
+      ? { ref: s.ref, uuid: s.uuid, sheet: "/", libId: s.libId, value: s.value, status: "matched", rule: 3, partId: "mcu", pinMap: ["1", "2", "3", "4"], unusedPins: [] }
+      : { ref: s.ref, uuid: s.uuid, sheet: "/", libId: s.libId, value: s.value, status: "none", rule: 5 })) as Match[],
+    symbols: symbols as unknown as Parameters<typeof chipFirmwares>[0]["symbols"],
+  });
+  const chip = (settings?: string) => sym("U1", "MCU:Chip", "Chip", ["+5V", "GND", "/X1", "/X2"], settings ? { "PCBJam.SimSettings": settings } : {});
+  const crystal = sym("Y1", "Device:Crystal", "16MHz", ["/X1", "/X2"]);
+
+  it("says the clock a chip will run at: its crystal's, its own, or its setting's", async () => {
+    expect((await read([chip(), crystal])).get("uuid-U1")!.clock).toEqual({ now: { hz: 16_000_000, from: "crystal", crystal: "Y1" }, setting: CLOCK, value: "auto" });
+    expect((await read([chip()])).get("uuid-U1")!.clock!.now).toEqual({ hz: 8_000_000, from: "assumed" });
+    const set = (await read([chip("clock=1MHz firmware=blink.hex"), crystal])).get("uuid-U1")!;
+    expect([set.name, set.clock!.value, set.clock!.now]).toEqual(["blink.hex", "1MHz", { hz: 1_000_000, from: "setting", crystal: "Y1" }]);
+  });
+
+  it("knows which crystal clocks which chip, and only a crystal that does", async () => {
+    expect([...clockingCrystals(await read([chip(), crystal]))]).toEqual([["Y1", "U1"]]);
+    expect([...clockingCrystals(await read([chip("clock=1MHz"), crystal]))]).toEqual([]);
+    expect([...clockingCrystals(await read([chip()]))]).toEqual([]);
+  });
+
+  it("writes a setting into the settings field, keeps the others, and takes the part's own value off the symbol", () => {
+    const doc = sheetDoc();
+    const text = symbolText(doc, U2)!;
+    expect(field(withSetting(text, "clock", "16MHz"), "PCBJam.SimSettings")).toBe("speed=2 firmware=old.bin clock=16MHz");
+    expect(field(withSetting(withSetting(text, "clock", "16MHz"), "clock", null), "PCBJam.SimSettings")).toBe("speed=2 firmware=old.bin");
+    expect(field(withSetting(symbolText(doc, U1)!, "clock", "8MHz"), "PCBJam.SimSettings")).toBe("clock=8MHz");
+  });
+
+  it("giveSetting changes the chip as one edit, and refuses what the setting does not take", async () => {
+    const edits: EditRequest[] = [];
+    const give = (value: string, doc: Y.Doc | null = sheetDoc(), uuid = U2) =>
+      giveSetting({ chip: { uuid, ref: "U2" }, setting: CLOCK, value, doc, edit: async (r) => { edits.push(r); } });
+    await give("16MHz");
+    expect(edits).toHaveLength(1);
+    expect(edits[0]!.label).toBe("Clock of U2");
+    expect(field(edits[0]!.upsert[0]!.sexpr, "PCBJam.SimSettings")).toBe("speed=2 firmware=old.bin clock=16MHz");
+    // the part's own value is not written
+    await give("auto");
+    expect(field(edits[1]!.upsert[0]!.sexpr, "PCBJam.SimSettings")).toBe("speed=2 firmware=old.bin");
+    await expect(give("fast")).rejects.toThrow('"fast" is not a value the setting "Clock" of U2 takes');
+    await expect(give("16MHz", null)).rejects.toThrow("This session cannot change the schematic from the list: U2 keeps its clock");
+    await expect(give("16MHz", sheetDoc(), "99999999-9999-4999-8999-999999999999")).rejects.toThrow("U2 is not on the sheet that is shown. Open its sheet, then set its clock");
+    expect(edits).toHaveLength(2);
   });
 });

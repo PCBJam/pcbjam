@@ -1,22 +1,26 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { PreparedRun } from "@pcbjam/shared/sim-library";
+import type { LeftOut, PreparedRun } from "@pcbjam/shared/sim-library";
 
 // The engine's module pulls the worker script in as text and asks where the
 // wasm lives; neither is needed here (the session gets a made-up engine).
 vi.mock("./ngspice-live-worker.js?raw", () => ({ default: "" }));
-vi.mock("./esp-emu-adapter.js?raw", () => ({ default: "" }));
+vi.mock("./esp32sim-adapter.js?raw", () => ({ default: "" }));
 vi.mock("./wasm-assets", () => ({ resolveWasmBase: async () => "http://wasm.test" }));
 
 import type { LiveCircuit, LiveEngine, LiveEngineOptions, LiveFrame } from "./live-engine";
 import {
   createLiveSession,
-  leftOutNote,
+  namedBySimulator,
   hasToolbarButton,
   LIVE_BUTTON_ID,
   LIVE_BUTTON_PLAY,
   LIVE_BUTTON_STOP,
+  LIVE_FILE_TIMEOUT_MS,
+  SAME_CLICK_MS,
   powerNote,
+  commandsNote,
   heatNote,
+  type LiveReport,
   type LiveSessionState,
   type ToolbarButtonModule,
 } from "./live-session";
@@ -30,7 +34,11 @@ const prepared = (over: Partial<PreparedRun> = {}): PreparedRun => ({
   codeParts: [],
   placed: [],
   notSimulated: [],
-  power: { byName: [], noVolts: [], assumed: [], noPower: [], unfed: [] },
+  leftOut: [],
+  valuesRead: [],
+  commandsLeftOut: 0,
+  marks: new Map(),
+  power: { byName: [], noVolts: [], assumed: [], noPower: [], unfed: [], sockets: [] },
   wires: [],
   notOnWire: [],
   notes: [],
@@ -39,6 +47,10 @@ const prepared = (over: Partial<PreparedRun> = {}): PreparedRun => ({
   parts: new Map(),
   ...over,
 });
+
+/** A left-out symbol as the netlist step reports it. */
+const out = (ref: string, reason: LeftOut["reason"] = "no-part", more: Partial<LeftOut> = {}): LeftOut =>
+  ({ ref, uuid: `uuid-${ref}`, sheet: "/", libId: "Lib:Thing", value: "Thing", reason, ...more });
 
 const frame = (over: Partial<LiveFrame> = {}): LiveFrame => ({
   t: 1, points: 1000, load: 0.02, achieved: 1, lagging: false, running: true, problem: null,
@@ -86,12 +98,14 @@ function setup(over: { prepare?: SimPartsReader["prepare"]; watchMs?: number; fr
   };
   const errors: string[] = [];
   const states: LiveSessionState[] = [];
+  const reports: LiveReport[] = [];
   const session = createLiveSession({
     mod,
     reader,
     onError: (text) => errors.push(text),
     onNote: (text, about) => { notes.push(text); abouts.push(about); },
     onState: (state) => states.push(state),
+    onReport: (report) => reports.push(report),
     watchMs: over.watchMs ?? 250,
     frameMs: over.frameMs ?? 50,
     createEngine: (options) => {
@@ -103,7 +117,7 @@ function setup(over: { prepare?: SimPartsReader["prepare"]; watchMs?: number; fr
   const press = (id = LIVE_BUTTON_ID) => mod.onHostToolbarButton!(id);
   /** Let what a click started run to its end. */
   const settle = () => vi.advanceTimersByTimeAsync(0);
-  return { mod, button, prepare, engine, errors, notes, abouts, states, session, press, settle, engineOptions: () => engineOptions };
+  return { mod, button, prepare, engine, errors, notes, abouts, states, reports, session, press, settle, engineOptions: () => engineOptions };
 }
 
 const PLAY = [LIVE_BUTTON_ID, LIVE_BUTTON_PLAY.tooltip, LIVE_BUTTON_PLAY.icon];
@@ -140,7 +154,7 @@ describe("live session", () => {
     expect(session.state).toBe("running");
     expect(session.run?.deck).toHaveLength(4);
     expect(states).toEqual(["starting", "running"]);
-    // Play stays while it starts: the button changes once
+    // Stop from the click on: the button changes once
     expect(button.mock.calls).toEqual([PLAY, STOP]);
     expect(errors).toEqual([]);
   });
@@ -163,7 +177,61 @@ describe("live session", () => {
     expect(session.state).toBe("running");
   });
 
-  it("clicks while it starts are not a second start or a stop", async () => {
+  // A start that waits (for the library, a firmware file, the engine) can be given up.
+  it("Stop while it starts gives the start up, and an answer that comes late starts nothing", async () => {
+    const wait = gate<PreparedRun>();
+    let asked = 0;
+    const { button, engine, session, states, reports, errors, press, settle } = setup({ prepare: () => (asked++ === 0 ? wait.promise : Promise.resolve(prepared())) });
+    press();
+    await settle();
+    expect(session.state).toBe("starting");
+    expect(button.mock.calls, "the button says Stop while it starts").toEqual([PLAY, STOP]);
+    await vi.advanceTimersByTimeAsync(SAME_CLICK_MS);
+    press();
+    await settle();
+    expect(session.state).toBe("idle");
+    expect(states).toEqual(["starting", "stopping", "idle"]);
+    expect(button.mock.calls).toEqual([PLAY, STOP, PLAY]);
+    expect(engine.stop).toHaveBeenCalledTimes(1);
+    // the circuit of that Play was never written: there is no report of it
+    expect(reports).toEqual([]);
+
+    wait.open(prepared());
+    await settle();
+    expect(engine.start).not.toHaveBeenCalled();
+    expect(session.state).toBe("idle");
+    expect(errors).toEqual([]);
+
+    // and it plays again
+    press();
+    await settle();
+    expect(engine.start).toHaveBeenCalledTimes(1);
+    expect(session.state).toBe("running");
+  });
+
+  it("Stop while the engine loads the circuit stops the engine, and the run is not taken for running", async () => {
+    const loading = gate<void>();
+    const { engine, session, states, reports, press, settle } = setup();
+    engine.start.mockImplementationOnce(() => loading.promise);
+    press();
+    await settle();
+    expect(session.state).toBe("starting");
+    await vi.advanceTimersByTimeAsync(SAME_CLICK_MS);
+    press();
+    await settle();
+    expect(engine.stop).toHaveBeenCalledTimes(1);
+    expect(session.state).toBe("idle");
+    // the engine's answer to the start comes after the stop
+    loading.open();
+    await settle();
+    expect(session.state).toBe("idle");
+    expect(session.run).toBeNull();
+    expect(states).toEqual(["starting", "stopping", "idle"]);
+    // the circuit was written: its report says the run was stopped
+    expect(reports.map((r) => r.outcome)).toEqual(["starting", "stopped"]);
+  });
+
+  it("clicks right behind the click on Play are the same click: not a second start, and not a stop", async () => {
     const wait = gate<PreparedRun>();
     const { prepare, engine, session, press, settle } = setup({ prepare: () => wait.promise });
     press();
@@ -188,7 +256,7 @@ describe("live session", () => {
     expect(engine.start).not.toHaveBeenCalled();
     expect(session.state).toBe("idle");
     expect(errors).toEqual(["Live simulation did not start: D1: pin A has no net; U3: no part with the id 'nope'"]);
-    expect(button.mock.calls, "the button was Play all along").toEqual([PLAY]);
+    expect(button.mock.calls, "Stop while it started, Play again when it did not").toEqual([PLAY, STOP, PLAY]);
   });
 
   it("a circuit the simulator does not run is said with the simulator's reason", async () => {
@@ -199,9 +267,11 @@ describe("live session", () => {
     await settle();
     expect(session.state).toBe("idle");
     expect(states).toEqual(["starting", "idle"]);
+    // nothing says which symbol the line "q1" belongs to: the simulator's words as they are
     expect(errors).toEqual([
       "Live simulation did not start: ngspice did not run the circuit: Error on line 4 or its substitute: / q1 c b 0 npn / could not find a valid modelname",
     ]);
+    expect(session.report).toEqual({ outcome: "not-started", leftOut: [], problem: errors[0], about: [] });
     // the next click tries again
     press();
     await settle();
@@ -337,7 +407,7 @@ describe("live session", () => {
     expect(session.state).toBe("idle");
     expect(states).toEqual(["starting"]);
     expect(errors).toEqual([]);
-    expect(button.mock.calls).toEqual([PLAY, [LIVE_BUTTON_ID, "", ""]]);
+    expect(button.mock.calls).toEqual([PLAY, STOP, [LIVE_BUTTON_ID, "", ""]]);
     // the editor no longer tells this session about clicks, and a click by hand does nothing
     expect(mod.onHostToolbarButton).toBeUndefined();
     await session.click();
@@ -431,12 +501,34 @@ describe("symbols a run leaves out", () => {
   });
 
   it("are named once the circuit runs, and the circuit runs", async () => {
-    const { session, press, settle, notes, errors } = setup({ prepare: async () => prepared({ notSimulated: ["Q1", "U1"] }) });
+    const { session, press, settle, notes, errors } = setup({ prepare: async () => prepared({ leftOut: [out("Q1"), out("U1")] }) });
     press();
     await settle();
     expect(session.state).toBe("running");
-    expect(notes).toEqual(["Not simulated, nothing has a model for them: Q1, U1. The rest of the circuit runs."]);
+    expect(notes).toEqual(["2 symbols have no part in the library: Q1 (Thing), U1 (Thing). The rest of the circuit runs."]);
     expect(errors).toEqual([]);
+  });
+
+  it("are said with their reasons, the missing values first", async () => {
+    const leftOut = [out("H1", "nothing"), out("R2", "no-value"), out("R9", "off", { off: "excluded" }), out("U1")];
+    const { press, settle, notes, abouts } = setup({ prepare: async () => prepared({ leftOut }) });
+    press();
+    await settle();
+    expect(notes).toEqual([
+      "1 symbol has no value (R2): type its value and it runs. 1 symbol has no part in the library: U1 (Thing). "
+      + "1 symbol is switched off: R9. 1 symbol has nothing to simulate. The rest of the circuit runs.",
+    ]);
+    expect(abouts).toEqual(["left-out"]);
+  });
+
+  it("are not a notice when all of them were switched off or have nothing to simulate", async () => {
+    const { session, press, settle, notes } = setup({ prepare: async () => prepared({ leftOut: [out("H1", "nothing"), out("R9", "off", { off: "excluded" })] }) });
+    press();
+    await settle();
+    expect(session.state).toBe("running");
+    expect(notes).toEqual([]);
+    // the report has them all the same
+    expect(session.report?.leftOut.map((s) => s.ref)).toEqual(["H1", "R9"]);
   });
 
   it("are not named when nothing is left out, or when the circuit does not start", async () => {
@@ -445,7 +537,7 @@ describe("symbols a run leaves out", () => {
     await fine.settle();
     expect(fine.notes).toEqual([]);
 
-    const refused = setup({ prepare: async () => prepared({ notSimulated: ["Q1"] }) });
+    const refused = setup({ prepare: async () => prepared({ leftOut: [out("Q1")] }) });
     refused.engine.start.mockRejectedValueOnce(new Error("ngspice did not run the circuit"));
     refused.press();
     await refused.settle();
@@ -453,12 +545,115 @@ describe("symbols a run leaves out", () => {
     expect(refused.notes).toEqual([]);
     expect(refused.errors).toEqual(["Live simulation did not start: ngspice did not run the circuit"]);
   });
+});
 
-  it("one is named by itself, many are counted", () => {
-    expect(leftOutNote([])).toBeNull();
-    expect(leftOutNote(["Q1"])).toBe("Q1 is not simulated: nothing has a model for it. The rest of the circuit runs.");
-    expect(leftOutNote(["J1", "J2", "J3", "J4", "J5", "J6"])).toContain("J1, J2, J3, J4, J5, J6. The rest");
-    expect(leftOutNote(["J1", "J2", "J3", "J4", "J5", "J6", "J7", "J8"])).toContain("J1, J2, J3, J4, J5, J6 and 2 more. The rest");
+// The report belongs to the run that was tried: it is made when the circuit is written,
+// and it stays after a start that failed, after a run that ended and after Stop.
+describe("the report of a run", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+  const leftOut = [out("R2", "no-value"), out("U1")];
+  const marks = new Map([["q1", "Q1"], ["xu2", "U2"], ["r1", "R1"]]);
+
+  it("is none before the first Play, and says what a run that runs left out", async () => {
+    const { session, press, settle, reports } = setup({ prepare: async () => prepared({ leftOut }) });
+    expect(session.report).toBeNull();
+    press();
+    await settle();
+    expect(reports.map((r) => r.outcome)).toEqual(["starting", "running"]);
+    expect(session.report).toEqual({ outcome: "running", leftOut, about: [] });
+  });
+
+  it("stays after Stop", async () => {
+    const { session, press, settle, reports } = setup({ prepare: async () => prepared({ leftOut }) });
+    press();
+    await settle();
+    press();
+    await settle();
+    expect(session.state).toBe("idle");
+    expect(session.run).toBeNull();
+    expect(session.report).toEqual({ outcome: "stopped", leftOut, about: [] });
+    expect(reports.map((r) => r.outcome)).toEqual(["starting", "running", "stopped"]);
+  });
+
+  it("stays after a start that failed, with what that circuit left out and the symbol the simulator names", async () => {
+    const { engine, session, press, settle, errors, notes } = setup({ prepare: async () => prepared({ leftOut, marks }) });
+    engine.start.mockRejectedValueOnce(
+      new Error("ngspice did not run the circuit: Error on line 4 or its substitute: / q1 c b 0 npn / could not find a valid modelname"));
+    press();
+    await settle();
+    const problem = "Live simulation did not start. The simulator names Q1: ngspice did not run the circuit: Error on line 4 or its substitute: / q1 c b 0 npn / could not find a valid modelname";
+    expect(errors).toEqual([problem]);
+    expect(notes).toEqual([]);
+    expect(session.report).toEqual({ outcome: "not-started", leftOut, problem, about: ["Q1"] });
+  });
+
+  it("names the symbol of a line that is inside a library part", async () => {
+    const { engine, session, press, settle, errors } = setup({ prepare: async () => prepared({ marks }) });
+    engine.start.mockRejectedValueOnce(new Error("ngspice did not run the circuit: Error: unknown subckt: xu2 +9v gnd +5v reg / in line no. 3 from file circbyline"));
+    press();
+    await settle();
+    expect(errors[0]).toBe("Live simulation did not start. The simulator names U2: ngspice did not run the circuit: Error: unknown subckt: xu2 +9v gnd +5v reg / in line no. 3 from file circbyline");
+    expect(session.report?.about).toEqual(["U2"]);
+  });
+
+  it("shows the simulator's words as they are when they name no line", async () => {
+    const { engine, session, press, settle, errors } = setup({ prepare: async () => prepared({ marks }) });
+    engine.start.mockRejectedValueOnce(new Error("ngspice did not take the circuit (see the log)"));
+    press();
+    await settle();
+    expect(errors).toEqual(["Live simulation did not start: ngspice did not take the circuit (see the log)"]);
+    expect(session.report?.about).toEqual([]);
+  });
+
+  it("does not search a reason that is not the simulator's own: it names its symbol already", async () => {
+    // R1 is a line of the circuit, and here it is only a word of somebody else's sentence
+    expect(namedBySimulator("U1 needs its firmware: the project has no file \"r1.hex\"", marks)).toEqual([]);
+    expect(namedBySimulator("ngspice did not run the circuit: Error on line 2 or its substitute: / r1 a 0 x", marks)).toEqual(["R1"]);
+    expect(namedBySimulator("the run did not start: Error: xu2.n3 is floating", marks)).toEqual(["U2"]);
+    expect(namedBySimulator("ngspice did not run the circuit: q1", undefined)).toEqual([]);
+  });
+
+  it("has no list when the circuit could not be written at all", async () => {
+    const { session, press, settle, errors } = setup({
+      prepare: async () => { throw new Error('the sheet "Power" is not loaded: its file power.kicad_sch is not in the project.'); },
+    });
+    press();
+    await settle();
+    expect(errors).toEqual(['Live simulation did not start: the sheet "Power" is not loaded: its file power.kicad_sch is not in the project.']);
+    expect(session.report).toEqual({ outcome: "not-started", leftOut: [], problem: errors[0], about: [] });
+  });
+
+  it("says why a run ended by itself, and keeps what it left out", async () => {
+    const { engine, session, press, settle, errors, engineOptions } = setup({ prepare: async () => prepared({ leftOut, marks }), watchMs: 100 });
+    press();
+    await settle();
+    engineOptions().onLog?.([["spice", "doAnalyses: TRAN:  Timestep too small; time = 1e-09, timestep = 1e-21: trouble with xu2.d1-instance d.xu2.d1"]], 0);
+    engine.frame.mockResolvedValueOnce(frame({ running: false }));
+    await vi.advanceTimersByTimeAsync(100);
+    expect(session.state).toBe("idle");
+    const problem = "Live simulation stopped by itself. The simulator names U2: doAnalyses: TRAN:  Timestep too small; time = 1e-09, timestep = 1e-21: trouble with xu2.d1-instance d.xu2.d1";
+    expect(errors).toEqual([problem]);
+    expect(session.report).toEqual({ outcome: "ended", leftOut, problem, about: ["U2"] });
+  });
+
+  it("is replaced by the next Play", async () => {
+    const first = prepared({ leftOut });
+    const second = prepared({ leftOut: [] });
+    let n = 0;
+    const { session, press, settle } = setup({ prepare: async () => (n++ ? second : first) });
+    press();
+    await settle();
+    press();
+    await settle();
+    expect(session.report?.leftOut).toEqual(leftOut);
+    press();
+    await settle();
+    expect(session.report).toEqual({ outcome: "running", leftOut: [], about: [] });
   });
 });
 
@@ -469,16 +664,16 @@ describe("where the power of a run comes from", () => {
   afterEach(() => {
     vi.useRealTimers();
   });
-  const none = { byName: [], noVolts: [], assumed: [], noPower: [], unfed: [] };
+  const none = { byName: [], noVolts: [], assumed: [], noPower: [], unfed: [], sockets: [] };
 
   it("is said once the circuit runs, in a notice of its own", async () => {
     const power = { ...none, byName: [{ net: "+5V", volts: 5 }] };
-    const { session, press, settle, notes, abouts, errors } = setup({ prepare: async () => prepared({ notSimulated: ["U1"], power }) });
+    const { session, press, settle, notes, abouts, errors } = setup({ prepare: async () => prepared({ leftOut: [out("U1")], power }) });
     press();
     await settle();
     expect(session.state).toBe("running");
     expect(notes).toEqual([
-      "U1 is not simulated: nothing has a model for it. The rest of the circuit runs.",
+      "U1 (Thing) is not simulated: the library has no part for it. The rest runs without it.",
       "+5V is powered with 5 V, by its name.",
     ]);
     expect(abouts).toEqual(["left-out", "power"]);
@@ -539,8 +734,26 @@ describe("where the power of a run comes from", () => {
       .toBe("BT2 runs with 1.5 V, BT4 runs with 9 V: their values do not say it.");
   });
 
+  it("says of every socket whether it feeds the board, and with what", () => {
+    const jack = { ref: "J1", title: "Barrel jack", feeds: true, volts: "9", label: "Voltage on the centre pin", assumed: true, setting: "plugged", on: "yes" };
+    const usb = { ref: "J2", title: "USB socket", feeds: true, volts: "5", label: "Voltage", assumed: false, setting: "plugged", on: "yes" };
+    expect(powerNote({ ...none, sockets: [jack] })).toBe("J1 (barrel jack) feeds the board with 9 V on the centre pin; its value does not say a voltage.");
+    expect(powerNote({ ...none, sockets: [{ ...jack, volts: "-12", assumed: false }] })).toBe("J1 (barrel jack) feeds the board with -12 V on the centre pin.");
+    expect(powerNote({ ...none, sockets: [usb] })).toBe("J2 (USB socket) feeds the board with 5 V.");
+    // a jack whose value says no voltage, on a wire whose name does
+    expect(powerNote({ ...none, sockets: [{ ...jack, volts: "5", assumed: false, fromWire: true }] })).toBe("J1 (barrel jack) feeds the board with 5 V on the centre pin, as the name of its wire says.");
+    // one that gives power out, or that somebody unplugged: no source, and how to make it one
+    expect(powerNote({ ...none, sockets: [{ ...usb, ref: "J3", feeds: false }] }))
+      .toBe("J3 (USB socket) gives no power: it does not count as plugged in (plugged=yes in the symbol's field PCBJam.SimSettings changes that).");
+    // the sockets come first, then what the names and the regulators say; more than three are counted
+    expect(powerNote({ ...none, byName: [{ net: "+5V", volts: 5 }], sockets: [jack, usb, { ...usb, ref: "J3" }, { ...usb, ref: "J4" }, { ...usb, ref: "J5" }] })).toBe(
+      "J1 (barrel jack) feeds the board with 9 V on the centre pin; its value does not say a voltage. J2 (USB socket) feeds the board with 5 V. "
+      + "J3 (USB socket) feeds the board with 5 V. And 2 more sockets. +5V is powered with 5 V, by its name.",
+    );
+  });
+
   it("is one notice for all of it", () => {
-    expect(powerNote({ byName: [{ net: "+5V", volts: 5 }], noVolts: ["VCC"], assumed: [{ ref: "BT1", label: "Voltage", value: "9", unit: "V" }], noPower: [{ ref: "U1", pins: ["8"] }], unfed: [] })).toBe(
+    expect(powerNote({ byName: [{ net: "+5V", volts: 5 }], noVolts: ["VCC"], assumed: [{ ref: "BT1", label: "Voltage", value: "9", unit: "V" }], noPower: [{ ref: "U1", pins: ["8"] }], unfed: [], sockets: [] })).toBe(
       "+5V is powered with 5 V, by its name. VCC is not powered: its name does not say a voltage. A battery or a voltage source on the wire powers it. "
       + "U1 has no power: nothing is connected to its supply pin 8. BT1 runs with 9 V: its value does not say the voltage.",
     );
@@ -581,8 +794,36 @@ describe("the heat of a run", () => {
   });
 });
 
+describe("simulator commands a schematic carries", () => {
+  const SAID = 'A text of this schematic holds commands for the simulator (".control" or "*#"). Live simulation does not run them: the circuit runs without them.';
+
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("are not run, and the run says so", async () => {
+    expect(commandsNote(0)).toBeNull();
+    expect(commandsNote(1)).toBe(SAID);
+    expect(commandsNote(3)).toBe(SAID);
+    const { session, press, settle, notes, abouts, errors } = setup({ prepare: async () => prepared({ commandsLeftOut: 2 }) });
+    press();
+    await settle();
+    expect(session.state).toBe("running");
+    expect(errors).toEqual([]);
+    expect(notes).toEqual([SAID]);
+    expect(abouts).toEqual(["commands"]);
+  });
+
+  it("is not talked about when there are none", async () => {
+    const { session, press, settle, notes } = setup({ prepare: async () => prepared() });
+    press();
+    await settle();
+    expect(session.state).toBe("running");
+    expect(notes).toEqual([]);
+  });
+});
+
 describe("live session: a chip that runs firmware", () => {
-  const LOADER = "export class WasmEmulator {}\nfunction initSync() {}\nexport { initSync };\n";
+  const LOADER = "export function createJitHost() {}\n";
   const chip = (): PreparedRun => prepared({
     codeParts: [{ partId: "esp32-c3-wroom-02", kind: "emulator", name: "esp32-c3-wroom-02_1", ref: "U1", logic: null }],
     placed: [{
@@ -591,12 +832,12 @@ describe("live session: a chip that runs firmware", () => {
     }] as unknown as PreparedRun["placed"],
     parts: new Map([["esp32-c3-wroom-02", {
       id: "esp32-c3-wroom-02", analog: "", logic: null,
-      manifest: { digital: { kind: "emulator", emulator: "esp-emu", chip: "esp32c3", orderParam: "IRR", pads: { IO4: 4 } } },
+      manifest: { digital: { kind: "emulator", emulator: "esp32sim", chip: "esp32c3", orderParam: "IRR", pads: { IO4: 4 } } },
     }]]) as unknown as PreparedRun["parts"],
   });
   const library = async () => ({
-    emulator: () => ({ id: "esp-emu", version: "1", program: "esp_emu_bg.wasm", loader: "esp_emu.js" }),
-    emulatorFile: async (_id: string, name: string) => new TextEncoder().encode(name === "esp_emu.js" ? LOADER : "wasm"),
+    emulator: () => ({ id: "esp32sim", version: "1", program: "esp32sim.wasm", loader: "jit.mjs", files: [] }),
+    emulatorFile: async (_id: string, name: string) => new TextEncoder().encode(name === "jit.mjs" ? LOADER : "wasm"),
   });
 
   // the start of an ESP32-C3's merged image
@@ -617,6 +858,28 @@ describe("live session: a chip that runs firmware", () => {
     });
     return { mod, engine, errors, session };
   }
+
+  it("a firmware file that never arrives ends the start with a sentence, and Play works again", async () => {
+    vi.useFakeTimers();
+    try {
+      let asked = 0;
+      const { mod, engine, errors, session } = start(() => (asked++ === 0 ? new Promise<Uint8Array | null>(() => {}) : Promise.resolve(IMAGE)));
+      mod.onHostToolbarButton!(LIVE_BUTTON_ID);
+      await vi.advanceTimersByTimeAsync(LIVE_FILE_TIMEOUT_MS - 1);
+      expect(session.state).toBe("starting");
+      await vi.advanceTimersByTimeAsync(1);
+      expect(session.state).toBe("idle");
+      expect(errors).toEqual(['Live simulation did not start: the project\'s file "firmware.bin" did not arrive within 60 seconds']);
+      expect(engine.start).not.toHaveBeenCalled();
+
+      mod.onHostToolbarButton!(LIVE_BUTTON_ID);
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.waitFor(() => expect(session.state).toBe("running"));
+      session.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it("hands the engine the chip's package: the emulator from the library, the firmware from the project", async () => {
     const readFile = vi.fn(async () => IMAGE);

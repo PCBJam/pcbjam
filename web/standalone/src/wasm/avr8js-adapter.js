@@ -6,7 +6,7 @@
  * user's firmware: its files come in one package, and the engine hands them to the adapter
  * the package names. This file is that adapter for avr8js. It runs the sketch on the
  * emulated chip and answers the three calls ngspice's d_cosim makes of every code part.
- * It is the seat Espressif's emulator has in esp-emu-adapter.js.
+ * It is the seat the ESP32 emulator has in esp32sim-adapter.js.
  *
  * It runs in the simulation thread. live-engine.ts puts this file's text in front of the
  * live Worker's script, so the adapter is there before the engine asks for it. It has no
@@ -16,6 +16,8 @@
  * The ports, for a chip with N modelled pads (config.pads lists their numbers):
  *   inputs   0 .. N-1    the level ON each pad, as ngspice computed it
  *            N           the reset pin, 1 = the chip runs (when config.enable is set)
+ *            N + 1       the supply, 1 = high enough for the chip to run (when config.supply
+ *                        is set: a chip without a board. A board feeds itself)
  *   outputs  0 .. N-1    the level the chip drives on each pad
  *            N .. 2N-1   output enable: 1 = the chip drives the pad
  *            2N .. 3N-1  pull-up on
@@ -28,7 +30,10 @@
  * for. A pin change is stamped with the count at that instruction (62.5 ns at 16 MHz) and
  * handed to ngspice at its own time; a pin change from ngspice is given to the chip when
  * ngspice reports it, at most one instruction after its time. The chip's clock never
- * jumps: a sleeping chip is stepped through its sleep like a working one.
+ * jumps: a sleeping chip is stepped through its sleep like a working one. The clock's speed
+ * is config.clock (a board's crystal, or what the schematic gives a chip without a board).
+ * A sketch can divide it while it runs (the chip's CLKPR register): avr8js keeps the
+ * divider, and this file counts the chip's time with it.
  *
  * The program. The page reads the sketch's file (Intel HEX text) and hands this thread
  * the program's bytes as they sit in the chip's program memory ("firmware.bin").
@@ -93,13 +98,13 @@
       throw new Error("the emulator's script is not there");
     const step = lib.avrInstruction;
     // What each chip is made of. avr8js describes these parts of the chip itself.
-    const CHIPS = {
-      atmega328p: {
-        flash: 0x8000, ram: 2048, eeprom: 1024,
-        ports: { 1: lib.portBConfig, 2: lib.portCConfig, 3: lib.portDConfig },
-        timers: [lib.timer0Config, lib.timer1Config, lib.timer2Config],
-      },
+    const ATMEGA328 = {
+      flash: 0x8000, ram: 2048, eeprom: 1024,
+      ports: { 1: lib.portBConfig, 2: lib.portCConfig, 3: lib.portDConfig },
+      timers: [lib.timer0Config, lib.timer1Config, lib.timer2Config],
     };
+    // the 328 without the P is the same chip here: the P is its sleep modes' lower current
+    const CHIPS = { atmega328p: ATMEGA328, atmega328: ATMEGA328 };
     const chip = CHIPS[config.chip];
 
     // The program memory: the sketch from address 0, 0xff where it has nothing (an erased chip).
@@ -121,6 +126,9 @@
     let base = 0;                    // ngspice time at which the chip's clock read 0
     let powered = false, held = false;
     let enable = config.enable ? -1 : 1;                // -1: ngspice has not said yet
+    // The supply of a chip without a board, as its model's threshold reads it. A board feeds itself.
+    const SUPPLY = config.supply ? N + 1 : -1;
+    let fed = config.supply ? -1 : 1;
     // What each pad reads, last word from ngspice: 0, 1, or -1 = ngspice cannot say (nothing
     // drives the pin, or it sits between the thresholds).
     const inLevel = new Array(N).fill(-1);
@@ -138,11 +146,16 @@
     const TYPED_MAX = 4096;
     let usart = null, sent = [], saidTyped = false;
     const typed = [];
-    let saidAnalog = false;
+    let saidAnalog = false, saidReference = false;
     const saidChannel = {};          // the converter's channels the board has no pin for, each said once
-    const stat = { real: 0, out: 0, inputs: 0, late: 0, maxLateUs: 0, unwired: 0, restarts: 0, readBack: 0, adc: 0, wished: 0, nextReport: 0 };
+    const stat = { real: 0, out: 0, inputs: 0, late: 0, maxLateUs: 0, unwired: 0, restarts: 0, starts: 0, readBack: 0, adc: 0, wished: 0, nextReport: 0 };
 
-    const now = () => cpu.cycles / HZ;
+    // avr8js's own clock divider, and "the sketch has just changed it"
+    let clock = null, rate = false;
+    const hz = () => (clock ? HZ / clock.prescaler : HZ);
+    const now = () => (clock ? (cpu.cycles + clock.cyclesDelta) / (HZ / clock.prescaler) : cpu.cycles / HZ);
+    // the count of the chip's clock at a time of its own
+    const cyclesAt = (t) => Math.ceil(clock ? t * (HZ / clock.prescaler) - clock.cyclesDelta : t * HZ);
     const put = (t, bit, state) => {
       if (silent[bit % N]) { stat.unwired++; return; }
       const at = Math.max(t, floor);
@@ -215,6 +228,18 @@
     // A fresh chip: its clock at 0, its program at the reset vector.
     function boot() {
       cpu = new lib.CPU(new Uint16Array(image.buffer), chip.ram);
+      // the chip's clock divider. Its register is watched: the instruction loop has to know
+      // at once that the chip's time runs at another pace
+      clock = typeof lib.AVRClock === "function" ? new lib.AVRClock(cpu, HZ) : null;
+      rate = false;
+      if (clock) {
+        const reg = (lib.clockConfig || { CLKPR: 0x61 }).CLKPR, inner = cpu.writeHooks[reg];
+        cpu.writeHooks[reg] = (value, old, addr, mask) => {
+          const before = clock.prescaler, done = inner(value, old, addr, mask);
+          if (clock.prescaler !== before) { rate = changed = true; }
+          return done;
+        };
+      }
       ports = {};
       for (const no of Object.keys(chip.ports)) { ports[no] = new lib.AVRIOPort(cpu, chip.ports[no]); watch(Number(no), ports[no]); }
       for (const t of chip.timers) new lib.AVRTimer(cpu, t);
@@ -243,7 +268,7 @@
         }
         const whole = adc.sampleCycles;
         const hold = Math.round((adc.conversionCycles === 25 ? 13.5 : 1.5) * adc.prescaler);
-        if (env.sampleAt && env.sampleAt(base + now() + hold / HZ)) stat.wished++;
+        if (env.sampleAt && env.sampleAt(base + now() + hold / hz())) stat.wished++;
         cpu.addClockEvent(() => {
           if (cpu !== board) return;
           const t = base + now();
@@ -264,6 +289,10 @@
           else if (input.type === T.Temperature) v = 0.378125;   // 25 degrees, avr8js's own number
           const kind = adc.referenceVoltageType;
           const ref = kind === R.Internal1V1 ? 1.1 : kind === R.Internal2V56 ? 2.56 : volt(kind === R.AREF ? "AREF" : "AVCC");
+          if (ref <= 0.01 && !saidReference && input.type === T.SingleEnded) {
+            saidReference = true;
+            trouble("the sketch measures against " + (kind === R.AREF ? "its AREF pin" : "AVCC, the supply of its converter") + ", and that pin has no voltage: analogRead gives 1023");
+          }
           const result = ref > 0.01 ? Math.min(1023, Math.max(0, Math.floor(v / ref * 1024))) : 1023;
           cpu.addClockEvent(() => { if (cpu === board) adc.completeADCRead(result); }, Math.max(1, whole - hold));
         }, hold);
@@ -309,13 +338,13 @@
     }
 
     function start() {
-      try { boot(); return true; }
+      try { boot(); stat.starts++; return true; }
       catch (e) { dead = true; cpu = null; trouble("the chip did not start: " + e); return false; }
     }
 
     return {
       // in | out << 8 | inout << 16 | method << 24 (0 = ngspice's "Normal": step, then input)
-      pj_setup() { return (N + (config.enable ? 1 : 0)) | ((3 * N) << 8); },
+      pj_setup() { return (N + (config.enable ? 1 : 0) + (config.supply ? 1 : 0)) | ((3 * N) << 8); },
 
       // ngspice: "advance to this time; stop early, and say when, if a pin changes".
       pj_step(target) {
@@ -326,8 +355,9 @@
           if (!(target >= 1e-6)) return target;
           powered = true;
           rebase(target);
-          held = enable !== 1;
-          if (held) trouble("the reset pin is not high: the chip is held in reset and its sketch does not run");
+          held = enable !== 1 || fed !== 1;
+          if (fed !== 1) trouble("the chip has no supply: its VCC pin has less than 1.8 V, so its sketch does not run");
+          else if (held) trouble("the reset pin is not high: the chip is held in reset and its sketch does not run");
           else if (!start()) return target;
         }
         const goal = target - base;
@@ -336,13 +366,20 @@
         if (held) { floor = goal; return target; }
 
         const started = performance.now();
-        const end = Math.ceil(goal * HZ), c = cpu;
+        const c = cpu;
+        let end = cyclesAt(goal);
         changed = false;
         if (typed.length && !usart.rxBusy) feed();      // the sketch may have switched its receiver on since
         while (c.cycles < end) {
           step(c);
           c.tick();
           if (changed) {
+            if (rate) {
+              // the sketch set the chip's clock divider: the same time is another count from here on
+              rate = false;
+              end = cyclesAt(goal);
+              log("the sketch set the chip's clock divider to " + clock.prescaler + ": the chip runs at " + (hz() / 1e6) + " MHz");
+            }
             if (due() <= goal) break;
             changed = false;
           }
@@ -365,19 +402,24 @@
           if (!powered && bit < N) inLevel[bit] = -1;
           return;
         }
-        if (bit === N) {                                // the reset pin
-          const was = enable;
-          enable = state;
+        if (bit === N || bit === SUPPLY) {              // the reset pin, the supply
+          const supply = bit === SUPPLY;
+          const was = supply ? fed : enable;
+          if (supply) fed = state; else enable = state;
           if (!powered || dead || was === state) return;
-          if (state === ZERO) {
+          // the chip runs with its supply up and its reset pin high; it starts from reset when both are back
+          const runs = enable === 1 && fed === 1;
+          if (!runs && !held) {
             held = true; cpu = null;
             resetPads(Math.max(time - base, floor));
-            log("reset went low: the chip is held in reset");
-          } else {
+            log(supply ? "the supply went below 1.7 V: the chip stopped" : "reset went low: the chip is held in reset");
+          } else if (runs && held) {
             rebase(time);
             held = false;
+            // a supply that comes for the first time is not "back"
+            const first = stat.starts === 0;
             stat.restarts++;
-            if (start()) log("reset went high: the chip starts");
+            if (start()) log(supply ? (first ? "the chip has its supply: it starts" : "the supply is back: the chip starts") : "reset went high: the chip starts");
           }
           return;
         }

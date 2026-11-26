@@ -48,7 +48,7 @@ export function readIntelHex(text: string): Uint8Array {
  * The program memory of the AVR chips the library has boards for, in bytes. The adapter
  * that runs them has the same numbers (avr8js-adapter.js).
  */
-export const AVR_PROGRAM_BYTES: Readonly<Record<string, number>> = { atmega328p: 32 * 1024 };
+export const AVR_PROGRAM_BYTES: Readonly<Record<string, number>> = { atmega328p: 32 * 1024, atmega328: 32 * 1024 };
 
 /**
  * Why a program is none for this chip, in words, or null: it needs more room than the

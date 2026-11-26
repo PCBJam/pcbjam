@@ -336,9 +336,19 @@ let simParts: SimPartsReader | null = null;
 /** The page's one reader of the simulation library (null ⇒ live simulation
  *  off). One per page, not per tool boot: the library is opened at its first
  *  read and the page then stays on that snapshot until it is reloaded. */
+/**
+ * Whether the editor's file system has this file: how the parts reader finds a sheet that
+ * did not load. The editor's glue publishes its file system as the global `FS` (wasm/boot.ts;
+ * `Module.FS` is not exported). Before an editor is up nothing can be said: true.
+ */
+function editorHasFile(path: string): boolean {
+  const fs = (globalThis as { FS?: { analyzePath?: (path: string) => { exists: boolean } } }).FS;
+  return typeof fs?.analyzePath === "function" ? fs.analyzePath(path).exists : true;
+}
+
 export function simPartsConfig(): SimPartsReader | null {
   if (!SIM_LIBRARY_URL) return null;
-  return (simParts ??= simPartsReader(SIM_LIBRARY_URL));
+  return (simParts ??= simPartsReader(SIM_LIBRARY_URL, { fileExists: editorHasFile }));
 }
 
 /** The 3D model source for a tool boot (null ⇒ models disabled). One instance

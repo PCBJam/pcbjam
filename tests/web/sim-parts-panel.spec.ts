@@ -17,7 +17,8 @@ import { shotPath } from '../e2e/utils/element-tracker';
  *     from simulation in the file) say so;
  *   - for the symbols without a library part it says what KiCad's own
  *     netlist (kicadSimNetlist) has: the capacitors run with KiCad's model,
- *     the connectors are not simulated;
+ *     the connectors have no part (why a symbol is left out has a test of its
+ *     own, live-sim-left-out.spec.ts);
  *   - a library that cannot be reached is said in the panel, in words;
  *   - a chip that runs firmware has a second line with the file it runs and
  *     "Choose file...". A picked file is sent to the project and its name is
@@ -193,10 +194,12 @@ test.describe('simulation parts panel', () => {
       // no library part: KiCad's netlist says what happens to them
       ['C1', 'kicad', /10uF.*KiCad's model/],
       ['C2', 'kicad', /680nF.*KiCad's model/],
-      ['P1', 'none', /IN.*not simulated/],
-      ['P2', 'none', /OUT.*not simulated/],
-      ['P3', 'none', /POWER.*not simulated/],
-      ['P4', 'none', /CONN_2.*not simulated/],
+      // (the demo's connectors are symbols of its own library, so they are not on the short
+      // list of KiCad's symbols with nothing to simulate: they read "no part")
+      ['P1', 'none', /IN.*no part/],
+      ['P2', 'none', /OUT.*no part/],
+      ['P3', 'none', /POWER.*no part/],
+      ['P4', 'none', /CONN_2.*no part/],
       // the demo's mounting holes are excluded from simulation in KiCad
       ['P5', 'excluded', /MOUNTING_HOLE.*excluded/],
       ['P6', 'excluded', /MOUNTING_HOLE.*excluded/],
