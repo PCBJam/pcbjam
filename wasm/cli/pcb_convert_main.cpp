@@ -111,7 +111,6 @@
 #include <zone_filler.h>
 #include <drc/drc_item.h>
 #include <drc/drc_report.h>
-#include <exporters/export_d356.h>
 #include <exporters/gendrill_excellon_writer.h>
 #include <exporters/gerber_jobfile_writer.h>
 #include <json_common.h>
@@ -147,6 +146,10 @@
 #include <netlist_reader/pcb_netlist.h>
 #include <tool/tool_manager.h>
 #include <widgets/report_severity.h>
+
+// The fabrication exporters, shared with the PCB editor's kicadFabExport. It brings
+// <exporters/export_d356.h>, which has no include guard upstream: include it only there.
+#include "../bindings/fab_export.h"
 
 /** Where --update-from-netlist staged its footprints (pcb_update_headless.cpp). */
 extern std::string g_pcbjamFootprintDir;
@@ -528,21 +531,8 @@ int runDrc( const char* aInPath, bool aJson, bool aStrict, const char* aOutPath,
 // plugins 0027: what a manufacturer's own KiCad plugin sets before it plots,
 // as options of the Gerber and drill exports. The defaults are the exports as
 // they always were; --fab-batch takes the options of both kinds in one list.
-struct FAB_OPTIONS
-{
-    // gerbers
-    const char* layers = nullptr;           // --layers a,b,...
-    bool        canonicalNames = false;     // --canonical-names
-    bool        protelExtensions = true;    // --no-protel-ext
-    bool        jobFile = true;             // --no-job-file
-    bool        zeroMaskExpansion = false;  // --zero-mask-expansion
-    bool        zeroMaskMinWidth = false;   // --zero-mask-min-width
-    int         precision = 0;              // --precision 5|6 (0: the job's default)
-    // drill
-    bool        separatePlated = false;     // --separate-plated
-    bool        minimalHeader = false;      // --minimal-header
-    bool        routeOvalHoles = false;     // --route-oval-holes
-};
+// They live in fab_export.h, with the exporters that read them.
+using FAB_OPTIONS = pcbjam_fab_export::OPTIONS;
 
 
 // Reads the option flags in argv[aFrom..]. False on a word that is not an
@@ -551,68 +541,10 @@ struct FAB_OPTIONS
 bool parseFabOptions( int argc, char** argv, int aFrom, bool aGerbers, bool aDrill,
                       FAB_OPTIONS& aOptions )
 {
-    for( int arg = aFrom; arg < argc; ++arg )
-    {
-        const char* word = argv[arg];
-
-        if( aGerbers && std::strcmp( word, "--layers" ) == 0 && arg + 1 < argc )
-        {
-            aOptions.layers = argv[++arg];
-        }
-        else if( aGerbers && std::strcmp( word, "--canonical-names" ) == 0 )
-        {
-            aOptions.canonicalNames = true;
-        }
-        else if( aGerbers && std::strcmp( word, "--no-protel-ext" ) == 0 )
-        {
-            aOptions.protelExtensions = false;
-        }
-        else if( aGerbers && std::strcmp( word, "--no-job-file" ) == 0 )
-        {
-            aOptions.jobFile = false;
-        }
-        else if( aGerbers && std::strcmp( word, "--zero-mask-expansion" ) == 0 )
-        {
-            aOptions.zeroMaskExpansion = true;
-        }
-        else if( aGerbers && std::strcmp( word, "--zero-mask-min-width" ) == 0 )
-        {
-            aOptions.zeroMaskMinWidth = true;
-        }
-        else if( aGerbers && std::strcmp( word, "--precision" ) == 0 && arg + 1 < argc )
-        {
-            const char* value = argv[++arg];
-
-            if( std::strcmp( value, "5" ) == 0 )
-                aOptions.precision = 5;
-            else if( std::strcmp( value, "6" ) == 0 )
-                aOptions.precision = 6;
-            else
-                return false;
-        }
-        else if( aDrill && std::strcmp( word, "--separate-plated" ) == 0 )
-        {
-            aOptions.separatePlated = true;
-        }
-        else if( aDrill && std::strcmp( word, "--minimal-header" ) == 0 )
-        {
-            aOptions.minimalHeader = true;
-        }
-        else if( aDrill && std::strcmp( word, "--route-oval-holes" ) == 0 )
-        {
-            aOptions.routeOvalHoles = true;
-        }
-        else
-        {
-            return false;
-        }
-    }
-
-    return true;
+    return pcbjam_fab_export::parseOptions(
+            std::vector<std::string>( argv + std::min( aFrom, argc ), argv + argc ), aGerbers, aDrill,
+            aOptions );
 }
-
-
-LSEQ parseLayerList( BOARD* aBrd, const char* aArg, std::string& aError );
 
 
 int exportGerbers( BOARD* brd, const char* aInPath, const wxString& aOutDir,
@@ -623,137 +555,24 @@ int exportGerbers( BOARD* brd, const char* aInPath, const wxString& aOutDir,
     if( !outPath.EndsWith( wxS( "/" ) ) )
         outPath += wxS( "/" );
 
-    REPORTER& reporter = CLI_REPORTER::GetInstance();
+    LSEQ        layersToPlot;
+    std::string layerError;
 
-    // kicad-cli defaults (m_useBoardPlotParams=false, m_createJobsFile=true);
-    // layer selection = the board's enabled layers, stackup plot order.
-    JOB_EXPORT_PCB_GERBERS gerberJob;
-    gerberJob.m_useProtelFileExtension = aOptions.protelExtensions;
-    gerberJob.m_createJobsFile = aOptions.jobFile;
-
-    if( aOptions.precision )
-        gerberJob.m_precision = aOptions.precision;
-
-    PCB_PLOT_PARAMS        plotOpts;
-    PCB_PLOTTER::PlotJobToPlotOpts( plotOpts, &gerberJob, reporter );
-
-    LSEQ layersToPlot;
-
-    if( aOptions.layers )
+    if( const int rc = pcbjam_fab_export::gerberLayers( brd, aOptions, layersToPlot, layerError ) )
     {
-        std::string layerError;
-        const LSEQ  asked = parseLayerList( brd, aOptions.layers, layerError );
-
-        if( asked.empty() )
-        {
-            std::fprintf( stderr, "%s: error: %s\n", aInPath, layerError.c_str() );
-            return 2;
-        }
-
-        // A fixed list serves every board: a 2-layer board has no In1.Cu to plot.
-        for( PCB_LAYER_ID layer : asked )
-        {
-            if( brd->IsLayerEnabled( layer ) )
-                layersToPlot.push_back( layer );
-        }
-
-        if( layersToPlot.empty() )
-        {
-            std::fprintf( stderr, "%s: error: the board has none of the layers asked for\n",
-                          aInPath );
-            return 4;
-        }
-    }
-    else
-    {
-        layersToPlot = brd->GetEnabledLayers().SeqStackupForPlotting();
+        std::fprintf( stderr, "%s: error: %s\n", aInPath, layerError.c_str() );
+        return rc;
     }
 
-    // A manufacturer whose CAM sets the mask openings itself asks for the
-    // pads as drawn (expansion 0) and for no merged mask webs (minimum width
-    // 0). On the loaded copy only, and put back, because --fab-batch runs the
-    // other exports on the same board.
-    struct MASK_SETTINGS_GUARD
-    {
-        BOARD_DESIGN_SETTINGS& m_bds;
-        const int              m_expansion;
-        const int              m_minWidth;
+    trace( "runGerbers: plotting" );
+    int        plotted = 0;
+    const bool ok = pcbjam_fab_export::gerbers( brd, outPath, CLI_REPORTER::GetInstance(), aOptions,
+                                                layersToPlot, &plotted );
 
-        MASK_SETTINGS_GUARD( BOARD_DESIGN_SETTINGS& aBds, bool aZeroExpansion,
-                             bool aZeroMinWidth ) :
-                m_bds( aBds ),
-                m_expansion( aBds.m_SolderMaskExpansion ),
-                m_minWidth( aBds.m_SolderMaskMinWidth )
-        {
-            if( aZeroExpansion )
-                m_bds.m_SolderMaskExpansion = 0;
-
-            if( aZeroMinWidth )
-                m_bds.m_SolderMaskMinWidth = 0;
-        }
-
-        ~MASK_SETTINGS_GUARD()
-        {
-            m_bds.m_SolderMaskExpansion = m_expansion;
-            m_bds.m_SolderMaskMinWidth = m_minWidth;
-        }
-    } maskGuard( brd->GetDesignSettings(), aOptions.zeroMaskExpansion,
-                 aOptions.zeroMaskMinWidth );
-
-    GERBER_JOBFILE_WRITER jobfileWriter( brd );
-    int  plotted = 0;
-    bool failed = false;
-
-    for( PCB_LAYER_ID layer : layersToPlot )
-    {
-        LSEQ plotSequence;
-        plotSequence.push_back( layer );
-
-        wxFileName gbrFn( brd->GetFileName() );
-        wxString   layerName = brd->GetLayerName( layer );
-        wxString   fileExt = plotOpts.GetUseGerberProtelExtensions()
-                                     ? GetGerberProtelExtension( layer )
-                                     : wxString( wxS( "gbr" ) );
-
-        // KiCad's own name for the layer (F.SilkS) gives the same file name
-        // on every board; the board's name may be anything its owner typed.
-        BuildPlotFileName( &gbrFn, outPath,
-                           aOptions.canonicalNames ? LSET::Name( layer ) : layerName, fileExt );
-        wxString gbrName = gbrFn.GetFullName(); // AddGbrFile wants a non-const ref
-        jobfileWriter.AddGbrFile( layer, gbrName );
-
-        trace( "runGerbers: StartPlotBoard" );
-        GERBER_PLOTTER* plotter = (GERBER_PLOTTER*) StartPlotBoard(
-                brd, &plotOpts, layer, layerName, gbrFn.GetFullPath(), wxEmptyString,
-                wxEmptyString );
-
-        if( plotter )
-        {
-            PlotBoardLayers( brd, plotter, plotSequence, plotOpts );
-            plotter->EndPlot();
-            plotted++;
-        }
-        else
-        {
-            std::fprintf( stderr, "%s: error: failed to plot %s\n", aInPath,
-                          (const char*) gbrFn.GetFullPath().ToUTF8() );
-            failed = true;
-        }
-
-        delete plotter;
-    }
-
-    if( aOptions.jobFile )
-    {
-        wxFileName jobFn( brd->GetFileName() );
-        BuildPlotFileName( &jobFn, outPath, wxS( "job" ), wxS( "gbrjob" ) );
-        jobfileWriter.CreateJobFile( jobFn.GetFullPath() );
-    }
-
-    std::fprintf( stderr, "%s: %s (%d layers%s) -> %s\n", aInPath, failed ? "FAIL" : "OK", plotted,
+    std::fprintf( stderr, "%s: %s (%d layers%s) -> %s\n", aInPath, ok ? "OK" : "FAIL", plotted,
                   aOptions.jobFile ? " + job file" : "", (const char*) outPath.ToUTF8() );
 
-    return failed ? 4 : 0;
+    return ok ? 0 : 4;
 }
 
 
@@ -779,31 +598,7 @@ int runGerbers( const char* aInPath, const char* aOutDir, const FAB_OPTIONS& aOp
 
 LSEQ parseLayerList( BOARD* aBrd, const char* aArg, std::string& aError )
 {
-    LSEQ     seq;
-    wxString arg = wxString::FromUTF8( aArg );
-
-    for( const wxString& token : wxSplit( arg, ',' ) )
-    {
-        bool found = false;
-
-        for( PCB_LAYER_ID layer : LSET::AllLayersMask() )
-        {
-            if( token == LSET::Name( layer ) || token == aBrd->GetLayerName( layer ) )
-            {
-                seq.push_back( layer );
-                found = true;
-                break;
-            }
-        }
-
-        if( !found )
-        {
-            aError = "unknown layer '" + std::string( token.ToUTF8() ) + "'";
-            return LSEQ();
-        }
-    }
-
-    return seq;
+    return pcbjam_fab_export::layerList( aBrd, wxString::FromUTF8( aArg ), aError );
 }
 
 
@@ -890,60 +685,8 @@ int exportDrill( BOARD* brd, const char* aInPath, const wxString& aOutDir,
     if( !outPath.EndsWith( wxS( "/" ) ) )
         outPath += wxS( "/" );
 
-    JOB_EXPORT_PCB_DRILL drillJob; // kicad-cli defaults
-
-    // plugins 0027; each stays the job's default unless asked.
-    if( aOptions.separatePlated )
-        drillJob.m_excellonCombinePTHNPTH = false;
-
-    if( aOptions.minimalHeader )
-        drillJob.m_excellonMinimalHeader = true;
-
-    if( aOptions.routeOvalHoles )
-        drillJob.m_excellonOvalDrillRoute = true;
-
-    VECTOR2I offset;
-
-    if( drillJob.m_drillOrigin == JOB_EXPORT_PCB_DRILL::DRILL_ORIGIN::ABS )
-        offset = VECTOR2I( 0, 0 );
-    else
-        offset = brd->GetDesignSettings().GetAuxOrigin();
-
-    EXCELLON_WRITER::ZEROS_FMT zeroFmt;
-
-    switch( drillJob.m_zeroFormat )
-    {
-    case JOB_EXPORT_PCB_DRILL::ZEROS_FORMAT::KEEP_ZEROS:
-        zeroFmt = EXCELLON_WRITER::KEEP_ZEROS;
-        break;
-    case JOB_EXPORT_PCB_DRILL::ZEROS_FORMAT::SUPPRESS_LEADING:
-        zeroFmt = EXCELLON_WRITER::SUPPRESS_LEADING;
-        break;
-    case JOB_EXPORT_PCB_DRILL::ZEROS_FORMAT::SUPPRESS_TRAILING:
-        zeroFmt = EXCELLON_WRITER::SUPPRESS_TRAILING;
-        break;
-    case JOB_EXPORT_PCB_DRILL::ZEROS_FORMAT::DECIMAL:
-    default:
-        zeroFmt = EXCELLON_WRITER::DECIMAL_FORMAT;
-        break;
-    }
-
-    // The upstream precision tables are statics in UI/handler TUs; the values
-    // are fixed (metric 3.3, inch 2.4).
-    const bool metric = drillJob.m_drillUnits == JOB_EXPORT_PCB_DRILL::DRILL_UNITS::MM;
-    DRILL_PRECISION precision = metric ? DRILL_PRECISION( 3, 3 ) : DRILL_PRECISION( 2, 4 );
-
     trace( "runDrill: CreateDrillandMapFilesSet" );
-    EXCELLON_WRITER writer( brd );
-    writer.SetFormat( metric, zeroFmt, precision.m_Lhs, precision.m_Rhs );
-    writer.SetOptions( drillJob.m_excellonMirrorY, drillJob.m_excellonMinimalHeader, offset,
-                       drillJob.m_excellonCombinePTHNPTH );
-    writer.SetRouteModeForOvalHoles( drillJob.m_excellonOvalDrillRoute );
-    writer.SetMapFileFormat( PLOT_FORMAT::PDF ); // unused: maps off
-
-    REPORTER& reporter = CLI_REPORTER::GetInstance();
-    const bool ok = writer.CreateDrillandMapFilesSet( outPath, true /*drill*/, false /*map*/,
-                                                      &reporter );
+    const bool ok = pcbjam_fab_export::drill( brd, outPath, CLI_REPORTER::GetInstance(), aOptions );
 
     std::fprintf( stderr, "%s: %s (excellon) -> %s\n", aInPath, ok ? "OK" : "FAIL",
                   (const char*) outPath.ToUTF8() );
@@ -973,8 +716,7 @@ int runDrill( const char* aInPath, const char* aOutDir, const FAB_OPTIONS& aOpti
 int exportIpc356( BOARD* brd, const char* aInPath, const wxString& aOutPath )
 {
     trace( "runIpc356: IPC356D_WRITER::Write" );
-    IPC356D_WRITER writer( brd );
-    const bool     ok = writer.Write( aOutPath );
+    const bool ok = pcbjam_fab_export::ipc356( brd, aOutPath );
 
     std::fprintf( stderr, "%s: %s (ipc-356d) -> %s\n", aInPath, ok ? "OK" : "FAIL",
                   (const char*) aOutPath.ToUTF8() );
@@ -1018,67 +760,9 @@ int runIpc356( const char* aInPath, const char* aOutPath )
 
 int exportFabComponents( BOARD* brd, const char* aInPath, const wxString& aOutPath )
 {
-    trace( "runFabComponents: collecting" );
-
-    const BOX2I    bbox = brd->GetBoardEdgesBoundingBox();
-    const VECTOR2I aux = brd->GetDesignSettings().GetAuxOrigin();
-
-    nlohmann::json board;
-    board["widthMm"] = pcbIUScale.IUTomm( bbox.GetWidth() );
-    board["heightMm"] = pcbIUScale.IUTomm( bbox.GetHeight() );
-    board["bboxOriginMm"] = { { "x", pcbIUScale.IUTomm( bbox.GetX() ) },
-                              { "y", pcbIUScale.IUTomm( bbox.GetY() ) } };
-    board["auxOriginMm"] = { { "x", pcbIUScale.IUTomm( aux.x ) },
-                             { "y", pcbIUScale.IUTomm( aux.y ) } };
-    board["copperLayers"] = brd->GetCopperLayerCount();
-    board["thicknessMm"] = pcbIUScale.IUTomm( brd->GetDesignSettings().GetBoardThickness() );
-
-    nlohmann::json footprints = nlohmann::json::array();
-
-    for( FOOTPRINT* fp : brd->Footprints() )
-    {
-        const VECTOR2I pos = fp->GetPosition();
-        const int      attrs = fp->GetAttributes();
-
-        nlohmann::json f;
-        f["ref"] = std::string( fp->GetReference().ToUTF8() );
-        f["fpid"] = std::string( fp->GetFPID().GetUniStringLibId().ToUTF8() );
-        f["side"] = fp->GetLayer() == B_Cu ? "bottom" : "top";
-        f["posMm"] = { { "x", pcbIUScale.IUTomm( pos.x ) },
-                       { "y", pcbIUScale.IUTomm( pos.y ) } };
-        f["rotationDeg"] = fp->GetOrientationDegrees();
-        f["smd"] = bool( attrs & FP_SMD );
-        f["excludeFromPos"] = fp->IsExcludedFromPosFiles();
-        f["excludeFromBom"] = fp->IsExcludedFromBOM();
-        f["dnp"] = fp->IsDNP();
-
-        nlohmann::json fields = nlohmann::json::object();
-
-        std::vector<PCB_FIELD*> fieldList;
-        fp->GetFields( fieldList, false );
-
-        for( PCB_FIELD* field : fieldList )
-        {
-            const wxString text = field->GetShownText( false );
-
-            if( !text.IsEmpty() )
-                fields[std::string( field->GetName().ToUTF8() )] = std::string( text.ToUTF8() );
-        }
-
-        f["fields"] = fields;
-        footprints.push_back( f );
-    }
-
-    nlohmann::json j;
-    j["board"] = board;
-    j["footprints"] = footprints;
-
     trace( "runFabComponents: writing" );
-    std::ofstream out( aOutPath.fn_str() );
-    out << j.dump( 2 ) << "\n";
-    out.close();
 
-    if( !out )
+    if( !pcbjam_fab_export::fabComponents( brd, aOutPath ) )
     {
         std::fprintf( stderr, "%s: error: unable to write %s\n", aInPath,
                       (const char*) aOutPath.ToUTF8() );

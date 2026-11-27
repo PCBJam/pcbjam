@@ -87,6 +87,8 @@ export interface PackageHost {
         signal: AbortSignal
       ): Promise<{ status: string }>;
       onDisconnected(message: string): void;
+      /** Exports run in the editor on the open board (plugins 0029), with the export's options (plugins 0027). */
+      browserExports?(kinds: string[], signal: AbortSignal, options?: import("@pcbjam/plugin-platform/api").ExportOptions): Promise<{ kind: string; files: { name: string; bytes: Uint8Array }[] }[]>;
       /** A dev page (localhost) reloaded itself: start the plugin again (plugins 0025 §12). */
       onPageReloaded?(): void;
       documents?: ReturnType<typeof createDocumentAPI>;

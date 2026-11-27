@@ -80,6 +80,7 @@
 #include "embedded_sync.h"
 #include "collab_presence_core.h"
 #include "plugin_board_geometry.h"
+#include "fab_export.h"
 #include "plugin_edits.h"
 #include "plugin_placement.h"
 #include "update_pcb.h"
@@ -2545,6 +2546,30 @@ void kicadSaveBoard( std::string path )
 }
 
 
+// Plugin exports in the browser (plugins 0029): the four fabrication exports kicad_tools
+// --fab-batch runs on the server, on the board this editor has open, into MEMFS under
+// aOutDir/<kind>/ (fab_export.h, shared with kicad_tools). aOptionWords: the option words of
+// kicad_tools --fab-batch (plugins 0027), one per line; empty for the plain exports.
+// Synchronous: the page shows its notice first. Not while a file is opening or the person is
+// in the middle of a tool (a move, a route): the board is then between two states, and so
+// would the files be.
+std::string pcbFabExport( std::string aOutDir, std::string aKindsCsv, std::string aOptionWords )
+{
+    PCB_EDIT_FRAME* fr = pcbFrame();
+
+    if( !fr || !fr->GetBoard() )
+        return R"({"ok":false,"error":"NO_EDITOR"})";
+
+    if( pcbjam_open::busy() )
+        return R"({"ok":false,"error":"BUSY"})";
+
+    if( !fr->ToolStackIsEmpty() )
+        return R"({"ok":false,"error":"TOOL_ACTIVE"})";
+
+    return pcbjam_fab_export::run( fr->GetBoard(), aOutDir, aKindsCsv, aOptionWords );
+}
+
+
 // Test/PoC helper: move the first top-level board item by (dx,dy) IU via a real BOARD_COMMIT,
 // firing the listener — a deterministic local edit for the two-tab demo / e2e. Returns the
 // moved item's uuid.
@@ -4634,6 +4659,8 @@ EMSCRIPTEN_BINDINGS(pcbnew) {
 
     // Programmatic save of the in-memory board (round-trip tests, README §A).
     function("kicadSaveBoard", &kicadSaveBoard);
+    // Fabrication exports on the open board (plugins 0029; tool-unique name, merged-image safe).
+    function("kicadFabExport", &pcbFabExport);
     // libs 0031: open a part's team-library copy (tool-unique name, merged-image safe).
     function("kicadFootprintEditorOpenCopy", &footprintEditorOpenCopy);
 #ifndef KICAD_MERGED_EMBIND

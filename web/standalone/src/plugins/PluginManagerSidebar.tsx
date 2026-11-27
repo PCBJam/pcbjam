@@ -12,6 +12,7 @@ import { showPluginActivity } from '@/wasm/collab/presence';
 import { EDIT_LIMITS } from '@pcbjam/plugin-platform/api';
 import { selectModule, selectItems } from './selection';
 import { geometryModule, openGeometry } from './board-geometry';
+import { browserExportsAvailable, runBrowserExports } from './browser-exports';
 import { createDocumentAPI } from './document-api';
 import { sessionFeature, sessionIdentity } from '@/lib/session-identity';
 import { API_BASE_URL, PLUGIN_DOCS_URL } from '@/lib/config';
@@ -209,6 +210,9 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
           localChecks: hostedPlugins && sessionFeature('pluginLocalChecks'),
           // Sites the plugin declared and the user granted, reachable from its Worker (plugins 0022 M3).
           network: hostedPlugins && sessionFeature('pluginNetwork'),
+          // Exports run in this editor on the open board (plugins 0029); without the toggle, or on an
+          // engine without the binding, on the server.
+          ...(hostedPlugins && tool === 'pcbnew' && sessionFeature('pluginBrowserExports') && browserExportsAvailable() ? { browserExports: runBrowserExports } : {}),
           // Published releases from content-hash URLs, no activation (plugins 0022 M2).
           hashServing: hostedPlugins && sessionFeature('pluginHashServing') && active.published ? catalog.hashAccount() ?? undefined : undefined,
           // Dev only: the local plugin lab's UI origin when it is not on the default :4318.
@@ -463,7 +467,7 @@ export function PluginSidebar({ doc, tool, readOnly, fileName, project, projectF
       {prompt?.kind === 'download' && <section aria-label="Confirm plugin download" className="mt-3 rounded border border-sky-500/40 p-3">
         <p>{active?.manifest.name} requests a download of <strong>{prompt.name}</strong>.</p>
         <p className="my-2 text-neutral-500 dark:text-white/60">{prompt.bytes.length.toLocaleString()} bytes. This downloads a file; it does not save changes to your project.</p>
-        {prompt.content === 'archive' && <p className="my-2 text-neutral-500 dark:text-white/60">A ZIP archive PCBJam built on its servers from this plugin's exports of your design.</p>}
+        {prompt.content === 'archive' && <p className="my-2 text-neutral-500 dark:text-white/60">A ZIP archive PCBJam built from this plugin's exports of your design.</p>}
         {prompt.content === 'html' && <p className="my-2 text-neutral-500 dark:text-white/60">This is a web page containing code from this plugin and data from your design. The code runs when you open the file. PCBJam blocks the page from loading or sending anything over the network.</p>}
         <Button variant="outline" size="xs" disabled={placementBusy} onClick={async () => {
           if(placing.current)return;placing.current=true;setPlacementBusy(true);
